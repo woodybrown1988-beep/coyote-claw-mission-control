@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Coyote Claw · Mission Control</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;500;700&family=Barlow:wght@300;400;500;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    /* base — deep navy command deck */
+    --void:#070B14; --navy:#0C1322; --panel:#121C30; --elevated:#1A2740;
+    --line:rgba(120,150,200,.10); --line-strong:rgba(120,150,200,.18);
+    --steel:#5B6B86; --ash:#8A9AB5; --mist:#C9D3E3; --bright:#EAF0FA;
+    /* signature + status */
+    --amber:#F5A623; --amber-glow:rgba(245,166,35,.14);
+    --green:#34D399; --green-dim:rgba(52,211,153,.12);
+    --red:#F2555A; --red-dim:rgba(242,85,90,.12);
+    --idle:#3D4A63;
+    /* type */
+    --display:'Oswald','Barlow Condensed',sans-serif;
+    --body:'Barlow','DM Sans',sans-serif;
+    --mono:'JetBrains Mono','IBM Plex Mono',monospace;
+    --xs:.75rem; --sm:.875rem; --base:1rem; --lg:1.25rem; --xl:1.5rem; --2xl:2rem;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    background:var(--void); color:var(--mist); font-family:var(--body);
+    font-size:var(--base); line-height:1.45; padding:1.25rem 1.5rem 3rem;
+    -webkit-font-smoothing:antialiased;
+  }
+  /* industrial grain */
+  body::before{content:'';position:fixed;inset:0;opacity:.035;pointer-events:none;z-index:9999;
+    background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");}
+  .mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+  .fade{opacity:0;transform:translateY(10px);animation:rev .4s ease-out forwards}
+  @keyframes rev{to{opacity:1;transform:none}}
+  .fade:nth-child(1){animation-delay:.04s}.fade:nth-child(2){animation-delay:.09s}
+  .fade:nth-child(3){animation-delay:.14s}.fade:nth-child(4){animation-delay:.19s}
+  .fade:nth-child(5){animation-delay:.24s}
+
+  /* ---- header ---- */
+  header{display:flex;align-items:center;gap:1rem;padding-bottom:1.1rem;border-bottom:1px solid var(--line-strong);margin-bottom:1.4rem}
+  .mark{flex:0 0 auto}
+  .wordmark{display:flex;flex-direction:column;line-height:1}
+  .wordmark .t{font-family:var(--display);font-weight:700;font-size:var(--lg);letter-spacing:.18em;color:var(--bright);text-transform:uppercase}
+  .wordmark .s{font-family:var(--mono);font-size:var(--xs);color:var(--steel);letter-spacing:.22em;margin-top:.35rem;text-transform:uppercase}
+  .sys{margin-left:auto;display:flex;gap:1.4rem;align-items:center}
+  .sysitem{display:flex;flex-direction:column;align-items:flex-end;gap:.2rem}
+  .sysitem .k{font-family:var(--mono);font-size:.62rem;letter-spacing:.16em;color:var(--steel);text-transform:uppercase}
+  .sysitem .v{font-family:var(--mono);font-size:var(--sm);color:var(--mist)}
+  .pulse{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--amber);box-shadow:0 0 0 0 var(--amber-glow);animation:pl 1.8s ease-out infinite;margin-right:.4rem;vertical-align:middle}
+  @keyframes pl{0%{box-shadow:0 0 0 0 rgba(245,166,35,.5)}70%{box-shadow:0 0 0 9px rgba(245,166,35,0)}100%{box-shadow:0 0 0 0 rgba(245,166,35,0)}}
+  .seal{font-family:var(--mono);font-size:var(--xs);color:var(--green);border:1px solid var(--green-dim);background:var(--green-dim);padding:.2rem .5rem;border-radius:4px;letter-spacing:.08em}
+
+  /* ---- kpi row ---- */
+  .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:.75rem;margin-bottom:1.4rem}
+  .kpi{background:rgba(255,255,255,.025);border:1px solid var(--line);border-left:3px solid var(--steel);border-radius:8px;padding:.85rem 1rem;display:flex;flex-direction:column;gap:.3rem}
+  .kpi.live{border-left-color:var(--amber)}
+  .kpi.good{border-left-color:var(--green)}
+  .kpi .lab{font-family:var(--display);font-size:var(--xs);font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--steel)}
+  .kpi .val{font-family:var(--mono);font-size:var(--2xl);font-weight:700;color:var(--bright);line-height:1}
+  .kpi .sub{font-family:var(--mono);font-size:var(--xs);color:var(--ash)}
+  .kpi .sub.g{color:var(--green)}
+
+  /* ---- layout ---- */
+  .grid{display:grid;grid-template-columns:1.8fr 1fr;gap:1rem;align-items:start}
+  @media(max-width:980px){.grid{grid-template-columns:1fr}}
+  .panel{background:var(--navy);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+  .phead{display:flex;align-items:center;gap:.6rem;padding:.8rem 1.1rem;border-bottom:1px solid var(--line)}
+  .phead h2{font-family:var(--display);font-weight:700;font-size:var(--sm);letter-spacing:.12em;text-transform:uppercase;color:var(--mist)}
+  .phead .count{margin-left:auto;font-family:var(--mono);font-size:var(--xs);color:var(--steel)}
+  .pbody{padding:.4rem 0}
+  .stack{display:flex;flex-direction:column;gap:1rem}
+
+  /* worker heroes */
+  .heroes{display:grid;grid-template-columns:1fr;gap:.7rem;padding:.9rem 1.1rem}
+  .hero{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:.9rem 1rem;display:flex;flex-direction:column;gap:.55rem}
+  .hero.active{border-color:var(--amber-glow);box-shadow:inset 3px 0 0 var(--amber)}
+  .hero .row1{display:flex;align-items:center;gap:.6rem}
+  .hero .name{font-family:var(--display);font-weight:700;letter-spacing:.06em;color:var(--bright);text-transform:uppercase;font-size:var(--sm)}
+  .hero .meta{display:flex;gap:1.2rem;flex-wrap:wrap}
+  .hero .meta .m{display:flex;flex-direction:column;gap:.15rem}
+  .hero .meta .mk{font-family:var(--mono);font-size:.6rem;letter-spacing:.14em;color:var(--steel);text-transform:uppercase}
+  .hero .meta .mv{font-family:var(--mono);font-size:var(--sm);color:var(--mist)}
+  .bar{height:5px;border-radius:3px;background:rgba(255,255,255,.06);overflow:hidden}
+  .bar>i{display:block;height:100%;background:var(--amber);width:48%}
+
+  /* pills */
+  .pill{font-family:var(--mono);font-size:.66rem;font-weight:500;letter-spacing:.06em;padding:.18rem .5rem;border-radius:4px;text-transform:uppercase;white-space:nowrap}
+  .p-build{color:var(--amber);background:var(--amber-glow)}
+  .p-merged{color:var(--green);background:var(--green-dim)}
+  .p-refused{color:var(--red);background:var(--red-dim)}
+  .p-queued{color:var(--ash);background:rgba(120,150,200,.08)}
+
+  /* table */
+  table{width:100%;border-collapse:collapse}
+  th{font-family:var(--display);font-size:.68rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--steel);text-align:left;padding:.6rem 1.1rem;border-bottom:1px solid var(--line)}
+  td{padding:.62rem 1.1rem;border-bottom:1px solid rgba(120,150,200,.05);font-size:var(--sm);color:var(--mist);vertical-align:middle}
+  tr:last-child td{border-bottom:none}
+  tbody tr:hover{background:rgba(255,255,255,.018)}
+  td.id,td.eng,td.ref{font-family:var(--mono);font-size:var(--xs)}
+  td.id{color:var(--ash)}
+  td.eng{color:var(--steel)}
+  td.ref a{color:var(--ash);text-decoration:none;border-bottom:1px dashed var(--line-strong)}
+  .title{color:var(--bright)}
+
+  /* spend */
+  .spend{padding:.9rem 1.1rem;display:flex;flex-direction:column;gap:.7rem}
+  .spend .line{display:flex;align-items:center;justify-content:space-between;font-size:var(--sm)}
+  .spend .line .l{color:var(--ash)}
+  .spend .line .r{font-family:var(--mono);color:var(--mist)}
+  .spend .line.excl .l,.spend .line.excl .r{color:var(--steel)}
+  .spend .tot{border-top:1px solid var(--line);padding-top:.7rem;display:flex;justify-content:space-between}
+  .spend .tot .l{font-family:var(--display);font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--mist);font-size:var(--sm)}
+  .spend .tot .r{font-family:var(--mono);font-weight:700;color:var(--bright);font-size:var(--lg)}
+  .cap{height:6px;border-radius:3px;background:rgba(255,255,255,.06);overflow:hidden;margin-top:.2rem}
+  .cap>i{display:block;height:100%;background:var(--green);width:8.6%}
+  .note{font-family:var(--mono);font-size:var(--xs);color:var(--steel);line-height:1.5}
+
+  /* empty state */
+  .empty{padding:2.2rem 1.1rem;display:flex;flex-direction:column;align-items:center;gap:.9rem;text-align:center}
+  .empty .glyph{opacity:.35}
+  .empty .h{font-family:var(--display);font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--ash);font-size:var(--sm)}
+  .empty .p{font-family:var(--mono);font-size:var(--xs);color:var(--steel);max-width:32ch;line-height:1.6}
+
+  /* events */
+  .events{padding:.5rem 0}
+  .ev{display:grid;grid-template-columns:54px 18px 1fr;gap:.6rem;padding:.55rem 1.1rem;border-bottom:1px solid rgba(120,150,200,.05);align-items:start}
+  .ev:last-child{border-bottom:none}
+  .ev .ts{font-family:var(--mono);font-size:var(--xs);color:var(--steel)}
+  .ev .dot{width:8px;height:8px;border-radius:50%;margin-top:.35rem}
+  .ev.ok .dot{background:var(--green)} .ev.bad .dot{background:var(--red)} .ev.info .dot{background:var(--amber)}
+  .ev .body .m{font-size:var(--sm);color:var(--mist)}
+  .ev .body .m b{font-family:var(--mono);font-size:var(--xs);color:var(--ash);font-weight:400}
+  .ev .body .corr{font-family:var(--mono);font-size:var(--xs);color:var(--amber);margin-top:.25rem;padding-left:.6rem;border-left:2px solid var(--amber-glow)}
+  footer{margin-top:2rem;font-family:var(--mono);font-size:var(--xs);color:var(--steel);text-align:center;letter-spacing:.08em}
+</style>
+</head>
+<body>
+
+<header class="fade">
+  <span class="mark">
+    <svg width="46" height="46" viewBox="0 0 100 100" aria-label="Coyote Claw">
+      <g fill="#8A9AB5">
+        <polygon points="20,40 26,49 20,58 14,49"/>
+        <polygon points="38,28 45,38 38,48 31,38"/>
+        <polygon points="62,28 69,38 62,48 55,38"/>
+        <polygon points="80,40 86,49 80,58 74,49"/>
+        <polygon points="30,62 50,55 70,62 63,86 50,80 37,86"/>
+      </g>
+    </svg>
+  </span>
+  <span class="wordmark">
+    <span class="t">Coyote Claw</span>
+    <span class="s">Mission Control</span>
+  </span>
+  <div class="sys">
+    <div class="sysitem"><span class="k">Daemon</span><span class="v"><span class="seal">SEALED ×4</span></span></div>
+    <div class="sysitem"><span class="k">Worker</span><span class="v"><span class="pulse"></span>LIVE</span></div>
+    <div class="sysitem"><span class="k">Refreshed</span><span class="v mono">14:32:08</span></div>
+  </div>
+</header>
+
+<section class="kpis">
+  <div class="kpi good fade"><span class="lab">Jobs Today</span><span class="val">4</span><span class="sub g">3 shipped · 1 in flight</span></div>
+  <div class="kpi good fade"><span class="lab">Gates Passed</span><span class="val">3/3</span><span class="sub">+ 1 forged tap refused</span></div>
+  <div class="kpi fade"><span class="lab">Metered Spend</span><span class="val">£2.14</span><span class="sub">of £25 cap · Codex excl.</span></div>
+  <div class="kpi fade"><span class="lab">Open Gates</span><span class="val">0</span><span class="sub">no taps pending</span></div>
+  <div class="kpi live fade"><span class="lab">Active Stage</span><span class="val" style="font-size:1.3rem"><span class="pulse"></span>BUILD</span><span class="sub">job #18 · 14:02 elapsed</span></div>
+</section>
+
+<div class="grid">
+  <!-- LEFT COLUMN -->
+  <div class="stack">
+    <div class="panel fade">
+      <div class="phead"><h2>Job Queue</h2><span class="count">5 of 18 shown</span></div>
+      <div class="pbody">
+        <table>
+          <thead><tr><th>ID</th><th>Job</th><th>State</th><th>Engine</th><th>Stage</th><th>Ref</th></tr></thead>
+          <tbody>
+            <tr><td class="id">#18</td><td class="title">v1.1 Mission Control redesign</td><td><span class="pill p-build">build</span></td><td class="eng">claude</td><td class="mono" style="color:var(--amber)">build · high</td><td class="ref"><a href="#">feat/mc-v1-1</a></td></tr>
+            <tr><td class="id">#17</td><td class="title">Dashboard token-panel contract</td><td><span class="pill p-merged">merged</span></td><td class="eng">codex</td><td class="mono">done</td><td class="ref"><a href="#">PR&nbsp;#9</a></td></tr>
+            <tr><td class="id">#16</td><td class="title">ImageGen dual-engine</td><td><span class="pill p-merged">merged</span></td><td class="eng">codex</td><td class="mono">done</td><td class="ref"><a href="#">f78cb1b</a></td></tr>
+            <tr><td class="id">#15</td><td class="title">Branch-protection ruleset</td><td><span class="pill p-merged">merged</span></td><td class="eng">codex</td><td class="mono">done</td><td class="ref"><a href="#">PR&nbsp;#7</a></td></tr>
+            <tr><td class="id">#14</td><td class="title">Forged-tap test</td><td><span class="pill p-refused">refused</span></td><td class="eng">—</td><td class="mono" style="color:var(--red)">gate: nonce</td><td class="ref">—</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="panel fade">
+      <div class="phead"><h2>Outcomes · Gate Trail</h2><span class="count">learning signal</span></div>
+      <div class="events">
+        <div class="ev ok"><span class="ts">14:31</span><span class="dot"></span><div class="body"><div class="m">job <b>#18</b> spec_approved — nonce verified, tap from 8217804242</div></div></div>
+        <div class="ev info"><span class="ts">14:18</span><span class="dot"></span><div class="body"><div class="m">job <b>#18</b> assets_generated — claw reused, 1 empty-state PNG via OAuth</div></div></div>
+        <div class="ev bad"><span class="ts">11:02</span><span class="dot"></span><div class="body"><div class="m">job <b>#14</b> merge_refused — forged nonce, replayed tap rejected</div><div class="corr">correction: tap the newest coder-bot message; nonce is single-use</div></div></div>
+        <div class="ev ok"><span class="ts">10:40</span><span class="dot"></span><div class="body"><div class="m">job <b>#17</b> merge_fired — nonce verified, PR #9 merged to main</div></div></div>
+        <div class="ev ok"><span class="ts">09:55</span><span class="dot"></span><div class="body"><div class="m">job <b>#16</b> build_complete — codex sandbox, DNS blocked, FS read-only ✓</div></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- RIGHT COLUMN -->
+  <div class="stack">
+    <div class="panel fade">
+      <div class="phead"><h2>Workers</h2><span class="count">1 active</span></div>
+      <div class="heroes">
+        <div class="hero active">
+          <div class="row1"><span class="pulse"></span><span class="name">coder-worker</span><span class="pill p-build" style="margin-left:auto">build</span></div>
+          <div class="meta">
+            <div class="m"><span class="mk">Job</span><span class="mv">#18</span></div>
+            <div class="m"><span class="mk">Engine</span><span class="mv">claude</span></div>
+            <div class="m"><span class="mk">Effort</span><span class="mv">high</span></div>
+            <div class="m"><span class="mk">Timeout</span><span class="mv">14:02 / 30:00</span></div>
+          </div>
+          <div class="bar"><i></i></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel fade">
+      <div class="phead"><h2>Metered Spend</h2><span class="count">£ only</span></div>
+      <div class="spend">
+        <div class="line"><span class="l">Router · sonnet-4-6</span><span class="r">£0.62</span></div>
+        <div class="line"><span class="l">Worker · claude builds</span><span class="r">£1.52</span></div>
+        <div class="line excl"><span class="l">Codex builds · OAuth</span><span class="r">excluded</span></div>
+        <div class="tot"><span class="l">Total metered</span><span class="r">£2.14</span></div>
+        <div>
+          <div class="cap"><i></i></div>
+          <p class="note" style="margin-top:.4rem">£22.86 remaining of £25 router cap. Codex draws shared ChatGPT quota — no £-ledger entry, deliberately excluded so spend isn't overstated.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel fade">
+      <div class="phead"><h2>Token Usage</h2><span class="count">job_token_usage</span></div>
+      <div class="empty">
+        <span class="glyph">
+          <svg width="56" height="56" viewBox="0 0 100 100">
+            <circle cx="50" cy="50" r="44" fill="none" stroke="#3D4A63" stroke-width="2" stroke-dasharray="5 6"/>
+            <g fill="#3D4A63">
+              <polygon points="20,40 26,49 20,58 14,49"/><polygon points="38,28 45,38 38,48 31,38"/>
+              <polygon points="62,28 69,38 62,48 55,38"/><polygon points="80,40 86,49 80,58 74,49"/>
+              <polygon points="30,62 50,55 70,62 63,86 50,80 37,86"/>
+            </g>
+          </svg>
+        </span>
+        <span class="h">Awaiting first instrumented job</span>
+        <span class="p">Panel built to the job_token_usage contract. Capture lands with worker token-instrumentation (deferred) — cached-input 90%-off accounted, output-weighted so API cost isn't overstated.</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<footer class="fade">COYOTE CLAW · MISSION CONTROL v1.1 PREVIEW · READ-ONLY · TAILSCALE-ONLY · 100.80.56.91:8787</footer>
+
+</body>
+</html>
