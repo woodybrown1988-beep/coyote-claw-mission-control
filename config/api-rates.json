@@ -1,0 +1,7 @@
+{
+  "gpt-5.5": {
+    "as_of": "2026-06-01",
+    "input_usd_per_1m_tokens": 5,
+    "output_usd_per_1m_tokens": 30
+  }
+}
