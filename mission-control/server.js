@@ -23,6 +23,7 @@ const ACTIVE_STATUSES = [
 ];
 
 const ROOT = path.resolve(__dirname, '..');
+const STATIC_ROOT = path.resolve(__dirname, 'static');
 const DB_PATH = process.env.COYOTE_CLAW_DB || path.join(ROOT, 'data', 'librarian.db');
 const RATES_PATH = path.join(ROOT, 'config', 'api-rates.json');
 
@@ -54,6 +55,11 @@ function handleRequest(req, res) {
     return;
   }
 
+  if (url.pathname.startsWith('/static/')) {
+    serveStatic(url.pathname, res);
+    return;
+  }
+
   if (url.pathname !== '/') {
     sendText(res, 404, 'Not found');
     return;
@@ -75,6 +81,7 @@ function buildDashboardModel() {
       monthMode: MONTH_MODE,
       rates,
       error: opened.message,
+      refreshedAt: Date.now(),
       sections: emptySections()
     };
   }
@@ -83,6 +90,7 @@ function buildDashboardModel() {
 
   try {
     const sections = {
+      kpis: getKpiSection(db, monthStartMs),
       queue: getQueueSection(db),
       worker: getWorkerSection(db),
       spend: getSpendSection(db, monthStartMs),
@@ -95,6 +103,7 @@ function buildDashboardModel() {
       monthStartMs,
       monthMode: MONTH_MODE,
       rates,
+      refreshedAt: Date.now(),
       sections
     };
   } finally {
@@ -108,6 +117,7 @@ function buildDashboardModel() {
 
 function emptySections() {
   return {
+    kpis: unavailable('Database unavailable'),
     queue: unavailable('Database unavailable'),
     worker: unavailable('Database unavailable'),
     spend: unavailable('Database unavailable'),
@@ -130,13 +140,108 @@ function openDatabase() {
 
   try {
     return { ok: true, db: new sqlite.DatabaseSync(DB_PATH, { readOnly: true }) };
-  } catch (readOnlyError) {
-    try {
-      return { ok: true, db: new sqlite.DatabaseSync(DB_PATH) };
-    } catch (_) {
-      return { ok: false, message: 'Librarian database could not be opened read-only.' };
-    }
+  } catch (_) {
+    return { ok: false, message: 'Librarian database could not be opened read-only.' };
   }
+}
+
+function getKpiSection(db, monthStartMs) {
+  const dayStartMs = getUtcDayStartMs(new Date());
+  const jobsToday = safeSelect(db, `
+    SELECT COUNT(*) AS count
+    FROM jobs
+    WHERE COALESCE(created_at, updated_at, 0) >= ?
+  `, [dayStartMs]);
+
+  const activeJobs = safeSelect(db, `
+    SELECT id, status, type, updated_at, created_at
+    FROM jobs
+    WHERE lower(status) IN (
+      'active',
+      'executing',
+      'in-flight',
+      'in_flight',
+      'in progress',
+      'in_progress',
+      'processing',
+      'running',
+      'started',
+      'spec',
+      'build'
+    )
+    ORDER BY COALESCE(updated_at, created_at, 0) DESC
+    LIMIT 1
+  `);
+
+  const shippedToday = safeSelect(db, `
+    SELECT COUNT(*) AS count
+    FROM jobs
+    WHERE COALESCE(updated_at, created_at, 0) >= ?
+      AND lower(status) IN ('merged', 'complete', 'completed', 'done', 'shipped')
+  `, [dayStartMs]);
+
+  const gatesPassed = safeSelect(db, `
+    SELECT COUNT(*) AS count
+    FROM job_events
+    WHERE lower(COALESCE(decision, kind, '')) IN (
+      'approved',
+      'accepted',
+      'passed',
+      'pass',
+      'merge_fired',
+      'spec_approved'
+    )
+  `);
+
+  const gatesRefused = safeSelect(db, `
+    SELECT COUNT(*) AS count
+    FROM job_events
+    WHERE lower(COALESCE(decision, kind, '')) IN (
+      'refused',
+      'rejected',
+      'failed',
+      'blocked',
+      'merge_refused'
+    )
+  `);
+
+  const openGates = safeSelect(db, `
+    SELECT COUNT(*) AS count
+    FROM job_events
+    WHERE lower(COALESCE(decision, kind, '')) IN (
+      'pending',
+      'open',
+      'awaiting',
+      'awaiting_tap',
+      'tap_pending'
+    )
+  `);
+
+  if (!jobsToday.ok && !activeJobs.ok && !gatesPassed.ok && !openGates.ok) {
+    return unavailable('KPI data is unavailable.');
+  }
+
+  const activeRow = activeJobs.ok && activeJobs.rows.length > 0 ? activeJobs.rows[0] : null;
+  const activeStage = activeRow ? deriveStage(activeRow) : 'idle';
+  const activeJob = activeRow ? shortId(activeRow.id) : '';
+
+  return {
+    ok: true,
+    jobsToday: jobsToday.ok ? toInteger(jobsToday.rows[0] && jobsToday.rows[0].count) : 0,
+    shippedToday: shippedToday.ok ? toInteger(shippedToday.rows[0] && shippedToday.rows[0].count) : 0,
+    activeJobs: activeRow ? 1 : 0,
+    gatesPassed: gatesPassed.ok ? toInteger(gatesPassed.rows[0] && gatesPassed.rows[0].count) : 0,
+    gatesRefused: gatesRefused.ok ? toInteger(gatesRefused.rows[0] && gatesRefused.rows[0].count) : 0,
+    openGates: openGates.ok ? toInteger(openGates.rows[0] && openGates.rows[0].count) : 0,
+    activeStage,
+    activeJob,
+    monthStartMs,
+    warnings: collectWarnings([
+      jobsToday.ok ? null : 'Jobs-today count unavailable.',
+      gatesPassed.ok ? null : 'Gate pass count unavailable.',
+      openGates.ok ? null : 'Open gate count unavailable.'
+    ])
+  };
 }
 
 function getQueueSection(db) {
@@ -148,7 +253,7 @@ function getQueueSection(db) {
   `);
 
   const recentJobs = safeSelect(db, `
-    SELECT id, type, status, attempts, created_at, updated_at
+    SELECT *
     FROM jobs
     ORDER BY COALESCE(updated_at, created_at, 0) DESC
     LIMIT 20
@@ -168,6 +273,10 @@ function getQueueSection(db) {
       id: shortId(row.id),
       type: safeLabel(row.type, 'unknown'),
       status: safeLabel(row.status, 'unknown'),
+      engine: deriveEngine(row),
+      stage: deriveStage(row),
+      effort: deriveEffort(row),
+      ref: deriveRef(row),
       attempts: toInteger(row.attempts),
       createdAt: toMs(row.created_at),
       updatedAt: toMs(row.updated_at)
@@ -216,6 +325,11 @@ function getWorkerSection(db) {
       active: parseBooleanLike(explicitActive),
       lastActivity: toMs(explicitLastActivity),
       currentJob: shortId(explicitCurrentJob),
+      name: 'coder-worker',
+      engine: 'unknown',
+      effort: 'unknown',
+      stage: parseBooleanLike(explicitActive) ? 'active' : 'idle',
+      timeoutSeconds: 1800,
       warnings: collectWarnings([
         explicitActive === null ? 'Worker active flag missing.' : null,
         explicitLastActivity === null ? 'Worker heartbeat timestamp missing.' : null,
@@ -225,7 +339,7 @@ function getWorkerSection(db) {
   }
 
   const activeJob = safeSelect(db, `
-    SELECT id, status, updated_at, created_at
+    SELECT *
     FROM jobs
     WHERE lower(status) IN (
       'active',
@@ -236,7 +350,9 @@ function getWorkerSection(db) {
       'in_progress',
       'processing',
       'running',
-      'started'
+      'started',
+      'spec',
+      'build'
     )
     ORDER BY COALESCE(updated_at, created_at, 0) DESC
     LIMIT 1
@@ -269,6 +385,11 @@ function getWorkerSection(db) {
     active,
     lastActivity,
     currentJob: activeRow ? shortId(activeRow.id) : '',
+    name: 'coder-worker',
+    engine: activeRow ? deriveEngine(activeRow) : 'idle',
+    effort: activeRow ? deriveEffort(activeRow) : 'idle',
+    stage: activeRow ? deriveStage(activeRow) : 'idle',
+    timeoutSeconds: activeRow && deriveStage(activeRow) === 'spec' ? 300 : 1800,
     warnings: collectWarnings([
       explicit.ok ? null : 'No explicit worker heartbeat keys found.',
       activeJob.ok ? null : 'Active job lookup unavailable.',
@@ -279,30 +400,28 @@ function getWorkerSection(db) {
 
 function getSpendSection(db, monthStartMs) {
   const ceiling = getMonthlyCeilingPence(db);
-  const spend = safeSelect(db, `
-    SELECT COALESCE(SUM(sl.cost_pence), 0) AS total_pence
+  const spendRows = safeSelect(db, `
+    SELECT sl.cost_pence, COALESCE(sl.note, '') AS note, COALESCE(j.type, '') AS type
     FROM spend_log sl
     LEFT JOIN jobs j ON j.id = sl.job_id
     WHERE sl.created_at >= ?
-      AND (
-        lower(COALESCE(sl.note, '')) LIKE '%claude%'
-        OR lower(COALESCE(j.type, '')) LIKE '%claude%'
-      )
-      AND lower(COALESCE(sl.note, '')) NOT LIKE '%codex%'
-      AND lower(COALESCE(j.type, '')) NOT LIKE '%codex%'
   `, [monthStartMs]);
 
-  if (!spend.ok) {
+  if (!spendRows.ok) {
     return unavailable('Claude-metered spend cannot be read. Spend rows must identify Claude API usage by note or job type.');
   }
 
-  const totalPence = toInteger(spend.rows[0] && spend.rows[0].total_pence);
+  const lines = summarizeSpendLines(spendRows.rows);
+  const totalPence = lines.routerPence + lines.workerPence;
   const percent = ceiling > 0 ? (totalPence / ceiling) * 100 : 0;
 
   return {
     ok: true,
     label: 'Metered spend (Claude API)',
     totalPence,
+    routerPence: lines.routerPence,
+    workerPence: lines.workerPence,
+    codexExcludedPence: lines.codexPence,
     ceilingPence: ceiling,
     percent,
     level: spendLevel(percent),
@@ -404,7 +523,9 @@ function getOutcomesSection(db) {
       actor: safeLabel(row.actor, ''),
       gate: safeLabel(row.gate, ''),
       decision: safeLabel(row.decision, ''),
-      summary: summarizeDetail(row)
+      summary: summarizeDetail(row),
+      correction: summarizeCorrection(row),
+      tone: eventTone(row)
     })),
     warnings: []
   };
@@ -469,6 +590,7 @@ function readRates() {
 }
 
 function renderDashboard(model) {
+  const kpis = model.sections.kpis;
   const queue = model.sections.queue;
   const worker = model.sections.worker;
   const spend = model.sections.spend;
@@ -476,38 +598,31 @@ function renderDashboard(model) {
   const outcomes = model.sections.outcomes;
 
   return `<!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Coyote Claw Mission Control</title>
+  <title>Coyote Claw · Mission Control</title>
+  <link rel="icon" type="image/svg+xml" href="/static/brand/claw.svg">
+  <link rel="apple-touch-icon" href="/static/brand/claw-mark.png">
   <style>${css()}</style>
 </head>
 <body>
-  <main class="shell">
-    <header class="masthead">
-      <div>
-        <p class="eyebrow">Local read-only dashboard</p>
-        <h1>Mission Control</h1>
-      </div>
-      <div class="meta">
-        <span>Bound to 127.0.0.1</span>
-        <span>Month mode: ${escapeHtml(model.monthMode)}</span>
-        <span>Month starts <time data-ms="${model.monthStartMs}">${formatUtc(model.monthStartMs)}</time></span>
-      </div>
-    </header>
-
-    ${model.ok ? '' : `<section class="banner">${escapeHtml(model.error)}</section>`}
-
-    <section class="hero-grid">
+  ${renderHeader(model, worker)}
+  ${model.ok ? '' : `<section class="banner fade">${escapeHtml(model.error)}</section>`}
+  ${renderKpis(kpis, spend)}
+  <div class="grid">
+    <div class="stack">
       ${renderQueue(queue)}
+      ${renderOutcomes(outcomes)}
+    </div>
+    <div class="stack">
       ${renderWorker(worker)}
-    </section>
-
-    ${renderSpend(spend)}
-    ${renderTokens(tokens)}
-    ${renderOutcomes(outcomes)}
-  </main>
+      ${renderSpend(spend)}
+      ${renderTokens(tokens)}
+    </div>
+  </div>
+  <footer class="fade">COYOTE CLAW · MISSION CONTROL v1.1 · READ-ONLY · LOOPBACK · ${escapeHtml(HOST)}:${DEFAULT_PORT}</footer>
   <script>
     for (const el of document.querySelectorAll('time[data-ms]')) {
       const ms = Number(el.dataset.ms);
@@ -515,55 +630,80 @@ function renderDashboard(model) {
         el.textContent = new Date(ms).toLocaleString();
       }
     }
+    window.setTimeout(() => window.location.reload(), 30000);
   </script>
 </body>
 </html>`;
 }
 
+function renderHeader(model, worker) {
+  const workerLive = worker.ok && worker.active === true;
+  const workerLabel = worker.ok && worker.active === false ? 'IDLE' : (workerLive ? 'LIVE' : 'UNKNOWN');
+  return `
+    <header class="fade">
+      <span class="mark">${renderClawSvg(46, 46, 'Coyote Claw')}</span>
+      <span class="wordmark">
+        <span class="t">Coyote Claw</span>
+        <span class="s">Mission Control</span>
+      </span>
+      <div class="sys">
+        <div class="sysitem"><span class="k">Daemon</span><span class="v"><span class="seal">SEALED ×4</span></span></div>
+        <div class="sysitem"><span class="k">Worker</span><span class="v">${workerLive ? '<span class="pulse"></span>' : ''}${escapeHtml(workerLabel)}</span></div>
+        <div class="sysitem"><span class="k">Refreshed</span><span class="v mono">${escapeHtml(formatClock(model.refreshedAt))}</span></div>
+      </div>
+    </header>
+  `;
+}
+
+function renderKpis(section, spend) {
+  const jobsToday = section.ok ? section.jobsToday : 0;
+  const shippedToday = section.ok ? section.shippedToday : 0;
+  const activeJobs = section.ok ? section.activeJobs : 0;
+  const gatesPassed = section.ok ? section.gatesPassed : 0;
+  const gatesRefused = section.ok ? section.gatesRefused : 0;
+  const openGates = section.ok ? section.openGates : 0;
+  const activeStage = section.ok ? section.activeStage : 'idle';
+  const activeJob = section.ok ? section.activeJob : '';
+  const gateTotal = gatesPassed + gatesRefused;
+  const spendText = spend.ok ? formatGbp(spend.totalPence) : 'unavailable';
+  const spendSub = spend.ok ? `of ${formatGbp(spend.ceilingPence)} cap · Codex excl.` : 'spend table unavailable';
+  const active = activeStage !== 'idle' && activeStage !== 'unknown';
+
+  return `
+    <section class="kpis">
+      <div class="kpi good fade"><span class="lab">Jobs Today</span><span class="val">${formatInteger(jobsToday)}</span><span class="sub g">${formatInteger(shippedToday)} shipped · ${formatInteger(activeJobs)} in flight</span></div>
+      <div class="kpi good fade"><span class="lab">Gates Passed</span><span class="val">${formatInteger(gatesPassed)}/${formatInteger(gateTotal || gatesPassed)}</span><span class="sub">+ ${formatInteger(gatesRefused)} refused</span></div>
+      <div class="kpi fade"><span class="lab">Metered Spend</span><span class="val">${escapeHtml(spendText)}</span><span class="sub">${escapeHtml(spendSub)}</span></div>
+      <div class="kpi fade"><span class="lab">Open Gates</span><span class="val">${formatInteger(openGates)}</span><span class="sub">${openGates === 0 ? 'no taps pending' : 'tap review pending'}</span></div>
+      <div class="kpi ${active ? 'live' : ''} fade"><span class="lab">Active Stage</span><span class="val stage-val">${active ? '<span class="pulse"></span>' : ''}${escapeHtml(activeStage.toUpperCase())}</span><span class="sub">${activeJob ? `job #${escapeHtml(activeJob)} · timeout ceiling only` : 'no active job'}</span></div>
+    </section>
+  `;
+}
+
 function renderQueue(section) {
   if (!section.ok) {
-    return renderUnavailableCard('Job Queue & States', section.message);
+    return renderUnavailablePanel('Job Queue', section.message);
   }
-
-  const countRows = section.counts.map((item) => `
-    <div class="stat">
-      <span>${escapeHtml(item.status)}</span>
-      <strong>${formatInteger(item.count)}</strong>
-    </div>
-  `).join('');
 
   const jobRows = section.recentJobs.map((job) => `
     <tr>
-      <td><code>${escapeHtml(job.id)}</code></td>
-      <td>${escapeHtml(job.type)}</td>
-      <td>${renderStatus(job.status)}</td>
-      <td class="numeric">${formatInteger(job.attempts)}</td>
-      <td>${renderTime(job.createdAt)}</td>
-      <td>${renderTime(job.updatedAt)}</td>
+      <td class="id">#${escapeHtml(job.id || 'unknown')}</td>
+      <td class="title">${escapeHtml(job.type)}</td>
+      <td>${renderStatusPill(job.status)}</td>
+      <td class="eng">${escapeHtml(job.engine)}</td>
+      <td class="mono stage ${escapeHtml(statusPillClass(job.status, job.stage))}">${escapeHtml(formatStage(job.stage, job.effort))}</td>
+      <td class="ref">${escapeHtml(job.ref || '—')}</td>
     </tr>
   `).join('');
 
   return `
-    <section class="panel hero">
-      <div class="panel-head">
-        <h2>Job Queue & States</h2>
-        <p>Recent jobs omit result and error payloads.</p>
-      </div>
-      <div class="stats">${countRows || '<p class="muted">No job statuses found.</p>'}</div>
+    <section class="panel fade">
+      <div class="phead"><h2>Job Queue</h2><span class="count">${formatInteger(section.recentJobs.length)} shown</span></div>
       ${renderWarnings(section.warnings)}
-      <div class="table-wrap">
+      <div class="pbody table-wrap">
         <table>
-          <thead>
-            <tr>
-              <th>Job</th>
-              <th>Type</th>
-              <th>Status</th>
-              <th>Attempts</th>
-              <th>Created</th>
-              <th>Updated</th>
-            </tr>
-          </thead>
-          <tbody>${jobRows || '<tr><td colspan="6" class="empty">No recent jobs.</td></tr>'}</tbody>
+          <thead><tr><th>ID</th><th>Job</th><th>State</th><th>Engine</th><th>Stage</th><th>Ref</th></tr></thead>
+          <tbody>${jobRows || '<tr><td colspan="6" class="empty-row">No recent jobs.</td></tr>'}</tbody>
         </table>
       </div>
     </section>
@@ -572,30 +712,26 @@ function renderQueue(section) {
 
 function renderWorker(section) {
   if (!section.ok) {
-    return renderUnavailableCard('Worker Status', section.message);
+    return renderUnavailablePanel('Workers', section.message);
   }
 
-  const activeText = section.active === null ? 'unknown' : (section.active ? 'yes' : 'no');
-  const source = section.derived ? 'derived, not authoritative' : 'explicit worker state';
+  const active = section.active === true;
+  const stage = section.stage || (active ? 'active' : 'idle');
 
   return `
-    <section class="panel hero">
-      <div class="panel-head">
-        <h2>Worker Status</h2>
-        <p>${escapeHtml(source)}</p>
-      </div>
-      <div class="worker-grid">
-        <div>
-          <span class="label">Active?</span>
-          <strong class="big">${escapeHtml(activeText)}</strong>
-        </div>
-        <div>
-          <span class="label">Last activity</span>
-          <strong>${renderTime(section.lastActivity)}</strong>
-        </div>
-        <div>
-          <span class="label">Current in-flight job</span>
-          <strong><code>${escapeHtml(section.currentJob || 'none')}</code></strong>
+    <section class="panel fade">
+      <div class="phead"><h2>Workers</h2><span class="count">${active ? '1 active' : 'idle'}</span></div>
+      <div class="heroes">
+        <div class="hero ${active ? 'active' : ''}">
+          <div class="row1">${active ? '<span class="pulse"></span>' : ''}<span class="name">${escapeHtml(section.name || 'coder-worker')}</span>${renderStatusPill(stage)}</div>
+          <div class="meta">
+            <div class="m"><span class="mk">Job</span><span class="mv">${section.currentJob ? `#${escapeHtml(section.currentJob)}` : 'none'}</span></div>
+            <div class="m"><span class="mk">Engine</span><span class="mv">${escapeHtml(section.engine || 'unknown')}</span></div>
+            <div class="m"><span class="mk">Effort</span><span class="mv">${escapeHtml(section.effort || 'unknown')}</span></div>
+            <div class="m"><span class="mk">Timeout</span><span class="mv">ceiling ${escapeHtml(formatTimeout(section.timeoutSeconds))}</span></div>
+            <div class="m"><span class="mk">Last Activity</span><span class="mv">${escapeHtml(formatClock(section.lastActivity))}</span></div>
+          </div>
+          <div class="bar" aria-label="Worker stage indicator"><i style="width:${stageProgressPercent(stage)}%"></i></div>
         </div>
       </div>
       ${renderWarnings(section.warnings)}
@@ -605,37 +741,24 @@ function renderWorker(section) {
 
 function renderSpend(section) {
   if (!section.ok) {
-    return renderUnavailableSection('Metered Spend', section.message);
+    return renderUnavailablePanel('Metered Spend', section.message);
   }
 
   const pct = Math.min(Math.max(section.percent, 0), 100);
+  const remaining = Math.max(section.ceilingPence - section.totalPence, 0);
 
   return `
-    <section class="panel">
-      <div class="panel-head">
-        <h2>${escapeHtml(section.label)}</h2>
-        <p>GBP 75/month ceiling applies only to Claude API marginal spend.</p>
-      </div>
-      <div class="spend-grid">
+    <section class="panel fade">
+      <div class="phead"><h2>Metered Spend</h2><span class="count">£ only</span></div>
+      <div class="spend">
+        <div class="line"><span class="l">Router · Claude metered</span><span class="r">${formatGbp(section.routerPence)}</span></div>
+        <div class="line"><span class="l">Worker · Claude builds</span><span class="r">${formatGbp(section.workerPence)}</span></div>
+        <div class="line excl"><span class="l">Codex builds · OAuth</span><span class="r">excluded</span></div>
+        <div class="tot"><span class="l">Total metered</span><span class="r">${formatGbp(section.totalPence)}</span></div>
         <div>
-          <span class="label">MTD metered spend</span>
-          <strong class="big">${formatGbp(section.totalPence)}</strong>
+          <div class="cap" aria-label="Metered spend cap usage"><i class="${escapeHtml(section.level)}" style="width:${pct.toFixed(2)}%"></i></div>
+          <p class="note" style="margin-top:.4rem">${formatGbp(remaining)} remaining of ${formatGbp(section.ceilingPence)} router cap. Codex draws shared ChatGPT quota — no £-ledger entry, deliberately excluded so spend isn't overstated.</p>
         </div>
-        <div>
-          <span class="label">Ceiling</span>
-          <strong>${formatGbp(section.ceilingPence)}</strong>
-        </div>
-        <div>
-          <span class="label">Progress</span>
-          <strong>${formatPercent(section.percent)}</strong>
-        </div>
-        <div>
-          <span class="label">Level</span>
-          <strong class="level ${escapeHtml(section.level)}">${escapeHtml(section.level)}</strong>
-        </div>
-      </div>
-      <div class="meter" aria-label="Metered spend progress">
-        <span class="${escapeHtml(section.level)}" style="width: ${pct.toFixed(2)}%"></span>
       </div>
       ${renderWarnings(section.warnings)}
     </section>
@@ -644,17 +767,30 @@ function renderSpend(section) {
 
 function renderTokens(section) {
   if (!section.ok) {
-    return renderUnavailableSection('Token Tracking + Cost Comparison', section.message);
+    return renderUnavailablePanel('Token Usage', section.message);
+  }
+
+  if (section.rows.length === 0) {
+    return `
+      <section class="panel fade">
+        <div class="phead"><h2>Token Usage</h2><span class="count">job_token_usage</span></div>
+        <div class="empty">
+          <span class="glyph">${renderTokenGlyph()}</span>
+          <span class="h">Awaiting first instrumented job</span>
+          <span class="p">Panel built to the job_token_usage contract. Capture lands with worker token-instrumentation — cached-input 90%-off accounted, output-weighted so API cost isn't overstated.</span>
+        </div>
+        ${renderWarnings(section.warnings)}
+      </section>
+    `;
   }
 
   const rows = section.rows.map((row) => `
     <tr>
-      <td><code>${escapeHtml(row.id)}</code></td>
-      <td>${escapeHtml(row.type)}</td>
-      <td class="numeric">${formatInteger(row.input)}</td>
-      <td class="numeric">${formatInteger(row.output)}</td>
-      <td class="numeric">${formatInteger(row.total)}</td>
-      <td>${renderTime(row.createdAt)}</td>
+      <td class="id">#${escapeHtml(row.id)}</td>
+      <td class="title">${escapeHtml(row.type)}</td>
+      <td class="mono">${formatInteger(row.input)}</td>
+      <td class="mono">${formatInteger(row.output)}</td>
+      <td class="mono">${formatInteger(row.total)}</td>
     </tr>
   `).join('');
 
@@ -666,32 +802,16 @@ function renderTokens(section) {
     : renderDifference(section.differenceUsd);
 
   return `
-    <section class="panel">
-      <div class="panel-head">
-        <h2>Token Tracking + Cost Comparison</h2>
-        <p>Separate from the GBP Claude API ceiling.</p>
+    <section class="panel fade">
+      <div class="phead"><h2>Token Usage</h2><span class="count">job_token_usage</span></div>
+      <div class="token-live">
+        <div><span class="mk">Input</span><span class="mv">${formatInteger(section.totals.input)}</span></div>
+        <div><span class="mk">Output</span><span class="mv">${formatInteger(section.totals.output)}</span></div>
+        <div><span class="mk">Total</span><span class="mv">${formatInteger(section.totals.total)}</span></div>
       </div>
-      <div class="token-summary">
-        <div>
-          <span class="label">MTD input tokens</span>
-          <strong>${formatInteger(section.totals.input)}</strong>
-        </div>
-        <div>
-          <span class="label">MTD output tokens</span>
-          <strong>${formatInteger(section.totals.output)}</strong>
-        </div>
-        <div>
-          <span class="label">MTD total tokens</span>
-          <strong>${formatInteger(section.totals.total)}</strong>
-        </div>
-      </div>
-      <div class="comparison">
-        <p><strong>Codex subscription:</strong> USD 200 flat-rate</p>
-        <p><strong>Estimated GPT-5.5 API cost at this volume:</strong> ${escapeHtml(estimate)}</p>
-        <p><strong>Difference:</strong> ${difference}</p>
-      </div>
+      <p class="note token-note">Codex subscription: USD 200 flat-rate. Estimated GPT-5.5 API cost at this volume: ${escapeHtml(estimate)}. ${difference}</p>
       ${renderWarnings(section.warnings)}
-      <div class="table-wrap">
+      <div class="pbody table-wrap">
         <table>
           <thead>
             <tr>
@@ -700,10 +820,9 @@ function renderTokens(section) {
               <th>Input tokens</th>
               <th>Output tokens</th>
               <th>Total tokens</th>
-              <th>Recorded</th>
             </tr>
           </thead>
-          <tbody>${rows || '<tr><td colspan="6" class="empty">No Codex token rows recorded yet.</td></tr>'}</tbody>
+          <tbody>${rows}</tbody>
         </table>
       </div>
     </section>
@@ -712,66 +831,34 @@ function renderTokens(section) {
 
 function renderOutcomes(section) {
   if (!section.ok) {
-    return renderUnavailableSection('Outcomes', section.message);
+    return renderUnavailablePanel('Outcomes · Gate Trail', section.message);
   }
 
-  const rows = section.events.map((event) => `
-    <tr>
-      <td>${renderTime(event.createdAt)}</td>
-      <td><code>${escapeHtml(event.jobId)}</code></td>
-      <td>${escapeHtml(event.kind)}</td>
-      <td>${escapeHtml(event.actor)}</td>
-      <td>${escapeHtml(event.gate)}</td>
-      <td>${escapeHtml(event.decision)}</td>
-      <td>${escapeHtml(event.summary)}</td>
-    </tr>
+  const events = section.events.map((event) => `
+    <div class="ev ${escapeHtml(event.tone)}">
+      <span class="ts">${escapeHtml(formatEventTime(event.createdAt))}</span>
+      <span class="dot"></span>
+      <div class="body">
+        <div class="m">job <b>#${escapeHtml(event.jobId || 'unknown')}</b> ${escapeHtml(event.kind || event.decision || 'event')} — ${escapeHtml(event.summary || 'no detail')}</div>
+        ${event.correction ? `<div class="corr">correction: ${escapeHtml(event.correction)}</div>` : ''}
+      </div>
+    </div>
   `).join('');
 
   return `
-    <section class="panel">
-      <div class="panel-head">
-        <h2>Outcomes</h2>
-        <p>Recent gate trail with summarized event detail only.</p>
-      </div>
+    <section class="panel fade">
+      <div class="phead"><h2>Outcomes · Gate Trail</h2><span class="count">learning signal</span></div>
       ${renderWarnings(section.warnings)}
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Timestamp</th>
-              <th>Job</th>
-              <th>Kind</th>
-              <th>Actor</th>
-              <th>Gate</th>
-              <th>Decision</th>
-              <th>Detail summary</th>
-            </tr>
-          </thead>
-          <tbody>${rows || '<tr><td colspan="7" class="empty">No recent events.</td></tr>'}</tbody>
-        </table>
-      </div>
+      <div class="events">${events || '<div class="empty-row">No recent events.</div>'}</div>
     </section>
   `;
 }
 
-function renderUnavailableCard(title, message) {
+function renderUnavailablePanel(title, message) {
   return `
-    <section class="panel hero unavailable">
-      <div class="panel-head">
-        <h2>${escapeHtml(title)}</h2>
-        <p>${escapeHtml(message)}</p>
-      </div>
-    </section>
-  `;
-}
-
-function renderUnavailableSection(title, message) {
-  return `
-    <section class="panel unavailable">
-      <div class="panel-head">
-        <h2>${escapeHtml(title)}</h2>
-        <p>${escapeHtml(message)}</p>
-      </div>
+    <section class="panel fade unavailable">
+      <div class="phead"><h2>${escapeHtml(title)}</h2><span class="count">unavailable</span></div>
+      <p class="note unavailable-note">${escapeHtml(message)}</p>
     </section>
   `;
 }
@@ -788,10 +875,9 @@ function renderWarnings(warnings) {
   `;
 }
 
-function renderStatus(status) {
+function renderStatusPill(status) {
   const name = safeLabel(status, 'unknown');
-  const active = ACTIVE_STATUSES.includes(name.toLowerCase());
-  return `<span class="pill ${active ? 'active' : ''}">${escapeHtml(name)}</span>`;
+  return `<span class="pill ${escapeHtml(statusPillClass(name, name))}">${escapeHtml(name)}</span>`;
 }
 
 function renderTime(ms) {
@@ -800,6 +886,29 @@ function renderTime(ms) {
   }
 
   return `<time data-ms="${ms}">${escapeHtml(formatUtc(ms))}</time>`;
+}
+
+function renderClawSvg(width, height, label) {
+  return `<svg width="${width}" height="${height}" viewBox="0 0 100 100" aria-label="${escapeHtml(label)}">
+      <g fill="#8A9AB5">
+        <polygon points="20,40 26,49 20,58 14,49"/>
+        <polygon points="38,28 45,38 38,48 31,38"/>
+        <polygon points="62,28 69,38 62,48 55,38"/>
+        <polygon points="80,40 86,49 80,58 74,49"/>
+        <polygon points="30,62 50,55 70,62 63,86 50,80 37,86"/>
+      </g>
+    </svg>`;
+}
+
+function renderTokenGlyph() {
+  return `<svg width="56" height="56" viewBox="0 0 100 100" aria-hidden="true">
+      <circle cx="50" cy="50" r="44" fill="none" stroke="#3D4A63" stroke-width="2" stroke-dasharray="5 6"/>
+      <g fill="#3D4A63">
+        <polygon points="20,40 26,49 20,58 14,49"/><polygon points="38,28 45,38 38,48 31,38"/>
+        <polygon points="62,28 69,38 62,48 55,38"/><polygon points="80,40 86,49 80,58 74,49"/>
+        <polygon points="30,62 50,55 70,62 63,86 50,80 37,86"/>
+      </g>
+    </svg>`;
 }
 
 function renderDifference(diff) {
@@ -812,6 +921,33 @@ function renderDifference(diff) {
   }
 
   return 'subscription equals estimated metered API cost';
+}
+
+function summarizeSpendLines(rows) {
+  const lines = {
+    routerPence: 0,
+    workerPence: 0,
+    codexPence: 0
+  };
+
+  for (const row of rows) {
+    const cost = toInteger(row.cost_pence);
+    const text = `${row.note || ''} ${row.type || ''}`.toLowerCase();
+    if (text.includes('codex')) {
+      lines.codexPence += cost;
+      continue;
+    }
+    if (!text.includes('claude')) {
+      continue;
+    }
+    if (text.includes('router')) {
+      lines.routerPence += cost;
+    } else {
+      lines.workerPence += cost;
+    }
+  }
+
+  return lines;
 }
 
 function summarizeDetail(row) {
@@ -844,6 +980,167 @@ function summarizeDetail(row) {
   }
 
   return `${keys.length} detail field${keys.length === 1 ? '' : 's'} omitted`;
+}
+
+function summarizeCorrection(row) {
+  if (!isRefusedEvent(row)) {
+    return '';
+  }
+
+  const detail = parseJsonObject(row.detail);
+  if (detail) {
+    for (const key of ['correction', 'correction_text', 'corrective_action', 'next_step', 'hint']) {
+      if (typeof detail[key] === 'string' && detail[key].trim()) {
+        return limitText(detail[key].trim(), 180);
+      }
+    }
+  }
+
+  return 'tap the newest coder-bot message; nonce is single-use';
+}
+
+function eventTone(row) {
+  if (isRefusedEvent(row)) {
+    return 'bad';
+  }
+  const text = `${row.kind || ''} ${row.gate || ''} ${row.decision || ''}`.toLowerCase();
+  if (/approved|accepted|passed|merged|complete|fired/.test(text)) {
+    return 'ok';
+  }
+  return 'info';
+}
+
+function isRefusedEvent(row) {
+  const text = `${row.kind || ''} ${row.gate || ''} ${row.decision || ''}`.toLowerCase();
+  return /refused|rejected|failed|blocked|denied/.test(text);
+}
+
+function deriveEngine(row) {
+  const value = firstPresent(row, ['engine', 'worker_engine', 'model_provider', 'provider', 'model']);
+  if (value) {
+    return safeLabel(value, 'unknown');
+  }
+
+  const text = `${row.type || ''} ${row.status || ''}`.toLowerCase();
+  if (text.includes('codex') || text.includes('gpt')) {
+    return 'codex';
+  }
+  if (text.includes('claude') || text.includes('sonnet')) {
+    return 'claude';
+  }
+  return 'unknown';
+}
+
+function deriveStage(row) {
+  const value = firstPresent(row, ['stage', 'phase', 'gate', 'status']);
+  const normalized = safeLabel(value, 'unknown').toLowerCase().replace(/[_\s]+/g, '-');
+  if (normalized.includes('spec')) {
+    return 'spec';
+  }
+  if (normalized.includes('build') || normalized.includes('active') || normalized.includes('running') || normalized.includes('progress') || normalized.includes('executing')) {
+    return 'build';
+  }
+  if (normalized.includes('merged') || normalized.includes('complete') || normalized.includes('done') || normalized.includes('shipped')) {
+    return 'done';
+  }
+  if (normalized.includes('refused') || normalized.includes('failed') || normalized.includes('rejected')) {
+    return 'gate';
+  }
+  if (normalized.includes('queued') || normalized.includes('pending')) {
+    return 'queued';
+  }
+  return normalized || 'unknown';
+}
+
+function deriveEffort(row) {
+  return safeLabel(firstPresent(row, ['effort', 'reasoning_effort', 'model_reasoning_effort', 'priority']), 'unknown').toLowerCase();
+}
+
+function deriveRef(row) {
+  return safeLabel(firstPresent(row, [
+    'branch',
+    'ref',
+    'pr',
+    'pr_number',
+    'pull_request',
+    'pull_request_url',
+    'sha',
+    'commit_sha',
+    'head_sha'
+  ]), '—');
+}
+
+function firstPresent(row, keys) {
+  for (const key of keys) {
+    if (row && row[key] !== null && row[key] !== undefined && String(row[key]).trim()) {
+      return row[key];
+    }
+  }
+  return '';
+}
+
+function statusPillClass(status, stage) {
+  const text = `${status || ''} ${stage || ''}`.toLowerCase();
+  if (/merged|complete|completed|done|shipped|approved|passed/.test(text)) {
+    return 'p-merged';
+  }
+  if (/refused|failed|rejected|blocked|denied|gate/.test(text)) {
+    return 'p-refused';
+  }
+  if (/spec|build|active|running|progress|executing|started/.test(text)) {
+    return 'p-build';
+  }
+  return 'p-queued';
+}
+
+function formatStage(stage, effort) {
+  const cleanStage = safeLabel(stage, 'unknown');
+  const cleanEffort = safeLabel(effort, '');
+  if (!cleanEffort || cleanEffort === 'unknown') {
+    return cleanStage;
+  }
+  return `${cleanStage} · ${cleanEffort}`;
+}
+
+function stageProgressPercent(stage) {
+  const normalized = String(stage || '').toLowerCase();
+  if (normalized === 'spec') {
+    return 32;
+  }
+  if (normalized === 'build' || normalized === 'active') {
+    return 64;
+  }
+  if (normalized === 'done') {
+    return 100;
+  }
+  return 0;
+}
+
+function formatTimeout(seconds) {
+  const total = toInteger(seconds);
+  const minutes = Math.floor(total / 60);
+  const rest = total % 60;
+  return `${String(minutes).padStart(2, '0')}:${String(rest).padStart(2, '0')}`;
+}
+
+function formatClock(ms) {
+  if (!ms) {
+    return 'unknown';
+  }
+  const date = new Date(ms);
+  return [
+    String(date.getHours()).padStart(2, '0'),
+    String(date.getMinutes()).padStart(2, '0'),
+    String(date.getSeconds()).padStart(2, '0')
+  ].join(':');
+}
+
+function formatEventTime(ms) {
+  if (!ms) {
+    return '--:--';
+  }
+  const date = new Date(ms);
+  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
 }
 
 function mapSystemState(rows) {
@@ -908,6 +1205,10 @@ function getMonthStartMs(date) {
     return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1);
   }
   return new Date(date.getFullYear(), date.getMonth(), 1).getTime();
+}
+
+function getUtcDayStartMs(date) {
+  return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
 }
 
 function parseIsoDate(value) {
@@ -992,6 +1293,72 @@ function readPort(raw) {
   return DEFAULT_PORT;
 }
 
+function serveStatic(urlPath, res) {
+  let decoded;
+  try {
+    decoded = decodeURIComponent(urlPath);
+  } catch (_) {
+    sendText(res, 400, 'Bad request');
+    return;
+  }
+
+  const relative = decoded.replace(/^\/static\/?/, '');
+  if (!relative || relative.includes('\0')) {
+    sendText(res, 404, 'Not found');
+    return;
+  }
+
+  const filePath = path.resolve(STATIC_ROOT, relative);
+  if (filePath !== STATIC_ROOT && !filePath.startsWith(`${STATIC_ROOT}${path.sep}`)) {
+    sendText(res, 404, 'Not found');
+    return;
+  }
+
+  const contentType = staticContentType(path.extname(filePath).toLowerCase());
+  if (!contentType) {
+    sendText(res, 404, 'Not found');
+    return;
+  }
+
+  fs.stat(filePath, (statError, stats) => {
+    if (statError || !stats.isFile()) {
+      sendText(res, 404, 'Not found');
+      return;
+    }
+
+    fs.readFile(filePath, (readError, data) => {
+      if (readError) {
+        sendText(res, 404, 'Not found');
+        return;
+      }
+
+      res.writeHead(200, {
+        'content-type': contentType,
+        'cache-control': 'public, max-age=3600',
+        'x-content-type-options': 'nosniff'
+      });
+      res.end(data);
+    });
+  });
+}
+
+function staticContentType(extension) {
+  switch (extension) {
+    case '.woff2':
+      return 'font/woff2';
+    case '.svg':
+      return 'image/svg+xml';
+    case '.png':
+      return 'image/png';
+    case '.css':
+      return 'text/css; charset=utf-8';
+    case '.js':
+      return 'text/javascript; charset=utf-8';
+    default:
+      return '';
+  }
+}
+
 function sendHtml(res, status, body) {
   res.writeHead(status, {
     'content-type': 'text/html; charset=utf-8',
@@ -1061,340 +1428,140 @@ function formatPercent(value) {
 
 function css() {
   return `
-    :root {
-      color-scheme: light;
-      --bg: #f7f8fa;
-      --panel: #ffffff;
-      --text: #18202a;
-      --muted: #647084;
-      --line: #d8dde6;
-      --accent: #1769aa;
-      --ok: #1d7f4c;
-      --warn50: #a86500;
-      --warn80: #a84700;
-      --hardstop: #b42318;
-      --soft: #eef4fb;
+    @font-face{font-family:'Oswald';font-style:normal;font-weight:400;font-display:swap;src:url('/static/fonts/oswald-latin-400-normal.woff2') format('woff2')}
+    @font-face{font-family:'Oswald';font-style:normal;font-weight:500;font-display:swap;src:url('/static/fonts/oswald-latin-500-normal.woff2') format('woff2')}
+    @font-face{font-family:'Oswald';font-style:normal;font-weight:700;font-display:swap;src:url('/static/fonts/oswald-latin-700-normal.woff2') format('woff2')}
+    @font-face{font-family:'Barlow';font-style:normal;font-weight:300;font-display:swap;src:url('/static/fonts/barlow-latin-300-normal.woff2') format('woff2')}
+    @font-face{font-family:'Barlow';font-style:normal;font-weight:400;font-display:swap;src:url('/static/fonts/barlow-latin-400-normal.woff2') format('woff2')}
+    @font-face{font-family:'Barlow';font-style:normal;font-weight:500;font-display:swap;src:url('/static/fonts/barlow-latin-500-normal.woff2') format('woff2')}
+    @font-face{font-family:'Barlow';font-style:normal;font-weight:700;font-display:swap;src:url('/static/fonts/barlow-latin-700-normal.woff2') format('woff2')}
+    @font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:400;font-display:swap;src:url('/static/fonts/jetbrains-mono-latin-400-normal.woff2') format('woff2')}
+    @font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:500;font-display:swap;src:url('/static/fonts/jetbrains-mono-latin-500-normal.woff2') format('woff2')}
+    @font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:700;font-display:swap;src:url('/static/fonts/jetbrains-mono-latin-700-normal.woff2') format('woff2')}
+    :root{
+      --void:#070B14; --navy:#0C1322; --panel:#121C30; --elevated:#1A2740;
+      --line:rgba(120,150,200,.10); --line-strong:rgba(120,150,200,.18);
+      --steel:#5B6B86; --ash:#8A9AB5; --mist:#C9D3E3; --bright:#EAF0FA;
+      --amber:#F5A623; --amber-glow:rgba(245,166,35,.14);
+      --green:#34D399; --green-dim:rgba(52,211,153,.12);
+      --red:#F2555A; --red-dim:rgba(242,85,90,.12);
+      --idle:#3D4A63;
+      --display:'Oswald','Barlow Condensed',sans-serif;
+      --body:'Barlow','DM Sans',sans-serif;
+      --mono:'JetBrains Mono','IBM Plex Mono',monospace;
+      --xs:.75rem; --sm:.875rem; --base:1rem; --lg:1.25rem; --xl:1.5rem; --2xl:2rem;
     }
-
-    * {
-      box-sizing: border-box;
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{
+      background:var(--void); color:var(--mist); font-family:var(--body);
+      font-size:var(--base); line-height:1.45; padding:1.25rem 1.5rem 3rem;
+      -webkit-font-smoothing:antialiased;
     }
-
-    body {
-      margin: 0;
-      background: var(--bg);
-      color: var(--text);
-      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      line-height: 1.45;
-    }
-
-    .shell {
-      width: min(1440px, calc(100vw - 32px));
-      margin: 0 auto;
-      padding: 28px 0 44px;
-    }
-
-    .masthead {
-      display: flex;
-      align-items: end;
-      justify-content: space-between;
-      gap: 20px;
-      margin-bottom: 20px;
-    }
-
-    .eyebrow {
-      margin: 0 0 4px;
-      color: var(--muted);
-      font-size: 13px;
-      font-weight: 700;
-      letter-spacing: .04em;
-      text-transform: uppercase;
-    }
-
-    h1, h2 {
-      margin: 0;
-      line-height: 1.1;
-    }
-
-    h1 {
-      font-size: 32px;
-    }
-
-    h2 {
-      font-size: 20px;
-    }
-
-    .meta {
-      display: flex;
-      flex-wrap: wrap;
-      justify-content: flex-end;
-      gap: 8px;
-      color: var(--muted);
-      font-size: 13px;
-    }
-
-    .meta span {
-      border: 1px solid var(--line);
-      border-radius: 999px;
-      padding: 4px 10px;
-      background: #fff;
-    }
-
-    .banner {
-      margin-bottom: 16px;
-      padding: 12px 14px;
-      border: 1px solid #f1b8b3;
-      border-radius: 8px;
-      color: var(--hardstop);
-      background: #fff5f4;
-      font-weight: 700;
-    }
-
-    .hero-grid {
-      display: grid;
-      grid-template-columns: minmax(0, 1.5fr) minmax(320px, .8fr);
-      gap: 16px;
-      margin-bottom: 16px;
-    }
-
-    .panel {
-      margin-bottom: 16px;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      background: var(--panel);
-      padding: 18px;
-      box-shadow: 0 1px 2px rgba(24, 32, 42, .04);
-    }
-
-    .hero {
-      margin-bottom: 0;
-      min-width: 0;
-    }
-
-    .panel-head {
-      display: flex;
-      justify-content: space-between;
-      gap: 16px;
-      align-items: start;
-      margin-bottom: 14px;
-    }
-
-    .panel-head p {
-      margin: 2px 0 0;
-      color: var(--muted);
-      font-size: 13px;
-      text-align: right;
-    }
-
-    .stats,
-    .spend-grid,
-    .token-summary,
-    .worker-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-      gap: 10px;
-      margin-bottom: 14px;
-    }
-
-    .stat,
-    .spend-grid > div,
-    .token-summary > div,
-    .worker-grid > div {
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      background: var(--soft);
-      padding: 12px;
-      min-width: 0;
-    }
-
-    .stat {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 10px;
-    }
-
-    .stat span,
-    .label {
-      display: block;
-      color: var(--muted);
-      font-size: 12px;
-      font-weight: 700;
-      text-transform: uppercase;
-      overflow-wrap: anywhere;
-    }
-
-    strong {
-      overflow-wrap: anywhere;
-    }
-
-    .big {
-      display: block;
-      font-size: 28px;
-      margin-top: 4px;
-    }
-
-    .table-wrap {
-      overflow-x: auto;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-    }
-
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      min-width: 720px;
-      font-size: 13px;
-    }
-
-    th,
-    td {
-      padding: 10px;
-      border-bottom: 1px solid var(--line);
-      text-align: left;
-      vertical-align: top;
-      overflow-wrap: anywhere;
-    }
-
-    th {
-      color: var(--muted);
-      background: #f2f4f7;
-      font-size: 12px;
-      text-transform: uppercase;
-    }
-
-    tr:last-child td {
-      border-bottom: 0;
-    }
-
-    code {
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      font-size: 12px;
-    }
-
-    .numeric {
-      text-align: right;
-      font-variant-numeric: tabular-nums;
-    }
-
-    .muted,
-    .empty {
-      color: var(--muted);
-    }
-
-    .pill,
-    .level {
-      display: inline-block;
-      border-radius: 999px;
-      padding: 3px 8px;
-      background: #e8edf3;
-      font-size: 12px;
-      font-weight: 700;
-    }
-
-    .pill.active {
-      color: #0b5a35;
-      background: #dcf7e8;
-    }
-
-    .level.ok,
-    .meter .ok {
-      color: #0b5a35;
-      background: var(--ok);
-    }
-
-    .level.warn50,
-    .meter .warn50 {
-      color: #6f4000;
-      background: var(--warn50);
-    }
-
-    .level.warn80,
-    .meter .warn80 {
-      color: #713000;
-      background: var(--warn80);
-    }
-
-    .level.hardstop,
-    .meter .hardstop {
-      color: #7a130d;
-      background: var(--hardstop);
-    }
-
-    .level {
-      color: #fff;
-    }
-
-    .meter {
-      height: 12px;
-      border-radius: 999px;
-      background: #e8edf3;
-      overflow: hidden;
-      margin: 8px 0 12px;
-    }
-
-    .meter span {
-      display: block;
-      height: 100%;
-    }
-
-    .comparison {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-      gap: 10px;
-      margin-bottom: 14px;
-    }
-
-    .comparison p {
-      margin: 0;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 12px;
-      background: #fbfcfe;
-    }
-
-    .warnings {
-      margin: 0 0 14px;
-      padding: 10px 12px 10px 28px;
-      border: 1px solid #f0d19a;
-      border-radius: 8px;
-      color: #6f4000;
-      background: #fff8eb;
-      font-size: 13px;
-    }
-
-    .unavailable {
-      border-color: #f0d19a;
-      background: #fffdf8;
-    }
-
-    @media (max-width: 860px) {
-      .shell {
-        width: min(100vw - 20px, 760px);
-        padding-top: 18px;
-      }
-
-      .masthead,
-      .panel-head {
-        display: block;
-      }
-
-      .meta {
-        justify-content: flex-start;
-        margin-top: 12px;
-      }
-
-      .panel-head p {
-        text-align: left;
-      }
-
-      .hero-grid {
-        grid-template-columns: 1fr;
-      }
-
-      table {
-        min-width: 680px;
-      }
+    body::before{content:'';position:fixed;inset:0;opacity:.035;pointer-events:none;z-index:9999;
+      background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");}
+    .mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+    .fade{opacity:0;transform:translateY(10px);animation:rev .4s ease-out forwards}
+    @keyframes rev{to{opacity:1;transform:none}}
+    .fade:nth-child(1){animation-delay:.04s}.fade:nth-child(2){animation-delay:.09s}
+    .fade:nth-child(3){animation-delay:.14s}.fade:nth-child(4){animation-delay:.19s}
+    .fade:nth-child(5){animation-delay:.24s}
+    header{display:flex;align-items:center;gap:1rem;padding-bottom:1.1rem;border-bottom:1px solid var(--line-strong);margin-bottom:1.4rem}
+    .mark{flex:0 0 auto}
+    .wordmark{display:flex;flex-direction:column;line-height:1}
+    .wordmark .t{font-family:var(--display);font-weight:700;font-size:var(--lg);letter-spacing:.18em;color:var(--bright);text-transform:uppercase}
+    .wordmark .s{font-family:var(--mono);font-size:var(--xs);color:var(--steel);letter-spacing:.22em;margin-top:.35rem;text-transform:uppercase}
+    .sys{margin-left:auto;display:flex;gap:1.4rem;align-items:center}
+    .sysitem{display:flex;flex-direction:column;align-items:flex-end;gap:.2rem}
+    .sysitem .k{font-family:var(--mono);font-size:.62rem;letter-spacing:.16em;color:var(--steel);text-transform:uppercase}
+    .sysitem .v{font-family:var(--mono);font-size:var(--sm);color:var(--mist)}
+    .pulse{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--amber);box-shadow:0 0 0 0 var(--amber-glow);animation:pl 1.8s ease-out infinite;margin-right:.4rem;vertical-align:middle}
+    @keyframes pl{0%{box-shadow:0 0 0 0 rgba(245,166,35,.5)}70%{box-shadow:0 0 0 9px rgba(245,166,35,0)}100%{box-shadow:0 0 0 0 rgba(245,166,35,0)}}
+    .seal{font-family:var(--mono);font-size:var(--xs);color:var(--green);border:1px solid var(--green-dim);background:var(--green-dim);padding:.2rem .5rem;border-radius:4px;letter-spacing:.08em}
+    .banner{margin-bottom:1rem;border:1px solid var(--red-dim);background:var(--red-dim);color:var(--red);border-radius:8px;padding:.75rem 1rem;font-family:var(--mono);font-size:var(--xs)}
+    .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:.75rem;margin-bottom:1.4rem}
+    .kpi{background:rgba(255,255,255,.025);border:1px solid var(--line);border-left:3px solid var(--steel);border-radius:8px;padding:.85rem 1rem;display:flex;flex-direction:column;gap:.3rem}
+    .kpi.live{border-left-color:var(--amber)}
+    .kpi.good{border-left-color:var(--green)}
+    .kpi .lab{font-family:var(--display);font-size:var(--xs);font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--steel)}
+    .kpi .val{font-family:var(--mono);font-size:var(--2xl);font-weight:700;color:var(--bright);line-height:1}
+    .kpi .stage-val{font-size:1.3rem}
+    .kpi .sub{font-family:var(--mono);font-size:var(--xs);color:var(--ash)}
+    .kpi .sub.g{color:var(--green)}
+    .grid{display:grid;grid-template-columns:1.8fr 1fr;gap:1rem;align-items:start}
+    @media(max-width:980px){.grid{grid-template-columns:1fr}}
+    .panel{background:var(--navy);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+    .phead{display:flex;align-items:center;gap:.6rem;padding:.8rem 1.1rem;border-bottom:1px solid var(--line)}
+    .phead h2{font-family:var(--display);font-weight:700;font-size:var(--sm);letter-spacing:.12em;text-transform:uppercase;color:var(--mist)}
+    .phead .count{margin-left:auto;font-family:var(--mono);font-size:var(--xs);color:var(--steel)}
+    .pbody{padding:.4rem 0}
+    .stack{display:flex;flex-direction:column;gap:1rem}
+    .heroes{display:grid;grid-template-columns:1fr;gap:.7rem;padding:.9rem 1.1rem}
+    .hero{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:.9rem 1rem;display:flex;flex-direction:column;gap:.55rem}
+    .hero.active{border-color:var(--amber-glow);box-shadow:inset 3px 0 0 var(--amber)}
+    .hero .row1{display:flex;align-items:center;gap:.6rem}
+    .hero .row1 .pill{margin-left:auto}
+    .hero .name{font-family:var(--display);font-weight:700;letter-spacing:.06em;color:var(--bright);text-transform:uppercase;font-size:var(--sm)}
+    .hero .meta,.token-live{display:flex;gap:1.2rem;flex-wrap:wrap}
+    .hero .meta .m,.token-live>div{display:flex;flex-direction:column;gap:.15rem}
+    .hero .meta .mk,.token-live .mk{font-family:var(--mono);font-size:.6rem;letter-spacing:.14em;color:var(--steel);text-transform:uppercase}
+    .hero .meta .mv,.token-live .mv{font-family:var(--mono);font-size:var(--sm);color:var(--mist)}
+    .bar{height:5px;border-radius:3px;background:rgba(255,255,255,.06);overflow:hidden}
+    .bar>i{display:block;height:100%;background:var(--amber)}
+    .pill{font-family:var(--mono);font-size:.66rem;font-weight:500;letter-spacing:.06em;padding:.18rem .5rem;border-radius:4px;text-transform:uppercase;white-space:nowrap}
+    .p-build{color:var(--amber);background:var(--amber-glow)}
+    .p-merged{color:var(--green);background:var(--green-dim)}
+    .p-refused{color:var(--red);background:var(--red-dim)}
+    .p-queued{color:var(--ash);background:rgba(120,150,200,.08)}
+    table{width:100%;border-collapse:collapse}
+    th{font-family:var(--display);font-size:.68rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--steel);text-align:left;padding:.6rem 1.1rem;border-bottom:1px solid var(--line)}
+    td{padding:.62rem 1.1rem;border-bottom:1px solid rgba(120,150,200,.05);font-size:var(--sm);color:var(--mist);vertical-align:middle}
+    tr:last-child td{border-bottom:none}
+    tbody tr:hover{background:rgba(255,255,255,.018)}
+    td.id,td.eng,td.ref{font-family:var(--mono);font-size:var(--xs)}
+    td.id{color:var(--ash)}
+    td.eng{color:var(--steel)}
+    td.ref{color:var(--ash)}
+    .title{color:var(--bright)}
+    .stage.p-build{background:transparent}.stage.p-merged{background:transparent}.stage.p-refused{background:transparent}.stage.p-queued{background:transparent}
+    .spend{padding:.9rem 1.1rem;display:flex;flex-direction:column;gap:.7rem}
+    .spend .line{display:flex;align-items:center;justify-content:space-between;gap:1rem;font-size:var(--sm)}
+    .spend .line .l{color:var(--ash)}
+    .spend .line .r{font-family:var(--mono);color:var(--mist)}
+    .spend .line.excl .l,.spend .line.excl .r{color:var(--steel)}
+    .spend .tot{border-top:1px solid var(--line);padding-top:.7rem;display:flex;justify-content:space-between;gap:1rem}
+    .spend .tot .l{font-family:var(--display);font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--mist);font-size:var(--sm)}
+    .spend .tot .r{font-family:var(--mono);font-weight:700;color:var(--bright);font-size:var(--lg)}
+    .cap{height:6px;border-radius:3px;background:rgba(255,255,255,.06);overflow:hidden;margin-top:.2rem}
+    .cap>i{display:block;height:100%;background:var(--green)}
+    .cap>i.warn50{background:var(--amber)}.cap>i.warn80,.cap>i.hardstop{background:var(--red)}
+    .note{font-family:var(--mono);font-size:var(--xs);color:var(--steel);line-height:1.5}
+    .token-live{padding:.9rem 1.1rem;border-bottom:1px solid var(--line)}
+    .token-note{padding:.8rem 1.1rem;border-bottom:1px solid var(--line)}
+    .empty{padding:2.2rem 1.1rem;display:flex;flex-direction:column;align-items:center;gap:.9rem;text-align:center}
+    .empty .glyph{opacity:.35}
+    .empty .h{font-family:var(--display);font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--ash);font-size:var(--sm)}
+    .empty .p{font-family:var(--mono);font-size:var(--xs);color:var(--steel);max-width:32ch;line-height:1.6}
+    .events{padding:.5rem 0}
+    .ev{display:grid;grid-template-columns:54px 18px 1fr;gap:.6rem;padding:.55rem 1.1rem;border-bottom:1px solid rgba(120,150,200,.05);align-items:start}
+    .ev:last-child{border-bottom:none}
+    .ev .ts{font-family:var(--mono);font-size:var(--xs);color:var(--steel)}
+    .ev .dot{width:8px;height:8px;border-radius:50%;margin-top:.35rem}
+    .ev.ok .dot{background:var(--green)} .ev.bad .dot{background:var(--red)} .ev.info .dot{background:var(--amber)}
+    .ev .body .m{font-size:var(--sm);color:var(--mist)}
+    .ev .body .m b{font-family:var(--mono);font-size:var(--xs);color:var(--ash);font-weight:400}
+    .ev .body .corr{font-family:var(--mono);font-size:var(--xs);color:var(--amber);margin-top:.25rem;padding-left:.6rem;border-left:2px solid var(--amber-glow)}
+    .warnings{margin:.75rem 1.1rem;padding:.65rem .8rem .65rem 1.4rem;border:1px solid var(--amber-glow);border-radius:8px;color:var(--amber);background:rgba(245,166,35,.06);font-family:var(--mono);font-size:var(--xs)}
+    .unavailable{border-color:var(--amber-glow)}
+    .unavailable-note{padding:.9rem 1.1rem}
+    .empty-row{padding:.9rem 1.1rem;color:var(--steel);font-family:var(--mono);font-size:var(--xs)}
+    footer{margin-top:2rem;font-family:var(--mono);font-size:var(--xs);color:var(--steel);text-align:center;letter-spacing:.08em}
+    @media(max-width:720px){
+      body{padding:1rem}
+      header{align-items:flex-start;flex-wrap:wrap}
+      .sys{width:100%;margin-left:0;justify-content:space-between;gap:.75rem}
+      .sysitem{align-items:flex-start}
+      table{min-width:680px}
+      .table-wrap{overflow-x:auto}
     }
   `;
 }
@@ -1405,6 +1572,7 @@ if (require.main === module) {
 
 module.exports = {
   buildDashboardModel,
+  renderDashboard,
   summarizeDetail,
   getMonthStartMs,
   spendLevel
