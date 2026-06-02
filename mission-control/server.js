@@ -65,8 +65,7 @@ function handleRequest(req, res) {
     return;
   }
 
-  const model = buildDashboardModel();
-  sendHtml(res, 200, renderDashboard(model));
+  sendPlannerApp(res);
 }
 
 function buildDashboardModel() {
@@ -1366,6 +1365,16 @@ function sendHtml(res, status, body) {
     'x-content-type-options': 'nosniff'
   });
   res.end(body);
+}
+
+function sendPlannerApp(res) {
+  fs.readFile(path.join(STATIC_ROOT, 'planner.html'), 'utf8', (error, body) => {
+    if (error) {
+      sendText(res, 500, 'Planner app unavailable');
+      return;
+    }
+    sendHtml(res, 200, body);
+  });
 }
 
 function sendJson(res, status, body) {
