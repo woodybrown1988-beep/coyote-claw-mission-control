@@ -1603,5 +1603,6 @@ module.exports = {
   renderDashboard,
   summarizeDetail,
   getMonthStartMs,
+  formatJobAge,
   spendLevel
 };
