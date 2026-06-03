@@ -14,6 +14,8 @@ The server binds only to `127.0.0.1`. If `COYOTE_CLAW_DB` is not set, it reads `
 
 The front-door service is deterministic and on-rail.
 
+The Mission Control dashboard is the operational view over the local Librarian mission database. It should make mission and session state, worker or service activity, recent sanitized events, health and status signals, and relevant usage or rate indicators visible at a glance while keeping the read path constrained to safe aggregate data. Operators use the dashboard to monitor live status, identify stuck or degraded missions, drill into mission detail for context, and decide the next operational action such as retrying work, correcting inputs, or escalating an unhealthy service.
+
 ## Sections
 
 - Job Queue & States: status counts and recent jobs without `result` or `error`.
