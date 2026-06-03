@@ -675,7 +675,7 @@ function renderKpis(section, spend) {
       <div class="kpi good fade"><span class="lab">Jobs Today</span><span class="val">${formatInteger(jobsToday)}</span><span class="sub g">${formatInteger(shippedToday)} shipped · ${formatInteger(activeJobs)} in flight</span></div>
       <div class="kpi good fade"><span class="lab">Gates Passed</span><span class="val">${formatInteger(gatesPassed)}/${formatInteger(gateTotal || gatesPassed)}</span><span class="sub">+ ${formatInteger(gatesRefused)} refused</span></div>
       <div class="kpi fade"><span class="lab">Metered Spend</span><span class="val">${escapeHtml(spendText)}</span><span class="sub">${escapeHtml(spendSub)}</span></div>
-      <div class="kpi fade"><span class="lab">Open Gates</span><span class="val">${formatInteger(openGates)}</span><span class="sub">${openGates === 0 ? 'no taps pending' : 'tap review pending'}</span></div>
+      <div class="kpi fade"><span class="lab">Open Gates</span><span class="val">${formatInteger(openGates)}</span><span class="sub">${formatCount(openGates, 'tap')} pending</span></div>
       <div class="kpi ${active ? 'live' : ''} fade"><span class="lab">Active Stage</span><span class="val stage-val">${active ? '<span class="pulse"></span>' : ''}${escapeHtml(activeStage.toUpperCase())}</span><span class="sub">${activeJob ? `job #${escapeHtml(activeJob)} · timeout ceiling only` : 'no active job'}</span></div>
     </section>
   `;
@@ -1170,6 +1170,10 @@ function formatJobAge(createdAt, renderedAt) {
   return formatUtc(createdMs);
 }
 
+function formatCount(count, label) {
+  return `${String(count)} ${label}${count === 1 ? '' : 's'}`;
+}
+
 function mapSystemState(rows) {
   const map = new Map();
   for (const row of rows) {
@@ -1604,5 +1608,6 @@ module.exports = {
   summarizeDetail,
   getMonthStartMs,
   formatJobAge,
+  formatCount,
   spendLevel
 };
