@@ -1,8 +1,12 @@
-'use strict';
+import { createRequire } from 'node:module';
+import http from 'node:http';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
-const http = require('node:http');
-const fs = require('node:fs');
-const path = require('node:path');
+const require = createRequire(import.meta.url);
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const HOST = '127.0.0.1';
 const DEFAULT_PORT = 8787;
@@ -27,7 +31,7 @@ const STATIC_ROOT = path.resolve(__dirname, 'static');
 const DB_PATH = process.env.COYOTE_CLAW_DB || path.join(ROOT, 'data', 'librarian.db');
 const RATES_PATH = path.join(ROOT, 'config', 'api-rates.json');
 
-function main() {
+function startServer() {
   const port = readPort(process.env.MISSION_CONTROL_PORT);
   const server = http.createServer(handleRequest);
 
@@ -1594,14 +1598,16 @@ function css() {
   `;
 }
 
-if (require.main === module) {
-  main();
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  startServer();
 }
 
-module.exports = {
+export {
   buildDashboardModel,
+  formatJobAge,
   renderDashboard,
-  summarizeDetail,
   getMonthStartMs,
-  spendLevel
+  spendLevel,
+  startServer,
+  summarizeDetail
 };
