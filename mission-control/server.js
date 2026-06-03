@@ -596,6 +596,7 @@ function renderDashboard(model) {
   const spend = model.sections.spend;
   const tokens = model.sections.tokens;
   const outcomes = model.sections.outcomes;
+  const renderedAt = Date.now();
 
   return `<!doctype html>
 <html lang="en" data-theme="dark">
@@ -613,7 +614,7 @@ function renderDashboard(model) {
   ${renderKpis(kpis, spend)}
   <div class="grid">
     <div class="stack">
-      ${renderQueue(queue)}
+      ${renderQueue(queue, renderedAt)}
       ${renderOutcomes(outcomes)}
     </div>
     <div class="stack">
@@ -680,7 +681,7 @@ function renderKpis(section, spend) {
   `;
 }
 
-function renderQueue(section) {
+function renderQueue(section, renderedAt) {
   if (!section.ok) {
     return renderUnavailablePanel('Job Queue', section.message);
   }
@@ -688,6 +689,7 @@ function renderQueue(section) {
   const jobRows = section.recentJobs.map((job) => `
     <tr>
       <td class="id">#${escapeHtml(job.id || 'unknown')}</td>
+      <td class="age mono">${escapeHtml(formatJobAge(job.createdAt, renderedAt))}</td>
       <td class="title">${escapeHtml(job.type)}</td>
       <td>${renderStatusPill(job.status)}</td>
       <td class="eng">${escapeHtml(job.engine)}</td>
@@ -702,8 +704,8 @@ function renderQueue(section) {
       ${renderWarnings(section.warnings)}
       <div class="pbody table-wrap">
         <table>
-          <thead><tr><th>ID</th><th>Job</th><th>State</th><th>Engine</th><th>Stage</th><th>Ref</th></tr></thead>
-          <tbody>${jobRows || '<tr><td colspan="6" class="empty-row">No recent jobs.</td></tr>'}</tbody>
+          <thead><tr><th>ID</th><th>Age</th><th>Job</th><th>State</th><th>Engine</th><th>Stage</th><th>Ref</th></tr></thead>
+          <tbody>${jobRows || '<tr><td colspan="7" class="empty-row">No recent jobs.</td></tr>'}</tbody>
         </table>
       </div>
     </section>
@@ -1143,6 +1145,31 @@ function formatEventTime(ms) {
   return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
 }
 
+function formatJobAge(createdAt, renderedAt) {
+  const createdMs = toMs(createdAt);
+  const nowMs = toMs(renderedAt);
+  if (!createdMs || !nowMs || createdMs > nowMs) {
+    return '-';
+  }
+
+  const ageMs = nowMs - createdMs;
+  const minuteMs = 60 * 1000;
+  const hourMs = 60 * minuteMs;
+  const dayMs = 24 * hourMs;
+  const olderCutoffMs = 30 * dayMs;
+
+  if (ageMs < hourMs) {
+    return `${Math.floor(ageMs / minuteMs)}m`;
+  }
+  if (ageMs < dayMs) {
+    return `${Math.floor(ageMs / hourMs)}h`;
+  }
+  if (ageMs < olderCutoffMs) {
+    return `${Math.floor(ageMs / dayMs)}d`;
+  }
+  return formatUtc(createdMs);
+}
+
 function mapSystemState(rows) {
   const map = new Map();
   for (const row of rows) {
@@ -1517,8 +1544,9 @@ function css() {
     td{padding:.62rem 1.1rem;border-bottom:1px solid rgba(120,150,200,.05);font-size:var(--sm);color:var(--mist);vertical-align:middle}
     tr:last-child td{border-bottom:none}
     tbody tr:hover{background:rgba(255,255,255,.018)}
-    td.id,td.eng,td.ref{font-family:var(--mono);font-size:var(--xs)}
+    td.id,td.age,td.eng,td.ref{font-family:var(--mono);font-size:var(--xs)}
     td.id{color:var(--ash)}
+    td.age{color:var(--steel);white-space:nowrap}
     td.eng{color:var(--steel)}
     td.ref{color:var(--ash)}
     .title{color:var(--bright)}
