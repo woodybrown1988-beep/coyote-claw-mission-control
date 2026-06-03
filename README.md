@@ -44,3 +44,4 @@ job_token_usage(
 `config/api-rates.json` stores the official GPT-5.5 standard API rates used for the comparison. Rates are considered stale after 90 days; stale or invalid rates are shown as unavailable instead of guessed.
 coder-worker production proof 20260602T104846Z
 Lead force-update test — 2026-06-02
+front-door service is live
