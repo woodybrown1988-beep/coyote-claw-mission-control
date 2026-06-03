@@ -10,6 +10,10 @@ COYOTE_CLAW_DB=/path/to/librarian.db MISSION_CONTROL_PORT=8787 node mission-cont
 
 The server binds only to `127.0.0.1`. If `COYOTE_CLAW_DB` is not set, it reads `./data/librarian.db`. The dashboard uses only hardcoded `SELECT` statements and does not render raw job results, raw errors, raw event detail payloads, environment variables, stack traces, database paths, or config contents.
 
+## Architecture
+
+The front-door service is deterministic and on-rail.
+
 ## Sections
 
 - Job Queue & States: status counts and recent jobs without `result` or `error`.
