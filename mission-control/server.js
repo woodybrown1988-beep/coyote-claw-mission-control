@@ -904,14 +904,6 @@ function renderStatusPill(status) {
   return `<span class="pill ${escapeHtml(statusPillClass(name, name))}">${escapeHtml(name)}</span>`;
 }
 
-function renderTime(ms) {
-  if (!ms) {
-    return '<span class="muted">unknown</span>';
-  }
-
-  return `<time data-ms="${ms}">${escapeHtml(formatUtc(ms))}</time>`;
-}
-
 function renderClawSvg(width, height, label) {
   return `<svg width="${width}" height="${height}" viewBox="0 0 100 100" aria-label="${escapeHtml(label)}">
       <g fill="#8A9AB5">
