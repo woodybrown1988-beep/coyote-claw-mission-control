@@ -1455,7 +1455,11 @@ function formatUtc(ms) {
   if (!ms) {
     return 'unknown';
   }
-  return new Date(ms).toISOString().replace('T', ' ').replace('.000Z', ' UTC');
+  const date = new Date(ms);
+  if (Number.isNaN(date.getTime())) {
+    return 'unknown';
+  }
+  return date.toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, ' UTC');
 }
 
 function formatInteger(value) {
@@ -1632,6 +1636,7 @@ module.exports = {
   renderDashboard,
   summarizeDetail,
   getMonthStartMs,
+  formatUtc,
   formatJobAge,
   formatCount,
   spendLevel

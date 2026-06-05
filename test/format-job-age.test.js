@@ -3,7 +3,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const { formatCount, formatJobAge, renderDashboard } = require('../mission-control/server.js');
+const { formatCount, formatJobAge, formatUtc, renderDashboard } = require('../mission-control/server.js');
 
 test('formatJobAge formats representative age ranges', () => {
   const renderedAt = 1_700_000_000_000;
@@ -22,6 +22,15 @@ test('formatCount formats singular and plural count labels', () => {
   assert.equal(formatCount(1, 'job'), '1 job');
   assert.equal(formatCount(0, 'job'), '0 jobs');
   assert.equal(formatCount(3, 'job'), '3 jobs');
+});
+
+test('formatUtc normalizes UTC timestamps to seconds precision', () => {
+  assert.equal(formatUtc('2026-06-05T19:49:43.729Z'), '2026-06-05 19:49:43 UTC');
+  assert.equal(formatUtc('2026-06-05T19:49:43.000Z'), '2026-06-05 19:49:43 UTC');
+  assert.equal(formatUtc('2026-06-05T19:49:43Z'), '2026-06-05 19:49:43 UTC');
+  assert.equal(formatUtc(), 'unknown');
+  assert.equal(formatUtc(0), 'unknown');
+  assert.equal(formatUtc('not a date'), 'unknown');
 });
 
 test('renderDashboard formats open gate count labels', () => {
