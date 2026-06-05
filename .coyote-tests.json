@@ -15,12 +15,36 @@
     {
       "module": "mission-control/server.js",
       "export": "statusPillClass"
+    },
+    {
+      "module": "mission-control/server.js",
+      "export": "eventTone"
+    },
+    {
+      "module": "mission-control/server.js",
+      "export": "isRefusedEvent"
+    },
+    {
+      "module": "mission-control/server.js",
+      "export": "summarizeDetail"
     }
   ],
   "tests": [
     {
       "name": "statusPillClass",
       "command": "node --test test/status-pill-class.test.js"
+    },
+    {
+      "name": "mission-control-event-tone-helper",
+      "command": "node --test test/mission-control-events.test.js"
+    },
+    {
+      "name": "mission-control-refusal-helper",
+      "command": "node --test test/mission-control-events.test.js"
+    },
+    {
+      "name": "mission-control-summary-helper",
+      "command": "node --test test/mission-control-events.test.js"
     }
   ],
   "mutants": [
