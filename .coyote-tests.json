@@ -1,1 +1,24 @@
-{"functionsUnderTest":[{"module":"mission-control/server.js","export":"formatCount"},{"module":"mission-control/server.js","export":"formatJobAge"}]}
+{
+  "functionsUnderTest": [
+    {
+      "module": "mission-control/server.js",
+      "export": "formatCount"
+    },
+    {
+      "module": "mission-control/server.js",
+      "export": "formatJobAge"
+    },
+    {
+      "module": "mission-control/server.js",
+      "export": "formatUtc"
+    }
+  ],
+  "mutants": [
+    {
+      "name": "formatUtc-old-whole-second-only",
+      "module": "mission-control/server.js",
+      "find": ".replace(/\\.\\d{3}Z$/, ' UTC')",
+      "replace": ".replace('.000Z', ' UTC')"
+    }
+  ]
+}
