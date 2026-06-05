@@ -11,6 +11,16 @@
     {
       "module": "mission-control/server.js",
       "export": "formatUtc"
+    },
+    {
+      "module": "mission-control/server.js",
+      "export": "statusPillClass"
+    }
+  ],
+  "tests": [
+    {
+      "name": "statusPillClass",
+      "command": "node --test test/status-pill-class.test.js"
     }
   ],
   "mutants": [
@@ -19,6 +29,12 @@
       "module": "mission-control/server.js",
       "find": ".replace(/\\.\\d{3}Z$/, ' UTC')",
       "replace": ".replace('.000Z', ' UTC')"
+    },
+    {
+      "name": "statusPillClass-escalated-not-refused",
+      "module": "mission-control/server.js",
+      "find": "|(?:^|\\s)escalated(?:\\s|$)",
+      "replace": ""
     }
   ]
 }
