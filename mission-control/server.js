@@ -1180,6 +1180,9 @@ function formatJobAge(createdAt, renderedAt) {
   const dayMs = 24 * hourMs;
   const olderCutoffMs = 30 * dayMs;
 
+  if (ageMs >= 0 && ageMs < minuteMs) {
+    return 'just now';
+  }
   if (ageMs < hourMs) {
     return `${Math.floor(ageMs / minuteMs)}m`;
   }

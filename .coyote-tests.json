@@ -1,1 +1,1 @@
-{"functionsUnderTest":[{"module":"mission-control/server.js","export":"formatCount"}]}
+{"functionsUnderTest":[{"module":"mission-control/server.js","export":"formatCount"},{"module":"mission-control/server.js","export":"formatJobAge"}]}
