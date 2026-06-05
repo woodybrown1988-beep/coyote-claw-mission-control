@@ -975,17 +975,22 @@ function summarizeSpendLines(rows) {
 }
 
 function summarizeDetail(row) {
-  const kind = String(row.kind || '').toLowerCase();
-  const gate = String(row.gate || '').toLowerCase();
-  const decision = String(row.decision || '').toLowerCase();
+  const kind = normalizeSignal(row.kind);
+  const gate = normalizeSignal(row.gate);
+  const decision = normalizeSignal(row.decision);
   const corrected = kind === 'corrected' || gate === 'corrected' || decision === 'corrected';
-  const detail = parseJsonObject(row.detail);
+  const detail = parseDetailObject(row.detail);
 
   if (corrected) {
     if (detail && typeof detail.note === 'string' && detail.note.trim()) {
       return limitText(detail.note.trim(), 180);
     }
     return 'Correction note missing';
+  }
+
+  const kindSummary = summarizeKnownDetail(row, detail);
+  if (kindSummary) {
+    return kindSummary;
   }
 
   if (!detail) {
@@ -1011,7 +1016,7 @@ function summarizeCorrection(row) {
     return '';
   }
 
-  const detail = parseJsonObject(row.detail);
+  const detail = parseDetailObject(row.detail);
   if (detail) {
     for (const key of ['correction', 'correction_text', 'corrective_action', 'next_step', 'hint']) {
       if (typeof detail[key] === 'string' && detail[key].trim()) {
@@ -1024,10 +1029,14 @@ function summarizeCorrection(row) {
 }
 
 function eventTone(row) {
-  if (isRefusedEvent(row)) {
-    return 'bad';
+  const directTone = classifiedTone(row);
+  if (directTone) {
+    return directTone;
   }
   const text = `${row.kind || ''} ${row.gate || ''} ${row.decision || ''}`.toLowerCase();
+  if (/refused|rejected|failed|blocked|denied/.test(text)) {
+    return 'bad';
+  }
   if (/approved|accepted|passed|merged|complete|fired/.test(text)) {
     return 'ok';
   }
@@ -1035,8 +1044,198 @@ function eventTone(row) {
 }
 
 function isRefusedEvent(row) {
+  const directTone = classifiedTone(row);
+  if (directTone) {
+    return directTone === 'bad';
+  }
   const text = `${row.kind || ''} ${row.gate || ''} ${row.decision || ''}`.toLowerCase();
   return /refused|rejected|failed|blocked|denied/.test(text);
+}
+
+function classifiedTone(row) {
+  for (const value of decisionValues(row)) {
+    const tone = signalTone(value);
+    if (tone) {
+      return tone;
+    }
+  }
+
+  const kind = normalizeSignal(row && row.kind);
+  const kindTone = signalTone(kind);
+  if (kindTone) {
+    return kindTone;
+  }
+
+  for (const word of signalWords(row && row.kind)) {
+    const tone = signalTone(word);
+    if (tone) {
+      return tone;
+    }
+  }
+
+  return '';
+}
+
+function decisionValues(row) {
+  const values = [];
+  const detail = parseDetailObject(row && row.detail);
+  for (const source of [row, detail]) {
+    if (!source || typeof source !== 'object' || Array.isArray(source)) {
+      continue;
+    }
+    for (const key of ['decision', 'verdict', 'status', 'outcome']) {
+      if (source[key] !== null && source[key] !== undefined) {
+        values.push(source[key]);
+      }
+    }
+  }
+  return values;
+}
+
+function signalTone(value) {
+  switch (normalizeSignal(value)) {
+    case 'approve':
+    case 'merged':
+    case 'passed':
+    case 'accepted':
+    case 'done':
+      return 'ok';
+    case 'reject':
+    case 'refused':
+    case 'failed':
+    case 'escalated':
+      return 'bad';
+    case 'correct':
+    case 'neutral':
+      return 'info';
+    default:
+      return '';
+  }
+}
+
+function normalizeSignal(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function signalWords(value) {
+  return String(value || '')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/u)
+    .filter(Boolean);
+}
+
+function summarizeKnownDetail(row, detail) {
+  const kind = normalizeSignal(row.kind);
+  if (kind === 'gate_decision') {
+    return summarizeGateDecision(row, detail);
+  }
+  if (kind === 'test_run') {
+    return summarizeTestRun(row, detail);
+  }
+  if (kind === 'pr_opened') {
+    return summarizePrOpened(row, detail);
+  }
+  if (kind === 'build_submitted') {
+    return summarizeBuildSubmitted(row, detail);
+  }
+  return '';
+}
+
+function summarizeGateDecision(row, detail) {
+  const parts = [];
+  const gate = detailValue(row, detail, ['gate']);
+  const decision = detailValue(row, detail, ['decision', 'verdict', 'status', 'outcome']);
+  const reason = detailValue(row, detail, ['reason', 'message', 'summary', 'note']);
+
+  if (gate) {
+    parts.push(`gate ${gate}`);
+  }
+  if (decision) {
+    parts.push(`decision ${decision}`);
+  }
+  if (reason) {
+    parts.push(reason);
+  }
+
+  return parts.length > 0 ? limitText(parts.join(' · '), 180) : '';
+}
+
+function summarizeTestRun(row, detail) {
+  const parts = [];
+  const verdict = detailValue(row, detail, ['verdict', 'decision', 'status', 'outcome']);
+  const countKeys = ['passCount', 'passes', 'passed', 'failCount', 'failures', 'failed', 'total', 'count'];
+
+  if (verdict) {
+    parts.push(`verdict ${verdict}`);
+  }
+
+  for (const key of countKeys) {
+    const value = detailValue(row, detail, [key]);
+    if (value) {
+      parts.push(`${humanizeKey(key)} ${value}`);
+    }
+  }
+
+  return parts.length > 0 ? limitText(parts.join(' · '), 180) : '';
+}
+
+function summarizePrOpened(row, detail) {
+  return summarizeFields(row, detail, [
+    ['number', 'pr', 'pr_number', 'pull_request'],
+    ['title'],
+    ['url', 'html_url', 'pull_request_url'],
+    ['branch'],
+    ['head'],
+    ['ref']
+  ]);
+}
+
+function summarizeBuildSubmitted(row, detail) {
+  return summarizeFields(row, detail, [
+    ['buildId', 'build_id', 'id'],
+    ['jobId', 'job_id'],
+    ['target'],
+    ['branch'],
+    ['ref'],
+    ['sha', 'head_sha'],
+    ['commit', 'commit_sha']
+  ]);
+}
+
+function summarizeFields(row, detail, groups) {
+  const parts = [];
+  for (const keys of groups) {
+    const value = detailValue(row, detail, keys);
+    if (value) {
+      parts.push(`${humanizeKey(keys[0])} ${value}`);
+    }
+  }
+  return parts.length > 0 ? limitText(parts.join(' · '), 180) : '';
+}
+
+function detailValue(row, detail, keys) {
+  for (const source of [detail, row]) {
+    if (!source || typeof source !== 'object' || Array.isArray(source)) {
+      continue;
+    }
+    for (const key of keys) {
+      if (source[key] !== null && source[key] !== undefined && String(source[key]).trim()) {
+        return singleLineText(source[key]);
+      }
+    }
+  }
+  return '';
+}
+
+function singleLineText(value) {
+  return String(value).replace(/\s+/g, ' ').trim();
+}
+
+function humanizeKey(key) {
+  return String(key)
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/[_-]+/g, ' ')
+    .toLowerCase();
 }
 
 function deriveEngine(row) {
@@ -1287,6 +1486,13 @@ function parseJsonObject(value) {
   } catch (_) {
     return null;
   }
+}
+
+function parseDetailObject(value) {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return value;
+  }
+  return parseJsonObject(value);
 }
 
 function looksSensitive(key) {
@@ -1635,6 +1841,8 @@ module.exports = {
   buildDashboardModel,
   renderDashboard,
   summarizeDetail,
+  eventTone,
+  isRefusedEvent,
   getMonthStartMs,
   formatUtc,
   formatJobAge,
