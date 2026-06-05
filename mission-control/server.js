@@ -3,6 +3,7 @@
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
+const { execFileSync } = require('node:child_process');
 
 const HOST = '127.0.0.1';
 const DEFAULT_PORT = 8787;
@@ -26,6 +27,22 @@ const ROOT = path.resolve(__dirname, '..');
 const STATIC_ROOT = path.resolve(__dirname, 'static');
 const DB_PATH = process.env.COYOTE_CLAW_DB || path.join(ROOT, 'data', 'librarian.db');
 const RATES_PATH = path.join(ROOT, 'config', 'api-rates.json');
+
+// The commit this process is serving — the gated deploy link's generic content check
+// (`/version` == target sha) reads this to confirm a merge actually shipped, not just
+// that `git pull` ran. Computed once (the running code is fixed for the process; a deploy
+// always restarts), lazily so module load stays side-effect-free for tests.
+let _commit = null;
+function getCommit() {
+  if (_commit === null) {
+    try {
+      _commit = execFileSync('git', ['-C', ROOT, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    } catch (_e) {
+      _commit = process.env.COYOTE_MC_COMMIT || 'unknown';
+    }
+  }
+  return _commit;
+}
 
 function main() {
   const port = readPort(process.env.MISSION_CONTROL_PORT);
@@ -52,6 +69,11 @@ function handleRequest(req, res) {
 
   if (url.pathname === '/health') {
     sendJson(res, 200, { ok: true });
+    return;
+  }
+
+  if (url.pathname === '/version') {
+    sendJson(res, 200, { commit: getCommit() });
     return;
   }
 
