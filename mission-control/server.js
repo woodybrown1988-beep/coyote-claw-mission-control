@@ -1108,7 +1108,7 @@ function statusPillClass(status, stage) {
   if (/merged|complete|completed|done|shipped|approved|passed/.test(text)) {
     return 'p-merged';
   }
-  if (/refused|failed|rejected|blocked|denied|gate/.test(text)) {
+  if (/refused|failed|rejected|blocked|denied|gate|(?:^|\s)escalated(?:\s|$)/.test(text)) {
     return 'p-refused';
   }
   if (/spec|build|active|running|progress|executing|started/.test(text)) {
@@ -1639,5 +1639,6 @@ module.exports = {
   formatUtc,
   formatJobAge,
   formatCount,
+  statusPillClass,
   spendLevel
 };
