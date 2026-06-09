@@ -39,6 +39,10 @@
       "command": "node --test test/mission-control-events.test.js"
     },
     {
+      "name": "mission-control-event-tone-ok",
+      "command": "node --test test/mission-control-event-tone-ok.test.js"
+    },
+    {
       "name": "mission-control-refusal-helper",
       "command": "node --test test/mission-control-events.test.js"
     },

@@ -1029,6 +1029,10 @@ function summarizeCorrection(row) {
 }
 
 function eventTone(row) {
+  const acceptedTone = acceptedEventTone(row);
+  if (acceptedTone) {
+    return acceptedTone;
+  }
   const directTone = classifiedTone(row);
   if (directTone) {
     return directTone;
@@ -1044,12 +1048,34 @@ function eventTone(row) {
 }
 
 function isRefusedEvent(row) {
+  const acceptedTone = acceptedEventTone(row);
+  if (acceptedTone) {
+    return false;
+  }
   const directTone = classifiedTone(row);
   if (directTone) {
     return directTone === 'bad';
   }
   const text = `${row.kind || ''} ${row.gate || ''} ${row.decision || ''}`.toLowerCase();
   return /refused|rejected|failed|blocked|denied/.test(text);
+}
+
+function acceptedEventTone(row) {
+  const kind = normalizeSignal(row && row.kind);
+  const detail = parseDetailObject(row && row.detail);
+  if (!detail) {
+    return '';
+  }
+
+  if (kind === 'test_run' && normalizeSignal(detail.verdict) === 'accept') {
+    return 'ok';
+  }
+
+  if (kind === 'note' && detail.merged === true) {
+    return 'ok';
+  }
+
+  return '';
 }
 
 function classifiedTone(row) {
