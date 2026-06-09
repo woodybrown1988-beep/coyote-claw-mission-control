@@ -27,6 +27,10 @@
     {
       "module": "mission-control/server.js",
       "export": "summarizeDetail"
+    },
+    {
+      "module": "mission-control/server.js",
+      "export": "summarizeTestRun"
     }
   ],
   "tests": [
@@ -49,6 +53,10 @@
     {
       "name": "mission-control-summary-helper",
       "command": "node --test test/mission-control-events.test.js"
+    },
+    {
+      "name": "mission-control-test-run-summary-integrity",
+      "command": "node --test test/summarize-test-run.test.js"
     }
   ],
   "mutants": [
@@ -62,6 +70,12 @@
       "name": "statusPillClass-escalated-not-refused",
       "module": "mission-control/server.js",
       "find": "|(?:^|\\s)escalated(?:\\s|$)",
+      "replace": ""
+    },
+    {
+      "name": "summarizeTestRun-old-bare-verdict-pass-count",
+      "module": "mission-control/server.js",
+      "find": "  if (verdict === 'theatre') {\n    parts.push('integrity theatre/proves-nothing');\n  } else if (verdict === 'accept') {\n    const caughtCount = countCaughtByMutant(detail && detail.perFunction);\n    if (caughtCount > 0) {\n      parts.push(`mutant-killed (${caughtCount} fns)`);\n    }\n  }\n\n",
       "replace": ""
     }
   ]
