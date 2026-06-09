@@ -374,9 +374,11 @@ function getWorkerSection(db) {
       'running',
       'started',
       'spec',
-      'build'
+      'build',
+      'awaiting_signoff'
     )
-    ORDER BY COALESCE(updated_at, created_at, 0) DESC
+    ORDER BY CASE WHEN lower(status) = 'awaiting_signoff' THEN 1 ELSE 0 END ASC,
+      COALESCE(updated_at, created_at, 0) DESC
     LIMIT 1
   `);
 
@@ -1368,12 +1370,15 @@ function formatStage(stage, effort) {
 }
 
 function stageProgressPercent(stage) {
-  const normalized = String(stage || '').toLowerCase();
+  const normalized = String(stage || '').toLowerCase().replace(/[_\s]+/g, '-');
   if (normalized === 'spec') {
     return 32;
   }
   if (normalized === 'build' || normalized === 'active') {
     return 64;
+  }
+  if (normalized === 'awaiting-signoff' || normalized === 'lead-review' || normalized === 'pr' || normalized === 'review') {
+    return 90;
   }
   if (normalized === 'done') {
     return 100;
@@ -1891,5 +1896,8 @@ module.exports = {
   formatJobAge,
   formatCount,
   statusPillClass,
+  stageProgressPercent,
+  deriveStage,
+  getWorkerSection,
   spendLevel
 };
