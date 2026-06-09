@@ -31,6 +31,18 @@
     {
       "module": "mission-control/server.js",
       "export": "summarizeTestRun"
+    },
+    {
+      "module": "mission-control/server.js",
+      "export": "stageProgressPercent"
+    },
+    {
+      "module": "mission-control/server.js",
+      "export": "deriveStage"
+    },
+    {
+      "module": "mission-control/server.js",
+      "export": "getWorkerSection"
     }
   ],
   "tests": [
@@ -57,6 +69,10 @@
     {
       "name": "mission-control-test-run-summary-integrity",
       "command": "node --test test/summarize-test-run.test.js"
+    },
+    {
+      "name": "mission-control-stage-progress-active-job",
+      "command": "node --test test/mission-control-stage-progress-active-job.test.js"
     }
   ],
   "mutants": [
@@ -77,6 +93,12 @@
       "module": "mission-control/server.js",
       "find": "  if (verdict === 'theatre') {\n    parts.push('integrity theatre/proves-nothing');\n  } else if (verdict === 'accept') {\n    const caughtCount = countCaughtByMutant(detail && detail.perFunction);\n    if (caughtCount > 0) {\n      parts.push(`mutant-killed (${caughtCount} fns)`);\n    }\n  }\n\n",
       "replace": ""
+    },
+    {
+      "name": "stageProgressPercent-awaiting-signoff-zero",
+      "module": "mission-control/server.js",
+      "find": "  if (normalized === 'awaiting-signoff' || normalized === 'lead-review' || normalized === 'pr' || normalized === 'review') {\n    return 90;\n  }\n",
+      "replace": "  if (normalized === 'awaiting-signoff' || normalized === 'lead-review' || normalized === 'pr' || normalized === 'review') {\n    return 0;\n  }\n"
     }
   ]
 }
