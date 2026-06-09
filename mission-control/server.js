@@ -1202,7 +1202,23 @@ function summarizeTestRun(row, detail) {
     }
   }
 
+  if (verdict === 'theatre') {
+    parts.push('integrity theatre/proves-nothing');
+  } else if (verdict === 'accept') {
+    const caughtCount = countCaughtByMutant(detail && detail.perFunction);
+    if (caughtCount > 0) {
+      parts.push(`mutant-killed (${caughtCount} fns)`);
+    }
+  }
+
   return parts.length > 0 ? limitText(parts.join(' · '), 180) : '';
+}
+
+function countCaughtByMutant(perFunction) {
+  if (!Array.isArray(perFunction)) {
+    return 0;
+  }
+  return perFunction.filter((entry) => entry && entry.caughtByMutant === true).length;
 }
 
 function summarizePrOpened(row, detail) {
@@ -1867,6 +1883,7 @@ module.exports = {
   buildDashboardModel,
   renderDashboard,
   summarizeDetail,
+  summarizeTestRun,
   eventTone,
   isRefusedEvent,
   getMonthStartMs,
