@@ -3,7 +3,9 @@
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
+const { homedir } = require('node:os');
 const { execFileSync } = require('node:child_process');
+const { join } = require('node:path');
 
 const HOST = '127.0.0.1';
 const DEFAULT_PORT = 8787;
@@ -94,11 +96,13 @@ function handleRequest(req, res) {
 function buildDashboardModel() {
   const monthStartMs = getMonthStartMs(new Date());
   const rates = readRates();
+  const haltFileExists = readHaltFileExists();
   const opened = openDatabase();
 
   if (!opened.ok) {
     return {
       ok: false,
+      halt: buildHaltModel(haltFileExists, null),
       monthStartMs,
       monthMode: MONTH_MODE,
       rates,
@@ -111,6 +115,7 @@ function buildDashboardModel() {
   const db = opened.db;
 
   try {
+    const halt = buildHaltModel(haltFileExists, readPausedValue(db));
     const sections = {
       kpis: getKpiSection(db, monthStartMs),
       queue: getQueueSection(db),
@@ -122,6 +127,7 @@ function buildDashboardModel() {
 
     return {
       ok: true,
+      halt,
       monthStartMs,
       monthMode: MONTH_MODE,
       rates,
@@ -135,6 +141,49 @@ function buildDashboardModel() {
       // Closing failure is not user-actionable and must not leak internals.
     }
   }
+}
+
+function buildHaltModel(haltFileExists, pausedValue) {
+  const fromFlagFile = haltFileExists === true;
+  const fromPaused = pausedValue === '1';
+
+  if (fromFlagFile && fromPaused) {
+    return { halted: true, source: 'flag-file+paused' };
+  }
+
+  if (fromFlagFile) {
+    return { halted: true, source: 'flag-file' };
+  }
+
+  if (fromPaused) {
+    return { halted: true, source: 'paused' };
+  }
+
+  return { halted: false };
+}
+
+function readHaltFileExists() {
+  const haltFile = process.env.COYOTE_HALT_FILE ?? join(homedir(), '.coyote-claw', 'HALT');
+  try {
+    return fs.existsSync(haltFile);
+  } catch (_) {
+    return true;
+  }
+}
+
+function readPausedValue(db) {
+  const result = safeSelect(db, `
+    SELECT value
+    FROM system_state
+    WHERE key = 'paused'
+    LIMIT 1
+  `);
+
+  if (!result.ok || result.rows.length === 0) {
+    return null;
+  }
+
+  return result.rows[0].value;
 }
 
 function emptySections() {
@@ -154,10 +203,6 @@ function openDatabase() {
     sqlite = require('node:sqlite');
   } catch (_) {
     return { ok: false, message: 'node:sqlite is unavailable in this Node.js runtime.' };
-  }
-
-  if (!fs.existsSync(DB_PATH)) {
-    return { ok: false, message: 'Librarian database is unavailable.' };
   }
 
   try {
@@ -586,6 +631,7 @@ function renderDashboard(model) {
 </head>
 <body>
   ${renderHeader(model, worker)}
+  ${renderHaltBanner(model.halt)}
   ${model.ok ? '' : `<section class="banner fade">${escapeHtml(model.error)}</section>`}
   ${renderKpis(kpis, spend)}
   <div class="grid">
@@ -630,6 +676,14 @@ function renderHeader(model, worker) {
       </div>
     </header>
   `;
+}
+
+function renderHaltBanner(halt) {
+  if (!halt || halt.halted !== true) {
+    return '';
+  }
+
+  return `<section class="banner fade">HALTED · ${escapeHtml(halt.source || 'unknown')}</section>`;
 }
 
 function renderKpis(section, spend) {
@@ -1955,6 +2009,7 @@ if (require.main === module) {
 
 module.exports = {
   buildDashboardModel,
+  buildHaltModel,
   renderDashboard,
   getKpiSection,
   summarizeDetail,
