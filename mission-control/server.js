@@ -1365,7 +1365,7 @@ function deriveEffort(row) {
 }
 
 function deriveRef(row) {
-  return safeLabel(firstPresent(row, [
+  const value = firstPresent(row, [
     'branch',
     'ref',
     'pr',
@@ -1375,7 +1375,34 @@ function deriveRef(row) {
     'sha',
     'commit_sha',
     'head_sha'
-  ]), '—');
+  ]);
+  if (value) {
+    return safeLabel(value, '—');
+  }
+
+  const result = parseDetailObject(row && row.result);
+  for (const key of ['prNumber', 'pr_number', 'number']) {
+    const prNumber = result && result[key];
+    if ((typeof prNumber === 'number' && Number.isFinite(prNumber)) || (typeof prNumber === 'string' && prNumber.trim())) {
+      return `#${String(prNumber).trim()}`;
+    }
+  }
+
+  for (const key of ['branch', 'ref']) {
+    const ref = result && result[key];
+    if (typeof ref === 'string' && ref.trim()) {
+      return safeLabel(ref, '—');
+    }
+  }
+
+  for (const key of ['headSha', 'sha', 'commit_sha']) {
+    const sha = result && result[key];
+    if (typeof sha === 'string' && sha.trim()) {
+      return shortId(sha) || '—';
+    }
+  }
+
+  return '—';
 }
 
 function firstPresent(row, keys) {
@@ -1943,6 +1970,7 @@ module.exports = {
   statusPillClass,
   stageProgressPercent,
   deriveEngine,
+  deriveRef,
   deriveStage,
   buildWorkerModel,
   getWorkerSection,
