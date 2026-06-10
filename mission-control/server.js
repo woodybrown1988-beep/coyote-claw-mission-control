@@ -1183,6 +1183,9 @@ function summarizeKnownDetail(row, detail) {
   if (kind === 'test_run') {
     return summarizeTestRun(row, detail);
   }
+  if (kind === 'lead_decision') {
+    return summarizeLeadDecision(row, detail);
+  }
   if (kind === 'pr_opened') {
     return summarizePrOpened(row, detail);
   }
@@ -1234,6 +1237,21 @@ function summarizeTestRun(row, detail) {
     if (caughtCount > 0) {
       parts.push(`mutant-killed (${caughtCount} fns)`);
     }
+  }
+
+  return parts.length > 0 ? limitText(parts.join(' · '), 180) : '';
+}
+
+function summarizeLeadDecision(row, detail) {
+  const parts = [];
+  const verdict = detailValue(row, detail, ['verdict', 'decision']);
+  const review = detailValue(row, detail, ['assessment', 'correction']);
+
+  if (verdict) {
+    parts.push(`verdict ${verdict}`);
+  }
+  if (review) {
+    parts.push(limitText(review, 180));
   }
 
   return parts.length > 0 ? limitText(parts.join(' · '), 180) : '';
@@ -1914,6 +1932,7 @@ module.exports = {
   getKpiSection,
   summarizeDetail,
   summarizeTestRun,
+  summarizeLeadDecision,
   classifyGateEvent,
   eventTone,
   isRefusedEvent,
