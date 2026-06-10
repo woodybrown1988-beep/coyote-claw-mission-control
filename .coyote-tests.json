@@ -46,6 +46,10 @@
     },
     {
       "module": "mission-control/server.js",
+      "export": "buildWorkerModel"
+    },
+    {
+      "module": "mission-control/server.js",
       "export": "classifyGateEvent"
     },
     {
@@ -85,6 +89,10 @@
     {
       "name": "mission-control-stage-progress-active-job",
       "command": "node --test test/mission-control-stage-progress-active-job.test.js"
+    },
+    {
+      "name": "mission-control-worker-heartbeat-model",
+      "command": "node --test test/build-worker-model.test.js"
     },
     {
       "name": "mission-control-derive-engine",
