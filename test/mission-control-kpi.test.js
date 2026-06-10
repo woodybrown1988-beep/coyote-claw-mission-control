@@ -6,7 +6,9 @@ const sqlite = require('node:sqlite');
 
 const {
   classifyGateEvent,
-  getKpiSection
+  countTestIntegrity,
+  getKpiSection,
+  renderDashboard
 } = require('../mission-control/server.js');
 
 function createKpiDb() {
@@ -58,6 +60,37 @@ function insertEvent(db, row) {
   );
 }
 
+function detail(value) {
+  return { detail: JSON.stringify(value) };
+}
+
+function acceptedCaughtRow() {
+  return detail({
+    verdict: 'accept',
+    perFunction: [
+      { caughtByMutant: true }
+    ]
+  });
+}
+
+function renderWithKpis(kpis) {
+  const unavailable = { ok: false, message: 'Unavailable', warnings: [] };
+  return renderDashboard({
+    ok: true,
+    halt: { halted: false },
+    refreshedAt: 1_704_067_200_000,
+    sections: {
+      kpis,
+      queue: unavailable,
+      worker: unavailable,
+      spend: { ok: true, totalPence: 0, ceilingPence: 7500, warnings: [] },
+      tokens: unavailable,
+      outcomes: unavailable,
+      deploy: unavailable
+    }
+  });
+}
+
 test('classifyGateEvent classifies base-form and legacy gate decisions', () => {
   assert.equal(classifyGateEvent({ decision: 'approve' }), 'passed');
   assert.equal(classifyGateEvent({ decision: 'reject' }), 'refused');
@@ -65,6 +98,57 @@ test('classifyGateEvent classifies base-form and legacy gate decisions', () => {
   assert.equal(classifyGateEvent({ decision: 'refuse' }), 'refused');
   assert.equal(classifyGateEvent({ decision: 'pending' }), null);
   assert.equal(classifyGateEvent({ kind: 'note', decision: 'approve' }), null);
+});
+
+test('countTestIntegrity counts accepted rows with mutant catches as teeth', () => {
+  assert.deepEqual(countTestIntegrity([
+    acceptedCaughtRow(),
+    acceptedCaughtRow(),
+    acceptedCaughtRow()
+  ]), { teeth: 3, theatre: 0 });
+});
+
+test('countTestIntegrity counts theatre rows only as theatre', () => {
+  assert.deepEqual(countTestIntegrity([
+    detail({ verdict: 'theatre' }),
+    detail({ verdict: 'theatre' })
+  ]), { teeth: 0, theatre: 2 });
+});
+
+test('countTestIntegrity rejects accepted rows without caught mutants as teeth', () => {
+  assert.equal(countTestIntegrity([
+    detail({ verdict: 'accept', perFunction: [] })
+  ]).teeth, 0);
+  assert.equal(countTestIntegrity([
+    detail({ verdict: 'accept' })
+  ]).teeth, 0);
+  assert.equal(countTestIntegrity([
+    detail({ verdict: 'accept', perFunction: [{ caughtByMutant: false }] })
+  ]).teeth, 0);
+});
+
+test('countTestIntegrity keeps mixed teeth and theatre counts separate', () => {
+  assert.deepEqual(countTestIntegrity([
+    acceptedCaughtRow(),
+    acceptedCaughtRow(),
+    detail({ verdict: 'theatre' }),
+    detail({ verdict: 'accept', perFunction: [] }),
+    { detail: '{malformed' }
+  ]), { teeth: 2, theatre: 1 });
+});
+
+test('countTestIntegrity ignores malformed and unparseable detail without throwing', () => {
+  let result;
+  assert.doesNotThrow(() => {
+    result = countTestIntegrity([
+      { detail: '{malformed' },
+      { detail: null },
+      {},
+      { detail: '' },
+      { detail: JSON.stringify(['not', 'object']) }
+    ]);
+  });
+  assert.deepEqual(result, { teeth: 0, theatre: 0 });
 });
 
 test('getKpiSection counts base-form gate decisions and exact awaiting_signoff jobs', () => {
@@ -141,6 +225,9 @@ test('getKpiSection counts base-form gate decisions and exact awaiting_signoff j
     assert.equal(section.gatesPassed, 2);
     assert.equal(section.gatesRefused, 3);
     assert.equal(section.openGates, 4);
+    assert.equal(section.testIntegrityTeeth, 0);
+    assert.equal(section.testIntegrityTheatre, 0);
+    assert.equal(section.testIntegrityUnavailable, false);
 
     assert.equal(section.jobsToday, 2);
     assert.equal(section.shippedToday, 1);
@@ -149,6 +236,70 @@ test('getKpiSection counts base-form gate decisions and exact awaiting_signoff j
     assert.equal(section.activeJob, 'active-j');
     assert.equal(section.monthStartMs, monthStartMs);
     assert.deepEqual(section.warnings, []);
+  } finally {
+    db.close();
+  }
+});
+
+test('renderDashboard includes the test integrity KPI value', () => {
+  const db = createKpiDb();
+  try {
+    for (let index = 0; index < 26; index += 1) {
+      insertEvent(db, {
+        job_id: `teeth-${index}`,
+        kind: 'test_run',
+        detail: JSON.stringify({
+          verdict: 'accept',
+          perFunction: [{ caughtByMutant: true }]
+        }),
+        created_at: 1_704_067_200_000
+      });
+    }
+    for (let index = 0; index < 2; index += 1) {
+      insertEvent(db, {
+        job_id: `theatre-${index}`,
+        kind: 'test_run',
+        detail: JSON.stringify({ verdict: 'theatre' }),
+        created_at: 1_704_067_200_000
+      });
+    }
+
+    const html = renderWithKpis(getKpiSection(db, 1_704_067_200_000));
+
+    assert.match(html, /TEST INTEGRITY/);
+    assert.match(html, /26 teeth · 2 theatre/);
+  } finally {
+    db.close();
+  }
+});
+
+test('renderDashboard marks the test integrity KPI unavailable when only that query fails', () => {
+  const db = createKpiDb();
+  try {
+    insertEvent(db, {
+      job_id: 'would-count',
+      kind: 'test_run',
+      detail: JSON.stringify({
+        verdict: 'accept',
+        perFunction: [{ caughtByMutant: true }]
+      }),
+      created_at: 1_704_067_200_000
+    });
+
+    const wrappedDb = {
+      prepare(sql) {
+        if (sql.trim() === "SELECT detail FROM job_events WHERE kind = 'test_run'") {
+          throw new Error('forced integrity select failure');
+        }
+        return db.prepare(sql);
+      }
+    };
+
+    const html = renderWithKpis(getKpiSection(wrappedDb, 1_704_067_200_000));
+
+    assert.match(html, /TEST INTEGRITY/);
+    assert.match(html, /0 teeth · 0 theatre/);
+    assert.match(html, /unavailable/);
   } finally {
     db.close();
   }

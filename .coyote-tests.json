@@ -66,6 +66,10 @@
     },
     {
       "module": "mission-control/server.js",
+      "export": "countTestIntegrity"
+    },
+    {
+      "module": "mission-control/server.js",
       "export": "getWorkerSection"
     },
     {
