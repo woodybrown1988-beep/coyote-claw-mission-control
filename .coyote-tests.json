@@ -34,6 +34,10 @@
     },
     {
       "module": "mission-control/server.js",
+      "export": "summarizeLeadDecision"
+    },
+    {
+      "module": "mission-control/server.js",
       "export": "stageProgressPercent"
     },
     {
