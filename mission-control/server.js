@@ -1346,12 +1346,12 @@ function deriveEngine(row) {
     return safeLabel(value, 'unknown');
   }
 
-  const text = `${row.type || ''} ${row.status || ''}`.toLowerCase();
-  if (text.includes('codex') || text.includes('gpt')) {
-    return 'codex';
-  }
-  if (text.includes('claude') || text.includes('sonnet')) {
-    return 'claude';
+  const result = typeof (row && row.result) === 'string'
+    ? parseJsonObject(row.result)
+    : parseDetailObject(row && row.result);
+  const resultValue = firstPresent(result, ['engine', 'model']);
+  if (resultValue) {
+    return safeLabel(resultValue, 'unknown');
   }
   return 'unknown';
 }
@@ -1957,6 +1957,7 @@ module.exports = {
   formatCount,
   statusPillClass,
   stageProgressPercent,
+  deriveEngine,
   deriveStage,
   getWorkerSection,
   spendLevel

@@ -38,6 +38,10 @@
     },
     {
       "module": "mission-control/server.js",
+      "export": "deriveEngine"
+    },
+    {
+      "module": "mission-control/server.js",
       "export": "deriveStage"
     },
     {
@@ -81,6 +85,10 @@
     {
       "name": "mission-control-stage-progress-active-job",
       "command": "node --test test/mission-control-stage-progress-active-job.test.js"
+    },
+    {
+      "name": "mission-control-derive-engine",
+      "command": "node --test test/derive-engine.test.js"
     },
     {
       "name": "mission-control-kpi",
