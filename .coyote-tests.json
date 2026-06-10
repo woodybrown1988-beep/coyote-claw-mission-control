@@ -79,6 +79,14 @@
     {
       "module": "mission-control/server.js",
       "export": "buildHaltModel"
+    },
+    {
+      "module": "mission-control/server.js",
+      "export": "buildDeployModel"
+    },
+    {
+      "module": "mission-control/server.js",
+      "export": "deployStatusPillClass"
     }
   ],
   "tests": [
@@ -129,6 +137,10 @@
     {
       "name": "mission-control-halt-dashboard",
       "command": "node --test test/mission-control-halt.test.js"
+    },
+    {
+      "name": "mission-control-deploy-status",
+      "command": "node --test test/mission-control-deploy-status.test.js"
     }
   ],
   "mutants": [
@@ -179,6 +191,42 @@
       "module": "mission-control/server.js",
       "find": "function deriveRef(row) {\n  const value = firstPresent(row, [\n    'branch',\n    'ref',\n    'pr',\n    'pr_number',\n    'pull_request',\n    'pull_request_url',\n    'sha',\n    'commit_sha',\n    'head_sha'\n  ]);\n  if (value) {\n    return safeLabel(value, '—');\n  }\n\n  const result = parseDetailObject(row && row.result);\n  for (const key of ['prNumber', 'pr_number', 'number']) {\n    const prNumber = result && result[key];\n    if ((typeof prNumber === 'number' && Number.isFinite(prNumber)) || (typeof prNumber === 'string' && prNumber.trim())) {\n      return `#${String(prNumber).trim()}`;\n    }\n  }\n\n  for (const key of ['branch', 'ref']) {\n    const ref = result && result[key];\n    if (typeof ref === 'string' && ref.trim()) {\n      return safeLabel(ref, '—');\n    }\n  }\n\n  for (const key of ['headSha', 'sha', 'commit_sha']) {\n    const sha = result && result[key];\n    if (typeof sha === 'string' && sha.trim()) {\n      return shortId(sha) || '—';\n    }\n  }\n\n  return '—';\n}",
       "replace": "function deriveRef(row) {\n  const value = firstPresent(row, [\n    'branch',\n    'ref',\n    'pr',\n    'pr_number',\n    'pull_request',\n    'pull_request_url',\n    'sha',\n    'commit_sha',\n    'head_sha'\n  ]);\n  if (value) {\n    return safeLabel(value, '—');\n  }\n\n  const result = parseDetailObject(row && row.result);\n  for (const key of ['headSha', 'sha', 'commit_sha']) {\n    const sha = result && result[key];\n    if (typeof sha === 'string' && sha.trim()) {\n      return shortId(sha) || '—';\n    }\n  }\n\n  for (const key of ['prNumber', 'pr_number', 'number']) {\n    const prNumber = result && result[key];\n    if ((typeof prNumber === 'number' && Number.isFinite(prNumber)) || (typeof prNumber === 'string' && prNumber.trim())) {\n      return `#${String(prNumber).trim()}`;\n    }\n  }\n\n  for (const key of ['branch', 'ref']) {\n    const ref = result && result[key];\n    if (typeof ref === 'string' && ref.trim()) {\n      return safeLabel(ref, '—');\n    }\n  }\n\n  return '—';\n}"
+    },
+    {
+      "name": "deploy-up-to-date-flipped-full-hash-comparison",
+      "module": "mission-control/server.js",
+      "find": "      && servingHash === latestTargetHash\n",
+      "replace": "      && servingHash !== latestTargetHash\n"
+    },
+    {
+      "name": "deploy-up-to-date-sha8-only-comparison",
+      "module": "mission-control/server.js",
+      "find": "      && servingHash === latestTargetHash\n",
+      "replace": "      && shortId(servingHash) === shortId(latestTargetHash)\n"
+    },
+    {
+      "name": "deploy-get-commit-linkage-severed",
+      "module": "mission-control/server.js",
+      "find": "    ...buildDeployModel(result.rows, getCommit()),\n",
+      "replace": "    ...buildDeployModel(result.rows, 'unknown'),\n"
+    },
+    {
+      "name": "deploy-broken-to-deployed-normalization",
+      "module": "mission-control/server.js",
+      "find": "  if (normalized === 'broken') {\n    return 'broken';\n  }\n",
+      "replace": "  if (normalized === 'broken') {\n    return 'deployed';\n  }\n"
+    },
+    {
+      "name": "deploy-rolled-back-to-deployed-normalization",
+      "module": "mission-control/server.js",
+      "find": "  if (normalized === 'rolled_back' || normalized === 'rollback' || normalized === 'roll_back') {\n    return 'rolled_back';\n  }\n",
+      "replace": "  if (normalized === 'rolled_back' || normalized === 'rollback' || normalized === 'roll_back') {\n    return 'deployed';\n  }\n"
+    },
+    {
+      "name": "deploy-pending-detection-dropped",
+      "module": "mission-control/server.js",
+      "find": "    pendingRows: normalizedRows.filter((row) => row.status === 'pending' || row.status === 'deploying'),\n",
+      "replace": "    pendingRows: normalizedRows.filter(() => false),\n"
     }
   ]
 }

@@ -122,7 +122,8 @@ function buildDashboardModel() {
       worker: getWorkerSection(db),
       spend: getSpendSection(db, monthStartMs),
       tokens: getTokenSection(db, monthStartMs, rates),
-      outcomes: getOutcomesSection(db)
+      outcomes: getOutcomesSection(db),
+      deploy: getDeploySection(db)
     };
 
     return {
@@ -193,7 +194,8 @@ function emptySections() {
     worker: unavailable('Database unavailable'),
     spend: unavailable('Database unavailable'),
     tokens: unavailable('Database unavailable'),
-    outcomes: unavailable('Database unavailable')
+    outcomes: unavailable('Database unavailable'),
+    deploy: unavailable('Database unavailable')
   };
 }
 
@@ -552,6 +554,22 @@ function getOutcomesSection(db) {
   };
 }
 
+function getDeploySection(db) {
+  const result = safeSelect(db, `
+    SELECT id, target_sha, pre_sha, status, created_at, updated_at FROM deploys ORDER BY id DESC LIMIT 16
+  `);
+
+  if (!result.ok) {
+    return unavailable('Deploy status is unavailable.');
+  }
+
+  return {
+    ok: true,
+    ...buildDeployModel(result.rows, getCommit()),
+    warnings: []
+  };
+}
+
 function safeSelect(db, sql, params = []) {
   const normalized = sql.trim().replace(/\s+/g, ' ').toLowerCase();
   if (!normalized.startsWith('select ')) {
@@ -617,6 +635,7 @@ function renderDashboard(model) {
   const spend = model.sections.spend;
   const tokens = model.sections.tokens;
   const outcomes = model.sections.outcomes;
+  const deploy = model.sections.deploy || unavailable('Deploy status is unavailable.');
   const renderedAt = Date.now();
 
   return `<!doctype html>
@@ -641,6 +660,7 @@ function renderDashboard(model) {
     </div>
     <div class="stack">
       ${renderWorker(worker)}
+      ${renderDeploy(deploy)}
       ${renderSpend(spend)}
       ${renderTokens(tokens)}
     </div>
@@ -772,6 +792,70 @@ function renderWorker(section) {
       <div class="phead"><h2>Workers</h2><span class="count">${escapeHtml(count)}</span></div>
       <div class="heroes">
         ${cards || '<p class="note">No worker heartbeat rows.</p>'}
+      </div>
+      ${renderWarnings(section.warnings)}
+    </section>
+  `;
+}
+
+function renderDeploy(section) {
+  if (!section.ok) {
+    return renderUnavailablePanel('Deploy Status', section.message);
+  }
+
+  if (section.empty === true) {
+    return `
+    <section class="panel fade deploy-panel">
+      <div class="phead"><h2>Deploy Status</h2><span class="count">deploys</span></div>
+      <p class="empty-row">No deploys recorded yet.</p>
+      ${renderWarnings(section.warnings)}
+    </section>
+  `;
+  }
+
+  const latestLabel = deployStatusLabel(section.latestStatus);
+  const summary = section.upToDate
+    ? '<div class="deploy-indicator deploy-indicator--ok">UP TO DATE</div>'
+    : `
+        <div class="deploy-summary-grid">
+          <div><span class="mk">Serving</span><span class="mv mono">${escapeHtml(section.servingSha8 || 'unknown')}</span></div>
+          <div><span class="mk">Latest</span><span class="mv mono">${escapeHtml(section.latestDeploySha8 || 'unknown')}</span></div>
+          <div><span class="mk">Status</span>${renderDeployStatusPill(section.latestStatus, latestLabel)}</div>
+        </div>
+      `;
+
+  const pending = section.pendingRows.length > 0
+    ? `
+      <div class="deploy-pending">
+        <div class="deploy-subhead">Pending</div>
+        ${section.pendingRows.map((row) => `
+          <div class="deploy-row deploy-row--pending">
+            <span class="mono">${escapeHtml(row.targetSha8 || 'unknown')}</span>
+            ${renderDeployStatusPill(row.status)}
+          </div>
+        `).join('')}
+      </div>
+    `
+    : '';
+
+  const recentRows = section.recentRows.map((row) => `
+    <tr>
+      <td class="mono">${escapeHtml(row.targetSha8 || 'unknown')}</td>
+      <td>${renderDeployStatusPill(row.status)}</td>
+      <td class="age mono">${renderTime(row.updatedAt || row.createdAt)}</td>
+    </tr>
+  `).join('');
+
+  return `
+    <section class="panel fade deploy-panel">
+      <div class="phead"><h2>Deploy Status</h2><span class="count">${escapeHtml(latestLabel)}</span></div>
+      <div class="deploy-summary">${summary}</div>
+      ${pending}
+      <div class="pbody table-wrap deploy-history">
+        <table>
+          <thead><tr><th>Target</th><th>Status</th><th>Time</th></tr></thead>
+          <tbody>${recentRows || '<tr><td colspan="3" class="empty-row">No deploys recorded yet.</td></tr>'}</tbody>
+        </table>
       </div>
       ${renderWarnings(section.warnings)}
     </section>
@@ -917,6 +1001,10 @@ function renderWarnings(warnings) {
 function renderStatusPill(status) {
   const name = safeLabel(status, 'unknown');
   return `<span class="pill ${escapeHtml(statusPillClass(name, name))}">${escapeHtml(name)}</span>`;
+}
+
+function renderDeployStatusPill(status, label = deployStatusLabel(status)) {
+  return `<span class="${escapeHtml(deployStatusPillClass(status))}">${escapeHtml(label)}</span>`;
 }
 
 function renderTime(ms) {
@@ -1468,6 +1556,133 @@ function firstPresent(row, keys) {
   return '';
 }
 
+function buildDeployModel(deployRows, servingCommit) {
+  const servingHash = fullHash(servingCommit);
+  const normalizedRows = (Array.isArray(deployRows) ? deployRows : [])
+    .map((row) => normalizeDeployRow(row))
+    .sort(compareDeployRows);
+  const latest = normalizedRows.length > 0 ? normalizedRows[0] : null;
+  const latestTargetHash = latest ? latest.targetSha : '';
+
+  return {
+    empty: normalizedRows.length === 0,
+    latest,
+    latestStatus: latest ? latest.status : 'none',
+    servingSha8: shortId(servingHash),
+    latestDeploySha8: shortId(latestTargetHash),
+    upToDate: Boolean(
+      latest
+      && latest.status === 'deployed'
+      && servingHash
+      && latestTargetHash
+      && servingHash === latestTargetHash
+    ),
+    pendingRows: normalizedRows.filter((row) => row.status === 'pending' || row.status === 'deploying'),
+    recentRows: normalizedRows.slice(0, 8)
+  };
+}
+
+function normalizeDeployRow(row) {
+  const source = row && typeof row === 'object' ? row : {};
+  const targetSha = fullHash(source.target_sha);
+
+  return {
+    id: source.id,
+    targetSha,
+    targetSha8: shortId(targetSha),
+    status: normalizeDeployStatus(source.status),
+    createdAt: toMs(source.created_at),
+    updatedAt: toMs(source.updated_at)
+  };
+}
+
+function normalizeDeployStatus(status) {
+  const normalized = String(status || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+
+  if (normalized === 'broken') {
+    return 'broken';
+  }
+  if (normalized === 'rolled_back' || normalized === 'rollback' || normalized === 'roll_back') {
+    return 'rolled_back';
+  }
+  if (['deployed', 'success', 'succeeded', 'successful', 'complete', 'completed', 'shipped'].includes(normalized)) {
+    return 'deployed';
+  }
+  if (normalized === 'pending') {
+    return 'pending';
+  }
+  if (normalized === 'deploying') {
+    return 'deploying';
+  }
+  return normalized || 'unknown';
+}
+
+function compareDeployRows(left, right) {
+  const leftId = numericDeployId(left.id);
+  const rightId = numericDeployId(right.id);
+
+  if (leftId !== null && rightId !== null && leftId !== rightId) {
+    return rightId - leftId;
+  }
+
+  const rightTime = right.updatedAt || right.createdAt;
+  const leftTime = left.updatedAt || left.createdAt;
+  if (rightTime !== leftTime) {
+    return rightTime - leftTime;
+  }
+
+  return String(right.id || '').localeCompare(String(left.id || ''));
+}
+
+function numericDeployId(value) {
+  if (value === null || value === undefined || String(value).trim() === '') {
+    return null;
+  }
+
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function fullHash(value) {
+  if (value === null || value === undefined) {
+    return '';
+  }
+  return String(value).trim();
+}
+
+function deployStatusPillClass(status) {
+  switch (normalizeDeployStatus(status)) {
+    case 'deployed':
+      return 'deploy-status-pill deploy-status-pill--success';
+    case 'pending':
+      return 'deploy-status-pill deploy-status-pill--pending';
+    case 'deploying':
+      return 'deploy-status-pill deploy-status-pill--active';
+    case 'broken':
+    case 'rolled_back':
+      return 'deploy-status-pill deploy-status-pill--danger';
+    default:
+      return 'deploy-status-pill deploy-status-pill--muted';
+  }
+}
+
+function deployStatusLabel(status) {
+  switch (normalizeDeployStatus(status)) {
+    case 'deployed':
+      return 'DEPLOYED';
+    case 'pending':
+      return 'PENDING';
+    case 'deploying':
+      return 'DEPLOYING';
+    case 'broken':
+      return 'BROKEN';
+    case 'rolled_back':
+      return 'ROLLED BACK';
+    default:
+      return 'UNKNOWN';
+  }
+}
+
 function statusPillClass(status, stage) {
   const text = `${status || ''} ${stage || ''}`.toLowerCase();
   if (/merged|complete|completed|done|shipped|approved|passed/.test(text)) {
@@ -1948,6 +2163,23 @@ function css() {
     .p-merged{color:var(--green);background:var(--green-dim)}
     .p-refused{color:var(--red);background:var(--red-dim)}
     .p-queued{color:var(--ash);background:rgba(120,150,200,.08)}
+    .deploy-summary{padding:.9rem 1.1rem;border-bottom:1px solid var(--line)}
+    .deploy-indicator{font-family:var(--display);font-weight:700;letter-spacing:.14em;text-transform:uppercase}
+    .deploy-indicator--ok{color:var(--green)}
+    .deploy-summary-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.8rem}
+    .deploy-summary-grid>div{display:flex;flex-direction:column;gap:.2rem}
+    .deploy-summary-grid .mk,.deploy-subhead{font-family:var(--mono);font-size:.6rem;letter-spacing:.14em;color:var(--steel);text-transform:uppercase}
+    .deploy-summary-grid .mv{font-size:var(--sm);color:var(--mist)}
+    .deploy-pending{padding:.8rem 1.1rem;border-bottom:1px solid var(--line);display:flex;flex-direction:column;gap:.5rem}
+    .deploy-row{display:flex;align-items:center;justify-content:space-between;gap:.8rem;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:.55rem .65rem}
+    .deploy-row--pending{border-color:var(--amber-glow)}
+    .deploy-history td:first-child{color:var(--ash)}
+    .deploy-status-pill{font-family:var(--mono);font-size:.66rem;font-weight:500;letter-spacing:.06em;padding:.18rem .5rem;border-radius:4px;text-transform:uppercase;white-space:nowrap}
+    .deploy-status-pill--success{color:var(--green);background:var(--green-dim)}
+    .deploy-status-pill--pending{color:var(--ash);background:rgba(120,150,200,.08)}
+    .deploy-status-pill--active{color:var(--amber);background:var(--amber-glow)}
+    .deploy-status-pill--danger{color:var(--red);background:var(--red-dim)}
+    .deploy-status-pill--muted{color:var(--steel);background:rgba(120,150,200,.06)}
     table{width:100%;border-collapse:collapse}
     th{font-family:var(--display);font-size:.68rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--steel);text-align:left;padding:.6rem 1.1rem;border-bottom:1px solid var(--line)}
     td{padding:.62rem 1.1rem;border-bottom:1px solid rgba(120,150,200,.05);font-size:var(--sm);color:var(--mist);vertical-align:middle}
@@ -2022,6 +2254,8 @@ module.exports = {
   formatUtc,
   formatJobAge,
   formatCount,
+  buildDeployModel,
+  deployStatusPillClass,
   statusPillClass,
   stageProgressPercent,
   deriveEngine,
