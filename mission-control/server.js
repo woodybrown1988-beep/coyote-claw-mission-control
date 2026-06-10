@@ -202,44 +202,23 @@ function getKpiSection(db, monthStartMs) {
       AND lower(status) IN ('merged', 'complete', 'completed', 'done', 'shipped')
   `, [dayStartMs]);
 
-  const gatesPassed = safeSelect(db, `
-    SELECT COUNT(*) AS count
+  const gateEvents = safeSelect(db, `
+    SELECT decision, kind
     FROM job_events
-    WHERE lower(COALESCE(decision, kind, '')) IN (
-      'approved',
-      'accepted',
-      'passed',
-      'pass',
-      'merge_fired',
-      'spec_approved'
-    )
   `);
 
-  const gatesRefused = safeSelect(db, `
-    SELECT COUNT(*) AS count
-    FROM job_events
-    WHERE lower(COALESCE(decision, kind, '')) IN (
-      'refused',
-      'rejected',
-      'failed',
-      'blocked',
-      'merge_refused'
-    )
-  `);
+  const gateCounts = gateEvents.ok ? countGateClassifications(gateEvents.rows) : {
+    passed: 0,
+    refused: 0
+  };
 
   const openGates = safeSelect(db, `
     SELECT COUNT(*) AS count
-    FROM job_events
-    WHERE lower(COALESCE(decision, kind, '')) IN (
-      'pending',
-      'open',
-      'awaiting',
-      'awaiting_tap',
-      'tap_pending'
-    )
+    FROM jobs
+    WHERE status = 'awaiting_signoff'
   `);
 
-  if (!jobsToday.ok && !activeJobs.ok && !gatesPassed.ok && !openGates.ok) {
+  if (!jobsToday.ok && !activeJobs.ok && !gateEvents.ok && !openGates.ok) {
     return unavailable('KPI data is unavailable.');
   }
 
@@ -252,18 +231,36 @@ function getKpiSection(db, monthStartMs) {
     jobsToday: jobsToday.ok ? toInteger(jobsToday.rows[0] && jobsToday.rows[0].count) : 0,
     shippedToday: shippedToday.ok ? toInteger(shippedToday.rows[0] && shippedToday.rows[0].count) : 0,
     activeJobs: activeRow ? 1 : 0,
-    gatesPassed: gatesPassed.ok ? toInteger(gatesPassed.rows[0] && gatesPassed.rows[0].count) : 0,
-    gatesRefused: gatesRefused.ok ? toInteger(gatesRefused.rows[0] && gatesRefused.rows[0].count) : 0,
+    gatesPassed: gateCounts.passed,
+    gatesRefused: gateCounts.refused,
     openGates: openGates.ok ? toInteger(openGates.rows[0] && openGates.rows[0].count) : 0,
     activeStage,
     activeJob,
     monthStartMs,
     warnings: collectWarnings([
       jobsToday.ok ? null : 'Jobs-today count unavailable.',
-      gatesPassed.ok ? null : 'Gate pass count unavailable.',
+      gateEvents.ok ? null : 'Gate pass count unavailable.',
       openGates.ok ? null : 'Open gate count unavailable.'
     ])
   };
+}
+
+function countGateClassifications(rows) {
+  const counts = {
+    passed: 0,
+    refused: 0
+  };
+
+  for (const row of rows) {
+    const classification = classifyGateEvent(row);
+    if (classification === 'passed') {
+      counts.passed += 1;
+    } else if (classification === 'refused') {
+      counts.refused += 1;
+    }
+  }
+
+  return counts;
 }
 
 function getQueueSection(db) {
@@ -1028,6 +1025,67 @@ function summarizeCorrection(row) {
   }
 
   return 'tap the newest coder-bot message; nonce is single-use';
+}
+
+function classifyGateEvent(event) {
+  if (!event || typeof event !== 'object' || Array.isArray(event)) {
+    return null;
+  }
+
+  const kind = normalizeSignal(event.kind);
+  const decision = normalizeSignal(event.decision);
+  if (decision) {
+    if (kind && !isGateEventKind(kind)) {
+      return null;
+    }
+    return classifyGateDecision(decision);
+  }
+
+  if (kind === 'spec_approved' || kind === 'merge_fired') {
+    return 'passed';
+  }
+  if (kind === 'merge_refused') {
+    return 'refused';
+  }
+
+  return classifyGateDecision(kind);
+}
+
+function classifyGateDecision(value) {
+  switch (normalizeSignal(value)) {
+    case 'approve':
+    case 'approved':
+    case 'passed':
+    case 'pass':
+    case 'accepted':
+    case 'accept':
+      return 'passed';
+    case 'reject':
+    case 'rejected':
+    case 'refused':
+    case 'refuse':
+      return 'refused';
+    default:
+      return null;
+  }
+}
+
+function isGateEventKind(kind) {
+  const normalized = normalizeSignal(kind);
+  return normalized === 'gate'
+    || normalized === 'gate_decision'
+    || normalized === 'gate-decision'
+    || normalized === 'approval'
+    || normalized === 'signoff'
+    || normalized === 'sign_off'
+    || normalized === 'awaiting_signoff'
+    || normalized === 'pr'
+    || normalized === 'merge'
+    || normalized === 'spec'
+    || normalized === 'spec_approved'
+    || normalized === 'merge_fired'
+    || normalized === 'merge_refused'
+    || normalized.includes('gate');
 }
 
 function eventTone(row) {
@@ -1887,8 +1945,10 @@ if (require.main === module) {
 module.exports = {
   buildDashboardModel,
   renderDashboard,
+  getKpiSection,
   summarizeDetail,
   summarizeTestRun,
+  classifyGateEvent,
   eventTone,
   isRefusedEvent,
   getMonthStartMs,

@@ -42,6 +42,14 @@
     },
     {
       "module": "mission-control/server.js",
+      "export": "classifyGateEvent"
+    },
+    {
+      "module": "mission-control/server.js",
+      "export": "getKpiSection"
+    },
+    {
+      "module": "mission-control/server.js",
       "export": "getWorkerSection"
     }
   ],
@@ -73,6 +81,10 @@
     {
       "name": "mission-control-stage-progress-active-job",
       "command": "node --test test/mission-control-stage-progress-active-job.test.js"
+    },
+    {
+      "name": "mission-control-kpi",
+      "command": "node --test test/mission-control-kpi.test.js"
     }
   ],
   "mutants": [
