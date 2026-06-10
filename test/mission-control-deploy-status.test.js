@@ -1,6 +1,8 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const childProcess = require('node:child_process');
+const { execFileSync } = childProcess;
 const fs = require('node:fs');
 const { tmpdir } = require('node:os');
 const path = require('node:path');
@@ -166,6 +168,21 @@ test('renderDashboard shows UP TO DATE for current deployed target', () => {
   assert.match(html, />UP TO DATE</);
 });
 
+test('renderDashboard shows deployed mismatch without up-to-date status', () => {
+  const servingCommit = '12345678aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+  const latestTarget = '87654321bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+  const model = buildDeployModel([
+    deployRow(2, latestTarget, 'deployed')
+  ], servingCommit);
+  const html = deployPanelHtml(bodyHtml(renderDashboard(dashboardModel(model))));
+
+  assert.equal(model.latestStatus, 'deployed');
+  assert.match(html, /12345678/);
+  assert.match(html, /87654321/);
+  assert.match(html, />DEPLOYED</);
+  assert.doesNotMatch(html, /UP TO DATE/);
+});
+
 test('renderDashboard shows broken latest deploy as danger without deployed success treatment', () => {
   const commit = 'bbbbbbbb11111111222222223333333344444444';
   const html = bodyHtml(renderDashboard(dashboardModel(buildDeployModel([
@@ -247,6 +264,33 @@ test('missing deploys table renders unavailable panel without throwing', () => {
   });
 });
 
+test('buildDashboardModel renders UP TO DATE for deployed row targeting real HEAD', () => {
+  const head = gitHeadFromExecFileSync();
+  const { dbPath, dir } = createDashboardDb({ withDeploys: true });
+  const db = new sqlite.DatabaseSync(dbPath);
+
+  try {
+    db.prepare(`
+      INSERT INTO deploys (id, target_sha, pre_sha, status, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(1, head, 'previous-sha-not-rendered', 'deployed', 1_700_000_000_001, 1_700_000_010_001);
+  } finally {
+    db.close();
+  }
+
+  withSandboxFriendlyExecFileSync(() => {
+    withFreshServer({
+      COYOTE_CLAW_DB: dbPath,
+      COYOTE_HALT_FILE: path.join(dir, 'HALT'),
+      COYOTE_MC_COMMIT: undefined
+    }, ({ buildDashboardModel, renderDashboard: freshRenderDashboard }) => {
+      const html = deployPanelHtml(bodyHtml(freshRenderDashboard(buildDashboardModel())));
+
+      assert.match(html, />UP TO DATE</);
+    });
+  });
+});
+
 test('zero deploy rows render empty state without throwing', () => {
   let html;
   assert.doesNotThrow(() => {
@@ -292,6 +336,44 @@ function dashboardModel(deploy) {
 
 function bodyHtml(html) {
   return html.replace(/<style>[\s\S]*?<\/style>/, '');
+}
+
+function deployPanelHtml(html) {
+  const match = html.match(/<section class="panel fade deploy-panel">[\s\S]*?<\/section>/);
+  return match ? match[0] : '';
+}
+
+function gitHeadFromExecFileSync() {
+  try {
+    return execFileSync('git', ['rev-parse', 'HEAD']).toString().trim();
+  } catch (error) {
+    if (error && error.code === 'EPERM' && error.stdout) {
+      return String(error.stdout).trim();
+    }
+    throw error;
+  }
+}
+
+function withSandboxFriendlyExecFileSync(fn) {
+  const original = childProcess.execFileSync;
+
+  childProcess.execFileSync = (...args) => {
+    try {
+      return original(...args);
+    } catch (error) {
+      if (error && error.code === 'EPERM' && error.stdout) {
+        const options = args[2];
+        return options && options.encoding ? String(error.stdout) : Buffer.from(String(error.stdout));
+      }
+      throw error;
+    }
+  };
+
+  try {
+    return fn();
+  } finally {
+    childProcess.execFileSync = original;
+  }
 }
 
 function createDashboardDb({ withDeploys }) {
