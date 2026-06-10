@@ -308,114 +308,69 @@ function getQueueSection(db) {
 }
 
 function getWorkerSection(db) {
-  const explicit = safeSelect(db, `
-    SELECT key, value, updated_at
-    FROM system_state
-    WHERE key IN (
-      'worker_active',
-      'worker_last_activity',
-      'worker_last_activity_ms',
-      'worker_heartbeat',
-      'worker_current_job',
-      'worker_current_job_id',
-      'worker_inflight_job_id',
-      'worker_in_flight_job_id'
-    )
+  const result = safeSelect(db, `
+    SELECT owner_id, last_beat_at, phase, job_id
+    FROM worker_heartbeat
   `);
 
-  const state = explicit.ok ? mapSystemState(explicit.rows) : new Map();
-  const explicitActive = firstStateValue(state, ['worker_active']);
-  const explicitLastActivity = firstStateValue(state, [
-    'worker_last_activity_ms',
-    'worker_last_activity',
-    'worker_heartbeat'
-  ]);
-  const explicitCurrentJob = firstStateValue(state, [
-    'worker_current_job_id',
-    'worker_current_job',
-    'worker_inflight_job_id',
-    'worker_in_flight_job_id'
-  ]);
-
-  if (explicit.ok && (explicitActive !== null || explicitLastActivity !== null || explicitCurrentJob !== null)) {
-    return {
-      ok: true,
-      derived: false,
-      active: parseBooleanLike(explicitActive),
-      lastActivity: toMs(explicitLastActivity),
-      currentJob: shortId(explicitCurrentJob),
-      name: 'coder-worker',
-      engine: 'unknown',
-      effort: 'unknown',
-      stage: parseBooleanLike(explicitActive) ? 'active' : 'idle',
-      timeoutSeconds: 1800,
-      warnings: collectWarnings([
-        explicitActive === null ? 'Worker active flag missing.' : null,
-        explicitLastActivity === null ? 'Worker heartbeat timestamp missing.' : null,
-        explicitCurrentJob === null ? 'Current in-flight job missing.' : null
-      ])
-    };
+  if (!result.ok) {
+    return unavailable('Worker heartbeat table is unavailable.');
   }
 
-  const activeJob = safeSelect(db, `
-    SELECT *
-    FROM jobs
-    WHERE lower(status) IN (
-      'active',
-      'executing',
-      'in-flight',
-      'in_flight',
-      'in progress',
-      'in_progress',
-      'processing',
-      'running',
-      'started',
-      'spec',
-      'build',
-      'awaiting_signoff'
-    )
-    ORDER BY CASE WHEN lower(status) = 'awaiting_signoff' THEN 1 ELSE 0 END ASC,
-      COALESCE(updated_at, created_at, 0) DESC
-    LIMIT 1
-  `);
-
-  const jobActivity = safeSelect(db, `
-    SELECT MAX(COALESCE(updated_at, created_at, 0)) AS last_activity
-    FROM jobs
-  `);
-
-  const eventActivity = safeSelect(db, `
-    SELECT MAX(created_at) AS last_activity
-    FROM job_events
-  `);
-
-  if (!activeJob.ok && !jobActivity.ok && !eventActivity.ok) {
-    return unavailable('Worker status cannot be derived from available tables.');
-  }
-
-  const active = activeJob.ok && activeJob.rows.length > 0;
-  const activeRow = active ? activeJob.rows[0] : null;
-  const lastActivity = Math.max(
-    jobActivity.ok ? toMs(jobActivity.rows[0] && jobActivity.rows[0].last_activity) : 0,
-    eventActivity.ok ? toMs(eventActivity.rows[0] && eventActivity.rows[0].last_activity) : 0
-  );
+  const model = buildWorkerModel(result.rows, Date.now());
+  const active = model.anyFresh
+    ? model.workers.some((worker) => worker.active === true)
+    : null;
 
   return {
     ok: true,
-    derived: true,
+    ...model,
     active,
-    lastActivity,
-    currentJob: activeRow ? shortId(activeRow.id) : '',
-    name: 'coder-worker',
-    engine: activeRow ? deriveEngine(activeRow) : 'idle',
-    effort: activeRow ? deriveEffort(activeRow) : 'idle',
-    stage: activeRow ? deriveStage(activeRow) : 'idle',
-    timeoutSeconds: activeRow && deriveStage(activeRow) === 'spec' ? 300 : 1800,
-    warnings: collectWarnings([
-      explicit.ok ? null : 'No explicit worker heartbeat keys found.',
-      activeJob.ok ? null : 'Active job lookup unavailable.',
-      jobActivity.ok || eventActivity.ok ? null : 'Last activity unavailable.'
-    ])
+    headerChip: active === true ? 'LIVE' : (active === false ? 'IDLE' : 'UNKNOWN'),
+    warnings: []
+  };
+}
+
+function buildWorkerModel(rows, nowMs) {
+  const selected = new Map();
+
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const ownerId = row && row.owner_id !== null && row.owner_id !== undefined
+      ? String(row.owner_id)
+      : '';
+    const name = ownerId.startsWith('lead:') ? 'lead' : 'coder-worker';
+    const lastBeatMs = toMs(row && row.last_beat_at);
+    const current = selected.get(name);
+
+    if (!current || lastBeatMs > current.lastBeatMs) {
+      selected.set(name, {
+        name,
+        ownerId,
+        phase: row && row.phase !== null && row.phase !== undefined ? String(row.phase).trim() : '',
+        jobId: shortId(row && row.job_id),
+        lastBeatMs
+      });
+    }
+  }
+
+  const currentMs = toMs(nowMs);
+  const workers = ['lead', 'coder-worker']
+    .filter((name) => selected.has(name))
+    .map((name) => {
+      const worker = selected.get(name);
+      const phase = worker.phase;
+      const fresh = worker.lastBeatMs > 0 && currentMs - worker.lastBeatMs <= 120000;
+      const activePhase = phase && phase.toLowerCase().replace(/[_\s]+/g, '-') !== 'idle';
+      return {
+        ...worker,
+        fresh,
+        active: fresh && (activePhase || Boolean(worker.jobId))
+      };
+    });
+
+  return {
+    workers,
+    anyFresh: workers.some((worker) => worker.fresh)
   };
 }
 
@@ -660,7 +615,7 @@ function renderDashboard(model) {
 
 function renderHeader(model, worker) {
   const workerLive = worker.ok && worker.active === true;
-  const workerLabel = worker.ok && worker.active === false ? 'IDLE' : (workerLive ? 'LIVE' : 'UNKNOWN');
+  const workerLabel = worker.ok && worker.headerChip ? worker.headerChip : 'UNKNOWN';
   return `
     <header class="fade">
       <span class="mark">${renderClawSvg(46, 46, 'Coyote Claw')}</span>
@@ -738,24 +693,31 @@ function renderWorker(section) {
     return renderUnavailablePanel('Workers', section.message);
   }
 
-  const active = section.active === true;
-  const stage = section.stage || (active ? 'active' : 'idle');
+  const workers = Array.isArray(section.workers) ? section.workers : [];
+  const activeCount = workers.filter((worker) => worker.active === true).length;
+  const count = activeCount > 0
+    ? `${formatInteger(activeCount)} active`
+    : (section.anyFresh ? 'IDLE' : 'UNKNOWN');
+  const cards = workers.map((worker) => {
+    const active = worker.active === true;
+    const stale = worker.fresh !== true;
+    const phase = worker.phase || 'IDLE';
+    return `
+        <div class="hero ${active ? 'active' : ''} ${stale ? 'stale' : ''}">
+          <div class="row1">${active ? '<span class="pulse"></span>' : ''}<span class="name">${escapeHtml(worker.name)}</span>${renderStatusPill(phase)}${stale ? '<span class="pill p-refused">STALE</span>' : ''}</div>
+          <div class="meta">
+            <div class="m"><span class="mk">Job</span><span class="mv">${worker.jobId ? `#${escapeHtml(worker.jobId)}` : 'none'}</span></div>
+            <div class="m"><span class="mk">Last Beat</span><span class="mv">${escapeHtml(formatClock(worker.lastBeatMs))}</span></div>
+          </div>
+        </div>
+    `;
+  }).join('');
 
   return `
     <section class="panel fade">
-      <div class="phead"><h2>Workers</h2><span class="count">${active ? '1 active' : 'idle'}</span></div>
+      <div class="phead"><h2>Workers</h2><span class="count">${escapeHtml(count)}</span></div>
       <div class="heroes">
-        <div class="hero ${active ? 'active' : ''}">
-          <div class="row1">${active ? '<span class="pulse"></span>' : ''}<span class="name">${escapeHtml(section.name || 'coder-worker')}</span>${renderStatusPill(stage)}</div>
-          <div class="meta">
-            <div class="m"><span class="mk">Job</span><span class="mv">${section.currentJob ? `#${escapeHtml(section.currentJob)}` : 'none'}</span></div>
-            <div class="m"><span class="mk">Engine</span><span class="mv">${escapeHtml(section.engine || 'unknown')}</span></div>
-            <div class="m"><span class="mk">Effort</span><span class="mv">${escapeHtml(section.effort || 'unknown')}</span></div>
-            <div class="m"><span class="mk">Timeout</span><span class="mv">ceiling ${escapeHtml(formatTimeout(section.timeoutSeconds))}</span></div>
-            <div class="m"><span class="mk">Last Activity</span><span class="mv">${escapeHtml(formatClock(section.lastActivity))}</span></div>
-          </div>
-          <div class="bar" aria-label="Worker stage indicator"><i style="width:${stageProgressPercent(stage)}%"></i></div>
-        </div>
+        ${cards || '<p class="note">No worker heartbeat rows.</p>'}
       </div>
       ${renderWarnings(section.warnings)}
     </section>
@@ -1869,6 +1831,7 @@ function css() {
     .heroes{display:grid;grid-template-columns:1fr;gap:.7rem;padding:.9rem 1.1rem}
     .hero{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:.9rem 1rem;display:flex;flex-direction:column;gap:.55rem}
     .hero.active{border-color:var(--amber-glow);box-shadow:inset 3px 0 0 var(--amber)}
+    .hero.stale{border-color:var(--red-dim);box-shadow:inset 3px 0 0 var(--red)}
     .hero .row1{display:flex;align-items:center;gap:.6rem}
     .hero .row1 .pill{margin-left:auto}
     .hero .name{font-family:var(--display);font-weight:700;letter-spacing:.06em;color:var(--bright);text-transform:uppercase;font-size:var(--sm)}
@@ -1959,6 +1922,8 @@ module.exports = {
   stageProgressPercent,
   deriveEngine,
   deriveStage,
+  buildWorkerModel,
   getWorkerSection,
+  renderWorker,
   spendLevel
 };

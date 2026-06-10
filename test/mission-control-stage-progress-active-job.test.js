@@ -18,6 +18,12 @@ function createWorkerDb() {
       value TEXT,
       updated_at INTEGER
     );
+    CREATE TABLE worker_heartbeat (
+      owner_id TEXT,
+      last_beat_at INTEGER,
+      phase TEXT,
+      job_id TEXT
+    );
     CREATE TABLE jobs (
       id TEXT PRIMARY KEY,
       status TEXT,
@@ -44,6 +50,18 @@ function insertJob(db, row) {
     row.type || null,
     row.updated_at,
     row.created_at
+  );
+}
+
+function insertHeartbeat(db, row) {
+  db.prepare(`
+    INSERT INTO worker_heartbeat (owner_id, last_beat_at, phase, job_id)
+    VALUES (?, ?, ?, ?)
+  `).run(
+    row.owner_id,
+    row.last_beat_at,
+    row.phase || null,
+    row.job_id || null
   );
 }
 
@@ -74,50 +92,44 @@ test('awaiting signoff progress does not regress to zero', () => {
   assert.equal(stageProgressPercent('awaiting-signoff'), 90);
 });
 
-test('getWorkerSection selects awaiting_signoff jobs as active rows', () => {
+test('getWorkerSection uses worker heartbeat rows for active state', () => {
   const db = createWorkerDb();
   try {
-    insertJob(db, {
-      id: 'signoff-job-1',
-      status: 'awaiting_signoff',
-      updated_at: 2000,
-      created_at: 1000
+    insertHeartbeat(db, {
+      owner_id: 'coder:one',
+      last_beat_at: Date.now() - 10_000,
+      phase: 'build',
+      job_id: 'running-job-1'
     });
 
     const section = getWorkerSection(db);
 
     assert.equal(section.ok, true);
     assert.equal(section.active, true);
-    assert.equal(section.currentJob, 'signoff-');
-    assert.equal(section.stage, 'awaiting-signoff');
-    assert.equal(stageProgressPercent(section.stage), 90);
+    assert.equal(section.headerChip, 'LIVE');
+    assert.equal(section.workers[0].jobId, 'running-');
+    assert.equal(section.workers[0].phase, 'build');
   } finally {
     db.close();
   }
 });
 
-test('getWorkerSection prefers actively-building jobs over newer awaiting_signoff jobs', () => {
+test('getWorkerSection does not derive worker state from active jobs', () => {
   const db = createWorkerDb();
   try {
     insertJob(db, {
-      id: 'signoff-newer',
-      status: 'awaiting_signoff',
-      updated_at: 3000,
-      created_at: 1000
-    });
-    insertJob(db, {
-      id: 'running-older',
+      id: 'running-newer',
       status: 'running',
-      updated_at: 2000,
+      updated_at: 3000,
       created_at: 1000
     });
 
     const section = getWorkerSection(db);
 
     assert.equal(section.ok, true);
-    assert.equal(section.active, true);
-    assert.equal(section.currentJob, 'running-');
-    assert.equal(section.stage, 'build');
+    assert.equal(section.active, null);
+    assert.equal(section.headerChip, 'UNKNOWN');
+    assert.deepEqual(section.workers, []);
   } finally {
     db.close();
   }

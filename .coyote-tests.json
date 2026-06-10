@@ -46,6 +46,10 @@
     },
     {
       "module": "mission-control/server.js",
+      "export": "buildWorkerModel"
+    },
+    {
+      "module": "mission-control/server.js",
       "export": "classifyGateEvent"
     },
     {
@@ -55,6 +59,10 @@
     {
       "module": "mission-control/server.js",
       "export": "getWorkerSection"
+    },
+    {
+      "module": "mission-control/server.js",
+      "export": "renderWorker"
     }
   ],
   "tests": [
@@ -87,12 +95,20 @@
       "command": "node --test test/mission-control-stage-progress-active-job.test.js"
     },
     {
+      "name": "mission-control-worker-heartbeat-model",
+      "command": "node --test test/build-worker-model.test.js"
+    },
+    {
       "name": "mission-control-derive-engine",
       "command": "node --test test/derive-engine.test.js"
     },
     {
       "name": "mission-control-kpi",
       "command": "node --test test/mission-control-kpi.test.js"
+    },
+    {
+      "name": "mission-control-worker-monitoring",
+      "command": "node --test test/mission-control-worker.test.js"
     }
   ],
   "mutants": [
