@@ -1051,6 +1051,9 @@ function isGateEventKind(kind) {
 }
 
 function eventTone(row) {
+  if (normalizeSignal(row.kind) === 'security') {
+    return 'bad';
+  }
   const acceptedTone = acceptedEventTone(row);
   if (acceptedTone) {
     return acceptedTone;

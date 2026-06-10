@@ -135,6 +135,18 @@
       "module": "mission-control/server.js",
       "find": "  if (normalized === 'awaiting-signoff' || normalized === 'lead-review' || normalized === 'pr' || normalized === 'review') {\n    return 90;\n  }\n",
       "replace": "  if (normalized === 'awaiting-signoff' || normalized === 'lead-review' || normalized === 'pr' || normalized === 'review') {\n    return 0;\n  }\n"
+    },
+    {
+      "name": "eventTone-security-kind-not-bad",
+      "module": "mission-control/server.js",
+      "find": "  if (normalizeSignal(row.kind) === 'security') {\n    return 'bad';\n  }\n",
+      "replace": ""
+    },
+    {
+      "name": "isRefusedEvent-security-kind-refused",
+      "module": "mission-control/server.js",
+      "find": "function isRefusedEvent(row) {\n  const acceptedTone = acceptedEventTone(row);\n",
+      "replace": "function isRefusedEvent(row) {\n  if (normalizeSignal(row && row.kind) === 'security') {\n    return true;\n  }\n  const acceptedTone = acceptedEventTone(row);\n"
     }
   ]
 }
