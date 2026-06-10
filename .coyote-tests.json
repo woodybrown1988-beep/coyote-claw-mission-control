@@ -205,6 +205,12 @@
       "replace": "      && shortId(servingHash) === shortId(latestTargetHash)\n"
     },
     {
+      "name": "deploy-get-commit-linkage-severed",
+      "module": "mission-control/server.js",
+      "find": "    ...buildDeployModel(result.rows, getCommit()),\n",
+      "replace": "    ...buildDeployModel(result.rows, 'unknown'),\n"
+    },
+    {
       "name": "deploy-broken-to-deployed-normalization",
       "module": "mission-control/server.js",
       "find": "  if (normalized === 'broken') {\n    return 'broken';\n  }\n",
