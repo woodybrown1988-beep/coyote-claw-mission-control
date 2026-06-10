@@ -46,6 +46,10 @@
     },
     {
       "module": "mission-control/server.js",
+      "export": "deriveRef"
+    },
+    {
+      "module": "mission-control/server.js",
       "export": "deriveStage"
     },
     {
@@ -151,6 +155,18 @@
       "module": "mission-control/server.js",
       "find": "function isRefusedEvent(row) {\n  const acceptedTone = acceptedEventTone(row);\n",
       "replace": "function isRefusedEvent(row) {\n  if (normalizeSignal(row && row.kind) === 'security') {\n    return true;\n  }\n  const acceptedTone = acceptedEventTone(row);\n"
+    },
+    {
+      "name": "deriveRef-result-source-removal",
+      "module": "mission-control/server.js",
+      "find": "function deriveRef(row) {\n  const value = firstPresent(row, [\n    'branch',\n    'ref',\n    'pr',\n    'pr_number',\n    'pull_request',\n    'pull_request_url',\n    'sha',\n    'commit_sha',\n    'head_sha'\n  ]);\n  if (value) {\n    return safeLabel(value, '—');\n  }\n\n  const result = parseDetailObject(row && row.result);\n  for (const key of ['prNumber', 'pr_number', 'number']) {\n    const prNumber = result && result[key];\n    if ((typeof prNumber === 'number' && Number.isFinite(prNumber)) || (typeof prNumber === 'string' && prNumber.trim())) {\n      return `#${String(prNumber).trim()}`;\n    }\n  }\n\n  for (const key of ['branch', 'ref']) {\n    const ref = result && result[key];\n    if (typeof ref === 'string' && ref.trim()) {\n      return safeLabel(ref, '—');\n    }\n  }\n\n  for (const key of ['headSha', 'sha', 'commit_sha']) {\n    const sha = result && result[key];\n    if (typeof sha === 'string' && sha.trim()) {\n      return shortId(sha) || '—';\n    }\n  }\n\n  return '—';\n}",
+      "replace": "function deriveRef(row) {\n  const value = firstPresent(row, [\n    'branch',\n    'ref',\n    'pr',\n    'pr_number',\n    'pull_request',\n    'pull_request_url',\n    'sha',\n    'commit_sha',\n    'head_sha'\n  ]);\n  if (value) {\n    return safeLabel(value, '—');\n  }\n\n  return '—';\n}"
+    },
+    {
+      "name": "deriveRef-result-sha-before-pr-number",
+      "module": "mission-control/server.js",
+      "find": "function deriveRef(row) {\n  const value = firstPresent(row, [\n    'branch',\n    'ref',\n    'pr',\n    'pr_number',\n    'pull_request',\n    'pull_request_url',\n    'sha',\n    'commit_sha',\n    'head_sha'\n  ]);\n  if (value) {\n    return safeLabel(value, '—');\n  }\n\n  const result = parseDetailObject(row && row.result);\n  for (const key of ['prNumber', 'pr_number', 'number']) {\n    const prNumber = result && result[key];\n    if ((typeof prNumber === 'number' && Number.isFinite(prNumber)) || (typeof prNumber === 'string' && prNumber.trim())) {\n      return `#${String(prNumber).trim()}`;\n    }\n  }\n\n  for (const key of ['branch', 'ref']) {\n    const ref = result && result[key];\n    if (typeof ref === 'string' && ref.trim()) {\n      return safeLabel(ref, '—');\n    }\n  }\n\n  for (const key of ['headSha', 'sha', 'commit_sha']) {\n    const sha = result && result[key];\n    if (typeof sha === 'string' && sha.trim()) {\n      return shortId(sha) || '—';\n    }\n  }\n\n  return '—';\n}",
+      "replace": "function deriveRef(row) {\n  const value = firstPresent(row, [\n    'branch',\n    'ref',\n    'pr',\n    'pr_number',\n    'pull_request',\n    'pull_request_url',\n    'sha',\n    'commit_sha',\n    'head_sha'\n  ]);\n  if (value) {\n    return safeLabel(value, '—');\n  }\n\n  const result = parseDetailObject(row && row.result);\n  for (const key of ['headSha', 'sha', 'commit_sha']) {\n    const sha = result && result[key];\n    if (typeof sha === 'string' && sha.trim()) {\n      return shortId(sha) || '—';\n    }\n  }\n\n  for (const key of ['prNumber', 'pr_number', 'number']) {\n    const prNumber = result && result[key];\n    if ((typeof prNumber === 'number' && Number.isFinite(prNumber)) || (typeof prNumber === 'string' && prNumber.trim())) {\n      return `#${String(prNumber).trim()}`;\n    }\n  }\n\n  for (const key of ['branch', 'ref']) {\n    const ref = result && result[key];\n    if (typeof ref === 'string' && ref.trim()) {\n      return safeLabel(ref, '—');\n    }\n  }\n\n  return '—';\n}"
     }
   ]
 }
