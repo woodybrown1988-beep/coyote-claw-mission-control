@@ -265,6 +265,12 @@ function getKpiSection(db, monthStartMs) {
     WHERE status = 'awaiting_signoff'
   `);
 
+  const testIntegrityRows = safeSelect(db, `SELECT detail FROM job_events WHERE kind = 'test_run'`);
+  const testIntegrity = testIntegrityRows.ok ? countTestIntegrity(testIntegrityRows.rows) : {
+    teeth: 0,
+    theatre: 0
+  };
+
   if (!jobsToday.ok && !activeJobs.ok && !gateEvents.ok && !openGates.ok) {
     return unavailable('KPI data is unavailable.');
   }
@@ -281,15 +287,45 @@ function getKpiSection(db, monthStartMs) {
     gatesPassed: gateCounts.passed,
     gatesRefused: gateCounts.refused,
     openGates: openGates.ok ? toInteger(openGates.rows[0] && openGates.rows[0].count) : 0,
+    testIntegrityTeeth: testIntegrity.teeth,
+    testIntegrityTheatre: testIntegrity.theatre,
+    testIntegrityUnavailable: !testIntegrityRows.ok,
     activeStage,
     activeJob,
     monthStartMs,
     warnings: collectWarnings([
       jobsToday.ok ? null : 'Jobs-today count unavailable.',
       gateEvents.ok ? null : 'Gate pass count unavailable.',
-      openGates.ok ? null : 'Open gate count unavailable.'
+      openGates.ok ? null : 'Open gate count unavailable.',
+      testIntegrityRows.ok ? null : 'Test integrity unavailable.'
     ])
   };
+}
+
+function countTestIntegrity(rows) {
+  const counts = {
+    teeth: 0,
+    theatre: 0
+  };
+
+  if (!Array.isArray(rows)) {
+    return counts;
+  }
+
+  for (const row of rows) {
+    const detail = parseDetailObject(row && row.detail);
+    if (!detail) {
+      continue;
+    }
+
+    if (detail.verdict === 'theatre') {
+      counts.theatre += 1;
+    } else if (detail.verdict === 'accept' && countCaughtByMutant(detail.perFunction) > 0) {
+      counts.teeth += 1;
+    }
+  }
+
+  return counts;
 }
 
 function countGateClassifications(rows) {
@@ -715,10 +751,14 @@ function renderKpis(section, spend) {
   const openGates = section.ok ? section.openGates : 0;
   const activeStage = section.ok ? section.activeStage : 'idle';
   const activeJob = section.ok ? section.activeJob : '';
+  const testIntegrityTeeth = section.ok ? section.testIntegrityTeeth : 0;
+  const testIntegrityTheatre = section.ok ? section.testIntegrityTheatre : 0;
+  const testIntegrityUnavailable = section.ok ? section.testIntegrityUnavailable === true : true;
   const gateTotal = gatesPassed + gatesRefused;
   const spendText = spend.ok ? formatGbp(spend.totalPence) : 'unavailable';
   const spendSub = spend.ok ? `of ${formatGbp(spend.ceilingPence)} cap · Codex excl.` : 'spend table unavailable';
   const active = activeStage !== 'idle' && activeStage !== 'unknown';
+  const integritySub = testIntegrityUnavailable ? 'unavailable · mutant-caught accepts and theatre verdicts' : 'mutant-caught accepts and theatre verdicts';
 
   return `
     <section class="kpis">
@@ -727,6 +767,7 @@ function renderKpis(section, spend) {
       <div class="kpi fade"><span class="lab">Metered Spend</span><span class="val">${escapeHtml(spendText)}</span><span class="sub">${escapeHtml(spendSub)}</span></div>
       <div class="kpi fade"><span class="lab">Open Gates</span><span class="val">${formatInteger(openGates)}</span><span class="sub">${formatCount(openGates, 'tap')} pending</span></div>
       <div class="kpi ${active ? 'live' : ''} fade"><span class="lab">Active Stage</span><span class="val stage-val">${active ? '<span class="pulse"></span>' : ''}${escapeHtml(activeStage.toUpperCase())}</span><span class="sub">${activeJob ? `job #${escapeHtml(activeJob)} · timeout ceiling only` : 'no active job'}</span></div>
+      <div class="kpi fade"><span class="lab">TEST INTEGRITY</span><span class="val">${formatInteger(testIntegrityTeeth)} teeth · ${formatInteger(testIntegrityTheatre)} theatre</span><span class="sub">${escapeHtml(integritySub)}</span></div>
     </section>
   `;
 }
@@ -2244,6 +2285,7 @@ module.exports = {
   buildHaltModel,
   renderDashboard,
   getKpiSection,
+  countTestIntegrity,
   summarizeDetail,
   summarizeTestRun,
   summarizeLeadDecision,
