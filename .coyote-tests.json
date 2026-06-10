@@ -71,6 +71,14 @@
     {
       "module": "mission-control/server.js",
       "export": "renderWorker"
+    },
+    {
+      "module": "mission-control/server.js",
+      "export": "buildDashboardModel"
+    },
+    {
+      "module": "mission-control/server.js",
+      "export": "buildHaltModel"
     }
   ],
   "tests": [
@@ -117,6 +125,10 @@
     {
       "name": "mission-control-worker-monitoring",
       "command": "node --test test/mission-control-worker.test.js"
+    },
+    {
+      "name": "mission-control-halt-dashboard",
+      "command": "node --test test/mission-control-halt.test.js"
     }
   ],
   "mutants": [
