@@ -59,6 +59,10 @@
     {
       "module": "mission-control/server.js",
       "export": "getWorkerSection"
+    },
+    {
+      "module": "mission-control/server.js",
+      "export": "renderWorker"
     }
   ],
   "tests": [
@@ -101,6 +105,10 @@
     {
       "name": "mission-control-kpi",
       "command": "node --test test/mission-control-kpi.test.js"
+    },
+    {
+      "name": "mission-control-worker-monitoring",
+      "command": "node --test test/mission-control-worker.test.js"
     }
   ],
   "mutants": [

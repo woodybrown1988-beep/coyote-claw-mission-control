@@ -1924,5 +1924,6 @@ module.exports = {
   deriveStage,
   buildWorkerModel,
   getWorkerSection,
+  renderWorker,
   spendLevel
 };
