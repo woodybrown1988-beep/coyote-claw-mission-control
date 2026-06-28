@@ -123,7 +123,8 @@ function buildDashboardModel() {
       spend: getSpendSection(db, monthStartMs),
       tokens: getTokenSection(db, monthStartMs, rates),
       outcomes: getOutcomesSection(db),
-      deploy: getDeploySection(db)
+      deploy: getDeploySection(db),
+      reviews: getReviewsSection(db)
     };
 
     return {
@@ -195,7 +196,8 @@ function emptySections() {
     spend: unavailable('Database unavailable'),
     tokens: unavailable('Database unavailable'),
     outcomes: unavailable('Database unavailable'),
-    deploy: unavailable('Database unavailable')
+    deploy: unavailable('Database unavailable'),
+    reviews: unavailable('Database unavailable')
   };
 }
 
@@ -606,6 +608,61 @@ function getDeploySection(db) {
   };
 }
 
+function getReviewsSection(db) {
+  // Gate state — real today: drafts parked for the operator's rev: tap + recent decisions.
+  const posts = safeSelect(db, `
+    SELECT id, status, decision, reviewed, created_at, updated_at FROM review_posts ORDER BY created_at DESC LIMIT 20
+  `);
+  // Aggregate snapshot — real once the read-only ingest has run. Latest row only.
+  const snap = safeSelect(db, `
+    SELECT total, awaiting_response, overall_rating, google_rating, tripadvisor_rating, opentable_rating, ratings_window, fetched_at FROM review_snapshot ORDER BY fetched_at DESC LIMIT 1
+  `);
+
+  if (!posts.ok && !snap.ok) {
+    return unavailable('Reviews tables are unavailable.');
+  }
+
+  const ratingOrNull = (value) => {
+    if (value === null || value === undefined) {
+      return null;
+    }
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  };
+
+  const postRows = posts.ok
+    ? posts.rows.map((row) => ({
+        id: toInteger(row.id),
+        status: safeLabel(row.status, 'unknown'),
+        decision: row.decision ? safeLabel(row.decision, '') : '',
+        updatedAt: toMs(row.updated_at) || toMs(row.created_at)
+      }))
+    : [];
+  const pendingCount = postRows.filter((row) => row.status === 'pending').length;
+
+  const snapRow = snap.ok && snap.rows.length > 0 ? snap.rows[0] : null;
+  const snapshot = snapRow
+    ? {
+        total: toInteger(snapRow.total),
+        awaiting: toInteger(snapRow.awaiting_response),
+        overall: ratingOrNull(snapRow.overall_rating),
+        google: ratingOrNull(snapRow.google_rating),
+        tripadvisor: ratingOrNull(snapRow.tripadvisor_rating),
+        opentable: ratingOrNull(snapRow.opentable_rating),
+        window: snapRow.ratings_window ? safeLabel(snapRow.ratings_window, '') : '',
+        fetchedAt: toMs(snapRow.fetched_at)
+      }
+    : null;
+
+  return {
+    ok: true,
+    pendingCount,
+    postRows: postRows.slice(0, 8),
+    snapshot,
+    warnings: []
+  };
+}
+
 function safeSelect(db, sql, params = []) {
   const normalized = sql.trim().replace(/\s+/g, ' ').toLowerCase();
   if (!normalized.startsWith('select ')) {
@@ -672,6 +729,7 @@ function renderDashboard(model) {
   const tokens = model.sections.tokens;
   const outcomes = model.sections.outcomes;
   const deploy = model.sections.deploy || unavailable('Deploy status is unavailable.');
+  const reviews = model.sections.reviews || unavailable('Reviews unavailable.');
   const renderedAt = Date.now();
 
   return `<!doctype html>
@@ -693,6 +751,7 @@ function renderDashboard(model) {
     <div class="stack">
       ${renderQueue(queue, renderedAt)}
       ${renderOutcomes(outcomes)}
+      ${renderReviews(reviews)}
     </div>
     <div class="stack">
       ${renderWorker(worker)}
@@ -901,6 +960,87 @@ function renderDeploy(section) {
       ${renderWarnings(section.warnings)}
     </section>
   `;
+}
+
+function renderReviews(section) {
+  if (!section.ok) {
+    return renderUnavailablePanel('Reviews', section.message);
+  }
+
+  // Freshness rule (no board-lies): show the STORED snapshot + its age. NEVER a live
+  // Google/Vercel call from the board; NEVER a fabricated number. Fresh within ~1.5x the
+  // daily cadence; older reads "stale" but still shows the real (last-known) number.
+  const REVIEW_STALE_MS = 36 * 60 * 60 * 1000;
+  const snap = section.snapshot;
+  const fmtRating = (rating) => (rating === null ? '—' : rating.toFixed(2));
+
+  let awaitingCell;
+  let ratingsCell;
+  let windowSuffix = '';
+  if (!snap) {
+    awaitingCell = '<span class="muted">— · no ingest yet</span>';
+    ratingsCell = '<span class="muted">— · no ingest yet</span>';
+  } else {
+    const ageMs = Date.now() - snap.fetchedAt;
+    const fresh = snap.fetchedAt > 0 && ageMs >= 0 && ageMs <= REVIEW_STALE_MS;
+    awaitingCell = fresh
+      ? `${formatInteger(snap.awaiting)} · as of ${renderTime(snap.fetchedAt)}`
+      : `${formatInteger(snap.awaiting)} · <span class="muted">stale · last ingest ${escapeHtml(formatAgo(snap.fetchedAt))}</span>`;
+    ratingsCell = `Google ${fmtRating(snap.google)} · TripAdvisor ${fmtRating(snap.tripadvisor)} · OpenTable ${fmtRating(snap.opentable)}`;
+    windowSuffix = snap.window ? ` (${escapeHtml(snap.window)})` : '';
+  }
+
+  const draftRows = section.postRows
+    .map((post) => `
+      <tr>
+        <td class="mono">#${formatInteger(post.id)}</td>
+        <td>${renderStatusPill(post.status)}</td>
+        <td>${post.decision ? escapeHtml(post.decision) : '—'}</td>
+        <td class="age mono">${renderTime(post.updatedAt)}</td>
+      </tr>
+    `)
+    .join('');
+
+  return `
+    <section class="panel fade reviews-panel">
+      <div class="phead"><h2>Reviews</h2><span class="count">${formatInteger(section.pendingCount)} awaiting tap</span></div>
+      <div class="pbody table-wrap">
+        <table>
+          <tbody>
+            <tr><td>Drafts awaiting your tap</td><td class="mono">${formatInteger(section.pendingCount)}</td></tr>
+            <tr><td>Awaiting response on Google</td><td class="mono">${awaitingCell}</td></tr>
+            <tr><td>Ratings${windowSuffix}</td><td class="mono">${ratingsCell}</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="pbody table-wrap">
+        <table>
+          <thead><tr><th>Draft</th><th>Status</th><th>Decision</th><th>Time</th></tr></thead>
+          <tbody>${draftRows || '<tr><td colspan="4" class="empty-row">No drafts parked.</td></tr>'}</tbody>
+        </table>
+      </div>
+      ${renderWarnings(section.warnings)}
+    </section>
+  `;
+}
+
+function formatAgo(ms) {
+  if (!ms) {
+    return 'unknown';
+  }
+  const diff = Date.now() - ms;
+  if (diff < 0) {
+    return 'in the future';
+  }
+  const mins = Math.floor(diff / 60000);
+  if (mins < 60) {
+    return `${mins}m ago`;
+  }
+  const hours = Math.floor(mins / 60);
+  if (hours < 48) {
+    return `${hours}h ago`;
+  }
+  return `${Math.floor(hours / 24)}d ago`;
 }
 
 function renderSpend(section) {
