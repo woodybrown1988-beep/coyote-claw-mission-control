@@ -29,7 +29,9 @@ function makeDb() {
       fetched_at INTEGER, PRIMARY KEY (platform, fetched_at)
     );
     CREATE TABLE review_snapshot (
-      id INTEGER PRIMARY KEY AUTOINCREMENT, total INTEGER, awaiting_response INTEGER, overall_rating REAL,
+      id INTEGER PRIMARY KEY AUTOINCREMENT, total INTEGER, awaiting_response INTEGER,
+      awaiting_recent_text INTEGER, awaiting_text_total INTEGER, awaiting_negative INTEGER,
+      awaiting_star_only INTEGER, awaiting_over_1y INTEGER, overall_rating REAL,
       google_rating REAL, tripadvisor_rating REAL, opentable_rating REAL, ratings_window TEXT, fetched_at INTEGER
     );
     CREATE TABLE review_posts (
@@ -54,9 +56,9 @@ function seed(db, { withAggregate, freshAt = NOW } = {}) {
   ins.run('ta-1', 'tripadvisor', 4, 3, 5, 4, 2, 'csv-real', null, 'api-v1', freshAt);
   ins.run('ta-2', 'tripadvisor', 5, null, null, null, null, 'overall-fallback', null, 'api-v1', freshAt);
   db.prepare(
-    `INSERT INTO review_snapshot (total, awaiting_response, overall_rating, google_rating, tripadvisor_rating, opentable_rating, ratings_window, fetched_at)
-     VALUES (?,?,?,?,?,?,?,?)`
-  ).run(1344, 959, 4.55, 4.73, 4.57, 3.75, 'Last 30 days (rolling)', freshAt);
+    `INSERT INTO review_snapshot (total, awaiting_response, awaiting_recent_text, awaiting_text_total, awaiting_negative, awaiting_star_only, awaiting_over_1y, overall_rating, google_rating, tripadvisor_rating, opentable_rating, ratings_window, fetched_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
+  ).run(1344, 959, 6, 685, 113, 274, 950, 4.55, 4.73, 4.57, 3.75, 'Last 30 days (rolling)', freshAt);
   if (withAggregate) {
     db.prepare(
       `INSERT INTO review_aggregate (platform, overall, num_reviews, food, service, atmosphere, value, fetched_at)
@@ -87,7 +89,13 @@ test('reviews panel renders honest grain: Google overall-only, OT/TA awareness, 
   assert.match(html, /Atmosphere/, 'TripAdvisor uses Atmosphere label');
   assert.match(html, /\(1\/2\)/, 'TripAdvisor coverage shows 1 of 2 (sparse)');
   assert.match(html, /awareness · no reply capability/, 'OT/TA labelled awareness');
-  assert.match(html, /959 awaiting · <span class="muted">actionable \(rev: tap\)/, 'Google is the actionable queue');
+  // Reframe: LEAD with the actionable recent-text queue (6), keep 959 as labelled historical context.
+  assert.match(html, /Awaiting reply \(last 30d\)/, 'leads with the actionable queue');
+  assert.match(html, /6 text · as of/, 'actionable number = 6 recent text');
+  assert.match(html, /Lifetime unanswered/, '959 kept as context, separate row');
+  assert.match(html, /950 &gt;1yr · 274 star-only · historical/, '959 labelled historical, not actionable');
+  assert.match(html, /6 recent · <span class="muted">actionable \(rev: tap\)/, 'rev: tap queue is the recent 6');
+  assert.doesNotMatch(html, /959 awaiting · <span class="muted">actionable/, 'never labels the lifetime 959 as actionable');
   assert.match(html, /averages pending · \/api\/v1\/aggregates not yet live/, 'aggregate empty → pending, never fabricated');
   db.close();
 });
@@ -124,6 +132,6 @@ test('reviews panel degrades gracefully when the corpus/aggregate tables are abs
   assert.deepEqual(section.platforms, {}, 'no per-platform data');
   const html = renderReviews(section);
   assert.doesNotMatch(html, /Per-review sub-ratings/, 'per-platform table omitted, not errored');
-  assert.match(html, /Awaiting response on Google/, 'summary still renders');
+  assert.match(html, /Awaiting reply \(last 30d\)/, 'summary still renders (reframed; breakdown NULL → "—")');
   db.close();
 });

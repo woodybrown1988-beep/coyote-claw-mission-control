@@ -615,7 +615,7 @@ function getReviewsSection(db) {
   `);
   // Aggregate snapshot — real once the read-only ingest has run. Latest row only.
   const snap = safeSelect(db, `
-    SELECT total, awaiting_response, overall_rating, google_rating, tripadvisor_rating, opentable_rating, ratings_window, fetched_at FROM review_snapshot ORDER BY fetched_at DESC LIMIT 1
+    SELECT total, awaiting_response, awaiting_recent_text, awaiting_text_total, awaiting_negative, awaiting_star_only, awaiting_over_1y, overall_rating, google_rating, tripadvisor_rating, opentable_rating, ratings_window, fetched_at FROM review_snapshot ORDER BY fetched_at DESC LIMIT 1
   `);
   // Per-platform per-review awareness (review_corpus, all platforms). AVG() ignores NULLs, so the
   // category averages cover ONLY genuine sub-ratings — Google's are always NULL (no native
@@ -655,10 +655,17 @@ function getReviewsSection(db) {
   const pendingCount = postRows.filter((row) => row.status === 'pending').length;
 
   const snapRow = snap.ok && snap.rows.length > 0 ? snap.rows[0] : null;
+  const intOrNull = (value) => (value === null || value === undefined ? null : toInteger(value));
   const snapshot = snapRow
     ? {
         total: toInteger(snapRow.total),
         awaiting: toInteger(snapRow.awaiting_response),
+        // Actionable breakdown of the lifetime awaiting count (nullable on pre-breakdown rows).
+        awaitingRecentText: intOrNull(snapRow.awaiting_recent_text),
+        awaitingTextTotal: intOrNull(snapRow.awaiting_text_total),
+        awaitingNegative: intOrNull(snapRow.awaiting_negative),
+        awaitingStarOnly: intOrNull(snapRow.awaiting_star_only),
+        awaitingOver1y: intOrNull(snapRow.awaiting_over_1y),
         overall: ratingOrNull(snapRow.overall_rating),
         google: ratingOrNull(snapRow.google_rating),
         tripadvisor: ratingOrNull(snapRow.tripadvisor_rating),
@@ -1022,25 +1029,35 @@ function renderReviews(section) {
   const snap = section.snapshot;
   const fmtRating = (rating) => (rating === null ? '—' : rating.toFixed(2));
 
-  let awaitingCell;
+  // The board LEADS with the genuinely-actionable queue (recent reviews with text), NOT the lifetime
+  // "959" — which is ~99% a years-old backlog and was misleadingly labelled "actionable". 959 stays
+  // as honest context, explicitly historical.
+  let actionableCell;
+  let lifetimeCell;
   let ratingsCell;
   let windowSuffix = '';
   let freshnessLabel;
   if (!snap) {
-    awaitingCell = '<span class="muted">— · no ingest yet</span>';
+    actionableCell = '<span class="muted">— · no ingest yet</span>';
+    lifetimeCell = '<span class="muted">— · no ingest yet</span>';
     ratingsCell = '<span class="muted">— · no ingest yet</span>';
     freshnessLabel = 'no ingest yet';
   } else {
     const ageMs = Date.now() - snap.fetchedAt;
     const fresh = snap.fetchedAt > 0 && ageMs >= 0 && ageMs <= REVIEW_STALE_MS;
-    awaitingCell = fresh
-      ? `${formatInteger(snap.awaiting)} · as of ${renderTime(snap.fetchedAt)}`
-      : `${formatInteger(snap.awaiting)} · <span class="muted">stale · last ingest ${escapeHtml(formatAgo(snap.fetchedAt))}</span>`;
-    ratingsCell = `Google ${fmtRating(snap.google)} · TripAdvisor ${fmtRating(snap.tripadvisor)} · OpenTable ${fmtRating(snap.opentable)}`;
-    windowSuffix = snap.window ? ` (${escapeHtml(snap.window)})` : '';
     freshnessLabel = fresh
       ? `as of ${renderTime(snap.fetchedAt)}`
       : `<span class="muted">stale · last ingest ${escapeHtml(formatAgo(snap.fetchedAt))}</span>`;
+    const recent = snap.awaitingRecentText;
+    actionableCell = `${recent === null ? '—' : formatInteger(recent)} text · ${freshnessLabel}`;
+    const over1y = snap.awaitingOver1y === null ? null : formatInteger(snap.awaitingOver1y);
+    const starOnly = snap.awaitingStarOnly === null ? null : formatInteger(snap.awaitingStarOnly);
+    const ctx = over1y === null && starOnly === null
+      ? ''
+      : ` <span class="muted">(${over1y ?? '?'} &gt;1yr · ${starOnly ?? '?'} star-only · historical, not a queue)</span>`;
+    lifetimeCell = `${formatInteger(snap.awaiting)}${ctx}`;
+    ratingsCell = `Google ${fmtRating(snap.google)} · TripAdvisor ${fmtRating(snap.tripadvisor)} · OpenTable ${fmtRating(snap.opentable)}`;
+    windowSuffix = snap.window ? ` (${escapeHtml(snap.window)})` : '';
   }
 
   const draftRows = section.postRows
@@ -1067,7 +1084,8 @@ function renderReviews(section) {
         <table>
           <tbody>
             <tr><td>Drafts awaiting your tap</td><td class="mono">${formatInteger(section.pendingCount)}</td></tr>
-            <tr><td>Awaiting response on Google</td><td class="mono">${awaitingCell}</td></tr>
+            <tr><td>Awaiting reply (last 30d)</td><td class="mono">${actionableCell}</td></tr>
+            <tr><td>Lifetime unanswered</td><td class="mono">${lifetimeCell}</td></tr>
             <tr><td>Ratings${windowSuffix}</td><td class="mono">${ratingsCell}</td></tr>
           </tbody>
         </table>
@@ -1103,8 +1121,9 @@ function renderPlatformGrain(platforms, aggregates, snap, fmtRating, freshnessLa
     }
     return `Food ${fmtRating(c.food)} · Service ${fmtRating(c.service)} · ${ambienceLabel} ${fmtRating(c.atmosphere)} · Value ${fmtRating(c.value)} <span class="muted">(${formatInteger(c.withCats)}/${formatInteger(c.n)})</span>`;
   };
+  // The rev: tap queue is the RECENT actionable reviews, not the lifetime 959 (kept here as muted context).
   const googleReply = snap
-    ? `${formatInteger(snap.awaiting)} awaiting · <span class="muted">actionable (rev: tap)</span>`
+    ? `${snap.awaitingRecentText === null ? '—' : formatInteger(snap.awaitingRecentText)} recent · <span class="muted">actionable (rev: tap)</span> · <span class="muted">${formatInteger(snap.awaiting)} lifetime</span>`
     : '<span class="muted">—</span>';
   const awareness = '<span class="muted">— awareness · no reply capability</span>';
   const googleCount = snap ? formatInteger(snap.total) : count('google');
