@@ -617,6 +617,20 @@ function getReviewsSection(db) {
   const snap = safeSelect(db, `
     SELECT total, awaiting_response, overall_rating, google_rating, tripadvisor_rating, opentable_rating, ratings_window, fetched_at FROM review_snapshot ORDER BY fetched_at DESC LIMIT 1
   `);
+  // Per-platform per-review awareness (review_corpus, all platforms). AVG() ignores NULLs, so the
+  // category averages cover ONLY genuine sub-ratings — Google's are always NULL (no native
+  // sub-ratings) and 'overall-fallback' rows store NULL, so nothing fabricated surfaces here.
+  const corpus = safeSelect(db, `
+    SELECT platform, COUNT(*) AS n,
+      SUM(CASE WHEN food IS NOT NULL THEN 1 ELSE 0 END) AS with_cats,
+      AVG(food) AS avg_food, AVG(service) AS avg_service, AVG(atmosphere) AS avg_atmosphere, AVG(value) AS avg_value
+    FROM review_corpus GROUP BY platform
+  `);
+  // Location-level aggregate (the dense TripAdvisor "averages"). Empty until the app ships
+  // /api/v1/aggregates; the panel renders "pending" then, never a fabricated number.
+  const aggregate = safeSelect(db, `
+    SELECT platform, overall, num_reviews, food, service, atmosphere, value, fetched_at FROM review_aggregate ORDER BY fetched_at DESC
+  `);
 
   if (!posts.ok && !snap.ok) {
     return unavailable('Reviews tables are unavailable.');
@@ -654,11 +668,45 @@ function getReviewsSection(db) {
       }
     : null;
 
+  const platforms = {};
+  if (corpus.ok) {
+    for (const row of corpus.rows) {
+      platforms[safeLabel(row.platform, 'unknown')] = {
+        n: toInteger(row.n),
+        withCats: toInteger(row.with_cats),
+        food: ratingOrNull(row.avg_food),
+        service: ratingOrNull(row.avg_service),
+        atmosphere: ratingOrNull(row.avg_atmosphere),
+        value: ratingOrNull(row.avg_value)
+      };
+    }
+  }
+  // Latest aggregate row per platform (rows arrive DESC by fetched_at, so first-seen wins).
+  const aggregates = {};
+  if (aggregate.ok) {
+    for (const row of aggregate.rows) {
+      const platform = safeLabel(row.platform, 'unknown');
+      if (!aggregates[platform]) {
+        aggregates[platform] = {
+          overall: ratingOrNull(row.overall),
+          numReviews: toInteger(row.num_reviews),
+          food: ratingOrNull(row.food),
+          service: ratingOrNull(row.service),
+          atmosphere: ratingOrNull(row.atmosphere),
+          value: ratingOrNull(row.value),
+          fetchedAt: toMs(row.fetched_at)
+        };
+      }
+    }
+  }
+
   return {
     ok: true,
     pendingCount,
     postRows: postRows.slice(0, 8),
     snapshot,
+    platforms,
+    aggregates,
     warnings: []
   };
 }
@@ -977,9 +1025,11 @@ function renderReviews(section) {
   let awaitingCell;
   let ratingsCell;
   let windowSuffix = '';
+  let freshnessLabel;
   if (!snap) {
     awaitingCell = '<span class="muted">— · no ingest yet</span>';
     ratingsCell = '<span class="muted">— · no ingest yet</span>';
+    freshnessLabel = 'no ingest yet';
   } else {
     const ageMs = Date.now() - snap.fetchedAt;
     const fresh = snap.fetchedAt > 0 && ageMs >= 0 && ageMs <= REVIEW_STALE_MS;
@@ -988,6 +1038,9 @@ function renderReviews(section) {
       : `${formatInteger(snap.awaiting)} · <span class="muted">stale · last ingest ${escapeHtml(formatAgo(snap.fetchedAt))}</span>`;
     ratingsCell = `Google ${fmtRating(snap.google)} · TripAdvisor ${fmtRating(snap.tripadvisor)} · OpenTable ${fmtRating(snap.opentable)}`;
     windowSuffix = snap.window ? ` (${escapeHtml(snap.window)})` : '';
+    freshnessLabel = fresh
+      ? `as of ${renderTime(snap.fetchedAt)}`
+      : `<span class="muted">stale · last ingest ${escapeHtml(formatAgo(snap.fetchedAt))}</span>`;
   }
 
   const draftRows = section.postRows
@@ -1001,6 +1054,12 @@ function renderReviews(section) {
     `)
     .join('');
 
+  // Per-platform detail at honest grain (no-lies): Google overall-only (Google Business reviews
+  // have no native sub-ratings); OpenTable dense per-review categories; TripAdvisor sparse
+  // per-review + a location-averages row that reads "pending" until /api/v1/aggregates ships.
+  // OT/TA carry NO reply status (has_reply NULL) — labelled awareness, not an actionable queue.
+  const platformTable = renderPlatformGrain(section.platforms || {}, section.aggregates || {}, snap, fmtRating, freshnessLabel);
+
   return `
     <section class="panel fade reviews-panel">
       <div class="phead"><h2>Reviews</h2><span class="count">${formatInteger(section.pendingCount)} awaiting tap</span></div>
@@ -1013,6 +1072,7 @@ function renderReviews(section) {
           </tbody>
         </table>
       </div>
+      ${platformTable}
       <div class="pbody table-wrap">
         <table>
           <thead><tr><th>Draft</th><th>Status</th><th>Decision</th><th>Time</th></tr></thead>
@@ -1022,6 +1082,51 @@ function renderReviews(section) {
       ${renderWarnings(section.warnings)}
     </section>
   `;
+}
+
+// Per-platform grain block. Pure (HTML string from the section model + helpers). Renders nothing
+// when there's no corpus (graceful on a pre-ingest / old DB). NEVER fabricates: Google is forced to
+// "overall only", OT/TA show genuine per-review averages with coverage (n_with_cats/n), and the
+// TripAdvisor location-averages row stays "pending" until review_aggregate is populated.
+function renderPlatformGrain(platforms, aggregates, snap, fmtRating, freshnessLabel) {
+  if (!platforms || Object.keys(platforms).length === 0) {
+    return '';
+  }
+  const count = (platform) => (platforms[platform] ? formatInteger(platforms[platform].n) : '0');
+  const cats = (platform, ambienceLabel) => {
+    if (platform === 'google') {
+      return '<span class="muted">overall only — Google has no sub-ratings</span>';
+    }
+    const c = platforms[platform];
+    if (!c || c.withCats === 0) {
+      return '<span class="muted">no per-review sub-ratings</span>';
+    }
+    return `Food ${fmtRating(c.food)} · Service ${fmtRating(c.service)} · ${ambienceLabel} ${fmtRating(c.atmosphere)} · Value ${fmtRating(c.value)} <span class="muted">(${formatInteger(c.withCats)}/${formatInteger(c.n)})</span>`;
+  };
+  const googleReply = snap
+    ? `${formatInteger(snap.awaiting)} awaiting · <span class="muted">actionable (rev: tap)</span>`
+    : '<span class="muted">—</span>';
+  const awareness = '<span class="muted">— awareness · no reply capability</span>';
+  const googleCount = snap ? formatInteger(snap.total) : count('google');
+
+  const taAgg = aggregates.tripadvisor;
+  const taAggCell = taAgg
+    ? `Food ${fmtRating(taAgg.food)} · Service ${fmtRating(taAgg.service)} · Atmosphere ${fmtRating(taAgg.atmosphere)} · Value ${fmtRating(taAgg.value)} <span class="muted">(${formatInteger(taAgg.numReviews)} reviews)</span>`
+    : '<span class="muted">averages pending · /api/v1/aggregates not yet live</span>';
+
+  return `
+      <div class="pbody"><span class="muted">Per-platform sub-ratings · ${freshnessLabel} · reply capability is Google-only</span></div>
+      <div class="pbody table-wrap">
+        <table>
+          <thead><tr><th>Platform</th><th>Reviews</th><th>Reply queue</th><th>Per-review sub-ratings</th></tr></thead>
+          <tbody>
+            <tr><td>Google</td><td class="mono">${googleCount}</td><td class="mono">${googleReply}</td><td class="mono">${cats('google', 'Atmosphere')}</td></tr>
+            <tr><td>OpenTable</td><td class="mono">${count('opentable')} <span class="muted">recent</span></td><td class="mono">${awareness}</td><td class="mono">${cats('opentable', 'Ambience')}</td></tr>
+            <tr><td>TripAdvisor</td><td class="mono">${count('tripadvisor')} <span class="muted">recent</span></td><td class="mono">${awareness}</td><td class="mono">${cats('tripadvisor', 'Atmosphere')}</td></tr>
+            <tr><td>TripAdvisor averages</td><td class="mono">—</td><td class="mono"><span class="muted">location-level</span></td><td class="mono">${taAggCell}</td></tr>
+          </tbody>
+        </table>
+      </div>`;
 }
 
 function formatAgo(ms) {
@@ -2446,5 +2551,7 @@ module.exports = {
   buildWorkerModel,
   getWorkerSection,
   renderWorker,
+  getReviewsSection,
+  renderReviews,
   spendLevel
 };
