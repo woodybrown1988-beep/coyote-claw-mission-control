@@ -342,10 +342,35 @@ module.exports = {
     ];
     const columns = COLS.map((col) => ({ ...col, cards: cards.filter((c) => c.col === col.id) }));
 
+    // --- queue-depth signal: queued jobs grouped by INTENDED agent (type→agent), oldest wait + stale flag.
+    // Renders ONLY when there's real backlog (the gauge for the 2nd-Coder work). A queued job older than
+    // STALE_MS is "likely stuck" — this is the visibility that would have surfaced the review-draft orphan.
+    const STALE_MS = 60 * 60 * 1000;
+    const queuedRows = rows(q(`SELECT type, COUNT(*) c, MIN(created_at) oldest FROM jobs WHERE status='queued' GROUP BY type`));
+    const byAgentQ = new Map();
+    for (const r of queuedRows) {
+      const a = agentForType(r.type);
+      const label = a && AGENTS[a] ? AGENTS[a].name : String(r.type || 'unassigned');
+      const cur = byAgentQ.get(label) || { agent: label, count: 0, oldest: Infinity };
+      cur.count += num(r.c);
+      cur.oldest = Math.min(cur.oldest, num(r.oldest));
+      byAgentQ.set(label, cur);
+    }
+    const queueDepth = Array.from(byAgentQ.values())
+      .map((x) => ({ agent: x.agent, count: x.count, oldestMs: Math.max(0, now - x.oldest), stale: now - x.oldest > STALE_MS }))
+      .sort((a, b) => b.count - a.count);
+
+    // forward work — the box-written scheduled_tasks snapshot (the board can't run systemctl)
+    const schedRow = rows(q(`SELECT name, schedule, next_fire, runs, computed_at FROM scheduled_tasks ORDER BY computed_at DESC LIMIT 1`))[0] || null;
+
     return {
       halt: ctx.halt || { halted: false },
       lib: { active: libActive, total: libTotal, events: libEvents },
       columns,
+      queueDepth,
+      scheduled: schedRow
+        ? { name: schedRow.name, schedule: schedRow.schedule, nextFire: num(schedRow.next_fire), runs: schedRow.runs, computedAt: num(schedRow.computed_at) }
+        : null,
     };
   },
 
@@ -447,9 +472,39 @@ module.exports = {
       '<span><i style="background:rgba(52,211,153,.45)"></i>done</span>' +
       '</span></div>';
 
+    // Queue-depth band — renders ONLY when there's real backlog (no dead UI when the queue is clear).
+    // Stale (oldest > 1h) → red "likely stuck"; otherwise amber "waiting".
+    function fmtWait(ms) {
+      const m = Math.floor(ms / 60000);
+      if (m < 60) return m + 'm';
+      const h = Math.floor(m / 60);
+      return h < 48 ? h + 'h' : Math.floor(h / 24) + 'd';
+    }
+    const qd = section.queueDepth || [];
+    const anyStale = qd.some((x) => x.stale);
+    const queueBand = qd.length
+      ? '<div class="banner ' + (anyStale ? 'red' : 'amber') + '" style="display:flex;flex-wrap:wrap;gap:6px 18px;align-items:center">' +
+        '<span style="font-family:var(--font-mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;opacity:.85">Queue depth</span>' +
+        qd
+          .map((x) =>
+            '<span>' + esc(String(x.count) + ' queued behind ' + x.agent) +
+            ' <span class="mono" style="opacity:.7">(oldest ' + esc(fmtWait(x.oldestMs)) + ')</span>' +
+            (x.stale ? ' <b>⚠ likely stuck</b>' : '') + '</span>',
+          )
+          .join('') +
+        '</div>'
+      : '';
+
+    // One scheduled-task line (forward work) — always shown when the box has written a snapshot.
+    const sc = section.scheduled;
+    const schedLine = sc && sc.nextFire
+      ? '<div class="flow-divider"><span class="t">Scheduled</span><span class="rule"></span>' +
+        '<span class="mono" style="font-size:11px;color:var(--text-2)">Next: ' + esc(sc.name) + ' · ' + S.fmtTime(sc.nextFire) + ' UTC</span></div>'
+      : '';
+
     const board = '<div class="board">' + (section.columns || []).map(colHtml).join('') + '</div>';
 
-    const body = haltBanner + apex + librarian + divider + board;
+    const body = haltBanner + queueBand + apex + librarian + schedLine + divider + board;
     return { stamp, body };
   },
 };

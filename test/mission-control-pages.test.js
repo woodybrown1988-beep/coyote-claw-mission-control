@@ -35,6 +35,7 @@ function schema(db) {
     CREATE TABLE kpi_snapshot (period TEXT, covers INTEGER, revenue_pence INTEGER, labour_pct REAL, atv_pence INTEGER, channel_split TEXT, source TEXT, as_of TEXT, fetched_at INTEGER, PRIMARY KEY (period, fetched_at));
     CREATE TABLE spend_log (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT, tokens INTEGER, cost_pence INTEGER, created_at INTEGER, note TEXT);
     CREATE TABLE system_state (key TEXT PRIMARY KEY, value TEXT);
+    CREATE TABLE scheduled_tasks (name TEXT PRIMARY KEY, unit TEXT, schedule TEXT, next_fire INTEGER, runs TEXT, computed_at INTEGER);
   `);
 }
 function makeDb(seed) {
@@ -100,6 +101,36 @@ test('agents: matches the mockup structure + counts a TEXT guard_flag (the fixed
   assert.match(out.body, /faded/);
   // the guard_flagged TEXT bug: 'sourcing, supply' must be counted (not '=1' which never matches)
   assert.match(out.body, /1 guard-flagged/, 'TEXT guard flag counted');
+});
+
+test('agents queue-depth signal: hidden when empty; renders per-agent backlog + stale flag + scheduled line', () => {
+  const A = PAGES.agents;
+  // (a) no backlog → band hidden (no dead UI), but the scheduled line shows
+  let db = makeDb((d) => {
+    d.prepare(`INSERT INTO jobs (id,type,payload,status,created_at,updated_at,attempts) VALUES ('r1','coder','{}','running',?,?,1)`).run(NOW - 1000, NOW - 1000);
+    d.prepare(`INSERT INTO scheduled_tasks (name,unit,schedule,next_fire,runs,computed_at) VALUES ('reviews-ingest','coyote-reviews-ingest.timer','daily 06:00 UTC',?,'reviews ingest',?)`).run(NOW + 50000000, NOW);
+  });
+  let ctx = ctxFor(db);
+  let out = A.render(A.getSection(db, ctx), ctx);
+  assert.doesNotMatch(out.body, /Queue depth/, 'no queue-depth band when nothing is queued');
+  assert.match(out.body, /Next: reviews-ingest/, 'scheduled line shown');
+  db.close();
+
+  // (b) real backlog: 3 coder queued (oldest 2h = stale) + 1 lead queued (fresh) → band renders, grouped, stale flagged
+  db = makeDb((d) => {
+    d.prepare(`INSERT INTO jobs (id,type,payload,status,created_at,updated_at,attempts) VALUES ('q1','coder','{}','queued',?,?,0)`).run(NOW - 2 * 3600000, NOW - 2 * 3600000); // 2h → stale
+    d.prepare(`INSERT INTO jobs (id,type,payload,status,created_at,updated_at,attempts) VALUES ('q2','coder','{}','queued',?,?,0)`).run(NOW - 600000, NOW - 600000);
+    d.prepare(`INSERT INTO jobs (id,type,payload,status,created_at,updated_at,attempts) VALUES ('q3','coder-build','{}','queued',?,?,0)`).run(NOW - 300000, NOW - 300000);
+    d.prepare(`INSERT INTO jobs (id,type,payload,status,created_at,updated_at,attempts) VALUES ('q4','lead','{}','queued',?,?,0)`).run(NOW - 120000, NOW - 120000);
+  });
+  ctx = ctxFor(db);
+  out = A.render(A.getSection(db, ctx), ctx);
+  assert.match(out.body, /Queue depth/, 'band renders on real backlog');
+  assert.match(out.body, /3 queued behind Coder/, 'grouped by intended agent (3 coder jobs)');
+  assert.match(out.body, /1 queued behind Lead/, 'lead grouping');
+  assert.match(out.body, /likely stuck/, 'stale (>1h) flagged');
+  assert.match(out.body, /banner red/, 'stale backlog uses the red action colour');
+  db.close();
 });
 
 test('reviews BOUNDARY: data-op write affordance ONLY on TA/OT, never on a Google card', () => {
