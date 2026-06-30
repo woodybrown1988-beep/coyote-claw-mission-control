@@ -78,7 +78,10 @@ function handleRequest(req, res) {
     return;
   }
 
-  if (url.pathname === '/health') {
+  // /health is BOTH the machine healthcheck (deploy waitHealthy polls it for 200) and the Health PAGE.
+  // Non-browser clients (curl/deploy/monitoring send no `text/html` Accept) get the JSON {ok:true};
+  // browsers fall through to the page router below. /healthz is a always-JSON alias for machines.
+  if (url.pathname === '/healthz' || (url.pathname === '/health' && (req.headers.accept || '').indexOf('text/html') === -1)) {
     sendJson(res, 200, { ok: true });
     return;
   }
@@ -93,13 +96,62 @@ function handleRequest(req, res) {
     return;
   }
 
-  if (url.pathname !== '/') {
+  const page = PAGE_BY_ROUTE[url.pathname];
+  if (!page) {
     sendText(res, 404, 'Not found');
     return;
   }
+  servePage(page, res);
+}
 
-  const model = buildDashboardModel();
-  sendHtml(res, 200, renderDashboard(model));
+// ---- multi-page router (ops-centre) ----
+const SHARED = require('./ui/shared.js');
+const DATA = require('./ui/data.js');
+const PAGES = [
+  require('./ui/pages/overview.js'),
+  require('./ui/pages/agents.js'),
+  require('./ui/pages/reviews.js'),
+  require('./ui/pages/issues.js'),
+  require('./ui/pages/operations.js'),
+  require('./ui/pages/health.js'),
+];
+const PAGE_BY_ROUTE = {};
+for (const p of PAGES) PAGE_BY_ROUTE[p.route] = p;
+
+// Render one page: open the READ-ONLY handle (all DATA is SELECT-only), compute nav badges + footer
+// from real data, let the page build its model + body, wrap in the shared shell. Any page error
+// degrades to a banner — never a crash, never a fabricated value.
+function servePage(page, res) {
+  const opened = openDatabase();
+  const now = Date.now();
+  if (!opened.ok) {
+    sendHtml(res, 200, SHARED.renderShell({ active: page.key, title: page.title, sub: page.sub, stamp: '', body: `<div class="banner red">${escapeHtml(opened.message)}</div>`, badges: {}, foot: [] }));
+    return;
+  }
+  const db = opened.db;
+  let badges = {};
+  let foot = [];
+  let rendered = { stamp: '', body: '' };
+  try {
+    badges = DATA.navBadges(db);
+    foot = DATA.footModel(db, now);
+    const ctx = {
+      q: (sql, params) => DATA.safeSelect(db, sql, params),
+      now,
+      halt: buildHaltModel(readHaltFileExists(), readPausedValue(db)),
+    };
+    const section = page.getSection(db, ctx);
+    rendered = page.render(section, ctx) || { stamp: '', body: '' };
+  } catch (_) {
+    rendered = { stamp: '', body: '<div class="banner red">This page failed to render. The data layer is read-only; no write occurred.</div>' };
+  } finally {
+    try {
+      db.close();
+    } catch (_) {
+      // close failure is not user-actionable
+    }
+  }
+  sendHtml(res, 200, SHARED.renderShell({ active: page.key, title: page.title, sub: page.sub, stamp: rendered.stamp, body: rendered.body, badges, foot }));
 }
 
 function buildDashboardModel() {
