@@ -569,7 +569,7 @@ function getQueueSection(db) {
 
 function getWorkerSection(db) {
   const result = safeSelect(db, `
-    SELECT owner_id, last_beat_at, phase, job_id
+    SELECT owner_id, last_beat_at, phase, job_id, worker_name
     FROM worker_heartbeat
   `);
 
@@ -591,42 +591,74 @@ function getWorkerSection(db) {
   };
 }
 
+// owner_id is host:pid:epochMs — the epoch-ms tail churns every restart, so drop it for a stable-enough
+// fallback label (host:pid) when a worker has no WORKER_NAME yet. Mirrors the coder worker's shortOwner.
+function shortOwnerId(ownerId) {
+  return String(ownerId || '').replace(/:\d{10,}$/, '');
+}
+
 function buildWorkerModel(rows, nowMs) {
-  const selected = new Map();
+  const currentMs = toMs(nowMs);
+  const isFresh = (ms) => ms > 0 && currentMs - ms <= 120000;
+
+  // The Lead collapses to ONE 'lead' (its owner_id churns per restart; there is one Lead).
+  // NAMED coders (WORKER_NAME set) render PER WORKER (coder-1, coder-2), the freshest row per name —
+  // a configured worker stays visible even when its beat goes stale (flagged STALE downstream), so the
+  // operator sees "coder-1 stopped". UNNAMED rows are either a worker on old code (show only while FRESH,
+  // labelled host:pid) or DEAD historical processes (owner_id churns per restart) — those are dropped, so
+  // the panel never floods with weeks of ghost rows. Never blank, never fabricated.
+  const lead = new Map();    // 'lead' → freshest lead row
+  const named = new Map();   // worker_name → freshest row
+  const unnamed = new Map(); // owner_id → freshest row (kept only if fresh)
 
   for (const row of Array.isArray(rows) ? rows : []) {
     const ownerId = row && row.owner_id !== null && row.owner_id !== undefined
       ? String(row.owner_id)
       : '';
-    const name = ownerId.startsWith('lead:') ? 'lead' : 'coder-worker';
     const lastBeatMs = toMs(row && row.last_beat_at);
-    const current = selected.get(name);
+    const entry = {
+      ownerId,
+      phase: row && row.phase !== null && row.phase !== undefined ? String(row.phase).trim() : '',
+      jobId: shortId(row && row.job_id),
+      lastBeatMs
+    };
 
-    if (!current || lastBeatMs > current.lastBeatMs) {
-      selected.set(name, {
-        name,
-        ownerId,
-        phase: row && row.phase !== null && row.phase !== undefined ? String(row.phase).trim() : '',
-        jobId: shortId(row && row.job_id),
-        lastBeatMs
-      });
+    if (ownerId.startsWith('lead:')) {
+      const cur = lead.get('lead');
+      if (!cur || lastBeatMs > cur.lastBeatMs) lead.set('lead', { name: 'lead', ...entry });
+    } else {
+      const workerName = row && row.worker_name !== null && row.worker_name !== undefined
+        ? String(row.worker_name).trim()
+        : '';
+      if (workerName) {
+        const cur = named.get(workerName);
+        if (!cur || lastBeatMs > cur.lastBeatMs) named.set(workerName, { name: workerName, ...entry });
+      } else {
+        const cur = unnamed.get(ownerId);
+        if (!cur || lastBeatMs > cur.lastBeatMs) unnamed.set(ownerId, { name: shortOwnerId(ownerId), ...entry });
+      }
     }
   }
 
-  const currentMs = toMs(nowMs);
-  const workers = ['lead', 'coder-worker']
-    .filter((name) => selected.has(name))
-    .map((name) => {
-      const worker = selected.get(name);
-      const phase = worker.phase;
-      const fresh = worker.lastBeatMs > 0 && currentMs - worker.lastBeatMs <= 120000;
-      const activePhase = phase && phase.toLowerCase().replace(/[_\s]+/g, '-') !== 'idle';
-      return {
-        ...worker,
-        fresh,
-        active: fresh && (activePhase || Boolean(worker.jobId))
-      };
-    });
+  // Lead first, then coders sorted by name: named always, unnamed only while FRESH (drop ghost history).
+  const ordered = [];
+  if (lead.has('lead')) ordered.push(lead.get('lead'));
+  const coders = [
+    ...named.values(),
+    ...Array.from(unnamed.values()).filter((e) => isFresh(e.lastBeatMs))
+  ].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  ordered.push(...coders);
+
+  const workers = ordered.map((worker) => {
+    const phase = worker.phase;
+    const fresh = isFresh(worker.lastBeatMs);
+    const activePhase = phase && phase.toLowerCase().replace(/[_\s]+/g, '-') !== 'idle';
+    return {
+      ...worker,
+      fresh,
+      active: fresh && (activePhase || Boolean(worker.jobId))
+    };
+  });
 
   return {
     workers,

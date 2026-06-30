@@ -22,7 +22,8 @@ function createWorkerDb() {
       owner_id TEXT,
       last_beat_at INTEGER,
       phase TEXT,
-      job_id TEXT
+      job_id TEXT,
+      worker_name TEXT
     );
     CREATE TABLE jobs (
       id TEXT PRIMARY KEY,

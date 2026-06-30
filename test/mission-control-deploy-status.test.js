@@ -431,7 +431,8 @@ function createDashboardDb({ withDeploys }) {
         owner_id TEXT,
         last_beat_at INTEGER,
         phase TEXT,
-        job_id TEXT
+        job_id TEXT,
+        worker_name TEXT
       );
       CREATE TABLE spend_log (
         job_id TEXT,
