@@ -35,6 +35,7 @@ function schema(db) {
     CREATE TABLE kpi_snapshot (period TEXT, covers INTEGER, revenue_pence INTEGER, labour_pct REAL, atv_pence INTEGER, channel_split TEXT, source TEXT, as_of TEXT, fetched_at INTEGER, PRIMARY KEY (period, fetched_at));
     CREATE TABLE spend_log (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT, tokens INTEGER, cost_pence INTEGER, created_at INTEGER, note TEXT);
     CREATE TABLE system_state (key TEXT PRIMARY KEY, value TEXT);
+    CREATE TABLE worker_heartbeat (owner_id TEXT PRIMARY KEY, last_beat_at INTEGER, job_id TEXT, phase TEXT, updated_at INTEGER, worker_name TEXT);
   `);
 }
 function makeDb(seed) {
@@ -100,6 +101,59 @@ test('agents: matches the mockup structure + counts a TEXT guard_flag (the fixed
   assert.match(out.body, /faded/);
   // the guard_flagged TEXT bug: 'sourcing, supply' must be counted (not '=1' which never matches)
   assert.match(out.body, /1 guard-flagged/, 'TEXT guard flag counted');
+});
+
+test('agents: renders ONE card per NAMED Coder worker (coder-1 idle + coder-2 working), not a collapsed "Coder"', () => {
+  const db = makeDb((d) => {
+    // two live workers beating their STABLE names — idle-aware: coder-1 idle (no job), coder-2 building
+    const hb = d.prepare(`INSERT INTO worker_heartbeat (owner_id,last_beat_at,job_id,phase,updated_at,worker_name) VALUES (?,?,?,?,?,?)`);
+    hb.run('box:10:1782800000000', NOW - 10000, null, 'idle', NOW - 10000, 'coder-1');
+    hb.run('box:11:1782800000001', NOW - 10000, 'jb', 'build', NOW - 10000, 'coder-2');
+    // coder-2's in-flight job (owned by coder-2's heartbeat owner_id) → its card shows Working
+    d.prepare(`INSERT INTO jobs (id,type,payload,status,created_at,updated_at,attempts,owner_id) VALUES ('jb','coder-build','{"pr_number":51}','running',?,?,1,'box:11:1782800000001')`).run(NOW - 60000, NOW - 60000);
+  });
+  const ctx = ctxFor(db);
+  const out = PAGES.agents.render(PAGES.agents.getSection(db, ctx), ctx);
+  // BOTH workers visible BY NAME — the whole point: two Coders, not one collapsed card
+  assert.match(out.body, /coder-1/, 'idle worker shown present (the beat fires even when idle)');
+  assert.match(out.body, /coder-2/, 'working worker shown by its name');
+  assert.match(out.body, /col working/, 'coder-2 sits in the Working column with its job');
+  // honest: a name fallback never fabricates — both are real WORKER_NAMEs here
+  assert.doesNotMatch(out.body, /\bcoder-worker\b/, 'never the old collapsed label');
+  db.close();
+});
+
+test('agents: NO heartbeat rows → degrades to in-flight coder jobs by owner (never hides work)', () => {
+  const db = makeDb((d) => {
+    // a real in-flight coder gate but no heartbeat yet (the honest in-between before workers restart)
+    d.prepare(`INSERT INTO jobs (id,type,payload,status,created_at,updated_at,attempts,owner_id) VALUES ('jx','coder-build','{"pr_number":7}','awaiting_signoff',?,?,1,'box:9:1782800000000')`).run(NOW - 60000, NOW - 60000);
+  });
+  const ctx = ctxFor(db);
+  const out = PAGES.agents.render(PAGES.agents.getSection(db, ctx), ctx);
+  assert.match(out.body, /box:9/, 'owner with no fresh beat still shown by host:pid — work never hidden');
+  assert.match(out.body, /col blocked/, 'its merge gate still surfaces');
+  db.close();
+});
+
+test('agents: a fresh worker owning OLD escalated / stale-done jobs does NOT flood — one idle card, no graveyard', () => {
+  const OLD = NOW - 5 * 86400000; // 5 days ago — well past the 36h "recently done" window
+  const db = makeDb((d) => {
+    d.prepare(`INSERT INTO worker_heartbeat (owner_id,last_beat_at,job_id,phase,updated_at,worker_name) VALUES ('box:10:1782800000000',?,null,'idle',?,'coder-1')`).run(NOW - 10000, NOW - 10000);
+    // ancient escalated + ancient done coder jobs owned by coder-1 — must NOT colour its card or spawn extras
+    d.prepare(`INSERT INTO jobs (id,type,payload,status,created_at,updated_at,attempts,owner_id) VALUES ('eold','coder-build','{}','escalated',?,?,1,'box:10:1782800000000')`).run(OLD, OLD);
+    d.prepare(`INSERT INTO jobs (id,type,payload,status,created_at,updated_at,attempts,owner_id) VALUES ('dold','coder-build','{}','done',?,?,1,'box:10:1782800000000')`).run(OLD, OLD);
+    // an escalated job owned by a DEAD non-roster owner (no heartbeat) — must NOT spawn a standalone card
+    d.prepare(`INSERT INTO jobs (id,type,payload,status,created_at,updated_at,attempts,owner_id) VALUES ('edead','coder-build','{}','escalated',?,?,1,'box:77:1700000000000')`).run(OLD, OLD);
+  });
+  const ctx = ctxFor(db);
+  const section = PAGES.agents.getSection(db, ctx);
+  const coderCards = section.columns.flatMap((c) => c.cards).filter((c) => c.av === 'av-coder');
+  assert.equal(coderCards.length, 1, 'exactly ONE coder card (coder-1) — not one per stale/escalated job');
+  assert.equal(coderCards[0].name, 'coder-1');
+  assert.equal(coderCards[0].col, 'idle', 'a fresh worker with only stale jobs is IDLE, never a graveyard of blocked cards');
+  const out = PAGES.agents.render(section, ctx);
+  assert.doesNotMatch(out.body, /box:77/, 'a dead non-roster owner of an escalated job spawns no card');
+  db.close();
 });
 
 test('reviews BOUNDARY: data-op write affordance ONLY on TA/OT, never on a Google card', () => {

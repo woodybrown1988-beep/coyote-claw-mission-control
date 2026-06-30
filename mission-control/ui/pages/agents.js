@@ -167,6 +167,63 @@ module.exports = {
       return { bucket: 'idle', job: null };
     }
 
+    // --- Coder roster: ONE card PER live worker (named), not a single collapsed "Coder" -------------
+    // Sources (SELECT-only): worker_heartbeat (fresh non-lead rows = who's alive + their STABLE name,
+    // idle-aware because the beat fires even when idle) + coder jobs grouped by owner_id (each worker's
+    // own work — the worker mints ONE owner_id for both its beat and its claims). A worker is keyed by
+    // WORKER_NAME (stable across restarts) else owner_id; label = name ?? host:pid (never blank, never
+    // fabricated). Stale heartbeats (>120s) are dropped. In-flight jobs whose owner has no fresh beat are
+    // STILL shown (work is never hidden). With no heartbeat table at all it degrades to one card per
+    // job-owner — never losing a job (the honest in-between before workers restart with their names).
+    const HEARTBEAT_FRESH_MS = 120000; // 4× the 30s beat; matches server.js getWorkerSection
+    function shortOwner(id) {
+      return String(id || '').replace(/:\d{10,}$/, ''); // host:pid (drop the per-restart epoch-ms tail)
+    }
+    function coderSlots(coderJobs) {
+      const hb = rows(q(
+        `SELECT owner_id, worker_name, last_beat_at FROM worker_heartbeat WHERE owner_id NOT LIKE 'lead:%' ORDER BY last_beat_at DESC`,
+      ));
+      const nameByOwner = new Map(); // owner_id → stable name (even a momentarily-stale beat still names its owner)
+      for (const r of hb) {
+        const wn = r.worker_name && String(r.worker_name).trim();
+        if (wn && !nameByOwner.has(r.owner_id)) nameByOwner.set(r.owner_id, wn);
+      }
+      const slots = new Map(); // key → { label, fresh, jobs }
+      const slotFor = (key, label) => {
+        if (!slots.has(key)) slots.set(key, { label, fresh: false, jobs: [] });
+        return slots.get(key);
+      };
+      // 1) fresh non-lead workers = the idle-aware roster (stale dropped), deduped by name||owner
+      for (const r of hb) {
+        if (now - num(r.last_beat_at) > HEARTBEAT_FRESH_MS) continue;
+        const wn = r.worker_name && String(r.worker_name).trim();
+        slotFor(wn || r.owner_id, wn || shortOwner(r.owner_id)).fresh = true;
+      }
+      // 2) attribute each worker's CURRENT work to its slot. Only IN-FLIGHT jobs (ACTIVE6) or a RECENT
+      // terminal are live worker state — escalated/old jobs are NOT (else a graveyard of dead/cancelled
+      // jobs floods the board, one card each). A non-roster owner gets a card ONLY for genuinely in-flight
+      // work (a hung worker still holding a gate — never hidden); a dead owner's stale terminal is dropped.
+      for (const j of coderJobs) {
+        const inflight = ACTIVE6.indexOf(j.status) !== -1;
+        const recentTerminal = (j.status === 'done' || j.status === 'failed') && now - num(j.updated_at) <= RECENT_MS;
+        if (!inflight && !recentTerminal) continue; // skip escalated + stale terminal — not current worker state
+        const owner = j.owner_id || null;
+        const wn = owner ? nameByOwner.get(owner) : null;
+        const key = wn || owner || ' unassigned';
+        if (slots.has(key)) slots.get(key).jobs.push(j); // a known worker's (roster or already-seen) job
+        else if (inflight) slotFor(key, wn || (owner ? shortOwner(owner) : AGENTS.coder.name)).jobs.push(j); // no-hide: live work by a non-roster owner
+        // else: a dead owner's recent terminal with no live slot → not worth a card
+      }
+      // 3) a rep per slot; a fresh worker with no live job → idle "standing by"; drop empty non-roster slots
+      const out = [];
+      for (const s of slots.values()) {
+        if (!s.jobs.length && !s.fresh) continue;
+        out.push({ label: s.label, rep: pickRep(s.jobs) }); // pickRep([]) → idle "standing by"
+      }
+      if (!out.length) out.push({ label: AGENTS.coder.name, rep: pickRep([]) }); // never hide the role entirely
+      return out.sort((a, b) => (a.label < b.label ? -1 : a.label > b.label ? 1 : 0));
+    }
+
     // --- review_drafts: the operator queue that surfaces Reviews as blocked-on-you ------------------
     const draftRows = rows(q(
       `SELECT draft_status, COUNT(*) c FROM review_drafts WHERE draft_status NOT IN ('responded','skipped','posted') GROUP BY draft_status`
@@ -251,9 +308,12 @@ module.exports = {
       return c;
     }
 
-    // Lead + Coder by job state
+    // Lead by job state (one Lead). Coder: ONE card PER live worker, named (Coder-1 / Coder-2), each
+    // showing its own job state — replaces the single collapsed "Coder" so two workers are both visible.
     cards.push(agentCard(AGENTS.lead, pickRep(byAgent.lead)));
-    cards.push(agentCard(AGENTS.coder, pickRep(byAgent.coder)));
+    for (const slot of coderSlots(byAgent.coder)) {
+      cards.push(agentCard({ ...AGENTS.coder, name: slot.label }, slot.rep));
+    }
 
     // Reviews: a job-gate outranks the draft queue; otherwise the pending operator queue surfaces it as
     // blocked-on-you (summarised from review_drafts — the mockup's signature Reviews card).

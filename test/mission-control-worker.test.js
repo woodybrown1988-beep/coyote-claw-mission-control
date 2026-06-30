@@ -19,7 +19,8 @@ function createWorkerDb({ withHeartbeat = true } = {}) {
         owner_id TEXT,
         last_beat_at INTEGER,
         phase TEXT,
-        job_id TEXT
+        job_id TEXT,
+        worker_name TEXT
       );
     `);
   }
@@ -29,13 +30,14 @@ function createWorkerDb({ withHeartbeat = true } = {}) {
 
 function insertHeartbeat(db, row) {
   db.prepare(`
-    INSERT INTO worker_heartbeat (owner_id, last_beat_at, phase, job_id)
-    VALUES (?, ?, ?, ?)
+    INSERT INTO worker_heartbeat (owner_id, last_beat_at, phase, job_id, worker_name)
+    VALUES (?, ?, ?, ?, ?)
   `).run(
     row.owner_id,
     row.last_beat_at,
     row.phase,
-    row.job_id
+    row.job_id,
+    row.worker_name || null
   );
 }
 
@@ -113,10 +115,11 @@ test('renderWorker includes fresh and stale workers with stale marker', () => {
       job_id: 'lead-job'
     },
     {
-      owner_id: 'coder:one',
+      owner_id: 'host:12:1700000000000',
       last_beat_at: nowMs - 121_000,
       phase: 'build',
-      job_id: 'coder-job'
+      job_id: 'coder-job',
+      worker_name: 'coder-2'
     }
   ], nowMs);
 
@@ -128,6 +131,6 @@ test('renderWorker includes fresh and stale workers with stale marker', () => {
   });
 
   assert.match(html, /lead/);
-  assert.match(html, /coder-worker/);
+  assert.match(html, /coder-2/, 'the stale worker renders by its STABLE name, not a collapsed "coder-worker"');
   assert.match(html, /class="hero\s+stale"|>STALE</);
 });
