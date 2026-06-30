@@ -64,6 +64,15 @@ function main() {
 function handleRequest(req, res) {
   const url = new URL(req.url, `http://${HOST}`);
 
+  // The ONE narrow write-path (Step 2). TIER 2 of the two-tier boundary: a fixed allowlist of
+  // safe/reversible ops (mark TA/OT responded, snooze, log an action) via a SEPARATE write handle.
+  // Everything else — all DATA rendering — uses the read-only handle. There is no op that posts to
+  // Google (replyToReview stays the box-side Telegram-gated tap; the board has no token/nonce/path).
+  if (req.method === 'POST' && url.pathname === '/api/review-action') {
+    handleReviewAction(req, res);
+    return;
+  }
+
   if (req.method !== 'GET') {
     sendText(res, 405, 'Method not allowed');
     return;
@@ -214,6 +223,120 @@ function openDatabase() {
   } catch (_) {
     return { ok: false, message: 'Librarian database could not be opened read-only.' };
   }
+}
+
+// TIER 2 handle — read-WRITE, opened ONLY by the narrow review-action write-path, used for exactly one
+// parameterised statement, then closed. Never held; never used for rendering.
+function openWritableDatabase() {
+  let sqlite;
+  try {
+    sqlite = require('node:sqlite');
+  } catch (_) {
+    return { ok: false };
+  }
+  try {
+    const db = new sqlite.DatabaseSync(DB_PATH);
+    db.exec('PRAGMA busy_timeout = 5000;');
+    return { ok: true, db };
+  } catch (_) {
+    return { ok: false };
+  }
+}
+
+// The CLOSED allowlist of safe/reversible board writes. Adding a posting op here would be the ONLY way
+// to make the board post — and none exists. mark_responded is TA/OT-only (the SQL WHERE excludes
+// Google), so even "responded" can't touch a Google review (its lifecycle is the Telegram tap).
+const REVIEW_ACTION_OPS = new Set(['mark_responded', 'skip', 'snooze', 'log_action']);
+
+/**
+ * Apply ONE narrow review action against a writable db. Pure over (db, body, now) for testability.
+ * Returns { ok, status, ... }. Rejects anything off the allowlist. All SQL is parameterised; no op
+ * can fire a Google reply (no replyToReview / nonce / token exists on the board).
+ */
+function applyReviewAction(db, body, now) {
+  const op = body && body.op;
+  if (!REVIEW_ACTION_OPS.has(op)) {
+    return { ok: false, status: 400, error: 'unknown op' };
+  }
+  try {
+    if (op === 'mark_responded') {
+      const id = String((body && body.review_id) || '');
+      if (!id) return { ok: false, status: 400, error: 'review_id required' };
+      // TA/OT ONLY — Google posts via the Telegram tap, never the board.
+      const r = db
+        .prepare(`UPDATE review_drafts SET draft_status = 'responded', updated_at = ? WHERE review_id = ? AND platform IN ('tripadvisor','opentable')`)
+        .run(now, id);
+      if (r.changes === 0) {
+        return { ok: false, status: 409, error: 'no TripAdvisor/OpenTable draft for that review_id (Google is posted via Telegram, not the board)' };
+      }
+      return { ok: true, status: 200, op, review_id: id, changes: r.changes };
+    }
+    if (op === 'skip') {
+      const id = String((body && body.review_id) || '');
+      if (!id) return { ok: false, status: 400, error: 'review_id required' };
+      const r = db.prepare(`UPDATE review_drafts SET draft_status = 'skipped', updated_at = ? WHERE review_id = ?`).run(now, id);
+      return { ok: r.changes > 0, status: r.changes > 0 ? 200 : 409, op, changes: r.changes };
+    }
+    if (op === 'snooze') {
+      const id = String((body && body.review_id) || '');
+      if (!id) return { ok: false, status: 400, error: 'review_id required' };
+      const hours = Math.max(1, Math.min(Number(body.hours) || 24, 24 * 30));
+      const until = now + hours * 3600 * 1000;
+      const r = db.prepare(`UPDATE review_drafts SET snoozed_until = ?, updated_at = ? WHERE review_id = ?`).run(until, now, id);
+      return { ok: r.changes > 0, status: r.changes > 0 ? 200 : 409, op, snoozed_until: until, changes: r.changes };
+    }
+    // log_action — record an operator action against an issue (the loop-closer reads it later).
+    const code = String((body && body.issue_code) || '');
+    const action = String((body && body.action_taken) || '');
+    if (!code || !action) return { ok: false, status: 400, error: 'issue_code and action_taken required' };
+    const actionDate = Number(body.action_date) || now;
+    const r = db
+      .prepare(`INSERT INTO review_actions (issue_code, identified_at, action_taken, action_date, status, auto) VALUES (?, ?, ?, ?, 'actioned', 0)`)
+      .run(code, now, action, actionDate);
+    return { ok: true, status: 200, op, id: Number(r.lastInsertRowid) };
+  } catch (_) {
+    return { ok: false, status: 500, error: 'write failed' };
+  }
+}
+
+function handleReviewAction(req, res) {
+  let raw = '';
+  let tooBig = false;
+  req.on('data', (chunk) => {
+    raw += chunk;
+    if (raw.length > 8192) {
+      tooBig = true;
+      req.destroy();
+    }
+  });
+  req.on('end', () => {
+    if (tooBig) {
+      sendJson(res, 413, { ok: false, error: 'payload too large' });
+      return;
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(raw || '{}');
+    } catch (_) {
+      sendJson(res, 400, { ok: false, error: 'invalid json' });
+      return;
+    }
+    const opened = openWritableDatabase();
+    if (!opened.ok) {
+      sendJson(res, 503, { ok: false, error: 'database unavailable for write' });
+      return;
+    }
+    try {
+      const result = applyReviewAction(opened.db, parsed, Date.now());
+      sendJson(res, result.status || (result.ok ? 200 : 400), result);
+    } finally {
+      try {
+        opened.db.close();
+      } catch (_) {
+        // close failure is not user-actionable
+      }
+    }
+  });
 }
 
 function getKpiSection(db, monthStartMs) {
@@ -632,6 +755,29 @@ function getReviewsSection(db) {
     SELECT platform, overall, num_reviews, food, service, atmosphere, value, fetched_at FROM review_aggregate ORDER BY fetched_at DESC
   `);
 
+  // ACTION QUEUE (Step 2) — STORED drafts only (the board NEVER generates one). Recent reviews with a
+  // draft, not yet responded/skipped/snoozed, newest first. Plus the issue tags, the rising trend, and
+  // the escalations the issues layer produced. ALL SELECT (safeSelect rejects non-SELECT) — render is
+  // strictly read-only; the one write-path is the narrow POST /api/review-action (separate handle).
+  const nowMs = Date.now();
+  const drafts = safeSelect(db, `
+    SELECT rc.review_id, rc.platform, rc.overall, rc.reviewer, rc.reviewed_date, rc.text,
+           rd.draft_text, rd.draft_status, rd.review_url, rd.guard_flagged
+    FROM review_drafts rd JOIN review_corpus rc ON rd.review_id = rc.review_id
+    WHERE rd.draft_status NOT IN ('responded','skipped')
+      AND (rd.snoozed_until IS NULL OR rd.snoozed_until < ?)
+    ORDER BY rc.reviewed_date DESC LIMIT 8
+  `, [nowMs]);
+  const issueTagRows = safeSelect(db, `SELECT review_id, issue_code FROM review_issues`);
+  const trendRows = safeSelect(db, `
+    SELECT issue_code, count_current, count_prior, rising FROM issue_trends
+    WHERE computed_at = (SELECT MAX(computed_at) FROM issue_trends)
+    ORDER BY rising DESC, count_current DESC
+  `);
+  const escalationRows = safeSelect(db, `
+    SELECT issue_code, status, evidence_summary FROM review_actions WHERE escalate = 1 ORDER BY auto DESC, id DESC
+  `);
+
   if (!posts.ok && !snap.ok) {
     return unavailable('Reviews tables are unavailable.');
   }
@@ -707,6 +853,49 @@ function getReviewsSection(db) {
     }
   }
 
+  // Issue tags grouped per review (for the cards).
+  const tagsByReview = {};
+  if (issueTagRows.ok) {
+    for (const row of issueTagRows.rows) {
+      const id = String(row.review_id);
+      (tagsByReview[id] = tagsByReview[id] || []).push(safeLabel(row.issue_code, ''));
+    }
+  }
+  const textOrEmpty = (value) => (typeof value === 'string' ? value : '');
+  const cards = drafts.ok
+    ? drafts.rows.map((row) => {
+        const id = String(row.review_id);
+        return {
+          reviewId: id,
+          platform: safeLabel(row.platform, 'unknown'),
+          overall: ratingOrNull(row.overall),
+          reviewer: textOrEmpty(row.reviewer),
+          date: row.reviewed_date ? String(row.reviewed_date).slice(0, 10) : '',
+          text: textOrEmpty(row.text),
+          draft: textOrEmpty(row.draft_text),
+          status: safeLabel(row.draft_status, 'draft'),
+          url: row.review_url ? String(row.review_url) : '',
+          flagged: row.guard_flagged ? String(row.guard_flagged) : '',
+          tags: tagsByReview[id] || []
+        };
+      })
+    : [];
+  const trends = trendRows.ok
+    ? trendRows.rows.map((row) => ({
+        code: safeLabel(row.issue_code, ''),
+        current: toInteger(row.count_current),
+        prior: toInteger(row.count_prior),
+        rising: toInteger(row.rising) === 1
+      }))
+    : [];
+  const escalations = escalationRows.ok
+    ? escalationRows.rows.map((row) => ({
+        code: safeLabel(row.issue_code, ''),
+        status: safeLabel(row.status, ''),
+        summary: textOrEmpty(row.evidence_summary)
+      }))
+    : [];
+
   return {
     ok: true,
     pendingCount,
@@ -714,6 +903,9 @@ function getReviewsSection(db) {
     snapshot,
     platforms,
     aggregates,
+    cards,
+    trends,
+    escalations,
     warnings: []
   };
 }
@@ -823,6 +1015,44 @@ function renderDashboard(model) {
         el.textContent = new Date(ms).toLocaleString();
       }
     }
+    // Action-queue interactions. Copy + filter are CLIENT-ONLY (no network). The safe write-path
+    // (mark responded / snooze) POSTs to /api/review-action — TA/OT reversible state only; there is
+    // NO client path that fires a Google reply (that stays the Telegram tap).
+    let aqBusy = false;
+    document.addEventListener('click', (e) => {
+      const t = e.target;
+      if (!t || !t.closest) return;
+      if (t.hasAttribute('data-copy')) {
+        const card = t.closest('.aq-card');
+        const body = card && card.querySelector('[data-draft]');
+        if (body && navigator.clipboard) {
+          navigator.clipboard.writeText(body.textContent).then(() => {
+            const prev = t.textContent; t.textContent = 'Copied ✓';
+            window.setTimeout(() => { t.textContent = prev; }, 1500);
+          }).catch(() => {});
+        }
+        return;
+      }
+      if (t.hasAttribute('data-filter')) {
+        const f = t.getAttribute('data-filter') || '';
+        for (const card of document.querySelectorAll('.aq-card')) {
+          const issues = (card.getAttribute('data-issues') || '').split(' ');
+          card.style.display = (!f || issues.indexOf(f) !== -1) ? '' : 'none';
+        }
+        return;
+      }
+      if (t.hasAttribute('data-op')) {
+        const wrap = t.closest('[data-review]');
+        const id = wrap && wrap.getAttribute('data-review');
+        if (!id || aqBusy) return;
+        aqBusy = true; t.disabled = true;
+        const payload = { op: t.getAttribute('data-op'), review_id: id };
+        if (payload.op === 'snooze') payload.hours = 24;
+        fetch('/api/review-action', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) })
+          .then((r) => r.json()).then(() => window.location.reload())
+          .catch(() => { aqBusy = false; t.disabled = false; });
+      }
+    });
     window.setTimeout(() => window.location.reload(), 30000);
   </script>
 </body>
@@ -1060,6 +1290,7 @@ function renderReviews(section) {
     windowSuffix = snap.window ? ` (${escapeHtml(snap.window)})` : '';
   }
 
+  // Gate-decision log (Google rev: tap history) — kept as a compact transparency footer.
   const draftRows = section.postRows
     .map((post) => `
       <tr>
@@ -1074,23 +1305,27 @@ function renderReviews(section) {
   // Per-platform detail at honest grain (no-lies): Google overall-only (Google Business reviews
   // have no native sub-ratings); OpenTable dense per-review categories; TripAdvisor sparse
   // per-review + a location-averages row that reads "pending" until /api/v1/aggregates ships.
-  // OT/TA carry NO reply status (has_reply NULL) — labelled awareness, not an actionable queue.
   const platformTable = renderPlatformGrain(section.platforms || {}, section.aggregates || {}, snap, fmtRating, freshnessLabel);
+
+  // The action surface: ALLERGEN alert (top), the honest-grain ratings line + 959 demoted, the rising
+  // strip, then the cards (the queue). All rendered from STORED data — no draft is generated here.
+  const allergenAlert = renderAllergenAlert(section.escalations || []);
+  const risingStrip = renderRisingStrip(section.trends || []);
+  const cards = (section.cards || []).map(renderActionCard).join('');
+  const cardsBlock = cards
+    ? `<div class="aq-cards" id="aq-cards">${cards}</div>`
+    : '<div class="pbody"><span class="muted">No drafts in the queue — drafts generate on the daily ingest.</span></div>';
+  const queueCount = section.cards ? section.cards.length : 0;
 
   return `
     <section class="panel fade reviews-panel">
-      <div class="phead"><h2>Reviews</h2><span class="count">${formatInteger(section.pendingCount)} awaiting tap</span></div>
-      <div class="pbody table-wrap">
-        <table>
-          <tbody>
-            <tr><td>Drafts awaiting your tap</td><td class="mono">${formatInteger(section.pendingCount)}</td></tr>
-            <tr><td>Awaiting reply (last 30d)</td><td class="mono">${actionableCell}</td></tr>
-            <tr><td>Lifetime unanswered</td><td class="mono">${lifetimeCell}</td></tr>
-            <tr><td>Ratings${windowSuffix}</td><td class="mono">${ratingsCell}</td></tr>
-          </tbody>
-        </table>
-      </div>
+      <div class="phead"><h2>Reviews · Action Queue</h2><span class="count">${formatInteger(queueCount)} in queue · ${formatInteger(section.pendingCount)} awaiting tap</span></div>
+      ${allergenAlert}
+      <div class="pbody aq-grain mono">Ratings${windowSuffix}: ${ratingsCell} · <span class="muted">awaiting 30d: ${actionableCell}</span> · <span class="muted">lifetime ${lifetimeCell} · historical</span></div>
+      ${risingStrip}
+      ${cardsBlock}
       ${platformTable}
+      <div class="pbody"><span class="muted">Google gate log (rev: tap)</span></div>
       <div class="pbody table-wrap">
         <table>
           <thead><tr><th>Draft</th><th>Status</th><th>Decision</th><th>Time</th></tr></thead>
@@ -1100,6 +1335,79 @@ function renderReviews(section) {
       ${renderWarnings(section.warnings)}
     </section>
   `;
+}
+
+// Colour-coded platform badge (Google blue / TripAdvisor green / OpenTable red) — the existing aesthetic.
+function platformBadge(platform) {
+  if (platform === 'google') return { label: 'Google', cls: 'b-google' };
+  if (platform === 'tripadvisor') return { label: 'TripAdvisor', cls: 'b-ta' };
+  if (platform === 'opentable') return { label: 'OpenTable', cls: 'b-ot' };
+  return { label: platform || 'unknown', cls: 'b-unknown' };
+}
+
+function renderStars(overall) {
+  if (overall === null || overall === undefined) return '<span class="muted">—</span>';
+  const n = Math.max(0, Math.min(5, Math.round(overall)));
+  return '★'.repeat(n) + '☆'.repeat(5 - n);
+}
+
+// ALLERGEN escalation = a top safety alert (already flagged escalate=1 in review_actions on sight).
+function renderAllergenAlert(escalations) {
+  const allergen = escalations.find((e) => e.code === 'ALLERGEN_HANDLING');
+  if (!allergen) return '';
+  const firstLine = (allergen.summary || '').split('\n')[0];
+  return `<div class="aq-alert">⚠ ALLERGEN — escalated on sight (safety, any count). ${escapeHtml(firstLine)} <span class="aq-alert-tail">· surface to web research</span></div>`;
+}
+
+// Rising-issue chips (issue_trends, latest). Click filters the queue (client-side, no network).
+function renderRisingStrip(trends) {
+  const rising = (trends || []).filter((t) => t.rising);
+  if (rising.length === 0) return '';
+  const chips = rising
+    .map((t) => `<button class="aq-chip" type="button" data-filter="${escapeHtml(t.code)}">${escapeHtml(t.code)} ↑${formatInteger(t.current)} <span class="muted">(was ${formatInteger(t.prior)})</span></button>`)
+    .join('');
+  return `<div class="pbody aq-rising"><span class="aq-rising-lab">Rising 30d</span>${chips}<button class="aq-chip aq-chip-all" type="button" data-filter="">all</button></div>`;
+}
+
+// One actionable review card: badge, stars, reviewer, date, text, issue tags, the STORED draft, and
+// the per-platform action. Google → "Approve in Telegram" (the gated tap, status only). TA/OT → copy +
+// open-review deep-link + mark-responded/snooze (the narrow safe write-path). No card can post to Google.
+function renderActionCard(card) {
+  const badge = platformBadge(card.platform);
+  const tags = (card.tags || [])
+    .map((t) => `<button class="aq-tag" type="button" data-filter="${escapeHtml(t)}">${escapeHtml(t)}</button>`)
+    .join('');
+  const flagged = card.flagged
+    ? `<div class="aq-flag">⚠ guard flag: ${escapeHtml(card.flagged)} — review before posting</div>`
+    : '';
+  let action;
+  if (card.platform === 'google') {
+    const state = card.status === 'posted' ? 'posted ✓' : '⏳ Approve in Telegram';
+    action = `<div class="aq-actions"><span class="aq-state">${escapeHtml(state)}</span></div>`;
+  } else {
+    const open = card.url ? `<a class="aq-btn aq-open" href="${escapeHtml(card.url)}" target="_blank" rel="noopener noreferrer">Open review ↗</a>` : '';
+    action = `<div class="aq-actions" data-review="${escapeHtml(card.reviewId)}">
+        <button class="aq-btn aq-copy" type="button" data-copy>Copy reply</button>
+        ${open}
+        <button class="aq-btn aq-respond" type="button" data-op="mark_responded">Mark responded</button>
+        <button class="aq-btn aq-snooze" type="button" data-op="snooze">Snooze</button>
+        <span class="aq-state">draft · post manually</span>
+      </div>`;
+  }
+  return `
+    <article class="aq-card ${badge.cls}" data-issues="${escapeHtml((card.tags || []).join(' '))}">
+      <div class="aq-top">
+        <span class="aq-badge ${badge.cls}">${escapeHtml(badge.label)}</span>
+        <span class="aq-stars">${renderStars(card.overall)}</span>
+        <span class="aq-who">${escapeHtml(card.reviewer || '—')}</span>
+        <span class="aq-date mono">${escapeHtml(card.date)}</span>
+      </div>
+      <div class="aq-text">${escapeHtml(card.text)}</div>
+      ${tags ? `<div class="aq-tags">${tags}</div>` : ''}
+      <div class="aq-draft"><div class="aq-draft-label">Draft reply</div><div class="aq-draft-body" data-draft>${escapeHtml(card.draft)}</div></div>
+      ${flagged}
+      ${action}
+    </article>`;
 }
 
 // Per-platform grain block. Pure (HTML string from the section model + helpers). Renders nothing
@@ -2449,6 +2757,42 @@ function css() {
     .phead h2{font-family:var(--display);font-weight:700;font-size:var(--sm);letter-spacing:.12em;text-transform:uppercase;color:var(--mist)}
     .phead .count{margin-left:auto;font-family:var(--mono);font-size:var(--xs);color:var(--steel)}
     .pbody{padding:.4rem 0}
+    /* §reviews action queue (Step 2) */
+    .aq-alert{margin:.6rem 1.1rem;border:1px solid var(--red);background:var(--red-dim);color:var(--red);border-radius:8px;padding:.6rem .8rem;font-family:var(--mono);font-size:var(--xs);font-weight:700;line-height:1.4}
+    .aq-alert-tail{color:var(--ash);font-weight:400}
+    .aq-grain{padding:.3rem 1.1rem;font-size:var(--xs);color:var(--mist)}
+    .aq-rising{display:flex;flex-wrap:wrap;gap:.4rem;align-items:center;padding:.2rem 1.1rem .5rem}
+    .aq-rising-lab{font-family:var(--display);font-size:.6rem;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--steel);margin-right:.3rem}
+    .aq-chip{font-family:var(--mono);font-size:var(--xs);color:var(--amber);border:1px solid var(--amber-glow);background:var(--amber-glow);border-radius:999px;padding:.18rem .55rem;cursor:pointer}
+    .aq-chip:hover{border-color:var(--amber)}
+    .aq-chip-all{color:var(--steel);border-color:var(--line);background:transparent}
+    .aq-cards{display:flex;flex-direction:column;gap:.7rem;padding:.4rem 1.1rem 1rem}
+    .aq-card{border:1px solid var(--line);border-left:3px solid var(--steel);border-radius:8px;background:rgba(255,255,255,.02);padding:.7rem .85rem;display:flex;flex-direction:column;gap:.5rem}
+    .aq-card.b-google{border-left-color:#4285F4}
+    .aq-card.b-ta{border-left-color:#34E0A1}
+    .aq-card.b-ot{border-left-color:#DA3743}
+    .aq-top{display:flex;align-items:center;gap:.55rem;flex-wrap:wrap}
+    .aq-badge{font-family:var(--display);font-weight:700;font-size:.58rem;letter-spacing:.1em;text-transform:uppercase;padding:.16rem .5rem;border-radius:4px}
+    .aq-badge.b-google{background:#4285F4;color:#fff}
+    .aq-badge.b-ta{background:#34E0A1;color:#06281d}
+    .aq-badge.b-ot{background:#DA3743;color:#fff}
+    .aq-badge.b-unknown{background:var(--steel);color:var(--void)}
+    .aq-stars{color:var(--amber);font-size:var(--sm);letter-spacing:.04em}
+    .aq-who{font-family:var(--body);font-weight:600;color:var(--bright);font-size:var(--sm)}
+    .aq-date{margin-left:auto;color:var(--steel);font-size:var(--xs)}
+    .aq-text{color:var(--mist);font-size:var(--sm);line-height:1.45}
+    .aq-tags{display:flex;flex-wrap:wrap;gap:.3rem}
+    .aq-tag{font-family:var(--mono);font-size:.66rem;color:var(--ash);border:1px solid var(--line);background:transparent;border-radius:4px;padding:.1rem .4rem;cursor:pointer}
+    .aq-tag:hover{border-color:var(--steel);color:var(--mist)}
+    .aq-draft{border:1px solid var(--line);border-radius:6px;background:rgba(52,211,153,.05)}
+    .aq-draft-label{font-family:var(--display);font-size:.58rem;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--green);padding:.4rem .6rem .15rem}
+    .aq-draft-body{font-family:var(--body);font-size:var(--sm);color:var(--mist);padding:0 .6rem .55rem;white-space:pre-wrap;line-height:1.5}
+    .aq-flag{color:var(--amber);font-size:var(--xs);font-family:var(--mono)}
+    .aq-actions{display:flex;flex-wrap:wrap;gap:.45rem;align-items:center}
+    .aq-btn{font-family:var(--mono);font-size:var(--xs);color:var(--mist);background:var(--elevated);border:1px solid var(--line-strong);border-radius:6px;padding:.32rem .7rem;cursor:pointer;text-decoration:none;display:inline-block}
+    .aq-btn:hover{border-color:var(--steel)}
+    .aq-respond{color:var(--green);border-color:var(--green-dim)}
+    .aq-state{margin-left:auto;color:var(--steel);font-size:var(--xs);font-family:var(--mono)}
     .stack{display:flex;flex-direction:column;gap:1rem}
     .heroes{display:grid;grid-template-columns:1fr;gap:.7rem;padding:.9rem 1.1rem}
     .hero{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:.9rem 1rem;display:flex;flex-direction:column;gap:.55rem}
@@ -2572,5 +2916,7 @@ module.exports = {
   renderWorker,
   getReviewsSection,
   renderReviews,
+  applyReviewAction,
+  REVIEW_ACTION_OPS,
   spendLevel
 };

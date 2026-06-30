@@ -89,10 +89,11 @@ test('reviews panel renders honest grain: Google overall-only, OT/TA awareness, 
   assert.match(html, /Atmosphere/, 'TripAdvisor uses Atmosphere label');
   assert.match(html, /\(1\/2\)/, 'TripAdvisor coverage shows 1 of 2 (sparse)');
   assert.match(html, /awareness · no reply capability/, 'OT/TA labelled awareness');
-  // Reframe: LEAD with the actionable recent-text queue (6), keep 959 as labelled historical context.
-  assert.match(html, /Awaiting reply \(last 30d\)/, 'leads with the actionable queue');
+  // Reframe (Step 2 action queue): LEAD with the actionable recent-text queue (6), keep 959 as labelled
+  // historical context. The summary moved into the action-queue grain line.
+  assert.match(html, /awaiting 30d:/, 'leads with the actionable queue (action-queue grain line)');
   assert.match(html, /6 text · as of/, 'actionable number = 6 recent text');
-  assert.match(html, /Lifetime unanswered/, '959 kept as context, separate row');
+  assert.match(html, /lifetime 959/, '959 kept as labelled historical context');
   assert.match(html, /950 &gt;1yr · 274 star-only · historical/, '959 labelled historical, not actionable');
   assert.match(html, /6 recent · <span class="muted">actionable \(rev: tap\)/, 'rev: tap queue is the recent 6');
   assert.doesNotMatch(html, /959 awaiting · <span class="muted">actionable/, 'never labels the lifetime 959 as actionable');
@@ -132,6 +133,6 @@ test('reviews panel degrades gracefully when the corpus/aggregate tables are abs
   assert.deepEqual(section.platforms, {}, 'no per-platform data');
   const html = renderReviews(section);
   assert.doesNotMatch(html, /Per-review sub-ratings/, 'per-platform table omitted, not errored');
-  assert.match(html, /Awaiting reply \(last 30d\)/, 'summary still renders (reframed; breakdown NULL → "—")');
+  assert.match(html, /awaiting 30d:/, 'summary still renders (reframed action-queue grain line)');
   db.close();
 });
