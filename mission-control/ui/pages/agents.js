@@ -84,7 +84,13 @@ function describeJob(job) {
 // per-status copy for a blocked-on-you card (pill text / task verb / off-board TG button label).
 function youCopy(agentKey, status) {
   if (status === 'awaiting_plan_feedback') return { pill: 'Needs your plan feedback', verb: 'awaiting your plan feedback', btn: 'Review in TG' };
-  if (status === 'escalated') return { pill: 'Escalated — needs you', verb: 'escalated to you', btn: 'Open in TG' };
+  if (status === 'escalated') {
+    // A coder escalation that reaches a worker card is, by construction, a genuine GIVE-UP (deliberate
+    // cancels carry a 'cancelled' marker and are suppressed in coderSlots) — so name it plainly.
+    return agentKey === 'coder'
+      ? { pill: 'Gave up — needs you', verb: 'gave up', btn: 'Open in TG' }
+      : { pill: 'Escalated — needs you', verb: 'escalated to you', btn: 'Open in TG' };
+  }
   // awaiting_signoff
   return { pill: agentKey === 'coder' ? 'Needs your merge tap' : 'Needs your sign-off', verb: 'held at the merge gate', btn: 'Approve in TG' };
 }
@@ -188,6 +194,14 @@ module.exports = {
         const wn = r.worker_name && String(r.worker_name).trim();
         if (wn && !nameByOwner.has(r.owner_id)) nameByOwner.set(r.owner_id, wn);
       }
+      // DELIBERATE cancels vs genuine GIVE-UPS: an escalated coder job is a worker/Lead give-up UNLESS it
+      // carries a 'cancelled' event (actor='human', written by lib.cancel / the CLI escalate route). That
+      // marker is the failure-vs-choice cut — an unmarked escalation gets SURFACED ("gave up — needs you"),
+      // a marked one is a deliberate operator cancel and stays SUPPRESSED (the worker shows its true state).
+      // Default-surface: a give-up never written a marker still shows, so a real failure is never hidden.
+      const cancelledIds = new Set(
+        rows(q(`SELECT DISTINCT job_id FROM job_events WHERE kind = 'cancelled'`)).map((r) => r.job_id),
+      );
       const slots = new Map(); // key → { label, fresh, jobs }
       const slotFor = (key, label) => {
         if (!slots.has(key)) slots.set(key, { label, fresh: false, jobs: [] });
@@ -199,20 +213,22 @@ module.exports = {
         const wn = r.worker_name && String(r.worker_name).trim();
         slotFor(wn || r.owner_id, wn || shortOwner(r.owner_id)).fresh = true;
       }
-      // 2) attribute each worker's CURRENT work to its slot. Only IN-FLIGHT jobs (ACTIVE6) or a RECENT
-      // terminal are live worker state — escalated/old jobs are NOT (else a graveyard of dead/cancelled
-      // jobs floods the board, one card each). A non-roster owner gets a card ONLY for genuinely in-flight
-      // work (a hung worker still holding a gate — never hidden); a dead owner's stale terminal is dropped.
+      // 2) attribute each worker's CURRENT state to its slot: IN-FLIGHT jobs (ACTIVE6), a RECENT terminal,
+      // or a genuine GIVE-UP (unmarked escalated). Deliberate cancels + stale terminal are NOT worker state
+      // (skipped). A give-up attaches ONLY to an EXISTING live slot — it never spawns a card — so a dead
+      // worker's old escalation stays off the board (no live card), while a non-roster owner still gets a
+      // card for genuinely in-flight work (a hung worker holding a gate — never hidden).
       for (const j of coderJobs) {
         const inflight = ACTIVE6.indexOf(j.status) !== -1;
         const recentTerminal = (j.status === 'done' || j.status === 'failed') && now - num(j.updated_at) <= RECENT_MS;
-        if (!inflight && !recentTerminal) continue; // skip escalated + stale terminal — not current worker state
+        const giveUp = j.status === 'escalated' && !cancelledIds.has(j.id); // unmarked escalated = genuine give-up
+        if (!inflight && !recentTerminal && !giveUp) continue; // skip deliberate cancels + stale terminal
         const owner = j.owner_id || null;
         const wn = owner ? nameByOwner.get(owner) : null;
         const key = wn || owner || ' unassigned';
-        if (slots.has(key)) slots.get(key).jobs.push(j); // a known worker's (roster or already-seen) job
-        else if (inflight) slotFor(key, wn || (owner ? shortOwner(owner) : AGENTS.coder.name)).jobs.push(j); // no-hide: live work by a non-roster owner
-        // else: a dead owner's recent terminal with no live slot → not worth a card
+        if (slots.has(key)) slots.get(key).jobs.push(j); // a live worker's job — incl. its genuine give-up
+        else if (inflight) slotFor(key, wn || (owner ? shortOwner(owner) : AGENTS.coder.name)).jobs.push(j); // no-hide: live in-flight work by a non-roster owner
+        // else: a give-up/terminal by a dead owner with no live slot → no card (the historical stay off)
       }
       // 3) a rep per slot; a fresh worker with no live job → idle "standing by"; drop empty non-roster slots
       const out = [];
