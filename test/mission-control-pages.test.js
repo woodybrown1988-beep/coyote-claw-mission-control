@@ -135,24 +135,53 @@ test('agents: NO heartbeat rows → degrades to in-flight coder jobs by owner (n
   db.close();
 });
 
-test('agents: a fresh worker owning OLD escalated / stale-done jobs does NOT flood — one idle card, no graveyard', () => {
+test('agents: a fresh worker owning a CANCELLED escalation + stale-done jobs does NOT flood — one idle card', () => {
   const OLD = NOW - 5 * 86400000; // 5 days ago — well past the 36h "recently done" window
   const db = makeDb((d) => {
     d.prepare(`INSERT INTO worker_heartbeat (owner_id,last_beat_at,job_id,phase,updated_at,worker_name) VALUES ('box:10:1782800000000',?,null,'idle',?,'coder-1')`).run(NOW - 10000, NOW - 10000);
-    // ancient escalated + ancient done coder jobs owned by coder-1 — must NOT colour its card or spawn extras
-    d.prepare(`INSERT INTO jobs (id,type,payload,status,created_at,updated_at,attempts,owner_id) VALUES ('eold','coder-build','{}','escalated',?,?,1,'box:10:1782800000000')`).run(OLD, OLD);
+    // a CANCELLED escalation (deliberate operator cancel) + an ancient done job owned by coder-1 — neither
+    // is current worker state, so the card stays IDLE (the cancel is suppressed; the done is stale).
+    d.prepare(`INSERT INTO jobs (id,type,payload,status,created_at,updated_at,attempts,owner_id) VALUES ('ecancel','coder-build','{}','escalated',?,?,1,'box:10:1782800000000')`).run(OLD, OLD);
+    d.prepare(`INSERT INTO job_events (job_id,created_at,kind,actor) VALUES ('ecancel',?,'cancelled','human')`).run(OLD); // the deliberate-cancel marker
     d.prepare(`INSERT INTO jobs (id,type,payload,status,created_at,updated_at,attempts,owner_id) VALUES ('dold','coder-build','{}','done',?,?,1,'box:10:1782800000000')`).run(OLD, OLD);
-    // an escalated job owned by a DEAD non-roster owner (no heartbeat) — must NOT spawn a standalone card
+    // a give-up owned by a DEAD non-roster owner (no heartbeat) — no live card, stays off the board
     d.prepare(`INSERT INTO jobs (id,type,payload,status,created_at,updated_at,attempts,owner_id) VALUES ('edead','coder-build','{}','escalated',?,?,1,'box:77:1700000000000')`).run(OLD, OLD);
   });
   const ctx = ctxFor(db);
   const section = PAGES.agents.getSection(db, ctx);
   const coderCards = section.columns.flatMap((c) => c.cards).filter((c) => c.av === 'av-coder');
-  assert.equal(coderCards.length, 1, 'exactly ONE coder card (coder-1) — not one per stale/escalated job');
+  assert.equal(coderCards.length, 1, 'exactly ONE coder card (coder-1) — not one per stale/cancelled job');
   assert.equal(coderCards[0].name, 'coder-1');
-  assert.equal(coderCards[0].col, 'idle', 'a fresh worker with only stale jobs is IDLE, never a graveyard of blocked cards');
+  assert.equal(coderCards[0].col, 'idle', 'a deliberate cancel is suppressed + stale done skipped → the worker is IDLE');
   const out = PAGES.agents.render(section, ctx);
-  assert.doesNotMatch(out.body, /box:77/, 'a dead non-roster owner of an escalated job spawns no card');
+  assert.doesNotMatch(out.body, /box:77/, 'a dead non-roster owner of a give-up spawns no card (historical stay off)');
+  db.close();
+});
+
+test('agents: a LIVE worker that GAVE UP (unmarked escalation) surfaces "gave up — needs you"; a CANCEL stays suppressed', () => {
+  const db = makeDb((d) => {
+    const hb = d.prepare(`INSERT INTO worker_heartbeat (owner_id,last_beat_at,job_id,phase,updated_at,worker_name) VALUES (?,?,null,'idle',?,?)`);
+    hb.run('box:10:1782800000000', NOW - 10000, NOW - 10000, 'coder-1');
+    hb.run('box:11:1782800000001', NOW - 10000, NOW - 10000, 'coder-2');
+    // coder-1 OWNS a genuine give-up (escalated, UNMARKED) → must surface as "gave up — needs you"
+    d.prepare(`INSERT INTO jobs (id,type,payload,status,created_at,updated_at,attempts,owner_id,error) VALUES ('gv','coder-build','{"title":"Deploy Status board"}','escalated',?,?,1,'box:10:1782800000000','Lead loop: max-iter 3 reached without converging')`).run(NOW - 600000, NOW - 600000);
+    // coder-2 OWNS a deliberate cancel (escalated, MARKED 'cancelled') → must NOT alarm; card stays idle
+    d.prepare(`INSERT INTO jobs (id,type,payload,status,created_at,updated_at,attempts,owner_id) VALUES ('cn','coder-build','{}','escalated',?,?,1,'box:11:1782800000001')`).run(NOW - 600000, NOW - 600000);
+    d.prepare(`INSERT INTO job_events (job_id,created_at,kind,actor) VALUES ('cn',?,'cancelled','human')`).run(NOW - 600000);
+  });
+  const ctx = ctxFor(db);
+  const section = PAGES.agents.getSection(db, ctx);
+  const cards = section.columns.flatMap((c) => c.cards).filter((c) => c.av === 'av-coder');
+  const c1 = cards.find((c) => c.name === 'coder-1');
+  const c2 = cards.find((c) => c.name === 'coder-2');
+  // coder-1 gave up → Blocked column, "Gave up — needs you", a TG button (a real failure is VISIBLE)
+  assert.equal(c1.col, 'blocked', 'a live worker that gave up is surfaced, not shown idle');
+  assert.equal(c1.waitPill.text, 'Gave up — needs you');
+  assert.ok(c1.button, 'a TG button to open it');
+  // coder-2 cancelled → suppressed (no false alarm); the worker shows its true idle state
+  assert.equal(c2.col, 'idle', 'a deliberate cancel is NOT a "needs you"');
+  const out = PAGES.agents.render(section, ctx);
+  assert.match(out.body, /Gave up — needs you/, 'the give-up is rendered');
   db.close();
 });
 
