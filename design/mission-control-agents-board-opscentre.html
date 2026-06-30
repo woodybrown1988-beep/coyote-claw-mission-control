@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Coyote Claw — Agents Board (Ops-Centre)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0A0E16; --panel:#0E141E; --panel-2:#121A26;
+    --card:rgba(255,255,255,.025); --card-hover:rgba(255,255,255,.05);
+    --border:rgba(125,165,205,.10); --border-strong:rgba(125,165,205,.20); --hl:rgba(255,255,255,.05);
+    --text:#E5EDF7; --text-2:#899AB1; --muted:rgba(170,195,225,.34);
+    --cyan:#22D3EE; --cyan-dim:rgba(34,211,238,.13); --cyan-glow:rgba(34,211,238,.22);
+    --blue:#60A5FA; --green:#34D399; --green-dim:rgba(52,211,153,.13);
+    --amber:#FBBF24; --amber-dim:rgba(251,191,36,.12);
+    --red:#F87171; --red-dim:rgba(248,113,113,.12); --red-glow:rgba(248,113,113,.2);
+    --font-display:'Space Grotesk',sans-serif; --font-body:'Inter',sans-serif; --font-mono:'IBM Plex Mono',monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);font-family:var(--font-body);font-size:14.5px;line-height:1.5;-webkit-font-smoothing:antialiased}
+  /* control grid + glow */
+  body::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
+    background-image:linear-gradient(rgba(125,165,205,.025) 1px,transparent 1px),linear-gradient(90deg,rgba(125,165,205,.025) 1px,transparent 1px);
+    background-size:38px 38px}
+  body::after{content:'';position:fixed;top:-120px;left:160px;width:600px;height:400px;pointer-events:none;z-index:0;
+    background:radial-gradient(ellipse,var(--cyan-glow),transparent 65%);opacity:.5;filter:blur(40px)}
+  .app{display:grid;grid-template-columns:228px 1fr;min-height:100vh;position:relative;z-index:1}
+
+  /* SIDEBAR */
+  .sidebar{background:rgba(12,17,25,.7);backdrop-filter:blur(8px);border-right:1px solid var(--border);display:flex;flex-direction:column;position:sticky;top:0;height:100vh}
+  .brand{padding:21px 20px 17px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:11px}
+  .brand-mark{width:33px;height:33px;border:1.5px solid var(--cyan);border-radius:8px;display:grid;place-items:center;flex-shrink:0;background:var(--cyan-dim);box-shadow:0 0 14px var(--cyan-glow)}
+  .brand-name{font-family:var(--font-display);font-weight:600;font-size:16.5px;letter-spacing:.01em;line-height:1}
+  .brand-sub{font-family:var(--font-mono);font-size:9px;color:var(--muted);letter-spacing:.16em;text-transform:uppercase;margin-top:3px}
+  .nav{padding:12px 12px;flex:1}
+  .nav-label{font-family:var(--font-mono);font-size:9.5px;font-weight:500;color:var(--muted);letter-spacing:.16em;text-transform:uppercase;padding:14px 10px 7px}
+  .nav-item{display:flex;align-items:center;gap:11px;padding:9px 11px;border-radius:7px;cursor:pointer;color:var(--text-2);font-weight:500;font-size:14px;transition:all .15s ease-out;position:relative;margin-bottom:1px}
+  .nav-item:hover{background:rgba(255,255,255,.035);color:var(--text)}
+  .nav-item.active{background:var(--cyan-dim);color:#CFF6FB}
+  .nav-item.active::before{content:'';position:absolute;left:0;top:8px;bottom:8px;width:2.5px;background:var(--cyan);border-radius:0 2px 2px 0;box-shadow:0 0 8px var(--cyan-glow)}
+  .nav-item .ico{width:16.5px;height:16.5px;flex-shrink:0;opacity:.8}
+  .nav-item .badge{margin-left:auto;font-family:var(--font-mono);font-size:10.5px;font-weight:600;background:var(--red);color:#1a0d0d;border-radius:9px;padding:1px 7px;min-width:19px;text-align:center}
+  .nav-item .badge.amber{background:var(--amber);color:#241a05}
+  .sidebar-foot{padding:14px 18px;border-top:1px solid var(--border);font-family:var(--font-mono);font-size:10px;color:var(--muted);line-height:1.8}
+  .pulse-dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--green);margin-right:7px;box-shadow:0 0 7px rgba(52,211,153,.6)}
+
+  .main{padding:24px 28px 50px;overflow-y:auto;max-height:100vh}
+  .page-head{display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;gap:12px}
+  .page-title{font-family:var(--font-display);font-weight:600;font-size:29px;letter-spacing:-.01em;line-height:1}
+  .page-sub{color:var(--muted);font-size:13px;margin-top:6px}
+  .stamp{font-family:var(--font-mono);font-size:11px;color:var(--muted)}
+  .stamp b{color:var(--green)}
+
+  /* LEADERSHIP */
+  .apex{display:grid;grid-template-columns:1fr 1.4fr;gap:13px;margin-bottom:11px}
+  .lead-card{background:var(--card);border:1px solid var(--border);border-top:1px solid var(--hl);border-radius:12px;padding:16px 18px;display:flex;gap:14px;align-items:flex-start;position:relative;overflow:hidden;transition:all .2s ease-out}
+  .lead-card:hover{transform:translateY(-2px);background:var(--card-hover);border-color:var(--border-strong)}
+  .lead-card.cos{box-shadow:inset 0 0 0 1px rgba(34,211,238,.08)}
+  .lead-av{width:46px;height:46px;border-radius:11px;display:grid;place-items:center;flex-shrink:0;font-family:var(--font-display);font-weight:600;font-size:16px}
+  .lead-av.boss{background:rgba(137,154,177,.12);color:#A9B6C9;border:1px solid rgba(137,154,177,.2)}
+  .lead-av.cos{background:var(--cyan-dim);color:#7FE9F5;border:1px solid rgba(34,211,238,.35);box-shadow:0 0 16px var(--cyan-glow)}
+  .lead-body{flex:1;min-width:0}
+  .lead-top{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .lead-name{font-family:var(--font-display);font-weight:600;font-size:16.5px;letter-spacing:-.005em}
+  .lead-role{font-family:var(--font-mono);font-size:9.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.09em}
+  .lead-desc{font-size:13px;color:var(--text-2);margin-top:7px;line-height:1.5}
+  .lead-desc .muted{color:var(--muted)}
+  .cos-btn{font-family:var(--font-display);font-weight:500;font-size:12px;letter-spacing:.01em;padding:8px 15px;border-radius:8px;cursor:pointer;background:var(--cyan);color:#04222A;border:none;margin-top:11px;transition:all .15s;box-shadow:0 0 16px var(--cyan-glow)}
+  .cos-btn:hover{background:#5EE3F5;transform:translateY(-1px)}
+  .mstat{display:inline-flex;align-items:center;gap:6px;font-family:var(--font-mono);font-size:10px;font-weight:500;text-transform:uppercase;letter-spacing:.06em;padding:2px 9px;border-radius:9px}
+  .mstat .sd{width:6px;height:6px;border-radius:50%}
+  .mstat.idle{background:rgba(255,255,255,.04);color:var(--muted)} .mstat.idle .sd{background:#566}
+  .mstat.ready{background:var(--green-dim);color:var(--green)} .mstat.ready .sd{background:var(--green);box-shadow:0 0 7px rgba(52,211,153,.7)}
+
+  .librarian{background:linear-gradient(180deg,rgba(96,165,250,.05),rgba(96,165,250,.02));border:1px solid rgba(96,165,250,.2);border-top:1px solid var(--hl);border-radius:12px;padding:14px 18px;display:flex;align-items:center;gap:16px}
+  .lib-av{width:40px;height:40px;border-radius:10px;display:grid;place-items:center;flex-shrink:0;background:rgba(96,165,250,.12);border:1px solid rgba(96,165,250,.3);color:#9DC4FB;font-family:var(--font-display);font-weight:600;font-size:14px}
+  .lib-text{flex:1;min-width:0}
+  .lib-name{font-family:var(--font-display);font-weight:600;font-size:15px;display:flex;align-items:center;gap:10px}
+  .lib-tag{font-family:var(--font-mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em}
+  .lib-desc{font-size:12.5px;color:var(--text-2);margin-top:3px}
+  .lib-stats{display:flex;gap:24px;flex-shrink:0}
+  .lib-stat{text-align:right}
+  .lib-stat .v{font-family:var(--font-mono);font-size:18px;font-weight:600;color:var(--text)}
+  .lib-stat .l{font-family:var(--font-mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.07em;margin-top:1px}
+
+  .flow-divider{display:flex;align-items:center;gap:14px;margin:20px 0 13px}
+  .flow-divider .t{font-family:var(--font-mono);font-size:10.5px;font-weight:500;color:var(--muted);text-transform:uppercase;letter-spacing:.16em}
+  .flow-divider .rule{flex:1;height:1px;background:var(--border)}
+  .flow-divider .legend{display:flex;gap:15px;font-family:var(--font-mono);font-size:10px;color:var(--muted)}
+  .flow-divider .legend span{display:inline-flex;align-items:center;gap:5px}
+  .flow-divider .legend i{width:7px;height:7px;border-radius:50%;display:inline-block}
+
+  /* KANBAN */
+  .board{display:grid;grid-template-columns:repeat(5,1fr);gap:11px;align-items:start}
+  .col{background:rgba(255,255,255,.012);border:1px solid var(--border);border-radius:12px;padding:11px 10px;min-height:160px}
+  .col-head{display:flex;align-items:center;justify-content:space-between;padding:3px 6px 11px;border-bottom:1px solid var(--border);margin-bottom:11px}
+  .col-name{font-family:var(--font-mono);font-weight:500;font-size:11px;text-transform:uppercase;letter-spacing:.11em;display:flex;align-items:center;gap:8px;color:var(--text-2)}
+  .col-name i{width:7px;height:7px;border-radius:50%}
+  .col-count{font-family:var(--font-mono);font-size:10.5px;font-weight:600;color:var(--muted);background:rgba(255,255,255,.04);border-radius:8px;padding:1px 7px;min-width:18px;text-align:center}
+  .col.idle .col-name i{background:#566}
+  .col.queued .col-name i{background:var(--blue);box-shadow:0 0 6px rgba(96,165,250,.5)}
+  .col.working .col-name i{background:var(--green);box-shadow:0 0 6px rgba(52,211,153,.5)}
+  .col.blocked{background:rgba(248,113,113,.035);border-color:rgba(248,113,113,.2)}
+  .col.blocked .col-name i{background:var(--red);box-shadow:0 0 6px var(--red-glow)}
+  .col.done .col-name i{background:var(--green);opacity:.45}
+
+  .acard{background:var(--panel-2);border:1px solid var(--border);border-top:1px solid var(--hl);border-radius:10px;padding:11px 12px;margin-bottom:9px;transition:all .17s ease-out;position:relative;overflow:hidden}
+  .acard:last-child{margin-bottom:0}
+  .acard:hover{transform:translateY(-2px);border-color:var(--border-strong)}
+  .acard::before{content:'';position:absolute;left:0;top:0;bottom:0;width:2.5px}
+  .acard.w::before{background:var(--green);box-shadow:0 0 10px rgba(52,211,153,.4)}
+  .acard.you::before{background:var(--red);box-shadow:0 0 10px var(--red-glow)}
+  .acard.dept::before{background:var(--amber)}
+  .acard.i::before{background:#455}
+  .acard.d::before{background:var(--green);opacity:.4}
+  .acard-top{display:flex;align-items:center;gap:9px;margin-bottom:7px}
+  .acard-av{width:30px;height:30px;border-radius:8px;display:grid;place-items:center;flex-shrink:0;font-family:var(--font-display);font-weight:600;font-size:12px;border:1px solid var(--border)}
+  .av-lead{background:rgba(251,191,36,.13);color:#FCD667} .av-coder{background:rgba(96,165,250,.13);color:#9DC4FB}
+  .av-rev{background:rgba(34,211,238,.12);color:#7FE9F5} .av-research{background:rgba(137,154,177,.1);color:var(--muted)}
+  .av-acct{background:rgba(137,154,177,.07);color:rgba(170,195,225,.3)}
+  .acard-name{font-family:var(--font-display);font-weight:600;font-size:13.5px;line-height:1.1}
+  .acard-role{font-family:var(--font-mono);font-size:8.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-top:2px}
+  .acard-task{font-size:12.5px;color:var(--text-2);line-height:1.45;margin-bottom:8px}
+  .acard-task .muted{color:var(--muted)} .acard-task b{color:var(--text);font-weight:600}
+  .wait-pill{display:flex;align-items:center;gap:6px;font-size:11.5px;padding:5px 9px;border-radius:7px;margin-bottom:8px;line-height:1.3;font-family:var(--font-mono);font-size:10.5px}
+  .wait-pill.you{background:var(--red-dim);color:#FCA5A5} .wait-pill.dept{background:var(--amber-dim);color:#FCD667}
+  .wait-pill .ar{opacity:.7;flex-shrink:0}
+  .mini-track{display:flex;gap:3px;margin-bottom:8px}
+  .mini-seg{flex:1;height:3.5px;border-radius:2px;background:rgba(255,255,255,.07)}
+  .mini-seg.done{background:var(--green)} .mini-seg.active{background:var(--amber)}
+  .mini-seg.gate{background:var(--red);animation:bl 1.5s infinite;box-shadow:0 0 7px var(--red-glow)}
+  @keyframes bl{0%,100%{opacity:1}50%{opacity:.4}}
+  .acard-foot{display:flex;align-items:center;gap:7px;justify-content:space-between}
+  .acard-btn{font-family:var(--font-display);font-weight:500;font-size:10.5px;letter-spacing:.01em;padding:5px 12px;border-radius:6px;cursor:pointer;border:none;transition:all .15s;background:var(--cyan);color:#04222A;box-shadow:0 0 12px var(--cyan-glow)}
+  .acard-btn:hover{background:#5EE3F5;transform:translateY(-1px)}
+  .acard-time{font-family:var(--font-mono);font-size:9px;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark"><svg viewBox="0 0 24 24" fill="none" width="17" height="17"><path d="M12 3 L19 8 L17 19 L7 19 L5 8 Z" stroke="#22D3EE" stroke-width="1.5"/><circle cx="9.5" cy="11" r="1.1" fill="#22D3EE"/><circle cx="14.5" cy="11" r="1.1" fill="#22D3EE"/><path d="M9 15 Q12 17 15 15" stroke="#22D3EE" stroke-width="1.2" fill="none"/></svg></div>
+      <div><div class="brand-name">Coyote Claw</div><div class="brand-sub">Mission Control</div></div>
+    </div>
+    <nav class="nav">
+      <div class="nav-label">Command</div>
+      <div class="nav-item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>Overview</div>
+      <div class="nav-item active"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="7" r="3"/><circle cx="5" cy="17" r="2.5"/><circle cx="19" cy="17" r="2.5"/><path d="M12 10v3M9 15l-2 1M15 15l2 1"/></svg>Agents<span class="badge">2</span></div>
+      <div class="nav-label">Departments</div>
+      <div class="nav-item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 3l2.5 5 5.5.8-4 3.9.9 5.5L12 21l-4.9 2.1.9-5.5-4-3.9 5.5-.8z"/></svg>Reviews<span class="badge">6</span></div>
+      <div class="nav-item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M10.3 3.8 2.5 18a2 2 0 0 0 1.7 3h15.6a2 2 0 0 0 1.7-3L13.7 3.8a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg>Issues<span class="badge amber">1</span></div>
+      <div class="nav-item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 3v18h18"/><path d="M7 14l3-4 4 3 5-7"/></svg>Operations</div>
+      <div class="nav-label">System</div>
+      <div class="nav-item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 9h6v6H9z"/></svg>Health</div>
+    </nav>
+    <div class="sidebar-foot"><div><span class="pulse-dot"></span>6 daemons live</div><div>spend £41.20 / £75</div><div>ingest 06:00 · fresh</div></div>
+  </aside>
+
+  <main class="main">
+    <div class="page-head">
+      <div><h1 class="page-title">Agents</h1><div class="page-sub">The team · who's working, who's stuck, who needs you</div></div>
+      <div class="stamp">live · <b>polling the Librarian</b></div>
+    </div>
+
+    <div class="apex">
+      <div class="lead-card boss">
+        <div class="lead-av boss">BO</div>
+        <div class="lead-body">
+          <div class="lead-top"><span class="lead-name">Boss</span><span class="lead-role">router · reception</span><span class="mstat idle"><span class="sd"></span>Listening</span></div>
+          <div class="lead-desc">Classifies every incoming message and routes it. <span class="muted">A switchboard, not a manager — it directs, it doesn't reason.</span></div>
+        </div>
+      </div>
+      <div class="lead-card cos">
+        <div class="lead-av cos">CS</div>
+        <div class="lead-body">
+          <div class="lead-top"><span class="lead-name">Chief of Staff</span><span class="lead-role">advisor · briefings</span><span class="mstat ready"><span class="sd"></span>Ready</span></div>
+          <div class="lead-desc">Reads the Librarian, synthesises status, talks through next steps. <span class="muted">The one you actually talk to.</span></div>
+          <button class="cos-btn">▸ What's been done today?</button>
+        </div>
+      </div>
+    </div>
+    <div class="librarian">
+      <div class="lib-av">LB</div>
+      <div class="lib-text">
+        <div class="lib-name">The Librarian <span class="lib-tag">state spine · source of truth</span></div>
+        <div class="lib-desc">Every job state, result, and gate decision. No model — pure memory. Everyone reads and writes here; the board renders from it.</div>
+      </div>
+      <div class="lib-stats">
+        <div class="lib-stat"><div class="v">3</div><div class="l">active jobs</div></div>
+        <div class="lib-stat"><div class="v">214</div><div class="l">total run</div></div>
+        <div class="lib-stat"><div class="v">428</div><div class="l">events</div></div>
+      </div>
+    </div>
+
+    <div class="flow-divider">
+      <span class="t">The fleet</span><span class="rule"></span>
+      <span class="legend">
+        <span><i style="background:#566"></i>idle</span><span><i style="background:#60A5FA"></i>queued</span>
+        <span><i style="background:#34D399"></i>working</span><span><i style="background:#F87171"></i>blocked</span>
+        <span><i style="background:rgba(52,211,153,.45)"></i>done</span>
+      </span>
+    </div>
+
+    <div class="board">
+      <div class="col idle">
+        <div class="col-head"><span class="col-name"><i></i>Idle</span><span class="col-count">2</span></div>
+        <div class="acard i">
+          <div class="acard-top"><div class="acard-av av-research">RE</div><div><div class="acard-name">Research</div><div class="acard-role">sourced precedent</div></div></div>
+          <div class="acard-task"><span class="muted">Standing by for stubborn-issue hand-offs. Not yet wired.</span></div>
+          <div class="acard-foot"><span class="acard-time">scoped · Gap C</span></div>
+        </div>
+        <div class="acard i">
+          <div class="acard-top"><div class="acard-av av-acct">AC</div><div><div class="acard-name" style="color:rgba(170,195,225,.4)">Accountant</div><div class="acard-role">books · tax</div></div></div>
+          <div class="acard-task"><span class="muted">Planned specialist. Not built.</span></div>
+          <div class="acard-foot"><span class="acard-time">future</span></div>
+        </div>
+      </div>
+
+      <div class="col queued">
+        <div class="col-head"><span class="col-name"><i></i>Queued</span><span class="col-count">1</span></div>
+        <div class="acard" style="border-left:2.5px solid var(--blue)">
+          <div class="acard-top"><div class="acard-av av-rev">RV</div><div><div class="acard-name">Reviews</div><div class="acard-role">next ingest</div></div></div>
+          <div class="acard-task">Daily ingest <b>queued</b> — Google + TripAdvisor + OpenTable email.</div>
+          <div class="acard-foot"><span class="acard-time">fires 06:00 UTC</span></div>
+        </div>
+      </div>
+
+      <div class="col working">
+        <div class="col-head"><span class="col-name"><i></i>Working</span><span class="col-count">1</span></div>
+        <div class="acard w">
+          <div class="acard-top"><div class="acard-av av-lead">LE</div><div><div class="acard-name">Lead</div><div class="acard-role">planner · gate</div></div></div>
+          <div class="acard-task">Planning the <b>mission-control redesign</b> spec.</div>
+          <div class="mini-track"><div class="mini-seg done"></div><div class="mini-seg active"></div><div class="mini-seg"></div><div class="mini-seg"></div></div>
+          <div class="acard-foot"><span class="acard-time">running 1m 20s</span></div>
+        </div>
+      </div>
+
+      <div class="col blocked">
+        <div class="col-head"><span class="col-name"><i></i>Blocked</span><span class="col-count">3</span></div>
+        <div class="acard you">
+          <div class="acard-top"><div class="acard-av av-coder">CO</div><div><div class="acard-name">Coder</div><div class="acard-role">builder · cage</div></div></div>
+          <div class="acard-task">Built <b>PR #38</b>. Tests 9/9. Held at the merge gate.</div>
+          <div class="wait-pill you"><span class="ar">▸</span>Needs your merge tap</div>
+          <div class="mini-track"><div class="mini-seg done"></div><div class="mini-seg done"></div><div class="mini-seg done"></div><div class="mini-seg gate"></div></div>
+          <div class="acard-foot"><button class="acard-btn">Approve in TG</button><span class="acard-time">held 4m</span></div>
+        </div>
+        <div class="acard you">
+          <div class="acard-top"><div class="acard-av av-rev">RV</div><div><div class="acard-name">Reviews</div><div class="acard-role">drafting</div></div></div>
+          <div class="acard-task"><b>6 replies</b> drafted, in voice, through the guard.</div>
+          <div class="wait-pill you"><span class="ar">▸</span>2 to approve · 4 to copy &amp; post</div>
+          <div class="acard-foot"><button class="acard-btn">Go to queue</button></div>
+        </div>
+        <div class="acard dept">
+          <div class="acard-top"><div class="acard-av av-research">RE</div><div><div class="acard-name">Research</div><div class="acard-role">precedent</div></div></div>
+          <div class="acard-task"><span class="muted">An allergen issue is pending your triage before it can escalate.</span></div>
+          <div class="wait-pill dept"><span class="ar">▸</span>Waiting on Reviews Dept</div>
+          <div class="acard-foot"><span class="acard-time">no escalation yet</span></div>
+        </div>
+      </div>
+
+      <div class="col done">
+        <div class="col-head"><span class="col-name"><i></i>Done</span><span class="col-count">2</span></div>
+        <div class="acard d">
+          <div class="acard-top"><div class="acard-av av-rev">RV</div><div><div class="acard-name">Reviews</div><div class="acard-role">ingest</div></div></div>
+          <div class="acard-task">Last ingest complete — <b>12 drafts</b> generated.</div>
+          <div class="acard-foot"><span class="acard-time">✓ 06:00 today</span></div>
+        </div>
+        <div class="acard d">
+          <div class="acard-top"><div class="acard-av av-coder">CO</div><div><div class="acard-name">Coder</div><div class="acard-role">shipped</div></div></div>
+          <div class="acard-task">PR #37 board reframe — <b>merged &amp; deployed</b>.</div>
+          <div class="acard-foot"><span class="acard-time">✓ yesterday</span></div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+</body>
+</html>
