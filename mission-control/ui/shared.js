@@ -64,6 +64,7 @@ const NAV = [
     { key: 'reviews', label: 'Reviews', route: '/reviews', ico: '<path d="M12 3l2.5 5 5.5.8-4 3.9.9 5.5L12 21l-4.9 2.1.9-5.5-4-3.9 5.5-.8z"/>' },
     { key: 'issues', label: 'Issues', route: '/issues', ico: '<path d="M10.3 3.8 2.5 18a2 2 0 0 0 1.7 3h15.6a2 2 0 0 0 1.7-3L13.7 3.8a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/>' },
     { key: 'operations', label: 'Operations', route: '/operations', ico: '<path d="M3 3v18h18"/><path d="M7 14l3-4 4 3 5-7"/>' },
+    { key: 'recipes', label: 'Recipes & Costs', route: '/recipes', ico: '<path d="M5 3h11l3 3v15H5z"/><path d="M9 8h6M9 12h6M9 16h4"/>' },
   ] },
   { group: 'System', items: [
     { key: 'health', label: 'Health', route: '/health', ico: '<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 9h6v6H9z"/>' },
@@ -127,7 +128,10 @@ function clientScript() {
     if(t.hasAttribute('data-filter')){const f=t.getAttribute('data-filter')||''; for(const card of document.querySelectorAll('[data-issues]')){const xs=(card.getAttribute('data-issues')||'').split(' '); card.style.display=(!f||xs.indexOf(f)!==-1)?'':'none';} return;}
     if(t.hasAttribute('data-op')){const wrap=t.closest('[data-review]'); const id=wrap&&wrap.getAttribute('data-review'); if(!id||aqBusy)return; aqBusy=true;t.disabled=true; const p={op:t.getAttribute('data-op'),review_id:id}; if(p.op==='snooze')p.hours=24; fetch('/api/review-action',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(p)}).then(r=>r.json()).then(()=>location.reload()).catch(()=>{aqBusy=false;t.disabled=false;}); return;}
     if(t.hasAttribute('data-log-action')){const form=t.closest('[data-log-form]'); if(!form||aqBusy)return; const code=form.querySelector('[name=issue_code]').value; const action=(form.querySelector('[name=action_taken]').value||'').trim(); if(!action){return;} aqBusy=true;t.disabled=true; fetch('/api/review-action',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({op:'log_action',issue_code:code,action_taken:action,action_date:Date.now()})}).then(r=>r.json()).then(()=>location.reload()).catch(()=>{aqBusy=false;t.disabled=false;}); return;}
+    if(t.classList&&t.classList.contains('rc-import-btn')){const box=t.closest('[data-kind]'); const file=box&&box.querySelector('input[type=file]'); const out=box.querySelector('.rc-result'); if(!file||!file.files||!file.files[0]){if(out)out.textContent='choose a CSV first';return;} const kind=box.getAttribute('data-kind'); const rd=new FileReader(); rd.onload=function(){ if(out)out.textContent='importing…'; fetch('/api/recipe-import?kind='+encodeURIComponent(kind),{method:'POST',headers:{'content-type':'text/csv'},body:rd.result}).then(r=>r.json()).then(r=>{ if(r&&r.ok){ if(out)out.textContent='imported '+r.imported+(r.rejected&&r.rejected.length?(' · '+r.rejected.length+' rejected'):''); setTimeout(()=>location.reload(),900);} else { if(out)out.textContent='failed: '+((r&&r.error)||'unknown'); } }).catch(()=>{if(out)out.textContent='network error';}); }; rd.readAsText(file.files[0]); return;}
   });
+  // BOM (Recipes & Costs) — gated edits: submit an rc-form to POST /api/recipe-action (the closed allowlist).
+  document.addEventListener('submit',(e)=>{const f=e.target; if(!f||!f.classList||!f.classList.contains('rc-form'))return; e.preventDefault(); if(aqBusy)return; const kind=f.getAttribute('data-rc'); const d={}; new FormData(f).forEach((v,k)=>{d[k]=v;}); let body; if(kind==='sub_item'){body={op:'upsert_sub_item',id:d.id,name:d.name,supplier:d.supplier,pack_description:d.pack_description,pack_cost_pence:(d.pack_cost===''||d.pack_cost==null)?null:Math.round(parseFloat(d.pack_cost)*100),pack_qty:(d.pack_qty===''?null:d.pack_qty),unit_of_measure:d.unit_of_measure};}else{body={op:'set_recipe_line',product_id:d.product_id,sub_item_id:d.sub_item_id,quantity:d.quantity};} aqBusy=true; fetch('/api/recipe-action',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}).then(r=>r.json()).then(r=>{aqBusy=false; if(r&&r.ok){location.reload();}else{alert('Rejected: '+((r&&r.error)||'unknown'));}}).catch(()=>{aqBusy=false;}); });
   setTimeout(()=>location.reload(),30000);`;
 }
 
@@ -208,6 +212,18 @@ function css() {
   .tag:hover{border-color:var(--border-strong);color:var(--text)}
   .btn{font-family:var(--font-display);font-weight:500;font-size:11px;letter-spacing:.01em;padding:6px 13px;border-radius:7px;cursor:pointer;border:1px solid var(--border-strong);background:var(--panel-2);color:var(--text);transition:all .15s}
   .btn:hover{border-color:var(--border-strong);background:var(--card-hover)}
+  .chip.green{color:var(--green);background:var(--green-dim);border-color:rgba(52,211,153,.25)}
+  /* BOM (Recipes & Costs) editor */
+  .ash{color:var(--text-2)}
+  .tbl{width:100%;border-collapse:collapse;font-size:12px}
+  .tbl th{text-align:left;font-family:var(--font-mono);font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--text-2);padding:6px 10px;border-bottom:1px solid var(--border)}
+  .tbl td{padding:6px 10px;border-bottom:1px solid var(--hl)}
+  .rc-form{display:flex;flex-wrap:wrap;gap:7px;align-items:center;margin-top:11px}
+  .rc-form input,.rc-form select{font-family:var(--font-mono);font-size:11.5px;padding:5px 8px;border-radius:6px;border:1px solid var(--border);background:var(--panel-2);color:var(--text)}
+  .rc-prod{border-top:1px solid var(--hl);padding:9px 0}
+  .rc-prod-head{display:flex;flex-wrap:wrap;gap:8px;align-items:center;font-size:12.5px}
+  .rc-import{display:flex;gap:9px;align-items:center;margin:6px 0}
+  .rc-result{font-family:var(--font-mono);font-size:11px}
   .btn.cyan{background:var(--cyan);color:#04222A;border:none;box-shadow:0 0 14px var(--cyan-glow)}
   .btn.cyan:hover{background:#5EE3F5;transform:translateY(-1px)}
   .btn.green{color:var(--green);border-color:var(--green-dim)}

@@ -36,6 +36,9 @@ function schema(db) {
     CREATE TABLE spend_log (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT, tokens INTEGER, cost_pence INTEGER, created_at INTEGER, note TEXT);
     CREATE TABLE system_state (key TEXT PRIMARY KEY, value TEXT);
     CREATE TABLE worker_heartbeat (owner_id TEXT PRIMARY KEY, last_beat_at INTEGER, job_id TEXT, phase TEXT, updated_at INTEGER, worker_name TEXT);
+    CREATE TABLE sub_items (id TEXT PRIMARY KEY, name TEXT, supplier TEXT, pack_description TEXT, pack_cost_pence INTEGER, pack_qty REAL, unit_of_measure TEXT, cost_source TEXT DEFAULT 'manual', updated_at INTEGER);
+    CREATE TABLE products (id TEXT PRIMARY KEY, lightspeed_sku TEXT UNIQUE, name TEXT, category TEXT, updated_at INTEGER);
+    CREATE TABLE recipe_lines (product_id TEXT, sub_item_id TEXT, quantity REAL, updated_at INTEGER, PRIMARY KEY (product_id, sub_item_id));
   `);
 }
 function makeDb(seed) {

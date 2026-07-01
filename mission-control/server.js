@@ -73,6 +73,22 @@ function handleRequest(req, res) {
     return;
   }
 
+  // BOM safe-write (Tier 2, same discipline): the operator's recipe/cost edits + the CSV bulk import.
+  if (req.method === 'POST' && url.pathname === '/api/recipe-action') {
+    handleRecipeAction(req, res);
+    return;
+  }
+  if (req.method === 'POST' && url.pathname === '/api/recipe-import') {
+    handleRecipeImport(req, res, url);
+    return;
+  }
+  // Download a recipes-CSV template PRE-FILLED with the live products (real SKUs from sales) so the
+  // operator fills sub_item_id + quantity against their actual menu. SELECT-only (reads products).
+  if (req.method === 'GET' && url.pathname === '/api/recipe-template') {
+    handleRecipeTemplate(res);
+    return;
+  }
+
   if (req.method !== 'GET') {
     sendText(res, 405, 'Method not allowed');
     return;
@@ -113,6 +129,7 @@ const PAGES = [
   require('./ui/pages/reviews.js'),
   require('./ui/pages/issues.js'),
   require('./ui/pages/operations.js'),
+  require('./ui/pages/recipes.js'),
   require('./ui/pages/health.js'),
 ];
 const PAGE_BY_ROUTE = {};
@@ -389,6 +406,223 @@ function handleReviewAction(req, res) {
       }
     }
   });
+}
+
+// ===================================================================================================
+// BOM (recipe/cost) SAFE-WRITE — the SECOND narrow write-path, identical two-tier discipline as
+// review-action: a CLOSED op allowlist, a pure applyRecipeAction(db, body, now), all SQL parameterised,
+// the tier-2 write handle opened for the statement(s) then closed. This is the ONE place the operator
+// edits recipes/costs — the agent NEVER writes here. Rendering (margin) stays SELECT-only.
+// ===================================================================================================
+const LEGAL_UNITS = new Set(['each', 'g', 'ml', 'portion']);
+const LEGAL_COST_SOURCES = new Set(['manual', 'portal', 'pdf']);
+// The operator edits INGREDIENTS and RECIPE LINES only. PRODUCTS are NOT operator-created — they are
+// seeded exclusively from the live Lightspeed SKUs by the sales ingest (ground truth = what's actually
+// selling), so a recipe can only attach to a REAL, current product. A recipe line for an unknown SKU is
+// rejected, never silently created (no-fabrication: no recipes against phantom products). All three ops
+// are safe, reversible, operator-driven.
+const RECIPE_ACTION_OPS = new Set(['upsert_sub_item', 'set_recipe_line', 'delete_recipe_line']);
+
+/** Non-negative integer pence, or null. Rejects floats/negatives/NaN (money is integer pence). */
+function asPence(v) {
+  if (v === null || v === undefined || v === '') return { ok: true, value: null };
+  const n = Number(v);
+  if (!Number.isInteger(n) || n < 0) return { ok: false };
+  return { ok: true, value: n };
+}
+/** A positive finite number (pack_qty, recipe quantity) — REAL is allowed (0.5 portion, 30 g). */
+function asPositive(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n <= 0) return { ok: false };
+  return { ok: true, value: n };
+}
+function nonEmpty(v) {
+  const s = v === null || v === undefined ? '' : String(v).trim();
+  return s;
+}
+
+/**
+ * Apply ONE narrow recipe/cost action against a writable db. Pure over (db, body, now) for testability.
+ * Rejects anything off the allowlist or failing validation; all SQL parameterised. Never stores a rounded
+ * unit cost (pack_cost_pence + pack_qty are the exact inputs; the per-unit cost is computed at read time).
+ */
+function applyRecipeAction(db, body, now) {
+  const op = body && body.op;
+  if (!RECIPE_ACTION_OPS.has(op)) return { ok: false, status: 400, error: 'unknown op' };
+  try {
+    if (op === 'upsert_sub_item') {
+      const id = nonEmpty(body.id);
+      const name = nonEmpty(body.name);
+      const uom = nonEmpty(body.unit_of_measure);
+      if (!id || !name) return { ok: false, status: 400, error: 'id and name required' };
+      if (!LEGAL_UNITS.has(uom)) return { ok: false, status: 400, error: 'unit_of_measure must be each|g|ml|portion' };
+      const packCost = asPence(body.pack_cost_pence);
+      if (!packCost.ok) return { ok: false, status: 400, error: 'pack_cost_pence must be a non-negative integer (pence)' };
+      let packQty = null;
+      if (body.pack_qty !== null && body.pack_qty !== undefined && body.pack_qty !== '') {
+        const pq = asPositive(body.pack_qty);
+        if (!pq.ok) return { ok: false, status: 400, error: 'pack_qty must be a positive number' };
+        packQty = pq.value;
+      }
+      const costSource = body.cost_source === undefined || body.cost_source === null || body.cost_source === ''
+        ? 'manual' : nonEmpty(body.cost_source);
+      if (!LEGAL_COST_SOURCES.has(costSource)) return { ok: false, status: 400, error: 'cost_source must be manual|portal|pdf' };
+      db.prepare(`
+        INSERT INTO sub_items (id, name, supplier, pack_description, pack_cost_pence, pack_qty, unit_of_measure, cost_source, updated_at)
+        VALUES (@id, @name, @supplier, @pack_description, @pack_cost_pence, @pack_qty, @uom, @cost_source, @now)
+        ON CONFLICT(id) DO UPDATE SET
+          name = excluded.name, supplier = excluded.supplier, pack_description = excluded.pack_description,
+          pack_cost_pence = excluded.pack_cost_pence, pack_qty = excluded.pack_qty,
+          unit_of_measure = excluded.unit_of_measure, cost_source = excluded.cost_source, updated_at = excluded.updated_at
+      `).run({ id, name, supplier: nonEmpty(body.supplier) || null, pack_description: nonEmpty(body.pack_description) || null,
+        pack_cost_pence: packCost.value, pack_qty: packQty, uom, cost_source: costSource, now });
+      return { ok: true, status: 200, op, id };
+    }
+    if (op === 'set_recipe_line') {
+      const productId = nonEmpty(body.product_id);
+      const subItemId = nonEmpty(body.sub_item_id);
+      if (!productId || !subItemId) return { ok: false, status: 400, error: 'product_id and sub_item_id required' };
+      const qty = asPositive(body.quantity);
+      if (!qty.ok) return { ok: false, status: 400, error: 'quantity must be a positive number (in the sub-item unit)' };
+      // A recipe can ONLY attach to a real, sales-seeded product + a defined ingredient — no phantom rows.
+      // (The DB FK also enforces this; a 409 is friendlier than a raw constraint throw.)
+      if (!db.prepare(`SELECT 1 FROM products WHERE id = ?`).get(productId)) return { ok: false, status: 409, error: 'no such product (SKU not in the live menu — seed products from sales first)' };
+      if (!db.prepare(`SELECT 1 FROM sub_items WHERE id = ?`).get(subItemId)) return { ok: false, status: 409, error: 'no such sub_item_id (define the ingredient first)' };
+      db.prepare(`
+        INSERT INTO recipe_lines (product_id, sub_item_id, quantity, updated_at)
+        VALUES (@product_id, @sub_item_id, @quantity, @now)
+        ON CONFLICT(product_id, sub_item_id) DO UPDATE SET quantity = excluded.quantity, updated_at = excluded.updated_at
+      `).run({ product_id: productId, sub_item_id: subItemId, quantity: qty.value, now });
+      return { ok: true, status: 200, op, product_id: productId, sub_item_id: subItemId };
+    }
+    // delete_recipe_line
+    const productId = nonEmpty(body.product_id);
+    const subItemId = nonEmpty(body.sub_item_id);
+    if (!productId || !subItemId) return { ok: false, status: 400, error: 'product_id and sub_item_id required' };
+    const r = db.prepare(`DELETE FROM recipe_lines WHERE product_id = ? AND sub_item_id = ?`).run(productId, subItemId);
+    return { ok: r.changes > 0, status: r.changes > 0 ? 200 : 409, op, changes: r.changes };
+  } catch (e) {
+    return { ok: false, status: 500, error: 'write failed' };
+  }
+}
+
+function handleRecipeAction(req, res) {
+  readJsonBody(req, res, 8192, (parsed) => {
+    const opened = openWritableDatabase();
+    if (!opened.ok) { sendJson(res, 503, { ok: false, error: 'database unavailable for write' }); return; }
+    try {
+      const result = applyRecipeAction(opened.db, parsed, Date.now());
+      sendJson(res, result.status || (result.ok ? 200 : 400), result);
+    } finally {
+      try { opened.db.close(); } catch (_) { /* close failure not user-actionable */ }
+    }
+  });
+}
+
+/**
+ * CSV bulk import (the PRIMARY first-load path). ONE endpoint, TWO kinds: 'sub_items' | 'recipes'.
+ * Every row is applied through applyRecipeAction (same validation) inside a single transaction, so the
+ * import is atomic and can NEVER write an unvalidated row. Returns a per-row accept/reject summary — a
+ * bad row is reported, never silently dropped. £ money columns are converted to integer pence here (the
+ * boundary), so applyRecipeAction only ever sees pence.
+ *
+ * PRODUCTS are NOT created here — the 'recipes' import attaches to REAL products (seeded from live sales
+ * SKUs); a row whose product_sku is not in the live menu is REJECTED with a clear reason (never a phantom
+ * product). The operator fills recipes against their real product list (downloadable pre-filled template).
+ */
+function applyRecipeImport(db, kind, csvText, now) {
+  const rows = parseCsv(csvText);
+  if (!rows.length) return { ok: false, status: 400, error: 'empty CSV (need a header row + data)' };
+  const header = rows[0].map((h) => h.trim().toLowerCase());
+  const body = rows.slice(1).filter((r) => r.some((c) => c.trim() !== ''));
+  const col = (row, name) => { const i = header.indexOf(name); return i >= 0 ? row[i] : undefined; };
+  const results = [];
+  let imported = 0;
+  // £ (e.g. "5.00") → integer pence, epsilon-safe.
+  const poundsToPence = (v) => {
+    const s = String(v == null ? '' : v).replace(/[£,\s]/g, '');
+    if (s === '') return null;
+    const n = Number(s);
+    if (!Number.isFinite(n) || n < 0) return NaN;
+    return Math.round(n * 100);
+  };
+  try {
+    txWrite(db, () => {
+      body.forEach((row, i) => {
+        let action;
+        if (kind === 'sub_items') {
+          const pence = poundsToPence(col(row, 'pack_cost'));
+          action = { op: 'upsert_sub_item', id: col(row, 'id'), name: col(row, 'name'), supplier: col(row, 'supplier'),
+            pack_description: col(row, 'pack_description'), pack_cost_pence: Number.isNaN(pence) ? 'bad' : pence,
+            pack_qty: col(row, 'pack_qty'), unit_of_measure: col(row, 'unit_of_measure'), cost_source: 'manual' };
+        } else { // recipes: attach to an EXISTING product (product_id = the live SKU); no product creation
+          action = { op: 'set_recipe_line', product_id: nonEmpty(col(row, 'product_sku')),
+            sub_item_id: col(row, 'sub_item_id'), quantity: col(row, 'quantity') };
+        }
+        const r = applyRecipeAction(db, action, now);
+        if (r.ok) imported += 1;
+        results.push({ row: i + 2, ok: r.ok, ...(r.ok ? {} : { error: r.error }) });
+      });
+    });
+  } catch (e) {
+    return { ok: false, status: 500, error: 'import transaction failed (rolled back)' };
+  }
+  const rejected = results.filter((r) => !r.ok);
+  return { ok: true, status: 200, kind, imported, rejected };
+}
+
+function handleRecipeImport(req, res, url) {
+  const kind = (url.searchParams.get('kind') || '').trim();
+  if (kind !== 'sub_items' && kind !== 'recipes') { sendJson(res, 400, { ok: false, error: 'kind must be sub_items|recipes' }); return; }
+  readTextBody(req, res, 512 * 1024, (csvText) => {
+    const opened = openWritableDatabase();
+    if (!opened.ok) { sendJson(res, 503, { ok: false, error: 'database unavailable for write' }); return; }
+    try {
+      const result = applyRecipeImport(opened.db, kind, csvText, Date.now());
+      sendJson(res, result.status || (result.ok ? 200 : 400), result);
+    } finally {
+      try { opened.db.close(); } catch (_) { /* not user-actionable */ }
+    }
+  });
+}
+
+// A CSV cell that quotes/escapes only when needed (comma, quote, or newline present).
+function csvCell(v) {
+  const s = v == null ? '' : String(v);
+  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+/** The recipes-CSV template, PRE-FILLED with the live products (real SKUs) so the operator only fills
+ *  sub_item_id + quantity. SELECT-only. If products aren't seeded yet (sales not flowing), it returns
+ *  just the header + a note row — honest, never a fabricated product. */
+function buildRecipeTemplate(db) {
+  const header = 'product_sku,product_name,sub_item_id,quantity';
+  let rows = [];
+  try {
+    const res = safeSelect(db, `SELECT lightspeed_sku, name FROM products ORDER BY name, lightspeed_sku`);
+    if (res.ok) rows = res.rows;
+  } catch (_) { rows = []; }
+  if (!rows.length) {
+    return `${header}\n# no products yet — they seed from live Lightspeed sales; download again once sales are flowing\n`;
+  }
+  // one blank line per product (operator adds a row per ingredient, copying the sku down)
+  const lines = rows.map((r) => `${csvCell(r.lightspeed_sku)},${csvCell(r.name)},,`);
+  return `${header}\n${lines.join('\n')}\n`;
+}
+function handleRecipeTemplate(res) {
+  const opened = openDatabase();
+  let csv;
+  try {
+    csv = opened.ok ? buildRecipeTemplate(opened.db) : 'product_sku,product_name,sub_item_id,quantity\n';
+  } finally {
+    if (opened.ok) { try { opened.db.close(); } catch (_) { /* not user-actionable */ } }
+  }
+  res.writeHead(200, {
+    'content-type': 'text/csv; charset=utf-8',
+    'content-disposition': 'attachment; filename="recipes-template.csv"',
+    'cache-control': 'no-store',
+    'x-content-type-options': 'nosniff',
+  });
+  res.end(csv);
 }
 
 function getKpiSection(db, monthStartMs) {
@@ -2711,6 +2945,60 @@ function sendHtml(res, status, body) {
   res.end(body);
 }
 
+// Read a bounded request body, then hand the raw text (or parsed JSON) to cb. Mirrors the inline
+// body-read the review-action handler uses; extracted so the recipe write-paths share it.
+function readTextBody(req, res, maxLen, cb) {
+  let raw = '';
+  let tooBig = false;
+  req.on('data', (chunk) => {
+    raw += chunk;
+    if (raw.length > maxLen) { tooBig = true; req.destroy(); }
+  });
+  req.on('end', () => {
+    if (tooBig) { sendJson(res, 413, { ok: false, error: 'payload too large' }); return; }
+    cb(raw);
+  });
+}
+function readJsonBody(req, res, maxLen, cb) {
+  readTextBody(req, res, maxLen, (raw) => {
+    let parsed;
+    try { parsed = JSON.parse(raw || '{}'); } catch (_) { sendJson(res, 400, { ok: false, error: 'invalid json' }); return; }
+    cb(parsed);
+  });
+}
+
+// A minimal BEGIN/COMMIT/ROLLBACK envelope for the tier-2 write handle (node:sqlite has no helper).
+function txWrite(db, fn) {
+  db.exec('BEGIN');
+  try { const r = fn(); db.exec('COMMIT'); return r; } catch (e) { try { db.exec('ROLLBACK'); } catch (_) { /* already rolled back */ } throw e; }
+}
+
+// Minimal RFC-4180-ish CSV parser (comma-delimited, "quoted" fields with "" escapes, CRLF/LF rows).
+// Returns an array of string-arrays (rows of cells). Tolerant: a trailing newline yields no empty row.
+function parseCsv(text) {
+  const rows = [];
+  let row = [];
+  let field = '';
+  let inQuotes = false;
+  const s = String(text || '');
+  for (let i = 0; i < s.length; i += 1) {
+    const c = s[i];
+    if (inQuotes) {
+      if (c === '"') {
+        if (s[i + 1] === '"') { field += '"'; i += 1; } else { inQuotes = false; }
+      } else { field += c; }
+    } else if (c === '"') { inQuotes = true; }
+    else if (c === ',') { row.push(field); field = ''; }
+    else if (c === '\n' || c === '\r') {
+      if (c === '\r' && s[i + 1] === '\n') i += 1;
+      row.push(field); field = '';
+      rows.push(row); row = [];
+    } else { field += c; }
+  }
+  if (field !== '' || row.length) { row.push(field); rows.push(row); }
+  return rows;
+}
+
 function sendJson(res, status, body) {
   res.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
@@ -3002,5 +3290,10 @@ module.exports = {
   renderReviews,
   applyReviewAction,
   REVIEW_ACTION_OPS,
+  applyRecipeAction,
+  applyRecipeImport,
+  RECIPE_ACTION_OPS,
+  buildRecipeTemplate,
+  parseCsv,
   spendLevel
 };
