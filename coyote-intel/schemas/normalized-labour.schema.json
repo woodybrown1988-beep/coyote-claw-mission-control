@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "normalized-labour.schema.json",
+  "title": "Lightspeed K-Series normalized labour record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "source_system",
+    "business_location_id",
+    "shift_uuid",
+    "raw_record_hash"
+  ],
+  "properties": {
+    "source_system": { "const": "lightspeed-kseries" },
+    "business_id": { "type": ["string", "null"] },
+    "business_location_id": { "type": ["string", "null"] },
+    "shift_uuid": { "type": ["string", "null"] },
+    "staff_id": { "type": ["string", "null"] },
+    "device_id": { "type": ["string", "null"] },
+    "declared_cash_tips": { "type": ["number", "null"] },
+    "last_updated_utc": { "type": ["string", "null"], "format": "date-time" },
+    "clock_in_timestamp": { "type": ["string", "null"], "format": "date-time" },
+    "clock_out_timestamp": { "type": ["string", "null"], "format": "date-time" },
+    "event_uuids": { "type": "array", "items": { "type": "string" } },
+    "staff_active": { "type": ["boolean", "null"] },
+    "staff_name": { "type": ["string", "null"] },
+    "staff_email": { "type": ["string", "null"] },
+    "roles": { "type": "array", "items": { "type": "string" } },
+    "raw_record_hash": { "type": "string" },
+    "stable_key": { "type": "string" }
+  }
+}

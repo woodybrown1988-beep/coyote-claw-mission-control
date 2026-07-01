@@ -91,6 +91,58 @@
     {
       "module": "mission-control/server.js",
       "export": "deployStatusPillClass"
+    },
+    {
+      "module": "coyote-intel/src/lightspeed/config.js",
+      "export": "loadConfig"
+    },
+    {
+      "module": "coyote-intel/src/lightspeed/config.js",
+      "export": "assertConnectorEnabled"
+    },
+    {
+      "module": "coyote-intel/src/lightspeed/oauth.js",
+      "export": "OAuthTokenManager"
+    },
+    {
+      "module": "coyote-intel/src/lightspeed/client.js",
+      "export": "LightspeedClient"
+    },
+    {
+      "module": "coyote-intel/src/lightspeed/sales-sync.js",
+      "export": "chunkDateRange"
+    },
+    {
+      "module": "coyote-intel/src/lightspeed/sales-sync.js",
+      "export": "syncSales"
+    },
+    {
+      "module": "coyote-intel/src/lightspeed/labour-sync.js",
+      "export": "syncLabour"
+    },
+    {
+      "module": "coyote-intel/src/lightspeed/normalize.js",
+      "export": "normalizeSalesRecord"
+    },
+    {
+      "module": "coyote-intel/src/lightspeed/normalize.js",
+      "export": "normalizeLabourShift"
+    },
+    {
+      "module": "coyote-intel/src/lightspeed/state-store.js",
+      "export": "JsonStateStore"
+    },
+    {
+      "module": "coyote-intel/src/lightspeed/reconcile.js",
+      "export": "reconcileRecords"
+    },
+    {
+      "module": "coyote-intel/src/lightspeed/backfill.js",
+      "export": "runBackfill"
+    },
+    {
+      "module": "coyote-intel/src/lightspeed/backfill.js",
+      "export": "dedupeRecords"
     }
   ],
   "tests": [
@@ -145,6 +197,26 @@
     {
       "name": "mission-control-deploy-status",
       "command": "node --test test/mission-control-deploy-status.test.js"
+    },
+    {
+      "name": "lightspeed-kseries-config",
+      "command": "node --test test/lightspeed-kseries-config.test.js"
+    },
+    {
+      "name": "lightspeed-kseries-normalize",
+      "command": "node --test test/lightspeed-kseries-normalize.test.js"
+    },
+    {
+      "name": "lightspeed-kseries-state",
+      "command": "node --test test/lightspeed-kseries-state.test.js"
+    },
+    {
+      "name": "lightspeed-kseries-reconcile",
+      "command": "node --test test/lightspeed-kseries-reconcile.test.js"
+    },
+    {
+      "name": "lightspeed-kseries-client",
+      "command": "node --test test/lightspeed-kseries-client.test.js"
     }
   ],
   "mutants": [
