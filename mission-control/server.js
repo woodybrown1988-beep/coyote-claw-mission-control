@@ -555,8 +555,14 @@ function applyRecipeImport(db, kind, csvText, now) {
           action = { op: 'upsert_sub_item', id: col(row, 'id'), name: col(row, 'name'), supplier: col(row, 'supplier'),
             pack_description: col(row, 'pack_description'), pack_cost_pence: Number.isNaN(pence) ? 'bad' : pence,
             pack_qty: col(row, 'pack_qty'), unit_of_measure: col(row, 'unit_of_measure'), cost_source: 'manual' };
-        } else { // recipes: attach to an EXISTING product (product_id = the live SKU); no product creation
-          action = { op: 'set_recipe_line', product_id: nonEmpty(col(row, 'product_sku')),
+        } else { // recipes: attach to an EXISTING product, resolved by its LIVE SKU (lightspeed_sku), not id
+          // The CSV + the downloaded template are SKU-keyed, and products.id MAY differ from lightspeed_sku,
+          // so resolve sku -> the real product id here. Unknown SKU -> reject (never mis-attach to a
+          // different product that merely happens to hold that string as its id).
+          const sku = nonEmpty(col(row, 'product_sku'));
+          const prod = sku ? db.prepare(`SELECT id FROM products WHERE lightspeed_sku = ?`).get(sku) : null;
+          if (!prod) { results.push({ row: i + 2, ok: false, error: 'no such product (SKU not in the live menu)' }); return; }
+          action = { op: 'set_recipe_line', product_id: prod.id,
             sub_item_id: col(row, 'sub_item_id'), quantity: col(row, 'quantity') };
         }
         const r = applyRecipeAction(db, action, now);

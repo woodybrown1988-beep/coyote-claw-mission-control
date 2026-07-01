@@ -139,6 +139,23 @@ test('import recipes: attaches to REAL products only; an unknown SKU is REJECTED
   assert.equal(db.prepare(`SELECT COUNT(*) c FROM products`).get().c, 1, 'no phantom product created by the import');
 });
 
+test('import recipes: resolves product_sku via lightspeed_sku (NOT id) — real SKU attaches even when id≠sku, no mis-attach', () => {
+  const db = makeDb((d) => {
+    // product A: id 'prod-A', SKU 'X' (the live SKU the template emits). product B: id 'X' (a stale id
+    // that collides with A's SKU as a string), SKU 'Y'. The naive id-match would attach A's recipe to B.
+    d.prepare(`INSERT INTO products (id, lightspeed_sku, name, updated_at) VALUES ('prod-A','X','Hangry Bird',1)`).run();
+    d.prepare(`INSERT INTO products (id, lightspeed_sku, name, updated_at) VALUES ('X','Y','Haggis Smash',1)`).run();
+    d.prepare(`INSERT INTO sub_items (id, name, unit_of_measure, pack_cost_pence, pack_qty, updated_at) VALUES ('bun','bun','each',500,48,1)`).run();
+  });
+  const r = applyRecipeImport(db, 'recipes', 'product_sku,product_name,sub_item_id,quantity\nX,Hangry Bird,bun,1\n', NOW);
+  assert.equal(r.imported, 1, 'a real SKU attaches even though its product id (prod-A) differs from the SKU');
+  const line = db.prepare(`SELECT product_id FROM recipe_lines WHERE sub_item_id='bun'`).get();
+  assert.equal(line.product_id, 'prod-A', 'attached to the product that OWNS the SKU (A), never the id-collision product (B)');
+  // an unknown SKU still rejects
+  const r2 = applyRecipeImport(db, 'recipes', 'product_sku,product_name,sub_item_id,quantity\nZZZ,x,bun,1\n', NOW);
+  assert.equal(r2.rejected.length, 1); assert.match(r2.rejected[0].error, /live menu|no such product/i);
+});
+
 test('parseCsv: quoted fields, embedded commas + escaped quotes', () => {
   const rows = parseCsv('a,b\n"x,y","he said ""hi"""\n');
   assert.deepEqual(rows, [['a', 'b'], ['x,y', 'he said "hi"']]);

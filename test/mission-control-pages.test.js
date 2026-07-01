@@ -16,6 +16,7 @@ const PAGES = {
   reviews: require('../mission-control/ui/pages/reviews.js'),
   issues: require('../mission-control/ui/pages/issues.js'),
   operations: require('../mission-control/ui/pages/operations.js'),
+  recipes: require('../mission-control/ui/pages/recipes.js'),
   health: require('../mission-control/ui/pages/health.js'),
 };
 const NOW = 1782800000000;

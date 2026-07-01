@@ -155,7 +155,8 @@ module.exports = {
     </div></div>`);
 
     // No clientScript here — the recipe form/import wiring lives in shared.js clientScript() (keyed by
-    // the data-rc / data-kind attributes above), so this page module contains NO fetch (boundary intact).
+    // the data-rc / data-kind attributes above), so this page module makes no network call itself
+    // (the SELECT-only page boundary, enforced by the boundary test which now covers this page too).
     return { stamp, body: parts.join('\n') };
   },
 };
