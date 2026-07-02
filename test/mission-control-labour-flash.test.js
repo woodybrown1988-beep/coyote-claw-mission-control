@@ -53,8 +53,8 @@ function seedLabourDay(db, date, over) {
     .run(date, v.sm, v.am, v.pm, v.sc, v.ac, v.sal, v.usm, v.uam, v.un, v.an, NOW);
 }
 
-function renderReports(db) {
-  const ctx = { q: (sql, p) => DATA.safeSelect(db, sql, p), now: NOW, halt: { halted: false } };
+function renderReports(db, query) {
+  const ctx = { q: (sql, p) => DATA.safeSelect(db, sql, p), now: NOW, halt: { halted: false }, query: query || {} };
   return reports.render(reports.getSection(db, ctx), ctx).body;
 }
 
@@ -122,8 +122,7 @@ test('partial coverage: labour 1 of 2 sales days → said plainly, % against cov
   db.prepare(`INSERT INTO sales_day (business_date, net_sales_pence, transactions, updated_at) VALUES ('2026-06-30', 406195, 114, ?)`).run(NOW);
   addLabourTables(db);
   seedLabourDay(db, '2026-07-01');
-  const body = renderReports(db);
-  // weekly period: 2 sales days, 1 labour day
+  const body = renderReports(db, { period: 'week' }); // calendar Mon–Sun 06-29→07-05 holds both days
   assert.ok(body.includes('Labour covers 1 of 2 sales day(s)'), 'coverage honesty line');
   // % uses 2026-07-01 net (280270) NOT the 2-day total (686465): 123172/280270 = 43.9%
   assert.ok(body.includes('43.9%'), 'labour % against SAME-day net, never diluted by uncovered days');

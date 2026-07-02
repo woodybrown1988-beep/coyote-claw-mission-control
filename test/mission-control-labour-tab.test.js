@@ -40,8 +40,8 @@ function seedDay(db, date) {
   db.prepare(`INSERT INTO labour_budget VALUES (?, 'foh', 0.107, 325000, ?)`).run(date, NOW);
 }
 
-function renderTab(db) {
-  const ctx = { q: (sql, p) => DATA.safeSelect(db, sql, p), now: NOW, halt: { halted: false } };
+function renderTab(db, query) {
+  const ctx = { q: (sql, p) => DATA.safeSelect(db, sql, p), now: NOW, halt: { halted: false }, query: query || {} };
   return labour.render(labour.getSection(db, ctx), ctx).body;
 }
 
@@ -70,21 +70,24 @@ test('seeded day: layers, exact pre-burden figures, budget £ = pct × same-day 
   assert.ok(body.includes('landed vs budget'), 'actual-vs-budget variance line');
   assert.ok(body.includes('planned vs budget'), 'scheduled-vs-budget variance line');
   assert.ok(body.includes('£0 in RotaCloud'), 'uncosted-in-RotaCloud surfaced');
-  assert.ok(body.includes('calendar month (the bonus period)'), 'monthly window defined on-page');
+  assert.ok(renderTab(db, { period: 'month' }).includes('calendar month = the bonus period'), 'monthly window defined on-page');
   assert.ok(body.includes('never compare with Reports'), 'two-ruler warning is explicit');
 });
 
-test('MONTHLY = calendar month of latest labour day; weekly is rolling', () => {
+test('MONTHLY = calendar month; WEEKLY = calendar Mon–Sun (both navigable via URL state)', () => {
   const db = makeDb();
   seedDay(db, '2026-06-30');
   seedDay(db, '2026-07-01');
-  const ctx = { q: (sql, p) => DATA.safeSelect(db, sql, p), now: NOW, halt: { halted: false } };
-  const section = labour.getSection(db, ctx);
-  assert.equal(section.periods.month.from, '2026-07-01', 'month starts at the calendar month (bonus period)');
-  const monthKitchen = section.periods.month.depts.find((d) => d.department === 'kitchen');
-  assert.equal(Number(monthKitchen.sm), 1470, 'June rows excluded from the July month');
-  const weekKitchen = section.periods.week.depts.find((d) => d.department === 'kitchen');
-  assert.equal(Number(weekKitchen.sm), 2940, 'weekly rolls across the boundary');
+  const ctxFor = (query) => ({ q: (sql, p) => DATA.safeSelect(db, sql, p), now: NOW, halt: { halted: false }, query });
+  const month = labour.getSection(db, ctxFor({ period: 'month' }));
+  assert.equal(month.nav.from, '2026-07-01', 'month starts at the calendar month (bonus period)');
+  assert.equal(Number(month.current.depts.find((d) => d.department === 'kitchen').sm), 1470, 'June rows excluded from the July month');
+  const week = labour.getSection(db, ctxFor({ period: 'week' }));
+  assert.equal(week.nav.from, '2026-06-29', 'calendar week = the Monday');
+  assert.equal(Number(week.current.depts.find((d) => d.department === 'kitchen').sm), 2940, 'Mon–Sun window spans the boundary');
+  const prevWeek = labour.getSection(db, ctxFor({ period: 'week', start: '2026-06-22' }));
+  assert.ok(prevWeek.nav.label.includes('22 Jun'), 'back-arrow target renders the prior Mon–Sun');
+  assert.ok(prevWeek.current.depts.length === 0, 'no data there');
 });
 
 test('rate parity: discrepancies named with the unfair-scorecard banner; clean state says so', () => {
@@ -151,15 +154,15 @@ test('headline tile: yesterday £-delta vs the managers’ budgets, £ first, % 
   seedDay(db, '2026-07-01');
   const body = renderTab(db);
   // kitchen 25501 + foh 2600 = 28101 spent vs 38677 + 29989 = 68666 budgeted → £405.65 under
-  assert.ok(body.includes('£405.65 under'), body.match(/Yesterday vs[\s\S]{0,220}/)?.[0]);
-  assert.ok(/Yesterday vs the managers' budgets[\s\S]{0,120}var\(--green/.test(body), 'green when under');
+  assert.ok(body.includes('£405.65 under'), body.match(/Latest settled day[\s\S]{0,220}/)?.[0]);
+  assert.ok(/Latest settled day[\s\S]{0,160}var\(--green/.test(body), 'green when under');
   assert.ok(body.includes('spent £281.01 against £686.66 budgeted'), 'both sides of the £ story');
 });
 
 test('bonus pacing (month): arithmetic restatement only — no revenue projection anywhere', () => {
   const db = makeDb();
   seedDay(db, '2026-07-01'); // day 1 of a 31-day month → 30 remaining
-  const body = renderTab(db);
+  const body = renderTab(db, { period: 'month' });
   assert.ok(body.includes('£131.76 under budget'), 'kitchen MTD cushion in £ (38677−25501)');
   assert.ok(body.includes('remaining 30 day(s)'), 'remaining days stated');
   assert.ok(body.includes('cushion of ≈£4.39/day'), 'per-day restatement, not a forecast');

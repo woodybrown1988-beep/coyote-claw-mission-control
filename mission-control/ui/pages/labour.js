@@ -13,6 +13,7 @@
 // are named: the managers' in-app % uses THEIR rates, so a drift makes the scorecard
 // unfair until fixed IN ROTACLOUD.
 const S = require('../shared.js');
+const NAV = require('../period-nav.js');
 
 function rowsOf(res) { return res && res.ok && Array.isArray(res.rows) ? res.rows : []; }
 function num(v) { if (v === null || v === undefined) return null; const n = Number(v); return Number.isFinite(n) ? n : null; }
@@ -60,9 +61,16 @@ module.exports = {
       return { from, to, depts, budgets, net: netRow, salesDays, uncostedNames: names.sort(), drift, driftTot };
     };
 
-    const monthStart = maxDate.slice(0, 8) + '01'; // calendar month = the bonus period
+    const nav = NAV.resolveNav(ctx.query, maxDate, now, '/labour');
+    const histRow = rowsOf(q('SELECT MIN(business_date) AS d FROM labour_dept'))[0];
     return {
-      now, hasData: true, maxDate,
+      now, hasData: true, maxDate, nav,
+      histStart: histRow && histRow.d ? String(histRow.d) : null,
+      current: build(nav.from, nav.to),
+      // Custom-range comparator: the same-length PRECEDING window — a lookup, labelled.
+      comparator: nav.comparator ? build(nav.comparator.from, nav.comparator.to) : null,
+      // The headline stays pinned to the latest settled day whatever is navigated.
+      headlineDay: build(maxDate, maxDate),
       parity: rowsOf(q(`SELECT user_name, role_name, kind, rc_value, locked_value FROM labour_rate_parity ORDER BY user_name, role_id`)),
       // TODAY — live (hourly snapshot; partial day, as-of-stamped — its own surface,
       // never mixed with the settled periods below).
@@ -72,11 +80,6 @@ module.exports = {
       // U18 working-time flags (WTR 1998 young workers; rules cited at ingest) — same
       // severity as rate parity.
       wtr: rowsOf(q(`SELECT business_date, user_name, kind, detail FROM labour_wtr_flags ORDER BY business_date DESC, user_name LIMIT 20`)),
-      periods: {
-        day: build(maxDate, maxDate),
-        week: build(addDays(maxDate, -6), maxDate),
-        month: build(monthStart, maxDate),
-      },
     };
   },
 
@@ -146,7 +149,10 @@ module.exports = {
       if (isMonth && budget != null && num(d.ac) != null) {
         const delta = num(d.ac) - budget;
         const covered = num(d.days) || 0;
-        const remaining = Math.max(0, daysInMonth(m.maxDate) - Number(m.maxDate.slice(8, 10)));
+        // Remaining days of the NAVIGATED month: 0 for a fully-past month (it reads as
+        // closed); for the current month, days after the last settled day.
+        const lastSettled = m.maxDate < p.to ? m.maxDate : p.to;
+        const remaining = Math.max(0, daysInMonth(p.from) - Number(lastSettled.slice(8, 10)));
         if (remaining === 0) {
           pacing = `<div class="lb-hint"><b>${delta > 0 ? '🔴' : '🟢'} Month closed ${delta > 0 ? gbp(delta) + ' OVER' : gbp(-delta) + ' under'} budget</b> across ${esc(String(covered))} settled day(s).</div>`;
         } else if (delta > 0) {
@@ -169,7 +175,7 @@ module.exports = {
       const parts = [];
       const covered = p.depts && p.depts.length ? Math.max.apply(null, p.depts.map((d) => num(d.days) || 0)) : 0;
       if (!covered) {
-        parts.push(`<div class="banner muted">No department labour for ${esc(label)} yet.</div>`);
+        parts.push(`<div class="banner muted">No record for this period — history starts ${esc(m.histStart || '(no labour history yet)')}. Nothing is interpolated; days without a record are never shown as zeros.</div>`);
         return parts.join('\n');
       }
       const order = ['kitchen', 'foh'];
@@ -279,7 +285,7 @@ module.exports = {
     // HEADLINE — yesterday's £-consequence on THIS ruler: dept spend vs the managers'
     // own RotaCloud budgets, £ first, % as the subtitle.
     const headline = () => {
-      const day = m.periods.day;
+      const day = m.headlineDay;
       const known = (day.depts || []).filter((d) => d.department === 'kitchen' || d.department === 'foh');
       const ac = known.reduce((x, d) => x + (num(d.ac) || 0), 0);
       const bud = (day.budgets || []).reduce((x, b) => x + (num(b.budget_pence) || 0), 0);
@@ -288,7 +294,7 @@ module.exports = {
       const net = day.net && num(day.net.net) > 0 ? num(day.net.net) : null;
       const col = delta <= 0 ? 'var(--green,#34d399)' : 'var(--red,#f87171)';
       return `<div class="rp-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-bottom:14px">
-        <div class="tile"><div class="lab">Yesterday vs the managers' budgets — scorecard ruler</div>
+        <div class="tile"><div class="lab">Latest settled day (${esc(m.maxDate)}) vs the managers' budgets — scorecard ruler</div>
           <div class="val" style="color:${col};font-size:26px">${delta <= 0 ? gbp(-delta) + ' under' : gbp(delta) + ' OVER'}</div>
           <div class="sub">spent ${gbp(ac)} against ${gbp(Math.round(bud))} budgeted${net != null ? ` · ${((ac / net) * 100).toFixed(1)}% of net vs ${((bud / net) * 100).toFixed(1)}% budgeted` : ''} · pre-burden</div></div>
       </div>`;
@@ -323,24 +329,32 @@ module.exports = {
         <div class="panel"><div class="panel-body"><table class="tbl"><thead><tr><th>who</th><th>date</th><th>flag</th><th>detail</th></tr></thead><tbody>${rows2}</tbody></table></div></div>`;
     };
 
+    // Custom-range comparator line (scorecard cost vs the preceding same-length window).
+    const comparatorHtml = () => {
+      if (!m.nav.comparator || !m.comparator) return '';
+      const sumAc = (per) => (per.depts || []).filter((d) => d.department !== 'unassigned').reduce((x, d) => x + (num(d.ac) || 0), 0);
+      const cur = sumAc(m.current);
+      const prevC = sumAc(m.comparator);
+      const prevDays = (m.comparator.depts || []).length ? Math.max.apply(null, m.comparator.depts.map((d) => num(d.days) || 0)) : 0;
+      if (!prevDays) return `<div class="lb-hint">Comparator (${esc(m.nav.comparator.label)}): no record — history starts ${esc(m.histStart || '?')}.</div>`;
+      const dlt = cur - prevC;
+      return `<div class="lb-hint">vs ${esc(m.nav.comparator.label)}: labour ${gbp(prevC)} → ${gbp(cur)} (${dlt >= 0 ? '+' : '−'}${gbp(Math.abs(dlt))}, pre-burden${prevDays < ((m.current.depts || [])[0] ? num(m.current.depts[0].days) || 0 : 0) ? ` · comparator covers only ${prevDays} day(s)` : ''}).</div>`;
+    };
+
     const body = styles
+      + `<style>${NAV.NAV_CSS}</style>`
       + `<div class="lb-ruler">Manager scorecard — pre-burden, matches RotaCloud · never compare with Reports' true cost (burden + salaried/365)</div>`
       + livePanel()
       + headline()
-      + `<div class="lb-seg" id="lb-seg">
-          <button data-p="day">Daily</button>
-          <button data-p="week">Weekly</button>
-          <button class="active" data-p="month">Monthly</button>
-        </div><span class="lb-hint" style="margin-left:10px">monthly = calendar month (the bonus period)</span>`
-      + `<div class="lb-period" data-p="day" hidden>${periodBody(m.periods.day, 'yesterday', false)}</div>`
-      + `<div class="lb-period" data-p="week" hidden>${periodBody(m.periods.week, 'last 7 days', false)}</div>`
-      + `<div class="lb-period" data-p="month">${periodBody(m.periods.month, 'this month', true)}</div>`
+      + NAV.renderNavStrip(m.nav, '/labour', esc)
+      + (m.nav.period === 'month' ? `<div class="lb-hint">calendar month = the bonus period</div>` : '')
+      + comparatorHtml()
+      + periodBody(m.current, m.nav.label, m.nav.period === 'month')
       + blendedHtml()
       + `<div class="sec-label" style="margin-top:18px">U18 working-time guard<span class="rule"></span></div>`
       + wtrHtml()
       + `<div class="sec-label" style="margin-top:18px">Rate parity — locked table vs RotaCloud<span class="rule"></span></div>`
-      + parityHtml()
-      + `<script>(function(){var r=document.getElementById('lb-seg');if(!r)return;var main=r.closest('main')||document;r.querySelectorAll('button').forEach(function(b){b.addEventListener('click',function(){var p=b.getAttribute('data-p');r.querySelectorAll('button').forEach(function(x){x.classList.toggle('active',x===b);});main.querySelectorAll('.lb-period').forEach(function(x){x.hidden=x.getAttribute('data-p')!==p;});});});})();</script>`;
+      + parityHtml();
 
     return { stamp: `labour · <span class="mono">RotaCloud · ${esc(m.maxDate)}</span>`, body };
   },

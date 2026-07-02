@@ -9,6 +9,7 @@
 //     sales-by-hour, payment reconciliation, category performance, best/worst products, discounts/voids.
 // Daily/Weekly/Monthly is a client-side toggle over server-rendered periods (no network call from here).
 const S = require('../shared.js');
+const NAV = require('../period-nav.js');
 
 function rowsOf(res) { return res && res.ok && Array.isArray(res.rows) ? res.rows : []; }
 function num(v) { if (v === null || v === undefined) return null; const n = Number(v); return Number.isFinite(n) ? n : null; }
@@ -73,16 +74,20 @@ module.exports = {
         try { for (const nm of JSON.parse(r.n)) if (labNames.indexOf(nm) < 0) labNames.push(nm); } catch (e) { /* keep going — a bad row never takes the flash down */ }
       }
       const labHourly = rowsOf(q(`SELECT hour, SUM(actual_minutes) AS am, SUM(actual_cost_pence) AS ac FROM labour_hourly WHERE business_date BETWEEN ? AND ? GROUP BY hour ORDER BY hour`, [from, to]));
-      return { from, to, tot, channels, payments, cats, prodsTop, prodsBottom, hourly, cov, lab, labNet, labNames, labHourly };
+      // CLOSED vs MISSING (edge honesty): a captured day with zero net = CLOSED (the pull
+      // ran and found no trade); a day with no row at all = NO RECORD. Never conflated,
+      // never rendered as zero-trading days.
+      const closed = rowsOf(q(`SELECT COUNT(*) AS n FROM sales_day WHERE business_date BETWEEN ? AND ? AND net_sales_pence = 0`, [from, to]))[0] || { n: 0 };
+      return { from, to, tot, channels, payments, cats, prodsTop, prodsBottom, hourly, cov, lab, labNet, labNames, labHourly, closedDays: num(closed.n) || 0 };
     };
 
+    const nav = NAV.resolveNav(ctx.query, maxDate, now, '/reports');
+    const histRow = rowsOf(q('SELECT MIN(business_date) AS d FROM sales_day'))[0];
     return {
-      now, hasData: true, maxDate,
-      periods: {
-        day: build(maxDate, maxDate),
-        week: build(addDays(maxDate, -6), maxDate),
-        month: build(addDays(maxDate, -30), maxDate),
-      },
+      now, hasData: true, maxDate, nav,
+      histStart: histRow && histRow.d ? String(histRow.d) : null,
+      current: build(nav.from, nav.to),
+      comparator: nav.comparator ? build(nav.comparator.from, nav.comparator.to) : null,
     };
   },
 
@@ -114,6 +119,19 @@ module.exports = {
     const periodBody = (p, label) => {
       const t = p.tot || {};
       const parts = [];
+      if (!num(t.days)) {
+        return `<div class="banner muted">No record for this period — history starts ${esc(m.histStart || '(no sales history yet)')}. Nothing is interpolated; days without a record are never shown as zeros.</div>`;
+      }
+      // settled span of this window (never expects the future): from → min(to, maxDate)
+      const settledEnd = m.maxDate < p.to ? m.maxDate : p.to;
+      const expected = Math.max(0, Math.round((Date.parse(settledEnd + 'T12:00:00Z') - Date.parse(p.from + 'T12:00:00Z')) / 86400000) + 1);
+      const missing = Math.max(0, expected - (num(t.days) || 0));
+      if (p.closedDays > 0 || missing > 0) {
+        const bits = [];
+        if (p.closedDays > 0) bits.push(`<b>${p.closedDays} closed day${p.closedDays === 1 ? '' : 's'}</b> (captured with zero trade — closed, not missing)`);
+        if (missing > 0) bits.push(`<b>${missing} day${missing === 1 ? '' : 's'} with no record</b> (not captured — never counted as zeros)`);
+        parts.push(`<div class="rp-hint">${bits.join(' · ')}</div>`);
+      }
       // headline KPIs (POS-truthful) + honest not-wired
       parts.push(`<div class="rp-grid">
         <div class="tile green"><div class="lab">Net sales (ex-VAT)</div><div class="val">${gbp(t.net)}</div><div class="sub">${esc(label)}${num(t.days) ? ` · ${esc(String(t.days))} day${t.days > 1 ? 's' : ''}` : ''}</div></div>
@@ -224,16 +242,22 @@ module.exports = {
       return parts.join('\n');
     };
 
+    // Custom-range comparator: net vs the same-length PRECEDING window (a lookup, labelled).
+    let comparatorHtml = '';
+    if (m.nav.comparator && m.comparator) {
+      const curNet = num((m.current.tot || {}).net);
+      const prevNet = num((m.comparator.tot || {}).net);
+      const prevDays = num((m.comparator.tot || {}).days) || 0;
+      comparatorHtml = !prevDays
+        ? `<div class="rp-hint">Comparator (${esc(m.nav.comparator.label)}): no record — history starts ${esc(m.histStart || '?')}.</div>`
+        : `<div class="rp-hint">vs ${esc(m.nav.comparator.label)}: net ${gbp(prevNet)} → ${gbp(curNet)}${curNet != null && prevNet != null ? ` (${curNet - prevNet >= 0 ? '+' : '−'}${gbp(Math.abs(curNet - prevNet))})` : ''}${prevDays < (num((m.current.tot || {}).days) || 0) ? ` · comparator covers only ${prevDays} day(s)` : ''}.</div>`;
+    }
+
     const body = styles
-      + `<div class="rp-seg" id="rp-seg">
-          <button class="active" data-p="day">Daily</button>
-          <button data-p="week">Weekly</button>
-          <button data-p="month">Monthly</button>
-        </div>`
-      + `<div class="rp-period" data-p="day">${periodBody(m.periods.day, 'yesterday')}</div>`
-      + `<div class="rp-period" data-p="week" hidden>${periodBody(m.periods.week, 'last 7 days')}</div>`
-      + `<div class="rp-period" data-p="month" hidden>${periodBody(m.periods.month, 'last 31 days')}</div>`
-      + `<script>(function(){var r=document.getElementById('rp-seg');if(!r)return;var main=r.closest('main')||document;r.querySelectorAll('button').forEach(function(b){b.addEventListener('click',function(){var p=b.getAttribute('data-p');r.querySelectorAll('button').forEach(function(x){x.classList.toggle('active',x===b);});main.querySelectorAll('.rp-period').forEach(function(x){x.hidden=x.getAttribute('data-p')!==p;});});});})();</script>`;
+      + `<style>${NAV.NAV_CSS}</style>`
+      + NAV.renderNavStrip(m.nav, '/reports', esc)
+      + comparatorHtml
+      + periodBody(m.current, m.nav.label);
 
     return { stamp: `sales · <span class="mono">Lightspeed · ${esc(m.maxDate)}</span>`, body };
   },
