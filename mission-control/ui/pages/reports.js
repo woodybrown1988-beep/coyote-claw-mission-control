@@ -54,7 +54,26 @@ module.exports = {
                        AND (SELECT COUNT(*) FROM recipe_lines rl JOIN sub_items si ON si.id=rl.sub_item_id
                               WHERE rl.product_id=p.id AND (si.pack_cost_pence IS NULL OR si.pack_qty IS NULL)) = 0)) AS costed_amt`,
         [from, to, from, to]))[0] || { total_amt: 0, costed_amt: 0 };
-      return { from, to, tot, channels, payments, cats, prodsTop, prodsBottom, hourly, cov };
+      // Labour (RotaCloud, TRUE cost = locked rates × 1.159 burden; salaried annual/365).
+      // Tables land with the labour ingest — until then rowsOf degrades to [] and the
+      // section says "not pulled yet" (never estimated, never faked).
+      const lab = rowsOf(q(
+        `SELECT COUNT(*) AS days, SUM(scheduled_minutes) AS sm, SUM(actual_minutes) AS am,
+                SUM(actual_paid_minutes) AS pm, SUM(scheduled_cost_pence) AS sc, SUM(actual_cost_pence) AS ac,
+                SUM(salaried_cost_pence) AS sal, SUM(unmapped_actual_minutes) AS uam, SUM(unmapped_scheduled_minutes) AS usm
+           FROM labour_day WHERE business_date BETWEEN ? AND ?`, [from, to]))[0] || null;
+      // Labour % is computed against net for the SAME days labour covers — thin labour
+      // history must never dilute the % against a fuller sales period (no-fabrication).
+      const labNet = rowsOf(q(
+        `SELECT SUM(s.net_sales_pence) AS net, COUNT(*) AS days FROM sales_day s
+           JOIN labour_day l ON l.business_date = s.business_date
+          WHERE s.business_date BETWEEN ? AND ?`, [from, to]))[0] || null;
+      const labNames = [];
+      for (const r of rowsOf(q(`SELECT unmapped_names AS n FROM labour_day WHERE business_date BETWEEN ? AND ? AND unmapped_names IS NOT NULL AND unmapped_names != '[]'`, [from, to]))) {
+        try { for (const nm of JSON.parse(r.n)) if (labNames.indexOf(nm) < 0) labNames.push(nm); } catch (e) { /* keep going — a bad row never takes the flash down */ }
+      }
+      const labHourly = rowsOf(q(`SELECT hour, SUM(actual_minutes) AS am, SUM(actual_cost_pence) AS ac FROM labour_hourly WHERE business_date BETWEEN ? AND ? GROUP BY hour ORDER BY hour`, [from, to]));
+      return { from, to, tot, channels, payments, cats, prodsTop, prodsBottom, hourly, cov, lab, labNet, labNames, labHourly };
     };
 
     return {
@@ -104,7 +123,7 @@ module.exports = {
         <div class="tile rp-notwired"><div class="lab">Covers</div><div class="val">not wired</div><div class="sub">from OpenTable · not yet wired (POS guest-count ${int(t.pgc)} kept as cross-check only)</div></div>
         <div class="tile rp-notwired"><div class="lab">Spend / cover</div><div class="val">not wired</div><div class="sub">needs real covers (OpenTable)</div></div>
       </div>`);
-      parts.push(`<div class="rp-hint">Covers, spend-per-cover &amp; RevPASH stay “not wired” until OpenTable covers are ingested — we never compute them off the POS guest-count. Labour hours ${num(t.labor) != null ? esc(String(t.labor)) : '—'}; labour % needs wage rates (not wired).</div>`);
+      parts.push(`<div class="rp-hint">Covers, spend-per-cover &amp; RevPASH stay “not wired” until OpenTable covers are ingested — we never compute them off the POS guest-count. Labour is real below (RotaCloud); the POS labor_hours field is ignored.</div>`);
 
       // sales by hour
       const hrs = p.hourly.filter((h) => num(h.net) != null);
@@ -138,6 +157,56 @@ module.exports = {
         <div class="tile"><div class="lab">Comps</div><div class="val">${gbp(t.comps)}</div><div class="sub">comped</div></div>
         <div class="tile"><div class="lab">Refunds</div><div class="val">${gbp(t.refunds)}</div><div class="sub">returned</div></div>
       </div>`);
+
+      // labour (RotaCloud · TRUE cost) — both numbers + variance; unmapped surfaced, never estimated
+      parts.push(`<div class="sec-label">Labour (RotaCloud · true cost)<span class="rule"></span></div>`);
+      const lb = p.lab;
+      if (!lb || !num(lb.days)) {
+        parts.push(`<div class="banner muted">No labour pulled for this period yet — the RotaCloud ingest (06:35 / 18:05 settlement) fills this in. Hours and cost are never estimated.</div>`);
+      } else {
+        const hrs = (mn) => (num(mn) != null ? (num(mn) / 60).toFixed(1) + 'h' : '—');
+        const sameDayNet = p.labNet && num(p.labNet.net) > 0 ? num(p.labNet.net) : null;
+        const pct = sameDayNet != null && num(lb.ac) != null ? (num(lb.ac) / sameDayNet) * 100 : null;
+        // Operator target 30%: green ≤30 · amber ≤33 (grace) · red >33.
+        const ragColor = pct == null ? '' : pct <= 30 ? 'var(--green,#34d399)' : pct <= 33 ? 'var(--amber,#e0b050)' : 'var(--red,#f87171)';
+        const varMin = num(lb.am) != null && num(lb.sm) != null ? num(lb.am) - num(lb.sm) : null;
+        const partial = num(lb.days) && num(t.days) && num(lb.days) < num(t.days);
+        parts.push(`<div class="rp-grid">
+          <div class="tile"><div class="lab">Labour cost (true)</div><div class="val">${gbp(lb.ac)}</div><div class="sub">rates + 15.9% burden · ${gbp(lb.sal)} salaried/365</div></div>
+          <div class="tile"><div class="lab">Labour % of net</div><div class="val"${ragColor ? ` style="color:${ragColor}"` : ''}>${pct != null ? pct.toFixed(1) + '%' : '—'}</div><div class="sub">${pct != null ? 'target 30% · same-day net only' : 'needs same-day sales'}</div></div>
+          <div class="tile"><div class="lab">Rota'd → worked</div><div class="val">${hrs(lb.sm)} → ${hrs(lb.am)}</div><div class="sub">${varMin != null ? (varMin >= 0 ? '+' : '−') + hrs(Math.abs(varMin)) + ' vs rota' : '—'} · paid ${hrs(lb.pm)}</div></div>
+          <div class="tile"><div class="lab">Scheduled cost</div><div class="val">${gbp(lb.sc)}</div><div class="sub">what the rota would cost</div></div>
+          ${num(lb.uam) || num(lb.usm) ? `<div class="tile rp-notwired"><div class="lab">Unmapped staff</div><div class="val">${hrs(Math.max(num(lb.uam) || 0, num(lb.usm) || 0))}</div><div class="sub">hours counted, cost EXCLUDED — ${esc(p.labNames.join(', ') || 'names in labour_day')} · fix rates.ts</div></div>` : ''}
+        </div>`);
+        if (partial) parts.push(`<div class="rp-hint">Labour covers ${esc(String(num(lb.days)))} of ${esc(String(num(t.days)))} sales day(s) — cost and % reflect only the covered days, never scaled up.</div>`);
+
+        // Daypart: labour cost per hour against the sales-by-hour curve. RotaCloud hours
+        // 24..29 are post-midnight wall-clock 0..5 of the same trading day — merged onto
+        // the matching sales hour.
+        const labBy = {};
+        for (const lh of p.labHourly) {
+          const wall = num(lh.hour) >= 24 ? num(lh.hour) - 24 : num(lh.hour);
+          if (!labBy[wall]) labBy[wall] = { am: 0, ac: 0 };
+          labBy[wall].am += num(lh.am) || 0;
+          labBy[wall].ac += num(lh.ac) || 0;
+        }
+        const salesBy = {};
+        for (const h of p.hourly) salesBy[num(h.hour)] = num(h.net) || 0;
+        const dayHours = [];
+        for (let hh = 0; hh < 24; hh++) if (salesBy[hh] != null || labBy[hh]) dayHours.push(hh);
+        if (dayHours.length) {
+          const rowsHtml = dayHours.map((hh) => {
+            const sNet = salesBy[hh] != null ? salesBy[hh] : null;
+            const l = labBy[hh];
+            const hp = l && sNet != null && sNet > 0 ? (l.ac / sNet) * 100 : null;
+            const hpColor = hp == null ? '' : hp <= 30 ? 'var(--green,#34d399)' : hp <= 50 ? 'var(--amber,#e0b050)' : 'var(--red,#f87171)';
+            return `<tr><td class="mono">${esc(String(hh))}:00</td><td class="mono">${sNet != null ? gbp(sNet) : '—'}</td><td class="mono">${l ? gbp(Math.round(l.ac)) : '—'}</td><td class="mono ash">${l ? hrs(l.am) : '—'}</td><td class="mono"${hpColor ? ` style="color:${hpColor}"` : ''}>${hp != null ? hp.toFixed(0) + '%' : '—'}</td></tr>`;
+          }).join('');
+          parts.push(`<div class="sec-label">Daypart — labour vs sales by hour<span class="rule"></span></div>
+            <div class="panel"><div class="panel-body"><table class="tbl"><thead><tr><th>hour</th><th>sales net</th><th>labour cost</th><th>hours</th><th>labour %</th></tr></thead><tbody>${rowsHtml}</tbody></table>
+            <div class="rp-hint" style="margin-top:8px">Hourly labour % is a staffing-shape signal (a quiet 15:00 at 200% means FOH carried against thin trade) — the day headline above is the operating truth.</div></div></div>`);
+        }
+      }
 
       // margin (not costed yet)
       const cov = p.cov || {};
