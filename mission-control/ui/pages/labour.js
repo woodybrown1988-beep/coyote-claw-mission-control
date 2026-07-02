@@ -60,6 +60,9 @@ module.exports = {
     return {
       now, hasData: true, maxDate,
       parity: rowsOf(q(`SELECT user_name, role_name, kind, rc_value, locked_value FROM labour_rate_parity ORDER BY user_name, role_id`)),
+      // TODAY — live (hourly snapshot; partial day, as-of-stamped — its own surface,
+      // never mixed with the settled periods below).
+      intraday: rowsOf(q(`SELECT business_date, department, as_of_ms, sched_minutes_full, sched_cost_rc_full, worked_minutes_so_far, cost_rc_so_far, uncosted_minutes, clocked_in_now FROM labour_intraday ORDER BY department`)),
       periods: {
         day: build(maxDate, maxDate),
         week: build(addDays(maxDate, -6), maxDate),
@@ -166,8 +169,42 @@ module.exports = {
         <div class="panel"><div class="panel-body"><table class="tbl"><thead><tr><th>who</th><th>role</th><th>finding</th><th>RotaCloud</th><th>locked table</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
     };
 
+    // TODAY — live panel (hourly snapshot). Its own honesty: as-of stamped, stale flagged,
+    // "so far" figures never presented as a day result.
+    const livePanel = () => {
+      const rows = (m.intraday || []).filter((r) => r.department !== 'unassigned');
+      const un = (m.intraday || []).find((r) => r.department === 'unassigned');
+      if (!rows.length && !un) {
+        return `<div class="sec-label">Today — live<span class="rule"></span></div><div class="banner muted">No intraday snapshot yet — the hourly pull (at :35) fills this in. Settled days appear below after the morning run.</div>`;
+      }
+      const asOf = num(rows[0] && rows[0].as_of_ms) || num(un && un.as_of_ms);
+      const lonTime = (ms) => new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/London', hour: '2-digit', minute: '2-digit' }).format(new Date(ms));
+      const ageMin = asOf != null ? Math.round((m.now - asOf) / 60000) : null;
+      const stale = ageMin != null && ageMin > 130; // two missed hourly pulls
+      const hrs = (mn) => (num(mn) != null ? (num(mn) / 60).toFixed(1) + 'h' : '—');
+      const blocks = rows.map((r) => {
+        let inNow = [];
+        try { inNow = JSON.parse(r.clocked_in_now || '[]'); } catch (e) { /* never take the tab down */ }
+        const names = inNow.map((x) => `${esc(x.name)} <span class="ash mono">${lonTime(num(x.since_ms))}</span>`).join(' · ');
+        return `<div><div class="sec-label">${esc(DEPT_LABEL[r.department] || r.department)}<span class="rule"></span></div>
+          <div class="panel"><div class="panel-body">
+            <table class="tbl"><tbody>
+              <tr><td>Clocked in now (${inNow.length})</td><td>${names || '<span class="ash">nobody</span>'}</td></tr>
+              <tr><td>Worked so far</td><td class="mono">${hrs(r.worked_minutes_so_far)} · ${gbp(r.cost_rc_so_far)} pre-burden</td></tr>
+              <tr><td>Rota'd today (full day)</td><td class="mono">${hrs(r.sched_minutes_full)} · ${gbp(r.sched_cost_rc_full)}</td></tr>
+            </tbody></table>
+            ${num(r.uncosted_minutes) ? `<div class="lb-hint">${hrs(r.uncosted_minutes)} so far at £0 in the scorecard ruler (salaried/unrated) — true cost lands in Reports tomorrow.</div>` : ''}
+          </div></div></div>`;
+      }).join('');
+      return `<div class="sec-label">Today — live · <span class="mono">${esc(rows[0] ? String(rows[0].business_date) : '')}</span><span class="rule"></span></div>`
+        + (asOf != null ? `<div class="lb-hint">${stale ? '⚠️ STALE — last snapshot ' : 'as of '}${esc(lonTime(asOf))}${stale ? ` (${Math.round(ageMin / 60)}h ago — check coyote-rotacloud-ingest)` : ' · refreshes hourly at :35'} · partial-day figures, never a day result</div>` : '')
+        + `<div class="lb-two">${blocks}</div>`
+        + (un ? `<div class="banner">⚠️ ${hrs(un.worked_minutes_so_far)} today on an UNKNOWN RotaCloud location — fix the location in RotaCloud.</div>` : '');
+    };
+
     const body = styles
       + `<div class="lb-ruler">Manager scorecard — pre-burden, matches RotaCloud · never compare with Reports' true cost (burden + salaried/365)</div>`
+      + livePanel()
       + `<div class="lb-seg" id="lb-seg">
           <button data-p="day">Daily</button>
           <button data-p="week">Weekly</button>
