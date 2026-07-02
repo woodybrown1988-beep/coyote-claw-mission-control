@@ -78,9 +78,11 @@ test('labour seeded: true cost, RAG vs 30% on SAME-DAY net, variance, daypart me
   assert.ok(body.includes('Labour cost (true)'), 'cost tile present');
   assert.ok(body.includes('£1,231.72'), 'the true cost figure');
   assert.ok(body.includes('£316.42 salaried/365'), 'salaried slice named');
-  // 123172 / 280270 = 43.9% → red
-  assert.ok(body.includes('43.9%'), body.match(/Labour % of net[\s\S]{0,200}/)?.[0]);
-  assert.ok(/Labour % of net<\/div><div class="val" style="color:var\(--red/.test(body), 'red RAG at 43.9%');
+  // £-CONSEQUENCE leads: permitted = 30% × £2,802.70 = £840.81; delta = +£390.91 → red
+  assert.ok(body.includes('£390.91 OVER'), 'the £ leads');
+  assert.ok(/vs the 30% target — true-cost ruler<\/div><div class="val" style="color:var\(--red/.test(body), 'red at 43.9%');
+  assert.ok(body.includes('43.9% of net'), 'the % is the subtitle');
+  assert.ok(body.includes('permitted £840.81 at 30%'), 'the permitted £ is stated');
   assert.ok(body.includes('85.0h → 78.5h'), 'rota’d → worked variance');
   assert.ok(body.includes('−6.5h vs rota'), 'signed variance');
   assert.ok(body.includes('Daypart — labour vs sales by hour'), 'daypart table present');
@@ -88,16 +90,20 @@ test('labour seeded: true cost, RAG vs 30% on SAME-DAY net, variance, daypart me
   assert.ok(!body.includes('labour % needs wage rates'), 'the old not-wired hint is gone');
 });
 
-test('RAG green at/under target; amber in the 30–33 grace band', () => {
+test('£-delta tile: green under (£ leads), amber in the 30–33 grace band', () => {
   const green = makeSalesDb();
   addLabourTables(green);
-  seedLabourDay(green, '2026-07-01', { ac: 80000 }); // 28.5%
-  assert.ok(/Labour % of net<\/div><div class="val" style="color:var\(--green/.test(renderReports(green)), 'green ≤30');
+  seedLabourDay(green, '2026-07-01', { ac: 80000 }); // 28.5% → £40.81 under
+  const gb = renderReports(green);
+  assert.ok(gb.includes('£40.81 under'), 'under stated in £');
+  assert.ok(/vs the 30% target — true-cost ruler<\/div><div class="val" style="color:var\(--green/.test(gb), 'green ≤30');
 
   const amber = makeSalesDb();
   addLabourTables(amber);
-  seedLabourDay(amber, '2026-07-01', { ac: 87000 }); // 31.0%
-  assert.ok(/Labour % of net<\/div><div class="val" style="color:var\(--amber/.test(renderReports(amber)), 'amber ≤33');
+  seedLabourDay(amber, '2026-07-01', { ac: 87000 }); // 31.0% → £29.19 OVER, amber band
+  const ab = renderReports(amber);
+  assert.ok(ab.includes('£29.19 OVER'));
+  assert.ok(/vs the 30% target — true-cost ruler<\/div><div class="val" style="color:var\(--amber/.test(ab), 'amber ≤33');
 });
 
 test('unmapped staff: named, hours shown, cost exclusion stated', () => {
