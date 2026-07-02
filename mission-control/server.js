@@ -117,7 +117,7 @@ function handleRequest(req, res) {
     sendText(res, 404, 'Not found');
     return;
   }
-  servePage(page, res);
+  servePage(page, res, url);
 }
 
 // ---- multi-page router (ops-centre) ----
@@ -140,7 +140,7 @@ for (const p of PAGES) PAGE_BY_ROUTE[p.route] = p;
 // Render one page: open the READ-ONLY handle (all DATA is SELECT-only), compute nav badges + footer
 // from real data, let the page build its model + body, wrap in the shared shell. Any page error
 // degrades to a banner — never a crash, never a fabricated value.
-function servePage(page, res) {
+function servePage(page, res, url) {
   const opened = openDatabase();
   const now = Date.now();
   if (!opened.ok) {
@@ -158,6 +158,8 @@ function servePage(page, res) {
       q: (sql, params) => DATA.safeSelect(db, sql, params),
       now,
       halt: buildHaltModel(readHaltFileExists(), readPausedValue(db)),
+      // URL query → period navigation state (validated page-side; bookmarkable views).
+      query: url ? Object.fromEntries(url.searchParams) : {},
     };
     const section = page.getSection(db, ctx);
     rendered = page.render(section, ctx) || { stamp: '', body: '' };
