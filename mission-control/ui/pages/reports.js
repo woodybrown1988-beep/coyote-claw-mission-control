@@ -167,13 +167,16 @@ module.exports = {
         const hrs = (mn) => (num(mn) != null ? (num(mn) / 60).toFixed(1) + 'h' : '—');
         const sameDayNet = p.labNet && num(p.labNet.net) > 0 ? num(p.labNet.net) : null;
         const pct = sameDayNet != null && num(lb.ac) != null ? (num(lb.ac) / sameDayNet) * 100 : null;
-        // Operator target 30%: green ≤30 · amber ≤33 (grace) · red >33.
+        // £-CONSEQUENCE first (operator-locked): permitted = 30% × same-day net; the £
+        // delta leads, the % is the subtitle. Bands: green ≤30 · amber ≤33 · red >33.
+        const permitted = sameDayNet != null ? Math.round(sameDayNet * 0.30) : null;
+        const deltaPence = permitted != null && num(lb.ac) != null ? num(lb.ac) - permitted : null;
         const ragColor = pct == null ? '' : pct <= 30 ? 'var(--green,#34d399)' : pct <= 33 ? 'var(--amber,#e0b050)' : 'var(--red,#f87171)';
         const varMin = num(lb.am) != null && num(lb.sm) != null ? num(lb.am) - num(lb.sm) : null;
         const partial = num(lb.days) && num(t.days) && num(lb.days) < num(t.days);
         parts.push(`<div class="rp-grid">
+          <div class="tile"><div class="lab">vs the 30% target — true-cost ruler</div><div class="val"${ragColor ? ` style="color:${ragColor}"` : ''}>${deltaPence != null ? (deltaPence > 0 ? gbp(deltaPence) + ' OVER' : gbp(-deltaPence) + ' under') : '—'}</div><div class="sub">${deltaPence != null ? `${pct.toFixed(1)}% of net · permitted ${gbp(permitted)} at 30% · same-day net only` : 'needs same-day sales'}</div></div>
           <div class="tile"><div class="lab">Labour cost (true)</div><div class="val">${gbp(lb.ac)}</div><div class="sub">rates + 15.9% burden · ${gbp(lb.sal)} salaried/365</div></div>
-          <div class="tile"><div class="lab">Labour % of net</div><div class="val"${ragColor ? ` style="color:${ragColor}"` : ''}>${pct != null ? pct.toFixed(1) + '%' : '—'}</div><div class="sub">${pct != null ? 'target 30% · same-day net only' : 'needs same-day sales'}</div></div>
           <div class="tile"><div class="lab">Rota'd → worked</div><div class="val">${hrs(lb.sm)} → ${hrs(lb.am)}</div><div class="sub">${varMin != null ? (varMin >= 0 ? '+' : '−') + hrs(Math.abs(varMin)) + ' vs rota' : '—'} · paid ${hrs(lb.pm)}</div></div>
           <div class="tile"><div class="lab">Scheduled cost</div><div class="val">${gbp(lb.sc)}</div><div class="sub">what the rota would cost</div></div>
           ${num(lb.uam) || num(lb.usm) ? `<div class="tile rp-notwired"><div class="lab">Unmapped staff</div><div class="val">${hrs(Math.max(num(lb.uam) || 0, num(lb.usm) || 0))}</div><div class="sub">hours counted, cost EXCLUDED — ${esc(p.labNames.join(', ') || 'names in labour_day')} · fix rates.ts</div></div>` : ''}
@@ -200,10 +203,11 @@ module.exports = {
             const l = labBy[hh];
             const hp = l && sNet != null && sNet > 0 ? (l.ac / sNet) * 100 : null;
             const hpColor = hp == null ? '' : hp <= 30 ? 'var(--green,#34d399)' : hp <= 50 ? 'var(--amber,#e0b050)' : 'var(--red,#f87171)';
-            return `<tr><td class="mono">${esc(String(hh))}:00</td><td class="mono">${sNet != null ? gbp(sNet) : '—'}</td><td class="mono">${l ? gbp(Math.round(l.ac)) : '—'}</td><td class="mono ash">${l ? hrs(l.am) : '—'}</td><td class="mono"${hpColor ? ` style="color:${hpColor}"` : ''}>${hp != null ? hp.toFixed(0) + '%' : '—'}</td></tr>`;
+            const hourSplh = l && l.am > 0 && sNet != null ? gbp(Math.round(sNet / (l.am / 60))) : '—';
+            return `<tr><td class="mono">${esc(String(hh))}:00</td><td class="mono">${sNet != null ? gbp(sNet) : '—'}</td><td class="mono">${l ? gbp(Math.round(l.ac)) : '—'}</td><td class="mono ash">${l ? hrs(l.am) : '—'}</td><td class="mono"${hpColor ? ` style="color:${hpColor}"` : ''}>${hp != null ? hp.toFixed(0) + '%' : '—'}</td><td class="mono ash">${hourSplh}</td></tr>`;
           }).join('');
           parts.push(`<div class="sec-label">Daypart — labour vs sales by hour<span class="rule"></span></div>
-            <div class="panel"><div class="panel-body"><table class="tbl"><thead><tr><th>hour</th><th>sales net</th><th>labour cost</th><th>hours</th><th>labour %</th></tr></thead><tbody>${rowsHtml}</tbody></table>
+            <div class="panel"><div class="panel-body"><table class="tbl"><thead><tr><th>hour</th><th>sales net</th><th>labour cost</th><th>hours</th><th>labour %</th><th>SPLH</th></tr></thead><tbody>${rowsHtml}</tbody></table>
             <div class="rp-hint" style="margin-top:8px">Hourly labour % is a staffing-shape signal (a quiet 15:00 at 200% means FOH carried against thin trade) — the day headline above is the operating truth.</div></div></div>`);
         }
       }
