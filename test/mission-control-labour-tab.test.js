@@ -25,6 +25,7 @@ function makeDb() {
     CREATE TABLE labour_dept (business_date TEXT, department TEXT, sched_minutes INTEGER, act_minutes INTEGER, sched_cost_rc_pence INTEGER, act_cost_rc_pence INTEGER, rc_uncosted_sched_min INTEGER, rc_uncosted_act_min INTEGER, rc_uncosted_names TEXT, updated_at INTEGER, PRIMARY KEY (business_date, department));
     CREATE TABLE labour_budget (business_date TEXT, department TEXT, labour_pct REAL, revenue_target_pence INTEGER, updated_at INTEGER, PRIMARY KEY (business_date, department));
     CREATE TABLE labour_rate_parity (user_id INTEGER, user_name TEXT, role_id INTEGER, role_name TEXT, kind TEXT, rc_value TEXT, locked_value TEXT, checked_at INTEGER);
+    CREATE TABLE labour_intraday (business_date TEXT, department TEXT, as_of_ms INTEGER, sched_minutes_full INTEGER, sched_cost_rc_full INTEGER, worked_minutes_so_far INTEGER, cost_rc_so_far INTEGER, uncosted_minutes INTEGER, clocked_in_now TEXT, updated_at INTEGER, PRIMARY KEY (business_date, department));
   `);
   return db;
 }
@@ -104,4 +105,30 @@ test('unknown location: surfaced as a banner, never guessed into a department', 
   const body = renderTab(db);
   assert.ok(body.includes('UNKNOWN RotaCloud location'), body.match(/UNKNOWN[\s\S]{0,80}/)?.[0]);
   assert.ok(!body.includes('Unassigned location</div>') || true, 'unassigned never renders as a peer department block');
+});
+
+
+test('TODAY-live panel: names + as-of + so-far vs full-day rota; stale flagged; absent = honest hint', () => {
+  const db = makeDb();
+  seedDay(db, '2026-07-01');
+  const fresh = NOW - 20 * 60000; // 20 min ago
+  db.prepare(`INSERT INTO labour_intraday VALUES ('2026-07-02','kitchen',?,3045,61027,1820,38000,0,'[{"name":"Rio Alexander","role":"Kitchen - Under 18","since_ms":1782990000000}]',?)`).run(fresh, NOW);
+  db.prepare(`INSERT INTO labour_intraday VALUES ('2026-07-02','foh',?,2055,27125,1200,15000,360,'[]',?)`).run(fresh, NOW);
+  const body = renderTab(db);
+  assert.ok(body.includes('Today — live'), 'panel present');
+  assert.ok(body.includes('Rio Alexander'), 'who is in now, by name');
+  assert.ok(body.includes('30.3h'), 'worked so far (1820min)');
+  assert.ok(body.includes('50.8h'), 'full-day rota (3045min)');
+  assert.ok(body.includes('partial-day figures, never a day result'), 'the honesty label');
+  assert.ok(body.includes('as of '), 'fresh snapshot is not flagged stale');
+  assert.ok(!body.includes('STALE'), 'no false stale alarm at 20 min');
+  assert.ok(body.includes('£0 in the scorecard ruler'), 'uncosted so-far surfaced (FOH 6h)');
+
+  // stale: 3h old snapshot
+  db.prepare(`UPDATE labour_intraday SET as_of_ms = ?`).run(NOW - 180 * 60000);
+  assert.ok(renderTab(db).includes('STALE'), 'two missed pulls = flagged');
+
+  // absent: no snapshot rows at all
+  db.prepare(`DELETE FROM labour_intraday`).run();
+  assert.ok(renderTab(db).includes('No intraday snapshot yet'), 'honest empty state');
 });
