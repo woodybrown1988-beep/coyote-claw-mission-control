@@ -1,0 +1,167 @@
+'use strict';
+// Reports — the daily sales flash from Lightspeed (Slice 1). Contract: { key, route, title, sub, getSection, render }.
+// SELECT-only via ctx.q (no writes). NO-FABRICATION rules baked in:
+//   • "Covers" from Lightspeed is a POS guest-count, NOT real covers → stored as pos_guest_count, shown
+//     ONLY as an honest, clearly-labelled cross-check; real covers come from OpenTable (not wired), so
+//     Covers + every cover-derived metric (spend-per-cover / RevPASH) render "not wired — OpenTable".
+//   • Margin needs recipes (Slice 2) → shows "not costed yet — X% coverage" (NULL, never an estimate).
+//   • Everything POS-truthful ships live: net (ex-VAT), transactions, ATV (net÷txn), channel split,
+//     sales-by-hour, payment reconciliation, category performance, best/worst products, discounts/voids.
+// Daily/Weekly/Monthly is a client-side toggle over server-rendered periods (no network call from here).
+const S = require('../shared.js');
+
+function rowsOf(res) { return res && res.ok && Array.isArray(res.rows) ? res.rows : []; }
+function num(v) { if (v === null || v === undefined) return null; const n = Number(v); return Number.isFinite(n) ? n : null; }
+function addDays(d, n) { const t = new Date(d + 'T12:00:00Z'); t.setUTCDate(t.getUTCDate() + n); return t.toISOString().slice(0, 10); }
+
+module.exports = {
+  key: 'reports', route: '/reports', title: 'Reports',
+  sub: 'Daily sales flash · Lightspeed — POS-truthful KPIs (covers via OpenTable, not wired)',
+
+  getSection(db, ctx) {
+    const q = ctx && ctx.q;
+    const now = (ctx && ctx.now) || Date.now();
+    if (typeof q !== 'function') return { now, hasData: false };
+    const maxRow = rowsOf(q('SELECT MAX(business_date) AS d FROM sales_day'))[0];
+    const maxDate = maxRow && maxRow.d ? String(maxRow.d) : null;
+    if (!maxDate) return { now, hasData: false };
+
+    const build = (from, to) => {
+      const tot = rowsOf(q(
+        `SELECT COUNT(*) AS days, SUM(net_sales_pence) AS net, SUM(gross_sales_pence) AS gross,
+                SUM(transactions) AS txn, SUM(pos_guest_count) AS pgc, SUM(tips_pence) AS tips,
+                SUM(discounts_pence) AS disc, SUM(voids_pence) AS voids, SUM(comps_pence) AS comps,
+                SUM(refunds_pence) AS refunds, SUM(taxes_pence) AS taxes, SUM(labor_hours) AS labor
+           FROM sales_day WHERE business_date BETWEEN ? AND ?`, [from, to]))[0] || {};
+      const channels = rowsOf(q(`SELECT profile_name AS name, SUM(net_sales_pence) AS net, SUM(transactions) AS txn
+           FROM sales_by_channel WHERE business_date BETWEEN ? AND ? GROUP BY profile_id, profile_name ORDER BY net DESC`, [from, to]));
+      const payments = rowsOf(q(`SELECT method_name AS name, SUM(total_pence) AS total, SUM(tips_pence) AS tips
+           FROM sales_by_payment WHERE business_date BETWEEN ? AND ? GROUP BY method_id, method_name ORDER BY total DESC`, [from, to]));
+      const cats = rowsOf(q(`SELECT category_name AS name, SUM(net_sales_pence) AS net
+           FROM sales_by_category WHERE grain='statistic_group' AND business_date BETWEEN ? AND ?
+           GROUP BY category_id, category_name HAVING SUM(net_sales_pence) > 0 ORDER BY net DESC LIMIT 12`, [from, to]));
+      const prodsTop = rowsOf(q(`SELECT product_name AS name, SUM(total_amount_pence) AS amt, SUM(quantity) AS qty
+           FROM sales_by_product WHERE business_date BETWEEN ? AND ? GROUP BY sku, product_name HAVING SUM(total_amount_pence) > 0 ORDER BY amt DESC LIMIT 8`, [from, to]));
+      const prodsBottom = rowsOf(q(`SELECT product_name AS name, SUM(total_amount_pence) AS amt, SUM(quantity) AS qty
+           FROM sales_by_product WHERE business_date BETWEEN ? AND ? GROUP BY sku, product_name HAVING SUM(total_amount_pence) > 0 ORDER BY amt ASC LIMIT 5`, [from, to]));
+      const hourly = rowsOf(q(`SELECT hour, SUM(net_sales_pence) AS net FROM sales_hourly WHERE business_date BETWEEN ? AND ? GROUP BY hour ORDER BY hour`, [from, to]));
+      // Margin coverage: share of product sales whose SKU has a COMPLETE recipe (≥1 line, no uncosted ingredient).
+      const cov = rowsOf(q(
+        `SELECT (SELECT COALESCE(SUM(total_amount_pence),0) FROM sales_by_product WHERE business_date BETWEEN ? AND ?) AS total_amt,
+                (SELECT COALESCE(SUM(total_amount_pence),0) FROM sales_by_product sp WHERE sp.business_date BETWEEN ? AND ?
+                   AND sp.sku IN (SELECT p.lightspeed_sku FROM products p
+                     WHERE (SELECT COUNT(*) FROM recipe_lines rl WHERE rl.product_id=p.id) > 0
+                       AND (SELECT COUNT(*) FROM recipe_lines rl JOIN sub_items si ON si.id=rl.sub_item_id
+                              WHERE rl.product_id=p.id AND (si.pack_cost_pence IS NULL OR si.pack_qty IS NULL)) = 0)) AS costed_amt`,
+        [from, to, from, to]))[0] || { total_amt: 0, costed_amt: 0 };
+      return { from, to, tot, channels, payments, cats, prodsTop, prodsBottom, hourly, cov };
+    };
+
+    return {
+      now, hasData: true, maxDate,
+      periods: {
+        day: build(maxDate, maxDate),
+        week: build(addDays(maxDate, -6), maxDate),
+        month: build(addDays(maxDate, -30), maxDate),
+      },
+    };
+  },
+
+  render(section, ctx) {
+    const m = section || {};
+    const esc = S.escapeHtml;
+    const gbp = S.fmtGbpPence;
+    const int = S.fmtInt;
+    if (!m.hasData) {
+      return { stamp: 'awaiting sales data', body: `<div class="banner muted">No Lightspeed sales yet. The daily ingest (05:30) pulls yesterday's exports into the box; KPIs appear here after the first run.</div>` };
+    }
+    const atv = (net, txn) => (num(net) != null && num(txn)) ? gbp(Math.round(num(net) / num(txn))) : '—';
+
+    const styles = `<style>
+      .rp-seg{display:inline-flex;gap:2px;background:rgba(255,255,255,.05);border-radius:9px;padding:3px;margin:2px 0 16px}
+      .rp-seg button{font:inherit;font-size:13px;font-weight:600;color:var(--text-2,#9aa);background:none;border:0;padding:7px 16px;border-radius:7px;cursor:pointer}
+      .rp-seg button.active{background:var(--cyan-dim,rgba(34,211,238,.15));color:#CFF6FB}
+      .rp-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:8px}
+      .rp-two{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+      @media(max-width:840px){.rp-two{grid-template-columns:1fr}}
+      .rp-bars{display:flex;align-items:flex-end;gap:3px;height:120px;padding:6px 0;border-bottom:1px solid rgba(255,255,255,.08)}
+      .rp-bar{flex:1;background:linear-gradient(180deg,#22D3EE,#0e7d8c);border-radius:3px 3px 0 0;min-height:2px;position:relative}
+      .rp-bar span{position:absolute;bottom:-17px;left:0;right:0;text-align:center;font-size:9px;color:var(--muted,#7a8)}
+      .rp-notwired{opacity:.72}
+      .rp-notwired .val{color:var(--amber,#e0b050)}
+      .rp-hint{font-size:11px;color:var(--muted,#7a8);margin:-4px 0 14px}
+    </style>`;
+
+    const periodBody = (p, label) => {
+      const t = p.tot || {};
+      const parts = [];
+      // headline KPIs (POS-truthful) + honest not-wired
+      parts.push(`<div class="rp-grid">
+        <div class="tile green"><div class="lab">Net sales (ex-VAT)</div><div class="val">${gbp(t.net)}</div><div class="sub">${esc(label)}${num(t.days) ? ` · ${esc(String(t.days))} day${t.days > 1 ? 's' : ''}` : ''}</div></div>
+        <div class="tile"><div class="lab">Gross sales</div><div class="val">${gbp(t.gross)}</div><div class="sub">inc. VAT ${gbp(t.taxes)}</div></div>
+        <div class="tile"><div class="lab">Transactions</div><div class="val">${int(t.txn)}</div><div class="sub">guest checks (POS-truthful)</div></div>
+        <div class="tile blue"><div class="lab">ATV</div><div class="val">${atv(t.net, t.txn)}</div><div class="sub">net ÷ transactions</div></div>
+        <div class="tile rp-notwired"><div class="lab">Covers</div><div class="val">not wired</div><div class="sub">from OpenTable · not yet wired (POS guest-count ${int(t.pgc)} kept as cross-check only)</div></div>
+        <div class="tile rp-notwired"><div class="lab">Spend / cover</div><div class="val">not wired</div><div class="sub">needs real covers (OpenTable)</div></div>
+      </div>`);
+      parts.push(`<div class="rp-hint">Covers, spend-per-cover &amp; RevPASH stay “not wired” until OpenTable covers are ingested — we never compute them off the POS guest-count. Labour hours ${num(t.labor) != null ? esc(String(t.labor)) : '—'}; labour % needs wage rates (not wired).</div>`);
+
+      // sales by hour
+      const hrs = p.hourly.filter((h) => num(h.net) != null);
+      const maxNet = hrs.reduce((mx, h) => Math.max(mx, num(h.net) || 0), 0) || 1;
+      const bars = hrs.map((h) => `<div class="rp-bar" style="height:${Math.max(2, Math.round((num(h.net) || 0) / maxNet * 108))}px" title="${esc(String(h.hour))}:00 — ${gbp(h.net)}"><span>${esc(String(h.hour))}</span></div>`).join('');
+      parts.push(`<div class="sec-label">Sales by hour<span class="rule"></span></div><div class="panel"><div class="panel-body">${bars ? `<div class="rp-bars">${bars}</div><div style="height:14px"></div>` : '<div class="empty-row">No hourly data.</div>'}</div></div>`);
+
+      // channel + payments (two columns)
+      const chRows = p.channels.map((c) => `<tr><td>${esc(c.name || '')}</td><td class="mono">${gbp(c.net)}</td><td class="mono ash">${int(c.txn)}</td></tr>`).join('');
+      const payTotal = p.payments.reduce((s, x) => s + (num(x.total) || 0), 0);
+      const payRows = p.payments.map((x) => `<tr><td>${esc(x.name || '')}</td><td class="mono">${gbp(x.total)}</td><td class="mono ash">${gbp(x.tips)}</td></tr>`).join('');
+      parts.push(`<div class="rp-two">
+        <div><div class="sec-label">Channel split<span class="rule"></span></div><div class="panel"><div class="panel-body">${chRows ? `<table class="tbl"><thead><tr><th>profile</th><th>net</th><th>txns</th></tr></thead><tbody>${chRows}</tbody></table>` : '<div class="empty-row">—</div>'}</div></div></div>
+        <div><div class="sec-label">Payments <span class="mono">(reconciliation)</span><span class="rule"></span></div><div class="panel"><div class="panel-body">${payRows ? `<table class="tbl"><thead><tr><th>method</th><th>taken</th><th>tips</th></tr></thead><tbody>${payRows}<tr><td><b>Total</b></td><td class="mono"><b>${gbp(payTotal)}</b></td><td></td></tr></tbody></table>` : '<div class="empty-row">—</div>'}</div></div></div>
+      </div>`);
+
+      // category performance + best/worst products
+      const catRows = p.cats.map((c) => `<tr><td>${esc((c.name || '').replace(/::/g, ' · '))}</td><td class="mono">${gbp(c.net)}</td></tr>`).join('');
+      const topRows = p.prodsTop.map((x) => `<tr><td>${esc(x.name || '')}</td><td class="mono">${gbp(x.amt)}</td><td class="mono ash">${int(Math.round(num(x.qty) || 0))}</td></tr>`).join('');
+      const botRows = p.prodsBottom.map((x) => `<tr><td>${esc(x.name || '')}</td><td class="mono">${gbp(x.amt)}</td><td class="mono ash">${int(Math.round(num(x.qty) || 0))}</td></tr>`).join('');
+      parts.push(`<div class="rp-two">
+        <div><div class="sec-label">Category performance <span class="mono">(top 12)</span><span class="rule"></span></div><div class="panel"><div class="panel-body">${catRows ? `<table class="tbl"><thead><tr><th>category</th><th>net</th></tr></thead><tbody>${catRows}</tbody></table>` : '<div class="empty-row">—</div>'}</div></div></div>
+        <div><div class="sec-label">Best sellers <span class="mono">(by sales)</span><span class="rule"></span></div><div class="panel"><div class="panel-body">${topRows ? `<table class="tbl"><thead><tr><th>product</th><th>sales</th><th>qty</th></tr></thead><tbody>${topRows}</tbody></table>` : '<div class="empty-row">—</div>'}
+          ${botRows ? `<div class="sec-label" style="margin-top:14px">Slowest sellers<span class="rule"></span></div><table class="tbl"><thead><tr><th>product</th><th>sales</th><th>qty</th></tr></thead><tbody>${botRows}</tbody></table>` : ''}</div></div></div>
+      </div>`);
+
+      // exceptions
+      parts.push(`<div class="sec-label">Exceptions<span class="rule"></span></div><div class="rp-grid">
+        <div class="tile"><div class="lab">Discounts</div><div class="val">${gbp(t.disc)}</div><div class="sub">given away</div></div>
+        <div class="tile"><div class="lab">Voids</div><div class="val">${gbp(t.voids)}</div><div class="sub">cancelled items</div></div>
+        <div class="tile"><div class="lab">Comps</div><div class="val">${gbp(t.comps)}</div><div class="sub">comped</div></div>
+        <div class="tile"><div class="lab">Refunds</div><div class="val">${gbp(t.refunds)}</div><div class="sub">returned</div></div>
+      </div>`);
+
+      // margin (not costed yet)
+      const cov = p.cov || {};
+      const covPct = num(cov.total_amt) && num(cov.total_amt) > 0 ? (num(cov.costed_amt) || 0) / num(cov.total_amt) : 0;
+      parts.push(`<div class="sec-label">Margin (prime cost)<span class="rule"></span></div>`);
+      if (covPct <= 0) {
+        parts.push(`<div class="banner muted">Not costed yet — <b>0% coverage</b>. Margin lights up once recipes/ingredient costs are entered in <a href="/recipes">Recipes &amp; Costs</a> (Slice 2). We never estimate a cost we don't have. <span class="ash">(Lightspeed's own margin figures are stored as a cross-check, not shown as truth.)</span></div>`);
+      } else {
+        parts.push(`<div class="banner muted">Recipes cover <b>${(covPct * 100).toFixed(1)}%</b> of product sales — margin shown for costed items only; the rest is a visible gap, never estimated.</div>`);
+      }
+      return parts.join('\n');
+    };
+
+    const body = styles
+      + `<div class="rp-seg" id="rp-seg">
+          <button class="active" data-p="day">Daily</button>
+          <button data-p="week">Weekly</button>
+          <button data-p="month">Monthly</button>
+        </div>`
+      + `<div class="rp-period" data-p="day">${periodBody(m.periods.day, 'yesterday')}</div>`
+      + `<div class="rp-period" data-p="week" hidden>${periodBody(m.periods.week, 'last 7 days')}</div>`
+      + `<div class="rp-period" data-p="month" hidden>${periodBody(m.periods.month, 'last 31 days')}</div>`
+      + `<script>(function(){var r=document.getElementById('rp-seg');if(!r)return;var main=r.closest('main')||document;r.querySelectorAll('button').forEach(function(b){b.addEventListener('click',function(){var p=b.getAttribute('data-p');r.querySelectorAll('button').forEach(function(x){x.classList.toggle('active',x===b);});main.querySelectorAll('.rp-period').forEach(function(x){x.hidden=x.getAttribute('data-p')!==p;});});});})();</script>`;
+
+    return { stamp: `sales · <span class="mono">Lightspeed · ${esc(m.maxDate)}</span>`, body };
+  },
+};

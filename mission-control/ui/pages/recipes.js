@@ -43,9 +43,12 @@ module.exports = {
     // Sales volume per SKU (from Slice 1) — used to SORT the worklist (biggest sellers first) + compute
     // coverage % of net sales. The table does not exist until the sales ingest runs; safeSelect returns
     // ok:false → salesWired=false and we sort by name + show "awaiting sales data" (never fabricate).
+    // Slice 1 lands sales as AGGREGATES (sales_by_product), not per-line rows. total_amount_pence is gross —
+    // a fine weight for the "biggest sellers first" worklist + coverage %. Table absent until the sales
+    // ingest runs → safeSelect ok:false → salesWired=false → sort by name + "awaiting sales data".
     const salesRes = q(
-      `SELECT sku, SUM(pretax_pence) AS net, SUM(quantity) AS units
-         FROM sales_line_items WHERE line_type = 'SALE' GROUP BY sku`);
+      `SELECT sku, SUM(total_amount_pence) AS net, SUM(quantity) AS units
+         FROM sales_by_product GROUP BY sku`);
     const salesWired = !!(salesRes && salesRes.ok);
     const salesBySku = new Map();
     for (const r of rowsOf(salesRes)) salesBySku.set(String(r.sku), { net: num(r.net) || 0, units: num(r.units) || 0 });

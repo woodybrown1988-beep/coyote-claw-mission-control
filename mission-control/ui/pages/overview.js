@@ -63,6 +63,10 @@ module.exports = {
         ORDER BY count_current DESC`));
 
     // (3) KPI — latest snapshot (one period). EMPTY until coyote-intel wired.
+    // COVERS-TRUTH CAVEAT: kpi_snapshot.covers comes from coyote-intel, which ingests Lightspeed exports
+    // where "Covers" is a POS guest-count, NOT real covers (real covers = OpenTable, not wired). The
+    // Reports tab already treats covers as "not wired". When coyote-intel is wired, this tile's `covers`
+    // needs the SAME treatment (do not render the POS guest-count as covers). Currently empty → safe.
     const kpi = row(q(
       `SELECT period, covers, revenue_pence, labour_pct, atv_pence, source, as_of, fetched_at
          FROM kpi_snapshot ORDER BY fetched_at DESC LIMIT 1`));

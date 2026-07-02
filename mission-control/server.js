@@ -129,6 +129,7 @@ const PAGES = [
   require('./ui/pages/reviews.js'),
   require('./ui/pages/issues.js'),
   require('./ui/pages/operations.js'),
+  require('./ui/pages/reports.js'),
   require('./ui/pages/recipes.js'),
   require('./ui/pages/health.js'),
 ];
