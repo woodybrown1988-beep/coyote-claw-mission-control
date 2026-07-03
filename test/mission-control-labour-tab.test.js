@@ -155,7 +155,7 @@ test('headline tile: yesterday £-delta vs the managers’ budgets, £ first, % 
   const body = renderTab(db);
   // kitchen 25501 + foh 2600 = 28101 spent vs 38677 + 29989 = 68666 budgeted → £405.65 under
   assert.ok(body.includes('£405.65 under'), body.match(/Latest settled day[\s\S]{0,220}/)?.[0]);
-  assert.ok(/Latest settled day[\s\S]{0,160}var\(--green/.test(body), 'green when under');
+  assert.ok(/Latest settled day[\s\S]{0,200}class="big G"/.test(body), 'green when under (headline hero)');
   assert.ok(body.includes('spent £281.01 against £686.66 budgeted'), 'both sides of the £ story');
 });
 
@@ -173,8 +173,9 @@ test('SPLH: number only, no invented benchmark; site + per dept', () => {
   const db = makeDb();
   seedDay(db, '2026-07-01');
   const body = renderTab(db);
-  assert.ok(body.includes('Site SPLH'), 'site tile');
-  assert.ok(body.includes('£92.09'), 'net £2,802.70 ÷ 30.4h worked');
+  assert.ok(body.includes('SPLH'), 'SPLH cross-ruler section');
+  assert.ok(body.includes('over 1 day with sales'), 'intersection day-count labelled (the year-view bug fix)');
+  assert.ok(body.includes('£92.09'), 'site net £2,802.70 ÷ 30.4h worked, over the 1 intersecting day');
   assert.ok(body.includes('no invented benchmark'), 'target explicitly deferred');
 });
 
@@ -207,4 +208,67 @@ test('blended rate: thin history says so instead of faking a trend', () => {
   const body = renderTab(db);
   assert.ok(body.includes('Blended rate'), 'section present');
   assert.ok(body.includes('Thin history — the trend needs a second week'), 'one week = honesty note');
+});
+
+test('PHASE 1 — cross-ruler needs sales: labour-only days show "needs sales history", never £0.25/h', () => {
+  const db = makeDb();
+  // labour exists for 2 days but NO sales rows at all → the year-view bug scenario
+  db.prepare(`DELETE FROM sales_day`).run();
+  db.prepare(`INSERT INTO labour_dept VALUES ('2026-06-30','kitchen', 3045, 2644, 61027, 52833, 0, 0, '[]', ?)`).run(NOW);
+  const body = renderTab(db, { period: 'month' });
+  assert.ok(body.includes('Needs sales history'), 'cross-ruler honestly withheld');
+  assert.ok(!/£0\.\d\d\/h/.test(body) && !body.includes('£0.25'), 'no nonsense SPLH from mismatched windows');
+  assert.ok(body.includes('cost (pre-burden)'), 'scorecard hours/cost still stand alone');
+});
+
+test('PHASE 1 — cross-ruler window is the INTERSECTION: 1 sales day among many labour days', () => {
+  const db = makeDb();
+  seedDay(db, '2026-07-01'); // has both
+  // add labour-only days (no sales) — must NOT dilute SPLH/%
+  db.prepare(`INSERT INTO labour_dept VALUES ('2026-06-15','kitchen', 3000, 3000, 60000, 60000, 0, 0, '[]', ?)`).run(NOW);
+  db.prepare(`INSERT INTO labour_dept VALUES ('2026-06-15','foh', 2000, 2000, 25000, 25000, 0, 0, '[]', ?)`).run(NOW);
+  const body = renderTab(db, { period: 'month' });
+  assert.ok(body.includes('over 1 day with sales'), 'cross-ruler uses only the 1 intersecting day');
+  assert.ok(body.includes('£92.09'), 'SPLH is the honest 1-day figure, not diluted by labour-only days');
+});
+
+test('PHASE 4 — WTR aggregate: per-person breach counts, hard-limit total, systemic story', () => {
+  const db = makeDb();
+  seedDay(db, '2026-07-01');
+  const ins = db.prepare(`INSERT INTO labour_wtr_flags VALUES (?,?,?,?,?,?)`);
+  // Rio: 91 over-8h, 131 past-22:00 ; Leon: 118 over-8h — the real backfill shape
+  for (let i = 0; i < 91; i++) ins.run('2026-0' + (1 + (i % 5)) + '-0' + (1 + (i % 9)) + 'x' + i, 1735963, 'Rio Alexander', 'day_over_8h', 'd', 1);
+  for (let i = 0; i < 131; i++) ins.run('2026-0' + (1 + (i % 5)) + '-1' + (i % 9) + 'y' + i, 1735963, 'Rio Alexander', 'night_22_24', 'n', 1);
+  for (let i = 0; i < 118; i++) ins.run('2026-0' + (1 + (i % 5)) + '-2' + (i % 8) + 'z' + i, 1705145, 'Leon Mackay', 'day_over_8h', 'd', 1);
+  const body = renderTab(db);
+  assert.ok(body.includes('U18 working-time flag'), 'aggregate banner');
+  assert.ok(/Rio Alexander[\s\S]{0,120}91/.test(body), 'per-person over-8h count surfaced (was hidden in a 20-row tail)');
+  assert.ok(/Leon Mackay[\s\S]{0,120}118/.test(body), 'Leon 118 over-8h days');
+  assert.ok(body.includes('HARD legal limits'), 'the actionable hard-limit framing');
+  assert.ok(body.includes('gov.uk'), 'citations retained');
+  assert.ok(body.includes('rota-policy action items'), 'points at the fix');
+});
+
+test('PHASE 2 — live panel only on the landing view, never on a historical navigation', () => {
+  const db = makeDb();
+  seedDay(db, '2026-07-01');
+  db.prepare(`INSERT INTO labour_intraday VALUES ('2026-07-02','kitchen',?,3045,61027,1820,38000,0,'[]','[]',NULL,NULL,NULL,NULL,?)`).run(NOW - 20 * 60000, NOW);
+  assert.ok(renderTab(db).includes('Today — live'), 'landing view shows the live panel');
+  assert.ok(!renderTab(db, { period: 'month', start: '2026-04-15' }).includes('Today — live'), 'April navigation hides today');
+  assert.ok(!renderTab(db, { period: 'week', start: '2026-06-01' }).includes('Today — live'), 'historical week hides today');
+});
+
+test('PHASE 3 — charts render: blended sparkline (multi-week), drift bars, staffing shape', () => {
+  const db = makeDb();
+  seedDay(db, '2026-07-01');
+  // two weeks of labour → blended sparkline has 2 points
+  db.prepare(`INSERT INTO labour_dept VALUES ('2026-06-24','kitchen', 3000, 3000, 60000, 60000, 0, 0, '[]', ?)`).run(NOW);
+  db.prepare(`CREATE TABLE labour_hourly (business_date TEXT, hour INTEGER, actual_minutes INTEGER, updated_at INTEGER)`).run();
+  for (const h of [11, 12, 13, 18, 19, 20]) db.prepare(`INSERT INTO labour_hourly VALUES ('2026-07-01', ?, ?, ?)`).run(h, 300 + h * 5, NOW);
+  db.prepare(`INSERT INTO labour_shifts VALUES ('2026-07-01', 1705145, 'Leon Mackay', 600, 443, -157, 1300, 'hourly', 1)`).run();
+  const body = renderTab(db);
+  assert.ok(body.includes('<svg') && body.includes('polyline'), 'blended sparkline is an SVG line');
+  assert.ok(body.includes('Staffing shape'), 'hourly staffing bars section');
+  assert.ok(body.includes('lb-bar'), 'staffing bars rendered');
+  assert.ok(body.includes('lb-hb') && body.includes('Leon Mackay'), 'drift ranked bars');
 });
