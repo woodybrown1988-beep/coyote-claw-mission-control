@@ -130,6 +130,7 @@ const PAGES = [
   require('./ui/pages/issues.js'),
   require('./ui/pages/operations.js'),
   require('./ui/pages/reports.js'),
+  require('./ui/pages/yoy-seasonality.js'),
   require('./ui/pages/labour.js'),
   require('./ui/pages/recipes.js'),
   require('./ui/pages/health.js'),
