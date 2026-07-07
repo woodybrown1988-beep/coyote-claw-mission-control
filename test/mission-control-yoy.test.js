@@ -9,7 +9,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const DATA = require('../mission-control/ui/data.js');
-const yoy = require('../mission-control/ui/pages/yoy-seasonality.js');
+const yoy = require('../mission-control/ui/pages/coyote/yoy-seasonality.js');
 
 // The real boundary-safe views (mirror src/schema.sql in coyote-claw) over minimal base tables.
 const DDL = `
@@ -55,7 +55,7 @@ function ctxFor(db) { return { q: (sql, p) => DATA.safeSelect(db, sql, p), now: 
 
 test('yoy: contract + module shape', () => {
   assert.equal(yoy.key, 'yoy');
-  assert.equal(yoy.route, '/yoy');
+  assert.equal(yoy.route, '/coyote/yoy');
   assert.ok(yoy.title && yoy.sub);
 });
 
@@ -102,7 +102,7 @@ test('yoy: NO-FABRICATION — the non-comparable Apr-2023 row carries no YoY num
 });
 
 test('yoy: source is read-only, no network, requires only shared.js', () => {
-  const src = fs.readFileSync(path.join(__dirname, '..', 'mission-control', 'ui', 'pages', 'yoy-seasonality.js'), 'utf8');
+  const src = fs.readFileSync(path.join(__dirname, '..', 'mission-control', 'ui', 'pages', 'coyote', 'yoy-seasonality.js'), 'utf8');
   assert.doesNotMatch(src, /\bfetch\s*\(|\bchild_process\b|require\(['"]node:(http|https|net|dgram|child_process)/);
   assert.doesNotMatch(src, /\.(run|exec|prepare)\s*\(/, 'reads only via ctx.q');
   assert.doesNotMatch(src, /\b(INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM|INSERT\s+OR)\b/i);

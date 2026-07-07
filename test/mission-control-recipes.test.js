@@ -12,7 +12,7 @@ const {
   applyRecipeAction, applyRecipeImport, RECIPE_ACTION_OPS, buildRecipeTemplate, parseCsv,
 } = require('../mission-control/server.js');
 const DATA = require('../mission-control/ui/data.js');
-const recipesPage = require('../mission-control/ui/pages/recipes.js');
+const recipesPage = require('../mission-control/ui/pages/coyote/recipes.js');
 
 const NOW = 1782900000000;
 

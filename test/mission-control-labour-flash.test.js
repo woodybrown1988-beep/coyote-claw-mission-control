@@ -13,7 +13,7 @@ const test = require('node:test');
 const sqlite = require('node:sqlite');
 
 const DATA = require('../mission-control/ui/data.js');
-const reports = require('../mission-control/ui/pages/reports.js');
+const reports = require('../mission-control/ui/pages/coyote/reports.js');
 
 const NOW = 1783000000000;
 

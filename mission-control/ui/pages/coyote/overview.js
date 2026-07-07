@@ -4,7 +4,7 @@
 // Layers: (1) ACTION BAND — what needs you, (2) RISING-ISSUES STRIP, (3) KPI TILES, (4) SYSTEM STRIP.
 // READ-ONLY / navigational only: the overview links to the page that owns each safe write — it never
 // renders a write control itself (no data-op, no log-form). No fabricated numbers; honest freshness.
-const S = require('../shared.js');
+const S = require('../../shared.js');
 
 function toInt(v) {
   const n = Number(v);
@@ -18,7 +18,7 @@ function rows(res) {
 }
 
 module.exports = {
-  key: "overview", route: "/", title: "Overview", sub: "The cockpit · what needs you, at a glance",
+  key: "overview", route: "/coyote/overview", workspace: "coyote", title: "Overview", sub: "The cockpit · what needs you, at a glance",
 
   getSection(db, ctx) {
     const q = ctx.q;
@@ -131,7 +131,7 @@ module.exports = {
            <div class="lab">Awaiting your sign-off</div>
            <div class="val">${S.fmtInt(signTotal)}</div>
            <div class="sub${signTotal ? ' r' : ''}">${signTotal ? esc(signSubBits.join(' · ')) : 'no jobs held at a gate'}</div>
-           <div><a class="tag" href="/agents">Open Agents →</a></div>
+           <div><a class="tag" href="/claw/agents">Open Agents →</a></div>
          </div>`);
 
       // (b) review reply queue
@@ -143,7 +143,7 @@ module.exports = {
            <div class="lab">Review replies</div>
            <div class="val">${S.fmtInt(m.replyTotal || 0)}</div>
            <div class="sub">${replySub}</div>
-           <div><a class="tag" href="/reviews">Go to queue →</a></div>
+           <div><a class="tag" href="/coyote/reviews">Go to queue →</a></div>
          </div>`);
 
       // (c) escalations — ALLERGEN prominent
@@ -155,7 +155,7 @@ module.exports = {
            <div class="lab">Escalations</div>
            <div class="val">${S.fmtInt(m.escalations || 0)}</div>
            <div class="sub${m.allergen ? '' : (m.escalations ? ' a' : '')}">${escSub}</div>
-           <div><a class="tag" href="/issues">Open Issues →</a></div>
+           <div><a class="tag" href="/coyote/issues">Open Issues →</a></div>
          </div>`);
 
       parts.push(`<div class="tiles">${tiles.join('')}</div>`);
@@ -167,7 +167,7 @@ module.exports = {
       const chips = m.rising.map((r) => {
         const sharp = (r.prior === 0) || ((r.cur - r.prior) >= r.prior);
         const tone = sharp ? 'amber' : 'cyan';
-        return `<a class="chip ${tone}" href="/issues">${esc(r.code)} ↑${S.fmtInt(r.cur)} <span class="muted">(was ${S.fmtInt(r.prior)})</span></a>`;
+        return `<a class="chip ${tone}" href="/coyote/issues">${esc(r.code)} ↑${S.fmtInt(r.cur)} <span class="muted">(was ${S.fmtInt(r.prior)})</span></a>`;
       }).join('');
       parts.push(`<div class="tiles" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center">${chips}</div>`);
     } else {

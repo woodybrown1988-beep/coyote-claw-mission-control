@@ -7,7 +7,7 @@
 //   (e) LOG-AN-ACTION   — the one safe write: a data-log-form the SHARED client script POSTs (op:log_action)
 // Contract: { key, route, title, sub, getSection(db,ctx), render(section,ctx) }. SELECT-only via ctx.q;
 // render returns { stamp, body }. NO writes, NO network, NO LLM — requires only ../shared.js.
-const S = require('../shared.js');
+const S = require('../../shared.js');
 
 const ALLERGEN = 'ALLERGEN_HANDLING';
 
@@ -278,7 +278,7 @@ function render(section, ctx) {
 
 module.exports = {
   key: 'issues',
-  route: '/issues',
+  route: '/coyote/issues', workspace: 'coyote',
   title: 'Issues',
   sub: 'Recurring themes · trends, the loop-closer, escalations',
   getSection,

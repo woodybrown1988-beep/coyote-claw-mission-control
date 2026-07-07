@@ -8,7 +8,7 @@
 // RULER: Coyote moved to a larger site on 2023-04-01. Pre-move is a DIFFERENT business (lower ceiling) —
 // never blended into current-site YoY. This tab shows current-premises figures as truth and pre-move only
 // as a clearly-flagged historical arc. NO-FABRICATION: a non-comparable period shows its reason, never a number.
-const S = require('../shared.js');
+const S = require('../../shared.js');
 
 function rowsOf(res) { return res && res.ok && Array.isArray(res.rows) ? res.rows : []; }
 function num(v) { if (v === null || v === undefined) return null; const n = Number(v); return Number.isFinite(n) ? n : null; }
@@ -16,7 +16,7 @@ const MONTHS = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep
 function monthLabel(ym) { const m = String(ym || '').match(/^(\d{4})-(\d{2})$/); return m ? `${MONTHS[Number(m[2])] || m[2]} ${m[1]}` : String(ym || ''); }
 
 module.exports = {
-  key: 'yoy', route: '/yoy', title: 'YoY / Seasonality',
+  key: 'yoy', route: '/coyote/yoy', workspace: 'coyote', title: 'YoY / Seasonality',
   sub: 'Long-range sales · current-premises YoY (Apr-2023 → ) + seasonal curve — pre-move flagged, never blended',
 
   getSection(db, ctx) {

@@ -12,15 +12,15 @@
 // the bonus period. Rate-parity discrepancies (locked table vs RotaCloud stored rates)
 // are named: the managers' in-app % uses THEIR rates, so a drift makes the scorecard
 // unfair until fixed IN ROTACLOUD.
-const S = require('../shared.js');
-const NAV = require('../period-nav.js');
+const S = require('../../shared.js');
+const NAV = require('../../period-nav.js');
 
 function rowsOf(res) { return res && res.ok && Array.isArray(res.rows) ? res.rows : []; }
 function num(v) { if (v === null || v === undefined) return null; const n = Number(v); return Number.isFinite(n) ? n : null; }
 function addDays(d, n) { const t = new Date(d + 'T12:00:00Z'); t.setUTCDate(t.getUTCDate() + n); return t.toISOString().slice(0, 10); }
 
 module.exports = {
-  key: 'labour', route: '/labour', title: 'Labour Analysis',
+  key: 'labour', route: '/coyote/labour', workspace: 'coyote', title: 'Labour Analysis',
   sub: 'Manager scorecard · PRE-BURDEN, matches RotaCloud — true cost lives in Reports',
 
   getSection(db, ctx) {
@@ -61,7 +61,7 @@ module.exports = {
       return { from, to, depts, budgets, net: netRow, salesDays, uncostedNames: names.sort(), drift, driftTot };
     };
 
-    const nav = NAV.resolveNav(ctx.query, maxDate, now, '/labour');
+    const nav = NAV.resolveNav(ctx.query, maxDate, now, '/coyote/labour');
     const histRow = rowsOf(q('SELECT MIN(business_date) AS d FROM labour_dept'))[0];
     return {
       now, hasData: true, maxDate, nav,
@@ -98,7 +98,7 @@ module.exports = {
     </style>`;
 
     if (!m.hasData) {
-      return { stamp: 'awaiting labour data', body: styles + `<div class="lb-ruler">Manager scorecard — pre-burden, matches RotaCloud</div><div class="banner muted">No department labour yet. The RotaCloud ingest (06:35 / 18:05) fills this in; nothing here is ever estimated. True cost (burden + salaried/365) lives in <a href="/reports">Reports</a>.</div>` };
+      return { stamp: 'awaiting labour data', body: styles + `<div class="lb-ruler">Manager scorecard — pre-burden, matches RotaCloud</div><div class="banner muted">No department labour yet. The RotaCloud ingest (06:35 / 18:05) fills this in; nothing here is ever estimated. True cost (burden + salaried/365) lives in <a href="/coyote/reports">Reports</a>.</div>` };
     }
 
     const DEPT_LABEL = { kitchen: 'Kitchen — Calum', foh: 'Front of House — Jordan', unassigned: 'Unassigned location' };
@@ -138,7 +138,7 @@ module.exports = {
         varLines.push(`landed vs budget: ${v >= 0 ? '+' : '−'}${gbp(Math.abs(v))}${actPct != null && targetPct != null ? ` (${pp(actPct - targetPct)})` : ''}`);
       }
       const uncosted = (num(d.usm) || 0) > 0 || (num(d.uam) || 0) > 0
-        ? `<div class="lb-hint">⚠️ ${hrs(Math.max(num(d.usm) || 0, num(d.uam) || 0))} at £0 in RotaCloud (no stored rate) — matches what the manager sees in-app; the real cost of these staff lives in <a href="/reports">Reports</a>.</div>`
+        ? `<div class="lb-hint">⚠️ ${hrs(Math.max(num(d.usm) || 0, num(d.uam) || 0))} at £0 in RotaCloud (no stored rate) — matches what the manager sees in-app; the real cost of these staff lives in <a href="/coyote/reports">Reports</a>.</div>`
         : '';
 
       // BONUS PACING (month only): a pure arithmetic restatement of the MTD ledger —
@@ -346,7 +346,7 @@ module.exports = {
       + `<div class="lb-ruler">Manager scorecard — pre-burden, matches RotaCloud · never compare with Reports' true cost (burden + salaried/365)</div>`
       + livePanel()
       + headline()
-      + NAV.renderNavStrip(m.nav, '/labour', esc)
+      + NAV.renderNavStrip(m.nav, '/coyote/labour', esc)
       + (m.nav.period === 'month' ? `<div class="lb-hint">calendar month = the bonus period</div>` : '')
       + comparatorHtml()
       + periodBody(m.current, m.nav.label, m.nav.period === 'month')

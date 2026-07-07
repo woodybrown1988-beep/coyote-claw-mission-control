@@ -54,29 +54,59 @@ function fmtInt(n) {
 const BRAND_SVG =
   '<svg viewBox="0 0 24 24" fill="none" width="17" height="17"><path d="M12 3 L19 8 L17 19 L7 19 L5 8 Z" stroke="#22D3EE" stroke-width="1.5"/><circle cx="9.5" cy="11" r="1.1" fill="#22D3EE"/><circle cx="14.5" cy="11" r="1.1" fill="#22D3EE"/><path d="M9 15 Q12 17 15 15" stroke="#22D3EE" stroke-width="1.2" fill="none"/></svg>';
 
-// Nav model: the 6 pages + section grouping + their live badges (red = blocked-on-you, amber = warn).
-const NAV = [
-  { group: 'Command', items: [
-    { key: 'overview', label: 'Overview', route: '/', ico: '<rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/>' },
-    { key: 'agents', label: 'Agents', route: '/agents', ico: '<circle cx="12" cy="7" r="3"/><circle cx="5" cy="17" r="2.5"/><circle cx="19" cy="17" r="2.5"/><path d="M12 10v3M9 15l-2 1M15 15l2 1"/>' },
+// WORKSPACE registry — ONE app, N route-namespaced workspaces. Adding /coyote-aviemore or /capital = one
+// more entry here + its page files under ui/pages/<ws>/; no routing-engine change. Each page module also
+// declares `workspace` so servePage can resolve the active workspace from the served page.
+//   /coyote — BUSINESS ("would a manager look at this?"): Overview, Reports, YoY, Labour, Recipes, Reviews, Issues, Operations.
+//   /claw   — ENGINE ROOM (agent machinery): Agents board + Health (job states, spend, gates live inside them).
+//             READ-ONLY: shows state; every action is a Telegram tap (a console button would cross the nonce
+//             trust boundary — see the read-only test). Badges: red = blocked-on-you, amber = warn.
+const WORKSPACES = [
+  { key: 'coyote', label: 'Coyote', tag: 'Business', home: '/coyote/overview', groups: [
+    { group: 'Command', items: [
+      { key: 'overview', label: 'Overview', route: '/coyote/overview', ico: '<rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/>' },
+    ] },
+    { group: 'Departments', items: [
+      { key: 'reports', label: 'Reports', route: '/coyote/reports', ico: '<path d="M3 3v18h18"/><rect x="7" y="11" width="3" height="7"/><rect x="12" y="7" width="3" height="11"/><rect x="17" y="4" width="3" height="14"/>' },
+      { key: 'yoy', label: 'YoY / Seasonality', route: '/coyote/yoy', ico: '<path d="M3 3v18h18"/><path d="M7 15l3-5 3 3 5-8"/><circle cx="21" cy="5" r="1"/>' },
+      { key: 'labour', label: 'Labour', route: '/coyote/labour', ico: '<circle cx="9" cy="7" r="3"/><circle cx="17" cy="9" r="2.5"/><path d="M3 20v-1a6 6 0 0 1 12 0v1"/><path d="M15 20v-1a5 5 0 0 1 7-4.6"/>' },
+      { key: 'recipes', label: 'Recipes & Costs', route: '/coyote/recipes', ico: '<path d="M5 3h11l3 3v15H5z"/><path d="M9 8h6M9 12h6M9 16h4"/>' },
+      { key: 'reviews', label: 'Reviews', route: '/coyote/reviews', ico: '<path d="M12 3l2.5 5 5.5.8-4 3.9.9 5.5L12 21l-4.9 2.1.9-5.5-4-3.9 5.5-.8z"/>' },
+      { key: 'issues', label: 'Issues', route: '/coyote/issues', ico: '<path d="M10.3 3.8 2.5 18a2 2 0 0 0 1.7 3h15.6a2 2 0 0 0 1.7-3L13.7 3.8a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/>' },
+      { key: 'operations', label: 'Operations', route: '/coyote/operations', ico: '<path d="M3 3v18h18"/><path d="M7 14l3-4 4 3 5-7"/>' },
+    ] },
   ] },
-  { group: 'Departments', items: [
-    { key: 'reviews', label: 'Reviews', route: '/reviews', ico: '<path d="M12 3l2.5 5 5.5.8-4 3.9.9 5.5L12 21l-4.9 2.1.9-5.5-4-3.9 5.5-.8z"/>' },
-    { key: 'issues', label: 'Issues', route: '/issues', ico: '<path d="M10.3 3.8 2.5 18a2 2 0 0 0 1.7 3h15.6a2 2 0 0 0 1.7-3L13.7 3.8a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/>' },
-    { key: 'operations', label: 'Operations', route: '/operations', ico: '<path d="M3 3v18h18"/><path d="M7 14l3-4 4 3 5-7"/>' },
-    { key: 'reports', label: 'Reports', route: '/reports', ico: '<path d="M3 3v18h18"/><rect x="7" y="11" width="3" height="7"/><rect x="12" y="7" width="3" height="11"/><rect x="17" y="4" width="3" height="14"/>' },
-    { key: 'yoy', label: 'YoY / Seasonality', route: '/yoy', ico: '<path d="M3 3v18h18"/><path d="M7 15l3-5 3 3 5-8"/><circle cx="21" cy="5" r="1"/>' },
-    { key: 'labour', label: 'Labour', route: '/labour', ico: '<circle cx="9" cy="7" r="3"/><circle cx="17" cy="9" r="2.5"/><path d="M3 20v-1a6 6 0 0 1 12 0v1"/><path d="M15 20v-1a5 5 0 0 1 7-4.6"/>' },
-    { key: 'recipes', label: 'Recipes & Costs', route: '/recipes', ico: '<path d="M5 3h11l3 3v15H5z"/><path d="M9 8h6M9 12h6M9 16h4"/>' },
-  ] },
-  { group: 'System', items: [
-    { key: 'health', label: 'Health', route: '/health', ico: '<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 9h6v6H9z"/>' },
+  { key: 'claw', label: 'Claw', tag: 'Engine room', home: '/claw/agents', readOnly: true, groups: [
+    { group: 'Console', items: [
+      { key: 'agents', label: 'Agents', route: '/claw/agents', ico: '<circle cx="12" cy="7" r="3"/><circle cx="5" cy="17" r="2.5"/><circle cx="19" cy="17" r="2.5"/><path d="M12 10v3M9 15l-2 1M15 15l2 1"/>' },
+      { key: 'health', label: 'Health', route: '/claw/health', ico: '<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 9h6v6H9z"/>' },
+    ] },
   ] },
 ];
 
+// Resolve the active workspace from the active page key (falls back to the first workspace for '/').
+function workspaceOf(activeKey) {
+  return WORKSPACES.find((w) => w.groups.some((g) => g.items.some((it) => it.key === activeKey))) || WORKSPACES[0];
+}
+
+// The workspace switcher — two chips in the shared shell; the active workspace is highlighted, each links to
+// that workspace's home (Coyote is the default daily driver).
+function renderSwitch(activeWs) {
+  const wrap = 'display:flex;gap:4px;margin:12px 14px 4px;padding:3px;background:rgba(255,255,255,.05);border-radius:9px';
+  const chips = WORKSPACES.map((w) => {
+    const on = w.key === activeWs.key;
+    const st = 'flex:1;text-align:center;padding:6px 4px;border-radius:7px;font-size:12px;font-weight:600;letter-spacing:.02em;text-decoration:none;'
+      + (on ? 'background:rgba(34,211,238,.16);color:#CFF6FB' : 'color:var(--muted,#8aa)');
+    return `<a href="${w.home}" style="${st}" title="${escapeHtml(w.tag || '')}">${escapeHtml(w.label)}</a>`;
+  }).join('');
+  const ro = activeWs.readOnly ? '<div style="margin:2px 15px 4px;font-size:10px;color:var(--muted,#7a8)">read-only · actions via Telegram</div>' : '';
+  return `<div style="${wrap}">${chips}</div>${ro}`;
+}
+
 function renderSidebar(active, badges, foot) {
   const b = badges || {};
-  const navHtml = NAV.map((sec) => {
+  const ws = workspaceOf(active);
+  const navHtml = ws.groups.map((sec) => {
     const items = sec.items
       .map((it) => {
         const isActive = it.key === active;
@@ -94,6 +124,7 @@ function renderSidebar(active, badges, foot) {
     .join('');
   return `<aside class="sidebar">
     <div class="brand"><div class="brand-mark">${BRAND_SVG}</div><div><div class="brand-name">Coyote Claw</div><div class="brand-sub">Mission Control</div></div></div>
+    ${renderSwitch(ws)}
     <nav class="nav">${navHtml}</nav>
     <div class="sidebar-foot">${footHtml}</div>
   </aside>`;
@@ -361,5 +392,6 @@ module.exports = {
   renderShell,
   renderSidebar,
   css,
-  NAV,
+  WORKSPACES,
+  workspaceOf,
 };

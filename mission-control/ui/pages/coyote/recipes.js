@@ -6,7 +6,7 @@
 // page itself never writes. NO-FABRICATION: a product only counts as "costed" when it has a complete
 // recipe whose every ingredient carries pack cost + qty; uncosted SKUs show as a visible coverage GAP,
 // never a made-up cost. Products are the LIVE Lightspeed SKUs (seeded from sales), never typed here.
-const S = require('../shared.js');
+const S = require('../../shared.js');
 
 function rowsOf(res) { return res && res.ok && Array.isArray(res.rows) ? res.rows : []; }
 function num(v) { if (v === null || v === undefined) return null; const n = Number(v); return Number.isFinite(n) ? n : null; }
@@ -15,7 +15,7 @@ function gbp(pence) { const n = num(pence); return n == null ? '—' : S.fmtGbpP
 function pct(x) { return x == null ? '—' : `${(x * 100).toFixed(1)}%`; }
 
 module.exports = {
-  key: 'recipes', route: '/recipes', title: 'Recipes & Costs',
+  key: 'recipes', route: '/coyote/recipes', workspace: 'coyote', title: 'Recipes & Costs',
   sub: 'Bill-of-materials · your recipes + ingredient costs → true prime cost',
 
   getSection(db, ctx) {
