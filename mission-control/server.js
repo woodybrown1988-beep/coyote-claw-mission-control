@@ -112,6 +112,13 @@ function handleRequest(req, res) {
     return;
   }
 
+  const redirect = LEGACY_REDIRECTS[url.pathname];
+  if (redirect) {
+    res.writeHead(308, { Location: redirect + url.search });
+    res.end();
+    return;
+  }
+
   const page = PAGE_BY_ROUTE[url.pathname];
   if (!page) {
     sendText(res, 404, 'Not found');
@@ -124,19 +131,37 @@ function handleRequest(req, res) {
 const SHARED = require('./ui/shared.js');
 const DATA = require('./ui/data.js');
 const PAGES = [
-  require('./ui/pages/overview.js'),
-  require('./ui/pages/agents.js'),
-  require('./ui/pages/reviews.js'),
-  require('./ui/pages/issues.js'),
-  require('./ui/pages/operations.js'),
-  require('./ui/pages/reports.js'),
-  require('./ui/pages/yoy-seasonality.js'),
-  require('./ui/pages/labour.js'),
-  require('./ui/pages/recipes.js'),
-  require('./ui/pages/health.js'),
+  require('./ui/pages/coyote/overview.js'),
+  require('./ui/pages/claw/agents.js'),
+  require('./ui/pages/coyote/reviews.js'),
+  require('./ui/pages/coyote/issues.js'),
+  require('./ui/pages/coyote/operations.js'),
+  require('./ui/pages/coyote/reports.js'),
+  require('./ui/pages/coyote/yoy-seasonality.js'),
+  require('./ui/pages/coyote/labour.js'),
+  require('./ui/pages/coyote/recipes.js'),
+  require('./ui/pages/claw/health.js'),
 ];
 const PAGE_BY_ROUTE = {};
 for (const p of PAGES) PAGE_BY_ROUTE[p.route] = p;
+
+// Legacy → namespaced workspace routes (308: permanent, preserves method + query string). NOTE: '/health'
+// non-HTML already returned the machine JSON healthcheck above (deploy waitHealthy) — only a BROWSER
+// reaching '/health' falls through to the redirect below. '/' lands on the daily-driver front door
+// (/coyote/overview), not the console. Factory-ready: a new workspace adds its own prefix, no engine change.
+const LEGACY_REDIRECTS = {
+  '/': '/coyote/overview',
+  '/overview': '/coyote/overview',
+  '/reports': '/coyote/reports',
+  '/labour': '/coyote/labour',
+  '/recipes': '/coyote/recipes',
+  '/reviews': '/coyote/reviews',
+  '/issues': '/coyote/issues',
+  '/yoy': '/coyote/yoy',
+  '/operations': '/coyote/operations',
+  '/agents': '/claw/agents',
+  '/health': '/claw/health',
+};
 
 // Render one page: open the READ-ONLY handle (all DATA is SELECT-only), compute nav badges + footer
 // from real data, let the page build its model + body, wrap in the shared shell. Any page error

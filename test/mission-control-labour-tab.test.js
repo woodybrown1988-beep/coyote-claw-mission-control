@@ -14,7 +14,7 @@ const test = require('node:test');
 const sqlite = require('node:sqlite');
 
 const DATA = require('../mission-control/ui/data.js');
-const labour = require('../mission-control/ui/pages/labour.js');
+const labour = require('../mission-control/ui/pages/coyote/labour.js');
 
 const NOW = 1783000000000;
 
@@ -142,7 +142,7 @@ test('TODAY-live panel: names + as-of + so-far vs full-day rota; stale flagged; 
 });
 
 test('RULER PURITY (source-level): the scorecard tab never touches the burdened ruler', () => {
-  const src = require('node:fs').readFileSync('mission-control/ui/pages/labour.js', 'utf8');
+  const src = require('node:fs').readFileSync('mission-control/ui/pages/coyote/labour.js', 'utf8');
   for (const banned of ['1.159', 'EMPLOYER_BURDEN', '0.159']) {
     assert.ok(!src.includes(banned), `labour.js must stay burden-free: found "${banned}"`);
   }

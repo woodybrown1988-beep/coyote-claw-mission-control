@@ -6,7 +6,7 @@
 // (data-copy / data-op). Google replies are Telegram-gated OFF the board, so a Google card shows status
 // only: NO data-op, NO data-review wrapper, never a control that could post a Google reply.
 // Contract: { key, route, title, sub, getSection(db,ctx), render(section,ctx) }.
-const S = require('../shared.js');
+const S = require('../../shared.js');
 
 // --- tiny local coercers (NEVER require anything but ../shared.js) ---
 function toIntOrNull(v) {
@@ -287,7 +287,7 @@ function render(section, ctx) {
 
 module.exports = {
   key: 'reviews',
-  route: '/reviews',
+  route: '/coyote/reviews', workspace: 'coyote',
   title: 'Reviews',
   sub: 'Action queue · drafts, tags, per-platform reply',
   getSection,

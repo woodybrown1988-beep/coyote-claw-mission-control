@@ -11,13 +11,13 @@ const sqlite = require('node:sqlite');
 const SHARED = require('../mission-control/ui/shared.js');
 const DATA = require('../mission-control/ui/data.js');
 const PAGES = {
-  overview: require('../mission-control/ui/pages/overview.js'),
-  agents: require('../mission-control/ui/pages/agents.js'),
-  reviews: require('../mission-control/ui/pages/reviews.js'),
-  issues: require('../mission-control/ui/pages/issues.js'),
-  operations: require('../mission-control/ui/pages/operations.js'),
-  recipes: require('../mission-control/ui/pages/recipes.js'),
-  health: require('../mission-control/ui/pages/health.js'),
+  overview: require('../mission-control/ui/pages/coyote/overview.js'),
+  agents: require('../mission-control/ui/pages/claw/agents.js'),
+  reviews: require('../mission-control/ui/pages/coyote/reviews.js'),
+  issues: require('../mission-control/ui/pages/coyote/issues.js'),
+  operations: require('../mission-control/ui/pages/coyote/operations.js'),
+  recipes: require('../mission-control/ui/pages/coyote/recipes.js'),
+  health: require('../mission-control/ui/pages/claw/health.js'),
 };
 const NOW = 1782800000000;
 let counter = 0;
@@ -245,7 +245,7 @@ test('boundary: no page module writes, fetches, or requires beyond ../shared.js'
   const dbWrite = /\.(run|exec|prepare)\s*\(/;
   const sqlWrite = /\b(INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM|INSERT\s+OR)\b/i;
   for (const key of Object.keys(PAGES)) {
-    const src = fs.readFileSync(path.join(__dirname, '..', 'mission-control', 'ui', 'pages', `${key}.js`), 'utf8');
+    const src = fs.readFileSync(path.join(__dirname, '..', 'mission-control', 'ui', 'pages', PAGES[key].workspace, `${key}.js`), 'utf8');
     assert.doesNotMatch(src, network, `${key} must make no network call`);
     assert.doesNotMatch(src, dbWrite, `${key} must not touch the db directly (read only via ctx.q)`);
     assert.doesNotMatch(src, sqlWrite, `${key} must run no write SQL`);

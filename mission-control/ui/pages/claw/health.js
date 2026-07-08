@@ -13,7 +13,7 @@
 // Contract: { key, route, title, sub, getSection(db,ctx), render(section,ctx) }. SELECT-only via ctx.q;
 // render returns { stamp, body }. NO writes, NO network, NO LLM — requires only ../shared.js. Honest
 // freshness everywhere; empty/missing data degrades to a graceful state, never a fabricated number.
-const S = require('../shared.js');
+const S = require('../../shared.js');
 
 function rows(res) {
   return res && res.ok && Array.isArray(res.rows) ? res.rows : [];
@@ -392,7 +392,7 @@ function render(section, ctx) {
 
 module.exports = {
   key: 'health',
-  route: '/health',
+  route: '/claw/health', workspace: 'claw',
   title: 'Health',
   sub: 'System · daemons, ships, spend, ingest freshness',
   getSection,

@@ -8,15 +8,15 @@
 //   • Everything POS-truthful ships live: net (ex-VAT), transactions, ATV (net÷txn), channel split,
 //     sales-by-hour, payment reconciliation, category performance, best/worst products, discounts/voids.
 // Daily/Weekly/Monthly is a client-side toggle over server-rendered periods (no network call from here).
-const S = require('../shared.js');
-const NAV = require('../period-nav.js');
+const S = require('../../shared.js');
+const NAV = require('../../period-nav.js');
 
 function rowsOf(res) { return res && res.ok && Array.isArray(res.rows) ? res.rows : []; }
 function num(v) { if (v === null || v === undefined) return null; const n = Number(v); return Number.isFinite(n) ? n : null; }
 function addDays(d, n) { const t = new Date(d + 'T12:00:00Z'); t.setUTCDate(t.getUTCDate() + n); return t.toISOString().slice(0, 10); }
 
 module.exports = {
-  key: 'reports', route: '/reports', title: 'Reports',
+  key: 'reports', route: '/coyote/reports', workspace: 'coyote', title: 'Reports',
   sub: 'Daily sales flash · Lightspeed — POS-truthful KPIs (covers via OpenTable, not wired)',
 
   getSection(db, ctx) {
@@ -81,7 +81,7 @@ module.exports = {
       return { from, to, tot, channels, payments, cats, prodsTop, prodsBottom, hourly, cov, lab, labNet, labNames, labHourly, closedDays: num(closed.n) || 0 };
     };
 
-    const nav = NAV.resolveNav(ctx.query, maxDate, now, '/reports');
+    const nav = NAV.resolveNav(ctx.query, maxDate, now, '/coyote/reports');
     const histRow = rowsOf(q('SELECT MIN(business_date) AS d FROM sales_day'))[0];
     return {
       now, hasData: true, maxDate, nav,
@@ -235,7 +235,7 @@ module.exports = {
       const covPct = num(cov.total_amt) && num(cov.total_amt) > 0 ? (num(cov.costed_amt) || 0) / num(cov.total_amt) : 0;
       parts.push(`<div class="sec-label">Margin (prime cost)<span class="rule"></span></div>`);
       if (covPct <= 0) {
-        parts.push(`<div class="banner muted">Not costed yet — <b>0% coverage</b>. Margin lights up once recipes/ingredient costs are entered in <a href="/recipes">Recipes &amp; Costs</a> (Slice 2). We never estimate a cost we don't have. <span class="ash">(Lightspeed's own margin figures are stored as a cross-check, not shown as truth.)</span></div>`);
+        parts.push(`<div class="banner muted">Not costed yet — <b>0% coverage</b>. Margin lights up once recipes/ingredient costs are entered in <a href="/coyote/recipes">Recipes &amp; Costs</a> (Slice 2). We never estimate a cost we don't have. <span class="ash">(Lightspeed's own margin figures are stored as a cross-check, not shown as truth.)</span></div>`);
       } else {
         parts.push(`<div class="banner muted">Recipes cover <b>${(covPct * 100).toFixed(1)}%</b> of product sales — margin shown for costed items only; the rest is a visible gap, never estimated.</div>`);
       }
@@ -255,7 +255,7 @@ module.exports = {
 
     const body = styles
       + `<style>${NAV.NAV_CSS}</style>`
-      + NAV.renderNavStrip(m.nav, '/reports', esc)
+      + NAV.renderNavStrip(m.nav, '/coyote/reports', esc)
       + comparatorHtml
       + periodBody(m.current, m.nav.label);
 

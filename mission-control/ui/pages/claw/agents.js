@@ -4,7 +4,7 @@
 // band (live counts) → flow-divider legend → 5-column kanban (Idle/Queued/Working/Blocked/Done).
 // Contract: { key, route, title, sub, getSection(db,ctx), render(section,ctx) }.
 // SELECT-only via ctx.q; render returns { stamp, body }. No writes, no network, only ../shared.js.
-const S = require('../shared.js');
+const S = require('../../shared.js');
 
 // --- jobs read-contract helpers -------------------------------------------------------------------
 const ACTIVE6 = ['queued', 'preparing', 'dispatched', 'running', 'awaiting_signoff', 'awaiting_plan_feedback'];
@@ -113,7 +113,7 @@ function buildTrack(mode, milestonesDone) {
 // =================================================================================================
 module.exports = {
   key: 'agents',
-  route: '/agents',
+  route: '/claw/agents', workspace: 'claw',
   title: 'Agents',
   sub: 'The team · who is working, who is stuck, who needs you',
 

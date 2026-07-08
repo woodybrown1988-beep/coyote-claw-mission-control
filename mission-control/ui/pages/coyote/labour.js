@@ -12,14 +12,14 @@
 // sales∩labour intersection and LABELLED with that day-count — never the full labour
 // window divided by a 1-day sliver of sales. Scorecard-ruler-only figures (hours,
 // pre-burden cost, budget-vs-actual £) use the full navigated window and need no sales.
-const S = require('../shared.js');
-const NAV = require('../period-nav.js');
+const S = require('../../shared.js');
+const NAV = require('../../period-nav.js');
 
 function rowsOf(res) { return res && res.ok && Array.isArray(res.rows) ? res.rows : []; }
 function num(v) { if (v === null || v === undefined) return null; const n = Number(v); return Number.isFinite(n) ? n : null; }
 
 module.exports = {
-  key: 'labour', route: '/labour', title: 'Labour Analysis',
+  key: 'labour', route: '/coyote/labour', workspace: 'coyote', title: 'Labour Analysis',
   sub: 'Manager scorecard · PRE-BURDEN, matches RotaCloud — true cost lives in Reports',
 
   getSection(db, ctx) {
@@ -74,7 +74,7 @@ module.exports = {
       return { from, to, depts, budgets, interDept, interNet, salesDays, uncostedNames: names.sort(), drift, driftTot, byHour };
     };
 
-    const nav = NAV.resolveNav(ctx.query, maxDate, now, '/labour');
+    const nav = NAV.resolveNav(ctx.query, maxDate, now, '/coyote/labour');
     const histRow = rowsOf(q('SELECT MIN(business_date) AS d FROM labour_dept'))[0];
     return {
       now, hasData: true, maxDate, nav,
@@ -141,7 +141,7 @@ module.exports = {
     </style>`;
 
     if (!m.hasData) {
-      return { stamp: 'awaiting labour data', body: styles + `<div class="lb-ruler">Manager scorecard — pre-burden, matches RotaCloud</div><div class="banner muted">No department labour yet. The RotaCloud ingest (hourly at :35) fills this in; nothing here is ever estimated. True cost (burden + salaried/365) lives in <a href="/reports">Reports</a>.</div>` };
+      return { stamp: 'awaiting labour data', body: styles + `<div class="lb-ruler">Manager scorecard — pre-burden, matches RotaCloud</div><div class="banner muted">No department labour yet. The RotaCloud ingest (hourly at :35) fills this in; nothing here is ever estimated. True cost (burden + salaried/365) lives in <a href="/coyote/reports">Reports</a>.</div>` };
     }
 
     // ---- small chart helpers (inline SVG / CSS, no deps) ----
@@ -201,7 +201,7 @@ module.exports = {
       if (budget != null && num(d.sc) != null) { const v = num(d.sc) - budget; varLines.push(`planned vs budget: ${v >= 0 ? '+' : '−'}${gbp(Math.abs(v))}`); }
       if (budget != null && num(d.ac) != null) { const v = num(d.ac) - budget; varLines.push(`landed vs budget: ${v >= 0 ? '+' : '−'}${gbp(Math.abs(v))}`); }
       const uncosted = (num(d.usm) || 0) > 0 || (num(d.uam) || 0) > 0
-        ? `<div class="lb-hint">⚠️ ${hrs(Math.max(num(d.usm) || 0, num(d.uam) || 0))} at £0 in RotaCloud (no stored rate) — matches what the manager sees in-app; the real cost of these staff lives in <a href="/reports">Reports</a>.</div>`
+        ? `<div class="lb-hint">⚠️ ${hrs(Math.max(num(d.usm) || 0, num(d.uam) || 0))} at £0 in RotaCloud (no stored rate) — matches what the manager sees in-app; the real cost of these staff lives in <a href="/coyote/reports">Reports</a>.</div>`
         : '';
 
       // BONUS PACING (month only) — arithmetic restatement of the MTD ledger, no projection.
@@ -260,7 +260,7 @@ module.exports = {
       const bars = hoursArr.map((h) => { const hh = num(h.hour) >= 24 ? num(h.hour) - 24 : num(h.hour); return `<div class="lb-bar" style="height:${Math.max(2, Math.round((num(h.am) || 0) / mx * 80))}px" title="${esc(String(hh))}:00 — ${hrs(h.am)}"><span>${esc(String(hh))}</span></div>`; }).join('');
       return `<div class="lb-sec">Staffing shape <span class="lb-sub">worked hours by hour of day · scorecard ruler</span></div>
         <div class="lb-card"><div class="lb-bars">${bars}</div><div style="height:14px"></div>
-        <div class="lb-hint" style="margin:0 12px">Where worked hours land across the day — the shape you flex against trade (cross-check the sales curve on <a href="/reports">Reports</a>).</div></div>`;
+        <div class="lb-hint" style="margin:0 12px">Where worked hours land across the day — the shape you flex against trade (cross-check the sales curve on <a href="/coyote/reports">Reports</a>).</div></div>`;
     };
 
     // ---- clock drift: ranked bars + detail table ----
@@ -401,7 +401,7 @@ module.exports = {
       + headline()
       + (showLive ? livePanel() : '')
       + `<div class="lb-sec">Analysis <span class="lb-sub">${m.nav.period === 'month' ? 'calendar month = the bonus period' : 'navigate periods below'}</span></div>`
-      + NAV.renderNavStrip(m.nav, '/labour', esc)
+      + NAV.renderNavStrip(m.nav, '/coyote/labour', esc)
       + comparatorHtml()
       + periodBody(m.current, m.nav.label, m.nav.period === 'month')
       + blendedHtml()

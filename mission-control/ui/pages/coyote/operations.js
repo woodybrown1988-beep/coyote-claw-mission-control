@@ -3,7 +3,7 @@
 // getSection: SELECT-only via ctx.q. render returns { stamp, body }. Requires ONLY ../shared.js — NO writes,
 // NO network, NO LLM. kpi_snapshot is EMPTY until the box-side coyote-intel ingest is wired, so the PRIMARY
 // path is a calm "KPI feed not yet wired" state — every tile shows '—', never a fabricated number.
-const S = require('../shared.js');
+const S = require('../../shared.js');
 
 function rowsOf(res) { return res && res.ok && Array.isArray(res.rows) ? res.rows : []; }
 function firstRow(res) { const r = rowsOf(res); return r.length ? r[0] : null; }
@@ -11,7 +11,7 @@ function firstRow(res) { const r = rowsOf(res); return r.length ? r[0] : null; }
 function num(v) { if (v === null || v === undefined) return null; const n = Number(v); return Number.isFinite(n) ? n : null; }
 
 module.exports = {
-  key: "operations", route: "/operations", title: "Operations", sub: "Restaurant KPIs · covers, revenue, labour, channel",
+  key: "operations", route: "/coyote/operations", workspace: "coyote", title: "Operations", sub: "Restaurant KPIs · covers, revenue, labour, channel",
 
   getSection(db, ctx) {
     const q = ctx && ctx.q;

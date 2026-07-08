@@ -18,7 +18,7 @@ const sqlite = require('node:sqlite');
 
 const NAVMOD = require('../mission-control/ui/period-nav.js');
 const DATA = require('../mission-control/ui/data.js');
-const reports = require('../mission-control/ui/pages/reports.js');
+const reports = require('../mission-control/ui/pages/coyote/reports.js');
 
 const NOW = Date.UTC(2026, 6, 2, 20, 0); // London Thu 2026-07-02 21:00
 const MAX = '2026-07-01';
@@ -101,8 +101,8 @@ test('closed vs missing: zero-net captured day = CLOSED; uncaptured day = NO REC
 
 test('URL state: the nav strip is links (bookmarkable), custom form is a GET', () => {
   const body = render(makeDb(), { period: 'week' });
-  assert.ok(body.includes('href="/reports?period=week&amp;start=2026-06-22"'), 'back arrow is a shareable URL (&amp; is correct HTML escaping)');
-  assert.ok(body.includes('method="GET" action="/reports"'), 'custom picker round-trips through the URL');
+  assert.ok(body.includes('href="/coyote/reports?period=week&amp;start=2026-06-22"'), 'back arrow is a shareable URL (&amp; is correct HTML escaping)');
+  assert.ok(body.includes('method="GET" action="/coyote/reports"'), 'custom picker round-trips through the URL');
   assert.ok(body.includes('the future has no record'), 'disabled forward arrow explains itself');
 });
 
