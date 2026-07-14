@@ -14,6 +14,8 @@ const NAV = require('../../period-nav.js');
 function rowsOf(res) { return res && res.ok && Array.isArray(res.rows) ? res.rows : []; }
 function num(v) { if (v === null || v === undefined) return null; const n = Number(v); return Number.isFinite(n) ? n : null; }
 function addDays(d, n) { const t = new Date(d + 'T12:00:00Z'); t.setUTCDate(t.getUTCDate() + n); return t.toISOString().slice(0, 10); }
+const MONTHS_ABBR = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+function monthLabel(ym) { const m = String(ym || '').match(/^(\d{4})-(\d{2})$/); return m ? `${MONTHS_ABBR[Number(m[2])] || m[2]} ${m[1]}` : String(ym || ''); }
 
 module.exports = {
   key: 'reports', route: '/coyote/reports', workspace: 'coyote', title: 'Reports',
@@ -83,9 +85,18 @@ module.exports = {
 
     const nav = NAV.resolveNav(ctx.query, maxDate, now, '/coyote/reports');
     const histRow = rowsOf(q('SELECT MIN(business_date) AS d FROM sales_day'))[0];
+    // YoY headline — "vs same month last year" from the box's boundary-safe view
+    // (v_sales_month_yoy): current-premises comparisons only; a comparison the
+    // premises move / partial month blocks carries its REASON, never a number.
+    // Anchor = the month of the viewed period's settled end (clamped to maxDate).
+    const anchorMonth = String(nav.to <= maxDate ? nav.to : maxDate).slice(0, 7);
+    const yoyCols = 'month, net_pence, days, cal_days, complete, prior_year_month, prior_year_net_pence, yoy_delta_pence, yoy_status';
+    const yoyAnchor = rowsOf(q(`SELECT ${yoyCols} FROM v_sales_month_yoy WHERE month = ?`, [anchorMonth]))[0] || null;
+    const yoyLatestOk = rowsOf(q(`SELECT ${yoyCols} FROM v_sales_month_yoy WHERE premises='current' AND yoy_status='ok' ORDER BY month DESC LIMIT 1`))[0] || null;
     return {
       now, hasData: true, maxDate, nav,
       histStart: histRow && histRow.d ? String(histRow.d) : null,
+      yoyAnchor, yoyLatestOk,
       current: build(nav.from, nav.to),
       comparator: nav.comparator ? build(nav.comparator.from, nav.comparator.to) : null,
     };
@@ -114,6 +125,9 @@ module.exports = {
       .rp-notwired{opacity:.72}
       .rp-notwired .val{color:var(--amber,#e0b050)}
       .rp-hint{font-size:11px;color:var(--muted,#7a8);margin:-4px 0 14px}
+      .rp-yoy{font-size:13px;padding:9px 14px;border:1px solid rgba(255,255,255,.08);border-radius:9px;margin:0 0 14px;background:rgba(255,255,255,.03)}
+      .rp-yoy-up{color:var(--green,#34d399)} .rp-yoy-down{color:var(--red,#f87171)}
+      .rp-yoy-na{color:var(--muted,#7a8);font-style:italic}
     </style>`;
 
     const periodBody = (p, label) => {
@@ -242,6 +256,31 @@ module.exports = {
       return parts.join('\n');
     };
 
+    // ---- YoY headline: vs same month last year (boundary-safe, current premises only) ----
+    // A blocked comparison (premises move / partial month / no prior year) shows its
+    // reason from the view verbatim; the latest comparable month is offered alongside
+    // so the line is useful mid-month without ever fabricating a month-to-date match.
+    let yoyHtml = '';
+    {
+      const a = m.yoyAnchor;
+      const l = m.yoyLatestOk;
+      const okLine = (r) => {
+        const d = num(r.yoy_delta_pence);
+        const base = num(r.prior_year_net_pence);
+        const pctS = base ? ` / ${d >= 0 ? '+' : '−'}${Math.abs(d / base * 100).toFixed(1)}%` : '';
+        return `<b>${esc(monthLabel(r.month))}</b> vs ${esc(monthLabel(r.prior_year_month))}: ${gbp(r.net_pence)} vs ${gbp(r.prior_year_net_pence)} · <span class="${d >= 0 ? 'rp-yoy-up' : 'rp-yoy-down'}"><b>${d >= 0 ? '+' : '−'}${gbp(Math.abs(d))}${pctS}</b></span>`;
+      };
+      if (a && a.yoy_status === 'ok') {
+        yoyHtml = `<div class="rp-yoy">${okLine(a)} <span class="ash">· vs same month last year · current premises</span></div>`;
+      } else if (a) {
+        const fallback = l && l.month !== a.month ? ` <span class="ash">·</span> latest comparable: ${okLine(l)}` : '';
+        yoyHtml = `<div class="rp-yoy"><b>${esc(monthLabel(a.month))}</b> vs same month last year: <span class="rp-yoy-na">${esc(a.yoy_status)}</span>${fallback}</div>`;
+      } else if (l) {
+        yoyHtml = `<div class="rp-yoy">Latest comparable month — ${okLine(l)} <span class="ash">· vs same month last year · current premises</span></div>`;
+      }
+      // no YoY rows at all (views not present / no monthly history) → no line, never a fabricated one
+    }
+
     // Custom-range comparator: net vs the same-length PRECEDING window (a lookup, labelled).
     let comparatorHtml = '';
     if (m.nav.comparator && m.comparator) {
@@ -256,6 +295,7 @@ module.exports = {
     const body = styles
       + `<style>${NAV.NAV_CSS}</style>`
       + NAV.renderNavStrip(m.nav, '/coyote/reports', esc)
+      + yoyHtml
       + comparatorHtml
       + periodBody(m.current, m.nav.label);
 
