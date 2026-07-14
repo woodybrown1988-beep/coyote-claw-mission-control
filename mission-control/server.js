@@ -112,6 +112,19 @@ function handleRequest(req, res) {
     return;
   }
 
+  // Report Standard raw artifact: the standalone branded HTML, served as-is (the
+  // library page iframes it; print from here = the PDF). SELECT-only.
+  if (url.pathname === '/coyote/report-library/raw') {
+    const opened = openDatabase();
+    if (!opened.ok) { sendText(res, 500, opened.message); return; }
+    try {
+      const r = reportRawResponse(opened.db, url.searchParams.get('id'));
+      res.writeHead(r.status, { 'content-type': r.contentType, 'x-content-type-options': 'nosniff' });
+      res.end(r.body);
+    } finally { opened.db.close(); }
+    return;
+  }
+
   const redirect = LEGACY_REDIRECTS[url.pathname];
   if (redirect) {
     res.writeHead(308, { Location: redirect + url.search });
@@ -137,6 +150,7 @@ const PAGES = [
   require('./ui/pages/coyote/issues.js'),
   require('./ui/pages/coyote/operations.js'),
   require('./ui/pages/coyote/reports.js'),
+  require('./ui/pages/coyote/report-library.js'),
   require('./ui/pages/coyote/yoy-seasonality.js'),
   require('./ui/pages/coyote/labour.js'),
   require('./ui/pages/coyote/recipes.js'),
@@ -166,6 +180,16 @@ const LEGACY_REDIRECTS = {
 // Render one page: open the READ-ONLY handle (all DATA is SELECT-only), compute nav badges + footer
 // from real data, let the page build its model + body, wrap in the shared shell. Any page error
 // degrades to a banner — never a crash, never a fabricated value.
+// Pure responder for /coyote/report-library/raw — testable without sockets.
+function reportRawResponse(db, idParam) {
+  const id = Number(idParam);
+  if (!Number.isInteger(id) || id <= 0) return { status: 400, contentType: 'text/plain; charset=utf-8', body: 'bad id' };
+  const r = DATA.safeSelect(db, 'SELECT html FROM report_artifacts WHERE id = ?', [id]);
+  const row = r && r.ok && r.rows && r.rows[0];
+  if (!row || typeof row.html !== 'string') return { status: 404, contentType: 'text/plain; charset=utf-8', body: 'no such report' };
+  return { status: 200, contentType: 'text/html; charset=utf-8', body: row.html };
+}
+
 function servePage(page, res, url) {
   const opened = openDatabase();
   const now = Date.now();
@@ -3297,6 +3321,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  reportRawResponse,
   buildDashboardModel,
   buildHaltModel,
   renderDashboard,
