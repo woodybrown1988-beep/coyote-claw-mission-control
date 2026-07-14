@@ -91,6 +91,22 @@
     {
       "module": "mission-control/server.js",
       "export": "deployStatusPillClass"
+    },
+    {
+      "module": "mission-control/ui/pages/claw/agents.js",
+      "export": "getSection"
+    },
+    {
+      "module": "mission-control/ui/pages/claw/agents.js",
+      "export": "render"
+    },
+    {
+      "module": "mission-control/ui/pages/claw/health.js",
+      "export": "getSection"
+    },
+    {
+      "module": "mission-control/ui/pages/claw/health.js",
+      "export": "render"
     }
   ],
   "tests": [
@@ -145,6 +161,10 @@
     {
       "name": "mission-control-deploy-status",
       "command": "node --test test/mission-control-deploy-status.test.js"
+    },
+    {
+      "name": "mission-control-claw-queue-depth",
+      "command": "node --test test/mission-control-claw-queue-depth.test.js"
     }
   ],
   "mutants": [

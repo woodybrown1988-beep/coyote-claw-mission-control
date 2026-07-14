@@ -14,6 +14,8 @@
 // render returns { stamp, body }. NO writes, NO network, NO LLM — requires only ../shared.js. Honest
 // freshness everywhere; empty/missing data degrades to a graceful state, never a fabricated number.
 const S = require('../../shared.js');
+const QUEUE_AGE_15M = 15 * 60 * 1000;
+const QUEUE_AGE_1H = 60 * 60 * 1000;
 
 function rows(res) {
   return res && res.ok && Array.isArray(res.rows) ? res.rows : [];
@@ -25,6 +27,35 @@ function one(res) {
 function toInt(v) {
   const n = Number(v);
   return Number.isFinite(n) ? Math.trunc(n) : 0;
+}
+function nullableInt(v) {
+  if (v === null || v === undefined) return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.trunc(n) : null;
+}
+
+function readQueueDepth(q, now) {
+  const row = one(q(
+    `SELECT
+       COALESCE(SUM(CASE WHEN status = 'queued' THEN 1 ELSE 0 END), 0) AS queued,
+       COALESCE(SUM(CASE WHEN status IN ('preparing','dispatched','running') THEN 1 ELSE 0 END), 0) AS in_flight,
+       COALESCE(SUM(CASE WHEN status = 'awaiting_signoff' THEN 1 ELSE 0 END), 0) AS awaiting_signoff,
+       MIN(CASE WHEN status = 'queued' AND created_at IS NOT NULL THEN created_at END) AS oldest_queued_at,
+       COALESCE(SUM(CASE WHEN status = 'queued' AND created_at IS NOT NULL AND created_at < ? THEN 1 ELSE 0 END), 0) AS queued_over_15m,
+       COALESCE(SUM(CASE WHEN status = 'queued' AND created_at IS NOT NULL AND created_at < ? THEN 1 ELSE 0 END), 0) AS queued_over_1h
+     FROM jobs`,
+    [now - QUEUE_AGE_15M, now - QUEUE_AGE_1H],
+  )) || {};
+  const oldestQueuedAt = nullableInt(row.oldest_queued_at);
+  return {
+    queued: toInt(row.queued),
+    inFlight: toInt(row.in_flight),
+    awaitingSignoff: toInt(row.awaiting_signoff),
+    oldestQueuedAt,
+    oldestQueuedAgeMs: oldestQueuedAt === null ? null : Math.max(0, now - oldestQueuedAt),
+    queuedOver15m: toInt(row.queued_over_15m),
+    queuedOver1h: toInt(row.queued_over_1h),
+  };
 }
 
 // The architectural service set. These are facts about WHAT the fleet is, not claims about whether each is
@@ -44,6 +75,7 @@ const UNITS = [
 function getSection(db, ctx) {
   const q = (sql, params) => ctx.q(sql, params);
   const now = (ctx && ctx.now) || Date.now();
+  const queueDepth = readQueueDepth(q, now);
 
   const d = new Date(now);
   const monthStart = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1);
@@ -120,6 +152,7 @@ function getSection(db, ctx) {
     actorLast,
     lastIngest, snapCount, lastKpi, kpiCount,
     ships,
+    queueDepth,
     jobsBreakdown, totalJobs,
   };
 }
@@ -201,6 +234,56 @@ function spendTile(m) {
     <div class="val">${S.fmtGbpPence(spent)}</div>
     <div class="sub${subCls}">${S.escapeHtml(pctTxt)} of ${S.fmtGbpPence(ceiling)} ceiling</div>
     <div class="rate-bar" style="margin-top:2px"><i style="width:${w}%;background:${barColor}"></i></div>
+  </div>`;
+}
+
+function queueAgeLabel(ageMs) {
+  if (ageMs === null || ageMs === undefined || !Number.isFinite(Number(ageMs))) return '—';
+  const minutes = Math.floor(Math.max(0, Number(ageMs)) / 60000);
+  if (minutes < 60) return minutes + 'm';
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return hours + 'h';
+  return Math.floor(hours / 24) + 'd';
+}
+
+function queueStrip(m) {
+  const q = m.queueDepth || {
+    queued: 0,
+    inFlight: 0,
+    awaitingSignoff: 0,
+    oldestQueuedAgeMs: null,
+    queuedOver15m: 0,
+    queuedOver1h: 0,
+  };
+  const queued = toInt(q.queued);
+  const inFlight = toInt(q.inFlight);
+  const awaitingSignoff = toInt(q.awaitingSignoff);
+  const over15m = toInt(q.queuedOver15m);
+  const over1h = toInt(q.queuedOver1h);
+  const ageKnown = q.oldestQueuedAgeMs !== null && q.oldestQueuedAgeMs !== undefined;
+  const ageTone = over1h > 0 ? 'red' : (over15m > 0 ? 'amber' : (ageKnown ? 'green' : 'muted'));
+  const ageState = over1h > 0 ? 'over-1h' : (over15m > 0 ? 'over-15m' : (ageKnown ? 'under-15m' : 'unknown'));
+  const emptyAge = queued > 0 ? 'oldest timestamp unknown' : 'queue empty';
+
+  return `<div class="tiles" data-health="queue-depth" style="grid-template-columns:repeat(4,minmax(150px,1fr))">
+    <div class="tile ${queued > 0 ? 'blue' : 'muted'}">
+      <div class="lab">Queued</div><div class="val" data-queue-bucket="queued">${S.fmtInt(queued)}</div>
+      <div class="sub">fleet-only · unattributed</div>
+    </div>
+    <div class="tile ${inFlight > 0 ? 'green' : 'muted'}">
+      <div class="lab">In-flight</div><div class="val" data-queue-bucket="in-flight">${S.fmtInt(inFlight)}</div>
+      <div class="sub">preparing · dispatched · running</div>
+    </div>
+    <div class="tile ${awaitingSignoff > 0 ? 'red' : 'muted'}">
+      <div class="lab">Awaiting signoff</div><div class="val" data-queue-bucket="awaiting-signoff">${S.fmtInt(awaitingSignoff)}</div>
+      <div class="sub">waiting on the operator</div>
+    </div>
+    <div class="tile ${ageTone}" data-oldest-queued="${ageState}">
+      <div class="lab">Oldest queued age</div><div class="val">${ageKnown ? queueAgeLabel(q.oldestQueuedAgeMs) : '—'}</div>
+      <div class="sub">${ageKnown
+        ? `<span class="${over15m > 0 ? 'a' : ''}">${S.fmtInt(over15m)} &gt;15m</span> · <span class="${over1h > 0 ? 'r' : ''}">${S.fmtInt(over1h)} &gt;1h</span>`
+        : emptyAge}</div>
+    </div>
   </div>`;
 }
 
@@ -349,7 +432,9 @@ function jobsTiles(m) {
   const tiles = sorted.map((r) => {
     const tone = statusTone(r.status);
     const blocked = r.status === 'awaiting_signoff' || r.status === 'awaiting_plan_feedback';
-    const sub = blocked ? '<span class="r">awaiting your tap</span>' : (r.status === 'failed' ? '<span class="r">needs attention</span>' : '&nbsp;');
+    const sub = r.status === 'awaiting_signoff'
+      ? '<span class="r">waiting on the operator</span>'
+      : (blocked ? '<span class="r">awaiting your tap</span>' : (r.status === 'failed' ? '<span class="r">needs attention</span>' : '&nbsp;'));
     return `<div class="tile ${tone}">
       <div class="lab">${esc(statusLabel(r.status))}</div>
       <div class="val">${S.fmtInt(r.count)}</div>
@@ -374,6 +459,9 @@ function render(section, ctx) {
 
   parts.push(`<div class="sec-label">System status<span class="rule"></span></div>`);
   parts.push(statusStrip(m, now));
+
+  parts.push(`<div class="sec-label">Fleet queue<span class="rule"></span></div>`);
+  parts.push(queueStrip(m));
 
   parts.push(`<div class="sec-label">Daemons &amp; services<span class="rule"></span></div>`);
   parts.push(daemonsPanel(m, now));
