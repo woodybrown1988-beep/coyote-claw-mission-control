@@ -8,6 +8,9 @@ const S = require('../../shared.js');
 
 // --- jobs read-contract helpers -------------------------------------------------------------------
 const ACTIVE6 = ['queued', 'preparing', 'dispatched', 'running', 'awaiting_signoff', 'awaiting_plan_feedback'];
+const IN_FLIGHT = ['preparing', 'dispatched', 'running'];
+const QUEUE_AGE_15M = 15 * 60 * 1000;
+const QUEUE_AGE_1H = 60 * 60 * 1000;
 const RECENT_MS = 36 * 60 * 60 * 1000; // a job counts as "recently done" within ~1.5× the daily cadence
 
 // Known fleet. Research + Accountant are scoped-but-unbuilt → ALWAYS faded idle, never an active state.
@@ -23,6 +26,11 @@ function num(v) {
 }
 function rows(res) {
   return res && res.ok && Array.isArray(res.rows) ? res.rows : [];
+}
+function nullableInt(v) {
+  if (v === null || v === undefined) return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.trunc(n) : null;
 }
 function trunc(s, n) {
   s = String(s);
@@ -110,6 +118,32 @@ function buildTrack(mode, milestonesDone) {
   return segs;
 }
 
+// Fleet queue facts are deliberately separate from worker attribution: queued work is unclaimed, while
+// the worker gauge counts only work that is actually preparing, dispatched, or running.
+function readQueueDepth(q, now) {
+  const row = rows(q(
+    `SELECT
+       COALESCE(SUM(CASE WHEN status = 'queued' THEN 1 ELSE 0 END), 0) AS queued,
+       COALESCE(SUM(CASE WHEN status IN ('preparing','dispatched','running') THEN 1 ELSE 0 END), 0) AS in_flight,
+       COALESCE(SUM(CASE WHEN status = 'awaiting_signoff' THEN 1 ELSE 0 END), 0) AS awaiting_signoff,
+       MIN(CASE WHEN status = 'queued' AND created_at IS NOT NULL THEN created_at END) AS oldest_queued_at,
+       COALESCE(SUM(CASE WHEN status = 'queued' AND created_at IS NOT NULL AND created_at < ? THEN 1 ELSE 0 END), 0) AS queued_over_15m,
+       COALESCE(SUM(CASE WHEN status = 'queued' AND created_at IS NOT NULL AND created_at < ? THEN 1 ELSE 0 END), 0) AS queued_over_1h
+     FROM jobs`,
+    [now - QUEUE_AGE_15M, now - QUEUE_AGE_1H],
+  ))[0] || {};
+  const oldestQueuedAt = nullableInt(row.oldest_queued_at);
+  return {
+    queued: num(row.queued),
+    inFlight: num(row.in_flight),
+    awaitingSignoff: num(row.awaiting_signoff),
+    oldestQueuedAt,
+    oldestQueuedAgeMs: oldestQueuedAt === null ? null : Math.max(0, now - oldestQueuedAt),
+    queuedOver15m: num(row.queued_over_15m),
+    queuedOver1h: num(row.queued_over_1h),
+  };
+}
+
 // =================================================================================================
 module.exports = {
   key: 'agents',
@@ -119,7 +153,8 @@ module.exports = {
 
   getSection(db, ctx) {
     const q = ctx.q;
-    const now = ctx.now;
+    const now = Number.isFinite(Number(ctx.now)) ? Number(ctx.now) : Date.now();
+    const queueDepth = readQueueDepth(q, now);
 
     // --- Librarian band: live counts (honest COUNT(*), never inflated) -----------------------------
     const placeholders = ACTIVE6.map(() => '?').join(',');
@@ -189,8 +224,30 @@ module.exports = {
       const hb = rows(q(
         `SELECT owner_id, worker_name, last_beat_at FROM worker_heartbeat WHERE owner_id NOT LIKE 'lead:%' ORDER BY last_beat_at DESC`,
       ));
+      const inFlightPlaceholders = IN_FLIGHT.map(() => '?').join(',');
+      const loadResult = q(
+        `SELECT h.owner_id, h.worker_name, COUNT(j.id) AS in_flight
+           FROM worker_heartbeat h
+           LEFT JOIN jobs j
+             ON j.owner_id = h.owner_id
+            AND j.status IN (${inFlightPlaceholders})
+          WHERE h.owner_id NOT LIKE 'lead:%'
+          GROUP BY h.owner_id, h.worker_name`,
+        IN_FLIGHT,
+      );
+      const workerLoadsKnown = !!(loadResult && loadResult.ok);
+      const inFlightByName = new Map();
+      const inFlightByOwner = new Map();
+      for (const r of rows(loadResult)) {
+        const owner = r.owner_id == null ? '' : String(r.owner_id);
+        const wn = r.worker_name && String(r.worker_name).trim();
+        if (owner) inFlightByOwner.set(owner, num(r.in_flight));
+        if (wn) inFlightByName.set(wn, num(inFlightByName.get(wn)) + num(r.in_flight));
+      }
       const nameByOwner = new Map(); // owner_id → stable name (even a momentarily-stale beat still names its owner)
+      const heartbeatOwners = new Set();
       for (const r of hb) {
+        if (r.owner_id) heartbeatOwners.add(r.owner_id);
         const wn = r.worker_name && String(r.worker_name).trim();
         if (wn && !nameByOwner.has(r.owner_id)) nameByOwner.set(r.owner_id, wn);
       }
@@ -202,42 +259,71 @@ module.exports = {
       const cancelledIds = new Set(
         rows(q(`SELECT DISTINCT job_id FROM job_events WHERE kind = 'cancelled'`)).map((r) => r.job_id),
       );
-      const slots = new Map(); // key → { label, fresh, jobs }
-      const slotFor = (key, label) => {
-        if (!slots.has(key)) slots.set(key, { label, fresh: false, jobs: [] });
+      const slots = new Map(); // key → { label, fresh, jobs, inFlightCount }
+      const workerLoad = (workerName, ownerId) => {
+        if (!workerLoadsKnown) return null;
+        if (workerName) return num(inFlightByName.get(workerName));
+        if (ownerId && inFlightByOwner.has(ownerId)) return num(inFlightByOwner.get(ownerId));
+        return null; // no heartbeat match: do not imply this owner is a recognised worker
+      };
+      const slotFor = (key, label, workerName, ownerId) => {
+        if (!slots.has(key)) {
+          slots.set(key, {
+            label,
+            fresh: false,
+            jobs: [],
+            inFlightCount: workerLoad(workerName, ownerId),
+          });
+        }
         return slots.get(key);
       };
       // 1) fresh non-lead workers = the idle-aware roster (stale dropped), deduped by name||owner
       for (const r of hb) {
         if (now - num(r.last_beat_at) > HEARTBEAT_FRESH_MS) continue;
         const wn = r.worker_name && String(r.worker_name).trim();
-        slotFor(wn || r.owner_id, wn || shortOwner(r.owner_id)).fresh = true;
+        slotFor(wn || r.owner_id, wn || shortOwner(r.owner_id), wn, r.owner_id).fresh = true;
       }
-      // 2) attribute each worker's CURRENT state to its slot: IN-FLIGHT jobs (ACTIVE6), a RECENT terminal,
+      // 2) attribute each worker's CURRENT state to its slot: claimed/gated jobs (not queued), a RECENT terminal,
       // or a genuine GIVE-UP (unmarked escalated). Deliberate cancels + stale terminal are NOT worker state
       // (skipped). A give-up attaches ONLY to an EXISTING live slot — it never spawns a card — so a dead
       // worker's old escalation stays off the board (no live card), while a non-roster owner still gets a
-      // card for genuinely in-flight work (a hung worker holding a gate — never hidden).
+      // fleet-level unattributed card for genuinely current work (never hidden or assigned by guesswork).
+      const unattributed = [];
       for (const j of coderJobs) {
-        const inflight = ACTIVE6.indexOf(j.status) !== -1;
+        if (j.status === 'queued') {
+          unattributed.push(j); // queued work is fleet-only even if an owner_id happens to be present
+          continue;
+        }
+        const currentWorkerState = j.status !== 'queued' && ACTIVE6.indexOf(j.status) !== -1;
         const recentTerminal = (j.status === 'done' || j.status === 'failed') && now - num(j.updated_at) <= RECENT_MS;
         const giveUp = j.status === 'escalated' && !cancelledIds.has(j.id); // unmarked escalated = genuine give-up
-        if (!inflight && !recentTerminal && !giveUp) continue; // skip deliberate cancels + stale terminal
+        if (!currentWorkerState && !recentTerminal && !giveUp) continue; // queued is fleet-only; skip cancels + stale terminal
         const owner = j.owner_id || null;
+        const recognisedOwner = !!(owner && heartbeatOwners.has(owner));
         const wn = owner ? nameByOwner.get(owner) : null;
         const key = wn || owner || ' unassigned';
-        if (slots.has(key)) slots.get(key).jobs.push(j); // a live worker's job — incl. its genuine give-up
-        else if (inflight) slotFor(key, wn || (owner ? shortOwner(owner) : AGENTS.coder.name)).jobs.push(j); // no-hide: live in-flight work by a non-roster owner
+        if (recognisedOwner && slots.has(key)) slots.get(key).jobs.push(j); // a recognised worker's job — incl. its genuine give-up
+        else if (recognisedOwner && currentWorkerState) slotFor(key, wn || shortOwner(owner), wn, owner).jobs.push(j); // stale heartbeat but current work: never hide it
+        else if (currentWorkerState) unattributed.push(j); // visible later as fleet work, never as a worker
         // else: a give-up/terminal by a dead owner with no live slot → no card (the historical stay off)
       }
       // 3) a rep per slot; a fresh worker with no live job → idle "standing by"; drop empty non-roster slots
       const out = [];
       for (const s of slots.values()) {
         if (!s.jobs.length && !s.fresh) continue;
-        out.push({ label: s.label, rep: pickRep(s.jobs) }); // pickRep([]) → idle "standing by"
+        out.push({ label: s.label, rep: pickRep(s.jobs), inFlightCount: s.inFlightCount }); // pickRep([]) → idle "standing by"
       }
-      if (!out.length) out.push({ label: AGENTS.coder.name, rep: pickRep([]) }); // never hide the role entirely
-      return out.sort((a, b) => (a.label < b.label ? -1 : a.label > b.label ? 1 : 0));
+      if (!out.length) {
+        out.push({
+          label: AGENTS.coder.name,
+          rep: pickRep([]),
+          inFlightCount: workerLoadsKnown ? 0 : null,
+        }); // never hide the role entirely
+      }
+      return {
+        slots: out.sort((a, b) => (a.label < b.label ? -1 : a.label > b.label ? 1 : 0)),
+        unattributed,
+      };
     }
 
     // --- review_drafts: the operator queue that surfaces Reviews as blocked-on-you ------------------
@@ -269,9 +355,12 @@ module.exports = {
       return String(child.type || 'another');
     }
 
-    function agentCard(meta, rep) {
+    function agentCard(meta, rep, inFlightCount) {
       const job = rep.job;
       const c = { kind: 'agent', av: meta.av, initials: meta.initials, name: meta.name, role: meta.role };
+      if (inFlightCount !== undefined) {
+        c.workerGauge = { known: inFlightCount !== null, count: inFlightCount };
+      }
       const summary = job ? describeJob(job) || String(job.type) : null;
       if (rep.bucket === 'blocked_you') {
         const cp = youCopy(meta.key, job.status);
@@ -280,7 +369,9 @@ module.exports = {
         c.task = { strong: summary, tail: ' — ' + cp.verb + '.' };
         c.waitPill = { tone: 'you', text: cp.pill };
         c.button = { label: cp.btn };
-        c.time = 'held ' + S.agoLabel(now - num(job.updated_at));
+        c.time = job.status === 'awaiting_signoff'
+          ? 'waiting on the operator · ' + fmtDur(now - num(job.updated_at))
+          : 'held ' + S.agoLabel(now - num(job.updated_at));
         c._trackJob = job.id;
         c._trackMode = 'gate';
         trackJobIds.add(job.id);
@@ -327,9 +418,12 @@ module.exports = {
     // Lead by job state (one Lead). Coder: ONE card PER live worker, named (Coder-1 / Coder-2), each
     // showing its own job state — replaces the single collapsed "Coder" so two workers are both visible.
     cards.push(agentCard(AGENTS.lead, pickRep(byAgent.lead)));
-    for (const slot of coderSlots(byAgent.coder)) {
-      cards.push(agentCard({ ...AGENTS.coder, name: slot.label }, slot.rep));
+    const coderRoster = coderSlots(byAgent.coder);
+    for (const slot of coderRoster.slots) {
+      cards.push(agentCard({ ...AGENTS.coder, name: slot.label }, slot.rep, slot.inFlightCount));
     }
+    const unattributedCoderJobIds = new Set(coderRoster.unattributed.map((job) => job.id));
+    generics.push(...coderRoster.unattributed);
 
     // Reviews: a job-gate outranks the draft queue; otherwise the pending operator queue surfaces it as
     // blocked-on-you (summarised from review_drafts — the mockup's signature Reviews card).
@@ -363,10 +457,17 @@ module.exports = {
     for (const j of generics.slice().sort((x, y) => num(y.updated_at) - num(x.updated_at))) {
       const b = classify(j, activeChildParents);
       const typeLabel = String(j.type || 'job');
-      const base = { kind: 'generic', av: 'av-research', initials: 'JB', name: trunc(typeLabel, 16), role: 'worker · ' + (j.owner_id ? trunc(String(j.owner_id), 14) : 'unassigned') };
+      const fleetOnly = unattributedCoderJobIds.has(j.id);
+      const role = fleetOnly
+        ? (j.status === 'queued' ? 'fleet · unattributed queue' : (j.owner_id ? 'fleet · unrecognised ' + trunc(String(j.owner_id), 14) : 'fleet · unowned'))
+        : 'worker · ' + (j.owner_id ? trunc(String(j.owner_id), 14) : 'unassigned');
+      const base = { kind: 'generic', av: 'av-research', initials: 'JB', name: trunc(typeLabel, 16), role };
       if (b === 'blocked_you') {
         const cp = youCopy(null, j.status);
-        cards.push(Object.assign(base, { col: 'blocked', variant: 'you', task: { strong: typeLabel, tail: ' — ' + cp.verb + '.' }, waitPill: { tone: 'you', text: cp.pill }, button: { label: cp.btn }, time: 'held ' + S.agoLabel(now - num(j.updated_at)), _trackJob: j.id, _trackMode: 'gate' }));
+        const waiting = j.status === 'awaiting_signoff'
+          ? 'waiting on the operator · ' + fmtDur(now - num(j.updated_at))
+          : 'held ' + S.agoLabel(now - num(j.updated_at));
+        cards.push(Object.assign(base, { col: 'blocked', variant: 'you', task: { strong: typeLabel, tail: ' — ' + cp.verb + '.' }, waitPill: { tone: 'you', text: cp.pill }, button: { label: cp.btn }, time: waiting, _trackJob: j.id, _trackMode: 'gate' }));
         trackJobIds.add(j.id);
       } else if (b === 'blocked_dept') {
         cards.push(Object.assign(base, { col: 'blocked', variant: 'dept', task: { strong: typeLabel, tail: ' — awaiting another desk.' }, waitPill: { tone: 'dept', text: 'Waiting on ' + deptNameFor(j) + ' Dept' }, time: 'blocked ' + S.agoLabel(now - num(j.updated_at)) }));
@@ -421,6 +522,7 @@ module.exports = {
     return {
       halt: ctx.halt || { halted: false },
       lib: { active: libActive, total: libTotal, events: libEvents },
+      queueDepth,
       columns,
     };
   },
@@ -440,6 +542,14 @@ module.exports = {
     function trackHtml(track) {
       if (!track || !track.length) return '';
       return '<div class="mini-track">' + track.map((s) => '<div class="mini-seg' + (s ? ' ' + s : '') + '"></div>').join('') + '</div>';
+    }
+    function workerGaugeHtml(gauge) {
+      if (!gauge) return '';
+      const value = gauge.known ? esc(S.fmtInt(gauge.count)) : '—';
+      const note = gauge.known ? '' : '<span style="color:var(--muted);font-size:8px">attribution unavailable</span>';
+      return '<div class="worker-gauge mono" data-worker-in-flight="' + (gauge.known ? esc(String(gauge.count)) : 'unknown') + '" style="display:flex;align-items:center;justify-content:space-between;gap:7px;margin:-1px 0 8px;padding:5px 7px;border:1px solid var(--border);border-radius:7px;background:rgba(96,165,250,.06)">' +
+        '<span style="color:var(--text-2);font-size:8.5px;text-transform:uppercase;letter-spacing:.06em">Current in-flight</span>' + note +
+        '<b style="color:var(--blue);font-size:14px">' + value + '</b></div>';
     }
     function footHtml(c) {
       let btn = '';
@@ -461,6 +571,7 @@ module.exports = {
         '<div class="' + cls + '"' + style + '>' +
         '<div class="acard-top"><div class="acard-av ' + c.av + '">' + esc(c.initials) + '</div>' +
         '<div><div class="acard-name"' + nameStyle + '>' + esc(c.name) + '</div><div class="acard-role">' + esc(c.role) + '</div></div></div>' +
+        workerGaugeHtml(c.workerGauge) +
         '<div class="acard-task">' + taskHtml(c.task) + '</div>' +
         pill +
         trackHtml(c.track) +
@@ -514,6 +625,18 @@ module.exports = {
       '<div class="lib-stat"><div class="v">' + esc(S.fmtInt(lib.events)) + '</div><div class="l">events</div></div>' +
       '</div></div>';
 
+    const queue = section.queueDepth || { queued: 0, inFlight: 0, awaitingSignoff: 0, oldestQueuedAgeMs: null };
+    const oldestQueue = queue.oldestQueuedAgeMs === null
+      ? (queue.queued ? 'unknown' : 'queue empty')
+      : S.agoLabel(queue.oldestQueuedAgeMs);
+    const queueContext =
+      '<div class="tiles" data-queue-depth="fleet" style="grid-template-columns:repeat(4,minmax(130px,1fr));margin-top:11px">' +
+      '<div class="tile blue"><div class="lab">Fleet queued · unattributed</div><div class="val" data-queue-bucket="queued">' + esc(S.fmtInt(queue.queued)) + '</div><div class="sub">not assigned to workers</div></div>' +
+      '<div class="tile green"><div class="lab">Fleet in-flight</div><div class="val" data-queue-bucket="in-flight">' + esc(S.fmtInt(queue.inFlight)) + '</div><div class="sub">preparing · dispatched · running</div></div>' +
+      '<div class="tile red"><div class="lab">Awaiting signoff</div><div class="val" data-queue-bucket="awaiting-signoff">' + esc(S.fmtInt(queue.awaitingSignoff)) + '</div><div class="sub">waiting on the operator</div></div>' +
+      '<div class="tile muted"><div class="lab">Oldest queued</div><div class="val">' + esc(oldestQueue) + '</div><div class="sub">fleet queue age</div></div>' +
+      '</div>';
+
     const divider =
       '<div class="flow-divider">' +
       '<span class="t">The fleet</span><span class="rule"></span>' +
@@ -525,7 +648,7 @@ module.exports = {
 
     const board = '<div class="board">' + (section.columns || []).map(colHtml).join('') + '</div>';
 
-    const body = haltBanner + apex + librarian + divider + board;
+    const body = haltBanner + apex + librarian + queueContext + divider + board;
     return { stamp, body };
   },
 };
