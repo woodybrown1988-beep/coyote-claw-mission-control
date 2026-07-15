@@ -128,6 +128,9 @@ module.exports = {
       .rp-yoy{font-size:13px;padding:9px 14px;border:1px solid rgba(255,255,255,.08);border-radius:9px;margin:0 0 14px;background:rgba(255,255,255,.03)}
       .rp-yoy-up{color:var(--green,#34d399)} .rp-yoy-down{color:var(--red,#f87171)}
       .rp-yoy-na{color:var(--muted,#7a8);font-style:italic}
+      .rp-lib{text-align:right;margin:0 0 10px;font-size:13px}
+      .rp-lib a{color:#e57373;text-decoration:none;font-weight:600}
+      .rp-lib a:hover{text-decoration:underline}
     </style>`;
 
     const periodBody = (p, label) => {
@@ -294,6 +297,7 @@ module.exports = {
 
     const body = styles
       + `<style>${NAV.NAV_CSS}</style>`
+      + '<div class="rp-lib"><a href="/coyote/report-library">Report Library — specialist reports, verdict-first →</a></div>'
       + NAV.renderNavStrip(m.nav, '/coyote/reports', esc)
       + yoyHtml
       + comparatorHtml
