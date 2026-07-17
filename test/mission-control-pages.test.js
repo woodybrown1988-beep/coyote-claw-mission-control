@@ -250,6 +250,13 @@ test('boundary: no page module writes, fetches, or requires beyond ../shared.js'
     assert.doesNotMatch(src, dbWrite, `${key} must not touch the db directly (read only via ctx.q)`);
     assert.doesNotMatch(src, sqlWrite, `${key} must run no write SQL`);
     const requires = src.match(/require\((['"][^'"]+['"])\)/g) || [];
-    for (const r of requires) assert.match(r, /\.\.\/shared\.js/, `${key} requires only ../shared.js, got ${r}`);
+    // ../shared.js (render helpers) and ../../kpi.js (pure compute — checked pure below) only.
+    for (const r of requires) assert.match(r, /\.\.\/shared\.js|\.\.\/\.\.\/kpi\.js/, `${key} requires only ../shared.js or ../../kpi.js, got ${r}`);
   }
+  // kpi.js earns its allowlist slot by being PURE: no requires at all, no network, no DB, no SQL.
+  const kpiSrc = fs.readFileSync(path.join(__dirname, '..', 'mission-control', 'ui', 'kpi.js'), 'utf8');
+  assert.doesNotMatch(kpiSrc, /\brequire\s*\(/, 'kpi.js requires nothing');
+  assert.doesNotMatch(kpiSrc, network, 'kpi.js makes no network call');
+  assert.doesNotMatch(kpiSrc, dbWrite, 'kpi.js never touches a db');
+  assert.doesNotMatch(kpiSrc, sqlWrite, 'kpi.js runs no SQL');
 });
