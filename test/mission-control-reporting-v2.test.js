@@ -196,10 +196,11 @@ function renderPage(db) {
 test('page: projected figures render and match hand arithmetic + direct SQL; VOIDs excluded; caption present', () => {
   const db = makeDb();
   const { section, html } = renderPage(db);
-  // the projection figure — £130,950.00 exactly (13,095,000p, hand-derived above)
-  assert.match(html, /£130,950\.00/, 'seasonality-aware full-year figure');
-  // the simple sanity figure — round(6,415,500 + (6,415,500/6,210,000)·6,570,000) = 13,202,913p
-  assert.match(html, /£132,029\.13/, 'simple YTD-YoY full-year figure');
+  // the projection figure — 13,095,000p hand-derived above; ESTIMATES display whole-pound
+  assert.match(html, /£130,950</, 'seasonality-aware full-year figure (whole-pound)');
+  // the simple sanity figure — round(6,415,500 + (6,415,500/6,210,000)·6,570,000)/100 = £132,029
+  assert.match(html, /£132,029</, 'simple YTD-YoY full-year figure (whole-pound)');
+  assert.match(html, /Projected 2026 full year/, 'the answer leads');
   // the operator-ruled caption line, with method + weighting + premises handling
   assert.match(html, /Projection basis: seasonality-aware/);
   assert.match(html, /newest ×3, next ×2/);
@@ -230,13 +231,58 @@ test('page: channel mix matches direct SQL; QR share correct; MTD month marked',
   assert.match(html, /\(MTD\)/, 'the MTD month is marked, never passed off as complete');
 });
 
-test('page: a partial month renders as a gap with its reason and blocks the full-year figure', () => {
+test('page: a partial month blocks the figure — the hero is the calm filling state with the unlock condition, never error-shaped', () => {
   const db = makeDb({ gapMonth: '2026-03' });
   const { html } = renderPage(db);
-  assert.match(html, /not computable/);
-  assert.match(html, /Mar 2026/);
-  assert.match(html, /partial API coverage \(10\/31 days\)/);
-  assert.doesNotMatch(html, /£130,950\.00/, 'no figure fabricated over the gap');
+  assert.match(html, /Record filling — projection pending/);
+  assert.match(html, /17\/18 months/, 'complete/elapsed record months (Mar 2026 partial)');
+  assert.match(html, /full-year figure unlocks when the backfill covers Mar 2026/);
+  assert.match(html, /rv2-fill/, 'progress bar renders');
+  assert.match(html, /partial API coverage \(10\/31 days\)/, 'the reason survives behind the expand');
+  assert.doesNotMatch(html, /£130,950</, 'no figure fabricated over the gap');
+  assert.doesNotMatch(html, /not computable/, 'no error-shaped lead');
+});
+
+test('page: window too thin promotes the SIMPLE method to the headline with its label', () => {
+  const db = makeDb();
+  // 2025 Jan–Apr ledgers go incomplete → only 2 comparable pairs (May, Jun); 2026 actuals stay complete.
+  db.prepare(`DELETE FROM sales_api_ingest_runs WHERE business_date >= '2025-01-01' AND business_date <= '2025-04-30' AND business_date NOT LIKE '%-15'`).run();
+  const { section, html } = renderPage(db);
+  assert.equal(section.rv2.projection.window.length, 2);
+  assert.equal(section.rv2.projection.fullYear.seasonalPence, null);
+  assert.ok(section.rv2.projection.fullYear.simplePence != null, 'simple method still covers the year');
+  assert.match(html, /Projected 2026 full year/);
+  assert.match(html, /simple YTD-YoY · /, 'promoted method is labelled');
+  assert.match(html, /seasonality-aware unlocks at 3 comparable 2026↔2025 month-pairs — have 2/);
+});
+
+test('page: filling state (no pairs) leads with the record-fill hero and draws the timeline, not floating dots', () => {
+  const db = makeDb();
+  // every 2025 month goes ledger-incomplete → zero comparable pairs, no YTD ratio
+  db.prepare(`DELETE FROM sales_api_ingest_runs WHERE business_date LIKE '2025-%' AND business_date NOT LIKE '%-15'`).run();
+  const { html } = renderPage(db);
+  assert.match(html, /Record filling — projection pending/);
+  assert.match(html, /seasonality-aware unlocks at 3 comparable 2026↔2025 month-pairs — have 0/);
+  assert.match(html, /rv2-tl/, 'continuous timeline replaces the line chart');
+  assert.match(html, /c gap/, 'missing months render as hatched slots');
+  assert.doesNotMatch(html, /svg viewBox="0 0 960/, 'no sparse line chart');
+});
+
+test('sparkline sparse rule: one point renders NOTHING (caller shows a value), two points render a path', () => {
+  assert.equal(REP.svgSparkline({ points: [{ v: 100 }] }), '', 'a lone dot on an empty grid is noise');
+  assert.match(REP.svgSparkline({ points: [{ v: 100 }, { v: 120 }] }), /<path /);
+});
+
+test('page: ~£0 integration channels group into "other" — never a KPI card, never invisible', () => {
+  const db = makeDb();
+  const ins = db.prepare(`INSERT INTO sales_receipts_api (receipt_id, business_date, type, cancelled, account_profile_code, net_without_tax_pence, net_with_tax_pence, tax_pence, updated_at) VALUES (?,?,?,?,?,?,?,?,1)`);
+  for (let i = 0; i < 5; i++) ins.run(`NOISE-${i}`, '2026-06-20', 'SALE', 0, 'TAKEAWAY', 1, 1, 0);
+  const { html } = renderPage(db);
+  assert.match(html, /other \(1\)/, 'legend shows the grouped bucket');
+  assert.doesNotMatch(html, /nm" title="TAKEAWAY"/, 'no ATV card for a £0.00-ATV ping channel');
+  assert.ok(html.includes('TAKEAWAY <span class="ash">→ other</span>'), 'still fully visible behind the expand');
+  const cards = (html.match(/ATV\/txn/g) || []).length;
+  assert.ok(cards <= 4, `at most 4 ATV cards, got ${cards}`);
 });
 
 test('page: empty DB renders the plain honest banner; scraper-only DB renders the v2 no-record banner', () => {

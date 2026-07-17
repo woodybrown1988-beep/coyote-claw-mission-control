@@ -38,6 +38,13 @@ function ymsOfYear(year) {
   return Array.from({ length: 12 }, (_, i) => `${year}-${String(i + 1).padStart(2, '0')}`);
 }
 
+/** Continuous inclusive month range 'from'..'to' — the REAL time axis (gaps stay visible). */
+function monthRange(from, to) {
+  const out = [];
+  for (let ym = from; ym <= to && out.length < 600; ym = ymAdd(ym, 1)) out.push(ym);
+  return out;
+}
+
 /** First month usable under the premises guard: the boundary month itself when the move is on the
  *  1st, else the following month (a mid-month move month is mixed-premises → unusable). */
 function firstPremisesYm(boundaryDate) {
@@ -130,17 +137,20 @@ function computeProjection({ months, year, nowYm, boundaryDate, windowN = 6 }) {
     };
   });
 
-  // Full-year figure: every month must be an actual or a computable forecast — else null + missing.
+  // Full-year figures: every month must be an actual or a computable forecast — else null + missing.
+  // Tracked PER METHOD: when the seasonality window is too thin the simple method may still cover
+  // the year (the promote-simple state); a coverage-gap month blocks both.
   const missing = [];
+  const missingSimple = [];
   let seasonal = 0, simple = 0, low = 0, high = 0;
   for (const a of actuals) {
     if (a.kind === 'actual') { seasonal += a.netPence; simple += a.netPence; low += a.netPence; high += a.netPence; continue; }
     const f = forecast.find((x) => x.ym === a.ym);
-    if (f && f.seasonalPence != null) { seasonal += f.seasonalPence; simple += f.simplePence != null ? f.simplePence : 0; low += f.lowPence; high += f.highPence; continue; }
-    missing.push(a.ym);
+    if (f && f.seasonalPence != null) { seasonal += f.seasonalPence; low += f.lowPence; high += f.highPence; } else missing.push(a.ym);
+    if (f && f.simplePence != null) simple += f.simplePence; else missingSimple.push(a.ym);
   }
   const ok = missing.length === 0 && ratio != null;
-  const okSimple = missing.length === 0 && ytdRatio != null;
+  const okSimple = missingSimple.length === 0 && ytdRatio != null;
   return {
     actuals, window, ratio, ratioMin, ratioMax, ytdRatio, ytdMonths: pairs.length,
     forecast,
@@ -150,6 +160,7 @@ function computeProjection({ months, year, nowYm, boundaryDate, windowN = 6 }) {
       lowPence: ok ? low : null,
       highPence: ok ? high : null,
       missing,
+      missingSimple,
     },
     mtdPence: months[nowYm] && months[nowYm].okDays > 0 ? months[nowYm].netPence : null,
   };
@@ -224,10 +235,12 @@ function contiguousRuns(points, ok) {
   return runs;
 }
 
-/** Small-multiple sparkline (ATV trends). points: [{v|null}] in order; rule = horizontal reference. */
+/** Small-multiple sparkline (ATV trends). points: [{v|null}] in order; rule = horizontal reference.
+ *  SPARSE RULE: fewer than 2 real points returns '' — a lone dot on an empty grid is noise; the
+ *  caller renders a labelled value instead. */
 function svgSparkline({ width = 150, height = 40, points = [], color = '#22D3EE', rulePence = null, ruleColor = 'rgba(251,191,36,.7)' }) {
   const vals = points.filter((p) => p.v != null).map((p) => p.v);
-  if (!vals.length) return '';
+  if (vals.length < 2) return '';
   let vMax = Math.max(...vals, rulePence || 0), vMin = Math.min(...vals, rulePence || vals[0]);
   if (vMax === vMin) { vMax += 1; vMin -= 1; }
   const pad = 4;
@@ -248,6 +261,6 @@ function svgSparkline({ width = 150, height = 40, points = [], color = '#22D3EE'
 }
 
 module.exports = {
-  MONTHS_ABBR, calDays, ymAdd, ymPriorYear, ymsOfYear, firstPremisesYm,
+  MONTHS_ABBR, calDays, ymAdd, ymPriorYear, ymsOfYear, monthRange, firstPremisesYm,
   buildMonths, computeProjection, svgMonthlyLines, svgSparkline, contiguousRuns, niceCeil,
 };
