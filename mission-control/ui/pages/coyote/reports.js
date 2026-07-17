@@ -1,33 +1,85 @@
 'use strict';
-// Reports — the daily sales flash from Lightspeed (Slice 1). Contract: { key, route, title, sub, getSection, render }.
+// Reports — Reporting v2 (Stage 2, operator-tapped): the decision surface, panels ranked by
+// decision value. Phase 1 ships P1 (revenue projection) + P2 (channel mix / QR migration) on top;
+// the POS-truthful day/period flash (the original tab) stays below until later phases re-home its
+// pieces (P5 product mix, P7 weekly verdict). Contract: { key, route, title, sub, getSection, render }.
 // SELECT-only via ctx.q (no writes). NO-FABRICATION rules baked in:
-//   • "Covers" from Lightspeed is a POS guest-count, NOT real covers → stored as pos_guest_count, shown
-//     ONLY as an honest, clearly-labelled cross-check; real covers come from OpenTable (not wired), so
-//     Covers + every cover-derived metric (spend-per-cover / RevPASH) render "not wired — OpenTable".
-//   • Margin needs recipes (Slice 2) → shows "not costed yet — X% coverage" (NULL, never an estimate).
-//   • Everything POS-truthful ships live: net (ex-VAT), transactions, ATV (net÷txn), channel split,
-//     sales-by-hour, payment reconciliation, category performance, best/worst products, discounts/voids.
-// Daily/Weekly/Monthly is a client-side toggle over server-rendered periods (no network call from here).
+//   • P1/P2 render from the BACKFILLED PER-RECEIPT TRUTH (sales_receipts_api) — operator source
+//     ruling. A month is COMPLETE only when every calendar day has an 'ok' ledger row
+//     (sales_api_ingest_runs; closed days get rows too). Anything less renders as a GAP with its
+//     reason — never an estimate, never a low-looking partial month drawn as an actual.
+//   • Forecast (operator ruling): seasonality-aware headline (weighted per-month YoY ratio,
+//     trailing ≤6 complete pairs, ×3/×2 recency on the newest two) + simple YTD-YoY grey sanity
+//     line + the one-line projection-basis caption under the chart. Premises guard: months before
+//     the 2023-04-01 move are never used. Re-forecast at every read — nothing stored.
+//   • "Covers" from Lightspeed is a POS guest-count, NOT real covers → covers stay "not wired"
+//     until OpenTable lands (P6). Margin needs recipes → "not costed yet" (never estimated).
 const S = require('../../shared.js');
 const NAV = require('../../period-nav.js');
+const REP = require('../../reporting.js');
 
 function rowsOf(res) { return res && res.ok && Array.isArray(res.rows) ? res.rows : []; }
 function num(v) { if (v === null || v === undefined) return null; const n = Number(v); return Number.isFinite(n) ? n : null; }
-function addDays(d, n) { const t = new Date(d + 'T12:00:00Z'); t.setUTCDate(t.getUTCDate() + n); return t.toISOString().slice(0, 10); }
 const MONTHS_ABBR = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 function monthLabel(ym) { const m = String(ym || '').match(/^(\d{4})-(\d{2})$/); return m ? `${MONTHS_ABBR[Number(m[2])] || m[2]} ${m[1]}` : String(ym || ''); }
 
+// Sale filter — MIRRORS src/lightspeed-api/aggregate.ts isSale (the reconciled day-net basis):
+// non-cancelled, type not VOID/CANCEL/RECALL; net = net_without_tax_pence (ex-VAT).
+const SALE_WHERE = `r.cancelled = 0 AND (r.type IS NULL OR r.type NOT IN ('VOID','CANCEL','RECALL'))`;
+
+// Channel palette (fixed per label; unknown labels rotate the grey tail). QR = STOREKIT ORDER & PAY.
+const QR_LABEL = 'STOREKIT ORDER & PAY';
+const CHANNEL_COLORS = {
+  'EAT IN': '#22D3EE',
+  [QR_LABEL]: '#34D399',
+  'MON-FRI DEAL': '#60A5FA',
+  'Take-Away': '#FBBF24',
+  'ONLINE ORDER': '#A78BFA',
+  'PICKUP': '#F0843E',
+};
+const FALLBACK_COLORS = ['#7d8da5', '#5a6b84', '#93a7c4', '#465a72', '#a5b4c9'];
+
 module.exports = {
   key: 'reports', route: '/coyote/reports', workspace: 'coyote', title: 'Reports',
-  sub: 'Daily sales flash · Lightspeed — POS-truthful KPIs (covers via OpenTable, not wired)',
+  sub: 'Reporting v2 — projection & channel mix from the per-receipt API record · day flash below (covers via OpenTable, not wired)',
 
   getSection(db, ctx) {
     const q = ctx && ctx.q;
     const now = (ctx && ctx.now) || Date.now();
-    if (typeof q !== 'function') return { now, hasData: false };
+    if (typeof q !== 'function') return { now, hasData: false, rv2: null };
+
+    // ---- Reporting v2 (P1 + P2): the per-receipt API record, month-complete via the ledger ----
+    const nowYm = new Date(now).toISOString().slice(0, 7);
+    const boundaryRow = rowsOf(q(`SELECT start_date FROM premises_regime WHERE name='current'`))[0];
+    const boundaryDate = boundaryRow && boundaryRow.start_date ? String(boundaryRow.start_date) : '2023-04-01';
+    const apiMonths = rowsOf(q(
+      `SELECT substr(r.business_date,1,7) AS ym, SUM(r.net_without_tax_pence) AS net, COUNT(*) AS txn
+         FROM sales_receipts_api r WHERE ${SALE_WHERE} GROUP BY ym ORDER BY ym`));
+    const ledgerMonths = rowsOf(q(
+      `SELECT substr(business_date,1,7) AS ym, COUNT(DISTINCT business_date) AS days
+         FROM sales_api_ingest_runs WHERE source='kseries-sales-daily' AND status='ok' GROUP BY ym`));
+    const chanMonths = rowsOf(q(
+      `SELECT substr(r.business_date,1,7) AS ym,
+              COALESCE(m.channel_label, m.profile_name, COALESCE(NULLIF(r.account_profile_code,''),'(no profile)')) AS label,
+              SUM(r.net_without_tax_pence) AS net, COUNT(*) AS txn
+         FROM sales_receipts_api r
+         LEFT JOIN sales_channel_map_api m ON m.account_profile_code = COALESCE(r.account_profile_code,'')
+        WHERE ${SALE_WHERE} GROUP BY ym, label ORDER BY ym`));
+    const maxApiRow = rowsOf(q(`SELECT MAX(business_date) AS d FROM sales_receipts_api`))[0];
+    let rv2 = null;
+    if (apiMonths.length || ledgerMonths.length) {
+      const months = REP.buildMonths({ apiMonths, ledgerMonths, nowYm });
+      const year = Number(nowYm.slice(0, 4));
+      rv2 = {
+        nowYm, year, boundaryDate, months, chanMonths,
+        maxApiDate: maxApiRow && maxApiRow.d ? String(maxApiRow.d) : null,
+        projection: REP.computeProjection({ months, year, nowYm, boundaryDate, windowN: 6 }),
+      };
+    }
+
     const maxRow = rowsOf(q('SELECT MAX(business_date) AS d FROM sales_day'))[0];
     const maxDate = maxRow && maxRow.d ? String(maxRow.d) : null;
-    if (!maxDate) return { now, hasData: false };
+    if (!maxDate) return { now, hasData: false, rv2 };
 
     const build = (from, to) => {
       const tot = rowsOf(q(
@@ -94,7 +146,7 @@ module.exports = {
     const yoyAnchor = rowsOf(q(`SELECT ${yoyCols} FROM v_sales_month_yoy WHERE month = ?`, [anchorMonth]))[0] || null;
     const yoyLatestOk = rowsOf(q(`SELECT ${yoyCols} FROM v_sales_month_yoy WHERE premises='current' AND yoy_status='ok' ORDER BY month DESC LIMIT 1`))[0] || null;
     return {
-      now, hasData: true, maxDate, nav,
+      now, hasData: true, maxDate, nav, rv2,
       histStart: histRow && histRow.d ? String(histRow.d) : null,
       yoyAnchor, yoyLatestOk,
       current: build(nav.from, nav.to),
@@ -107,9 +159,6 @@ module.exports = {
     const esc = S.escapeHtml;
     const gbp = S.fmtGbpPence;
     const int = S.fmtInt;
-    if (!m.hasData) {
-      return { stamp: 'awaiting sales data', body: `<div class="banner muted">No Lightspeed sales yet. The daily ingest (05:30) pulls yesterday's exports into the box; KPIs appear here after the first run.</div>` };
-    }
     const atv = (net, txn) => (num(net) != null && num(txn)) ? gbp(Math.round(num(net) / num(txn))) : '—';
 
     const styles = `<style>
@@ -131,7 +180,206 @@ module.exports = {
       .rp-lib{text-align:right;margin:0 0 10px;font-size:13px}
       .rp-lib a{color:#e57373;text-decoration:none;font-weight:600}
       .rp-lib a:hover{text-decoration:underline}
+      /* Reporting v2 */
+      .rv2-caption{font-family:var(--font-mono,monospace);font-size:10.5px;color:var(--muted,#7a8);margin:6px 2px 2px;line-height:1.5}
+      .rv2-legend{display:flex;flex-wrap:wrap;gap:14px;font-family:var(--font-mono,monospace);font-size:10px;color:var(--muted,#7a8);margin:2px 2px 8px}
+      .rv2-legend i{display:inline-block;width:14px;height:0;border-top:2px solid;vertical-align:middle;margin-right:5px}
+      .rv2-legend i.dash{border-top-style:dashed}
+      .rv2-legend b{display:inline-block;width:10px;height:10px;border-radius:2px;vertical-align:middle;margin-right:5px}
+      .rv2-mtable{width:100%;border-collapse:collapse;font-family:var(--font-mono,monospace);font-size:10.5px;margin-top:10px}
+      .rv2-mtable th{font-size:9px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted,#7a8);text-align:right;padding:3px 6px;border-bottom:1px solid rgba(255,255,255,.08);font-weight:500}
+      .rv2-mtable th:first-child,.rv2-mtable td:first-child{text-align:left}
+      .rv2-mtable td{text-align:right;padding:3px 6px;color:var(--text-2,#9ab);border-bottom:1px solid rgba(255,255,255,.04)}
+      .rv2-gap{color:var(--muted,#7a8);font-style:italic}
+      .rv2-stack{display:flex;align-items:flex-end;gap:2px;height:150px;padding:4px 0 0}
+      .rv2-col{flex:1;display:flex;flex-direction:column-reverse;height:100%;min-width:7px;border-radius:2px;overflow:hidden}
+      .rv2-col i{display:block;width:100%}
+      .rv2-xlab{display:flex;gap:2px;font-family:var(--font-mono,monospace);font-size:8.5px;color:var(--muted,#7a8);margin-top:4px}
+      .rv2-xlab span{flex:1;text-align:center;min-width:7px;overflow:hidden;white-space:nowrap}
+      .rv2-multi{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px}
+      .rv2-multi .cell{background:rgba(255,255,255,.02);border:1px solid rgba(125,165,205,.08);border-radius:9px;padding:9px 11px}
+      .rv2-multi .nm{font-family:var(--font-mono,monospace);font-size:9.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--text-2,#9ab);margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+      .rv2-multi .v{font-family:var(--font-mono,monospace);font-size:15px;font-weight:600}
+      .rv2-multi .s{font-family:var(--font-mono,monospace);font-size:9.5px;color:var(--muted,#7a8)}
     </style>`;
+
+    // ================= P1 — REVENUE PROJECTION (per-receipt API record) =================
+    const renderProjection = (rv2) => {
+      const P = rv2.projection;
+      const year = rv2.year;
+      const iOf = (ym) => Number(ym.slice(5, 7)) - 1;
+      const yearPoints = (y) => REP.ymsOfYear(y).map((ym) => {
+        const mm = rv2.months[ym];
+        return { i: iOf(ym), v: mm && mm.complete ? mm.netPence : null };
+      });
+      const actualPoints = REP.ymsOfYear(year).map((ym) => {
+        const a = P.actuals.find((x) => x.ym === ym);
+        return { i: iOf(ym), v: a && a.kind === 'actual' ? a.netPence : null };
+      });
+      const lastActual = P.actuals.filter((a) => a.kind === 'actual').pop() || null;
+      const joined = (key) => {
+        // Nulls stay in the point list — the chart splits paths on them, so a gap month is drawn as
+        // ABSENCE, never bridged. The dashed line continues FROM the last actual only when the
+        // first forecast month is adjacent and computable.
+        const pts = P.forecast.map((f) => ({ i: iOf(f.ym), v: f[key] != null ? f[key] : null }));
+        const first = P.forecast[0];
+        return lastActual && first && first[key] != null && iOf(first.ym) === iOf(lastActual.ym) + 1
+          ? [{ i: iOf(lastActual.ym), v: lastActual.netPence }, ...pts] : pts;
+      };
+      const series = [
+        { label: String(year - 2), color: 'rgba(137,154,177,.45)', width: 1.5, points: yearPoints(year - 2) },
+        { label: String(year - 1), color: 'rgba(137,154,177,.85)', width: 1.5, points: yearPoints(year - 1) },
+        { label: 'simple sanity', color: 'rgba(170,195,225,.5)', dash: '3 4', width: 1.4, points: joined('simplePence') },
+        { label: `${year} actual`, color: '#22D3EE', width: 2.5, points: actualPoints },
+        { label: 'forecast', color: '#22D3EE', dash: '7 5', width: 2, points: joined('seasonalPence') },
+      ];
+      if (P.mtdPence != null) series.push({ label: 'MTD', color: '#22D3EE', dots: true, points: [{ i: iOf(rv2.nowYm), v: P.mtdPence }] });
+      const band = { color: 'rgba(34,211,238,.09)', points: P.forecast.map((f) => ({ i: iOf(f.ym), low: f.lowPence, high: f.highPence })) };
+      const yFmt = (v) => (v >= 100000 ? `£${Math.round(v / 100000)}k` : `£${Math.round(v / 100)}`);
+      const chart = REP.svgMonthlyLines({ series, band, yFmt });
+
+      const fy = P.fullYear;
+      // Coverage gaps = ELAPSED months without a complete record; the future is not a gap.
+      const gaps = P.actuals.filter((a) => a.kind === 'gap' && a.ym < rv2.nowYm);
+      const actSum = P.actuals.filter((a) => a.kind === 'actual').reduce((s, a) => s + a.netPence, 0);
+      const pctOf = (r) => (r == null ? '—' : `${r >= 1 ? '+' : '−'}${Math.abs((r - 1) * 100).toFixed(1)}%`);
+      const tiles = `<div class="rp-grid">
+        <div class="tile green"><div class="lab">Projected ${year} — seasonality-aware</div>
+          <div class="val">${fy.seasonalPence != null ? gbp(Math.round(fy.seasonalPence)) : 'not computable'}</div>
+          <div class="sub">${fy.seasonalPence != null ? `band ${gbp(Math.round(fy.lowPence))} – ${gbp(Math.round(fy.highPence))} · ratio ${pctOf(P.ratio)} YoY` : `missing: ${fy.missing.map(monthLabel).join(', ') || 'ratio window too thin'}`}</div></div>
+        <div class="tile"><div class="lab">Simple sanity — YTD-YoY</div>
+          <div class="val">${fy.simplePence != null ? gbp(Math.round(fy.simplePence)) : '—'}</div>
+          <div class="sub">${P.ytdRatio != null ? `YTD ${pctOf(P.ytdRatio)} applied to remaining ${year - 1} months` : 'needs a comparable YTD pair'}</div></div>
+        <div class="tile blue"><div class="lab">${year} actual to date</div>
+          <div class="val">${gbp(Math.round(actSum + (P.mtdPence || 0)))}</div>
+          <div class="sub">${P.actuals.filter((a) => a.kind === 'actual').length} complete months${P.mtdPence != null ? ` + MTD ${gbp(Math.round(P.mtdPence))}` : ''}${rv2.maxApiDate ? ` · through ${esc(rv2.maxApiDate)}` : ''}</div></div>
+        <div class="tile ${gaps.length ? 'amber' : ''}"><div class="lab">API record coverage</div>
+          <div class="val">${P.actuals.filter((a) => a.kind === 'actual').length}/${P.actuals.filter((a) => a.ym < rv2.nowYm).length}</div>
+          <div class="sub">${gaps.length ? `gaps: ${gaps.map((g) => monthLabel(g.ym)).join(', ')}` : `every elapsed ${year} month complete`}</div></div>
+      </div>`;
+
+      const legend = `<div class="rv2-legend">
+        <span><i style="border-color:rgba(137,154,177,.45)"></i>${year - 2}</span>
+        <span><i style="border-color:rgba(137,154,177,.85)"></i>${year - 1}</span>
+        <span><i style="border-color:#22D3EE"></i>${year} actual</span>
+        <span><i class="dash" style="border-color:#22D3EE"></i>forecast (seasonality-aware)</span>
+        <span><i class="dash" style="border-color:rgba(170,195,225,.5)"></i>simple YTD-YoY sanity</span>
+        <span><b style="background:rgba(34,211,238,.18)"></b>ratio-spread band</span>
+      </div>`;
+
+      // The 12-month value strip: actual / MTD / forecast / gap — the chart's numbers, checkable.
+      const cells = REP.ymsOfYear(year).map((ym) => {
+        const a = P.actuals.find((x) => x.ym === ym);
+        if (a && a.kind === 'actual') return `<td>${gbp(a.netPence)}</td>`;
+        if (a && a.kind === 'mtd' && P.mtdPence != null) return `<td>${gbp(Math.round(P.mtdPence))} <span class="rv2-gap">MTD</span></td>`;
+        const f = P.forecast.find((x) => x.ym === ym);
+        if (f && f.seasonalPence != null) return `<td class="rv2-gap">≈ ${gbp(Math.round(f.seasonalPence))}</td>`;
+        const reason = (a && a.reason) || (f && f.reason) || 'no record';
+        return `<td class="rv2-gap" title="${esc(reason)}">gap</td>`;
+      }).join('');
+      const mtable = `<table class="rv2-mtable"><thead><tr><th>${year}</th>${REP.ymsOfYear(year).map((ym) => `<th>${MONTHS_ABBR[Number(ym.slice(5, 7))]}</th>`).join('')}</tr></thead>
+        <tbody><tr><td>net</td>${cells}</tr></tbody></table>`;
+
+      const windowStr = P.window.length
+        ? P.window.map((w) => `${MONTHS_ABBR[Number(w.ym.slice(5, 7))]}×${w.weight}`).join(' ')
+        : 'none yet';
+      const caption = `<div class="rv2-caption">Projection basis: seasonality-aware — weighted per-month YoY ratio over the trailing ≤6 complete month-pairs (${esc(windowStr)}; newest ×3, next ×2), applied to each remaining month's ${year - 1} actual; grey dashed = simple YTD-YoY sanity; band = the window's min–max ratio spread; current-premises months only (move ${esc(rv2.boundaryDate)}); months without complete per-receipt API coverage render as gaps, never estimates. Re-forecast at every read.</div>`;
+
+      return `<div class="sec-label">P1 · Revenue projection <span class="mono">(per-receipt API record)</span><span class="rule"></span></div>
+        ${tiles}
+        <div class="panel"><div class="panel-body">${legend}${chart}${mtable}${caption}</div></div>`;
+    };
+
+    // ================= P2 — CHANNEL MIX / QR MIGRATION (per-receipt API record) =================
+    const renderChannelMix = (rv2) => {
+      // Months rendered = complete months + the MTD month (marked). Nothing partial in between.
+      const isShown = (ym) => (rv2.months[ym] && (rv2.months[ym].complete || (ym === rv2.nowYm && rv2.months[ym].okDays > 0)));
+      const yms = [...new Set(rv2.chanMonths.map((r) => String(r.ym)))].filter(isShown).sort();
+      if (!yms.length) {
+        return `<div class="sec-label">P2 · Channel mix<span class="rule"></span></div>
+          <div class="banner muted">No complete months in the per-receipt record yet — the K-Series backfill fills this in; channel mix renders only whole, ledger-complete months (never partial slices).</div>`;
+      }
+      const byYm = new Map(yms.map((ym) => [ym, []]));
+      for (const r of rv2.chanMonths) if (byYm.has(String(r.ym))) byYm.get(String(r.ym)).push({ label: String(r.label), net: num(r.net) || 0, txn: num(r.txn) || 0 });
+      // Global channel rank (stack order + legend + colors are stable across months).
+      const totals = new Map();
+      for (const rows of byYm.values()) for (const r of rows) totals.set(r.label, (totals.get(r.label) || 0) + r.net);
+      const rank = [...totals.entries()].sort((a, b) => b[1] - a[1]).map(([label]) => label);
+      const colorOf = (label) => CHANNEL_COLORS[label] || FALLBACK_COLORS[Math.max(0, rank.indexOf(label)) % FALLBACK_COLORS.length];
+
+      const cols = yms.map((ym) => {
+        const rows = byYm.get(ym) || [];
+        const tot = rows.reduce((s, r) => s + Math.max(0, r.net), 0) || 1;
+        const segs = rank.map((label) => {
+          const r = rows.find((x) => x.label === label);
+          if (!r || r.net <= 0) return '';
+          const pct = (r.net / tot) * 100;
+          return `<i style="height:${pct.toFixed(2)}%;background:${colorOf(label)}" title="${esc(label)} ${esc(monthLabel(ym))}: ${gbp(r.net)} (${pct.toFixed(1)}%)"></i>`;
+        }).join('');
+        return `<div class="rv2-col"${ym === rv2.nowYm ? ' style="opacity:.55"' : ''} title="${esc(monthLabel(ym))}${ym === rv2.nowYm ? ' (MTD)' : ''}">${segs}</div>`;
+      }).join('');
+      const xlabs = yms.map((ym) => `<span>${ym.slice(5, 7) === '01' || ym === yms[0] ? esc(monthLabel(ym).replace(' 20', ' ')) : esc(ym.slice(5, 7))}${ym === rv2.nowYm ? '°' : ''}</span>`).join('');
+      const legend = `<div class="rv2-legend">${rank.map((label) => `<span><b style="background:${colorOf(label)}"></b>${esc(label)}</span>`).join('')}</div>`;
+
+      // ATV small multiples (top channels) — QR carries the £38 checkpoint rule.
+      const iOfShown = new Map(yms.map((ym, i) => [ym, i]));
+      const multis = rank.slice(0, 6).map((label) => {
+        const pts = yms.map((ym) => {
+          const r = (byYm.get(ym) || []).find((x) => x.label === label);
+          return { v: r && r.txn > 0 ? Math.round(r.net / r.txn) : null };
+        });
+        const lastPt = pts.filter((p) => p.v != null).pop();
+        const isQr = label === QR_LABEL;
+        const spark = REP.svgSparkline({ points: pts, color: colorOf(label), rulePence: isQr ? 3800 : null });
+        return `<div class="cell"><div class="nm" title="${esc(label)}">${esc(label)}</div>
+          <div class="v">${lastPt ? gbp(lastPt.v) : '—'}</div>
+          <div class="s">ATV/txn · latest shown month${isQr ? ' · dashed rule = £38 target' : ''}</div>${spark}</div>`;
+      }).join('');
+
+      // Migration view — EAT IN + QR as ONE dine-in unit; the QR share inside it is the migration.
+      const migRows = yms.map((ym) => {
+        const rows = byYm.get(ym) || [];
+        const eat = rows.find((x) => x.label === 'EAT IN');
+        const qr = rows.find((x) => x.label === QR_LABEL);
+        const unit = (eat ? eat.net : 0) + (qr ? qr.net : 0);
+        const share = unit > 0 && qr ? (qr.net / unit) * 100 : null;
+        return { ym, eat: eat ? eat.net : null, qr: qr ? qr.net : null, unit: unit || null, share };
+      });
+      const migTable = `<table class="tbl"><thead><tr><th>month</th><th>EAT IN</th><th>QR (Storekit)</th><th>dine-in unit</th><th>QR share</th></tr></thead><tbody>
+        ${migRows.slice(-13).map((r) => `<tr><td>${esc(monthLabel(r.ym))}${r.ym === rv2.nowYm ? ' <span class="ash">(MTD)</span>' : ''}</td>
+          <td class="mono">${r.eat != null ? gbp(r.eat) : '—'}</td><td class="mono">${r.qr != null ? gbp(r.qr) : '—'}</td>
+          <td class="mono">${r.unit != null ? gbp(r.unit) : '—'}</td>
+          <td class="mono">${r.share != null ? r.share.toFixed(1) + '%' : '<span class="ash">no QR</span>'}</td></tr>`).join('')}
+      </tbody></table>`;
+      const shareSpark = REP.svgSparkline({ width: 220, height: 44, points: migRows.map((r) => ({ v: r.share != null ? Math.round(r.share * 100) : null })), color: '#34D399' });
+
+      // Coverage honesty: which window this record covers + the gaps inside it.
+      const allLedger = Object.keys(rv2.months).sort();
+      const gapsInRange = allLedger.length
+        ? (() => { const out = []; for (let ym = allLedger[0]; ym < rv2.nowYm; ym = REP.ymAdd(ym, 1)) if (!rv2.months[ym] || !rv2.months[ym].complete) out.push(ym); return out; })()
+        : [];
+      const coverage = `<div class="rp-hint">Record covers <b>${yms.filter((ym) => ym !== rv2.nowYm).length} complete month(s)</b> (${esc(monthLabel(yms[0]))} → ${esc(monthLabel(yms[yms.length - 1]))}${yms[yms.length - 1] === rv2.nowYm ? ', last = MTD°' : ''})${gapsInRange.length ? ` · gaps not shown: ${gapsInRange.map(monthLabel).join(', ')}` : ''}. Channel labels: operator + net-match inference (<span class="mono">sales_channel_map_api</span>); unlabelled codes show raw. Integration channels can carry ~£0 receipts — txn counts and ATV are as recorded, never cleaned invisibly.</div>`;
+
+      return `<div class="sec-label">P2 · Channel mix &amp; QR migration <span class="mono">(per-receipt API record)</span><span class="rule"></span></div>
+        <div class="panel"><div class="panel-body">${legend}<div class="rv2-stack">${cols}</div><div class="rv2-xlab">${xlabs}</div>${coverage}</div></div>
+        <div class="rp-two">
+          <div><div class="sec-label">ATV by channel <span class="mono">(net ÷ txn, monthly)</span><span class="rule"></span></div><div class="rv2-multi">${multis}</div></div>
+          <div><div class="sec-label">Dine-in migration <span class="mono">(EAT IN + QR as one unit)</span><span class="rule"></span></div><div class="panel"><div class="panel-body">${migTable}<div style="margin-top:8px">${shareSpark} <span class="rp-hint">QR share of the dine-in unit</span></div></div></div></div>
+        </div>`;
+    };
+
+    const v2Html = m.rv2
+      ? renderProjection(m.rv2) + renderChannelMix(m.rv2)
+      : `<div class="banner muted">Reporting v2 — no per-receipt API record yet. The K-Series shadow ingest + backfill light these panels up; nothing is estimated in the meantime.</div>`;
+
+    if (!m.hasData) {
+      // Fully empty box → the plain honest banner (no v2 scaffolding, no stray CSS). If the API
+      // record exists without the scraper's sales_day, the v2 panels still render above the banner.
+      return {
+        stamp: m.rv2 && m.rv2.maxApiDate ? `api record · <span class="mono">${esc(m.rv2.maxApiDate)}</span>` : 'awaiting sales data',
+        body: (m.rv2 ? styles + v2Html : '') + `<div class="banner muted">No Lightspeed sales yet. The daily ingest (05:30) pulls yesterday's exports into the box; the day flash appears here after the first run.</div>`,
+      };
+    }
 
     const periodBody = (p, label) => {
       const t = p.tot || {};
@@ -199,7 +447,7 @@ module.exports = {
       if (!lb || !num(lb.days)) {
         parts.push(`<div class="banner muted">No labour pulled for this period yet — the RotaCloud ingest (06:35 / 18:05 settlement) fills this in. Hours and cost are never estimated.</div>`);
       } else {
-        const hrs = (mn) => (num(mn) != null ? (num(mn) / 60).toFixed(1) + 'h' : '—');
+        const hrs2 = (mn) => (num(mn) != null ? (num(mn) / 60).toFixed(1) + 'h' : '—');
         const sameDayNet = p.labNet && num(p.labNet.net) > 0 ? num(p.labNet.net) : null;
         const pct = sameDayNet != null && num(lb.ac) != null ? (num(lb.ac) / sameDayNet) * 100 : null;
         // £-CONSEQUENCE first (operator-locked): permitted = 30% × same-day net; the £
@@ -212,9 +460,9 @@ module.exports = {
         parts.push(`<div class="rp-grid">
           <div class="tile"><div class="lab">vs the 30% target — true-cost ruler</div><div class="val"${ragColor ? ` style="color:${ragColor}"` : ''}>${deltaPence != null ? (deltaPence > 0 ? gbp(deltaPence) + ' OVER' : gbp(-deltaPence) + ' under') : '—'}</div><div class="sub">${deltaPence != null ? `${pct.toFixed(1)}% of net · permitted ${gbp(permitted)} at 30% · same-day net only` : 'needs same-day sales'}</div></div>
           <div class="tile"><div class="lab">Labour cost (true)</div><div class="val">${gbp(lb.ac)}</div><div class="sub">rates + 15.9% burden · ${gbp(lb.sal)} salaried/365</div></div>
-          <div class="tile"><div class="lab">Rota'd → worked</div><div class="val">${hrs(lb.sm)} → ${hrs(lb.am)}</div><div class="sub">${varMin != null ? (varMin >= 0 ? '+' : '−') + hrs(Math.abs(varMin)) + ' vs rota' : '—'} · paid ${hrs(lb.pm)}</div></div>
+          <div class="tile"><div class="lab">Rota'd → worked</div><div class="val">${hrs2(lb.sm)} → ${hrs2(lb.am)}</div><div class="sub">${varMin != null ? (varMin >= 0 ? '+' : '−') + hrs2(Math.abs(varMin)) + ' vs rota' : '—'} · paid ${hrs2(lb.pm)}</div></div>
           <div class="tile"><div class="lab">Scheduled cost</div><div class="val">${gbp(lb.sc)}</div><div class="sub">what the rota would cost</div></div>
-          ${num(lb.uam) || num(lb.usm) ? `<div class="tile rp-notwired"><div class="lab">Unmapped staff</div><div class="val">${hrs(Math.max(num(lb.uam) || 0, num(lb.usm) || 0))}</div><div class="sub">hours counted, cost EXCLUDED — ${esc(p.labNames.join(', ') || 'names in labour_day')} · fix rates.ts</div></div>` : ''}
+          ${num(lb.uam) || num(lb.usm) ? `<div class="tile rp-notwired"><div class="lab">Unmapped staff</div><div class="val">${hrs2(Math.max(num(lb.uam) || 0, num(lb.usm) || 0))}</div><div class="sub">hours counted, cost EXCLUDED — ${esc(p.labNames.join(', ') || 'names in labour_day')} · fix rates.ts</div></div>` : ''}
         </div>`);
         if (partial) parts.push(`<div class="rp-hint">Labour covers ${esc(String(num(lb.days)))} of ${esc(String(num(t.days)))} sales day(s) — cost and % reflect only the covered days, never scaled up.</div>`);
 
@@ -239,7 +487,7 @@ module.exports = {
             const hp = l && sNet != null && sNet > 0 ? (l.ac / sNet) * 100 : null;
             const hpColor = hp == null ? '' : hp <= 30 ? 'var(--green,#34d399)' : hp <= 50 ? 'var(--amber,#e0b050)' : 'var(--red,#f87171)';
             const hourSplh = l && l.am > 0 && sNet != null ? gbp(Math.round(sNet / (l.am / 60))) : '—';
-            return `<tr><td class="mono">${esc(String(hh))}:00</td><td class="mono">${sNet != null ? gbp(sNet) : '—'}</td><td class="mono">${l ? gbp(Math.round(l.ac)) : '—'}</td><td class="mono ash">${l ? hrs(l.am) : '—'}</td><td class="mono"${hpColor ? ` style="color:${hpColor}"` : ''}>${hp != null ? hp.toFixed(0) + '%' : '—'}</td><td class="mono ash">${hourSplh}</td></tr>`;
+            return `<tr><td class="mono">${esc(String(hh))}:00</td><td class="mono">${sNet != null ? gbp(sNet) : '—'}</td><td class="mono">${l ? gbp(Math.round(l.ac)) : '—'}</td><td class="mono ash">${l ? hrs2(l.am) : '—'}</td><td class="mono"${hpColor ? ` style="color:${hpColor}"` : ''}>${hp != null ? hp.toFixed(0) + '%' : '—'}</td><td class="mono ash">${hourSplh}</td></tr>`;
           }).join('');
           parts.push(`<div class="sec-label">Daypart — labour vs sales by hour<span class="rule"></span></div>
             <div class="panel"><div class="panel-body"><table class="tbl"><thead><tr><th>hour</th><th>sales net</th><th>labour cost</th><th>hours</th><th>labour %</th><th>SPLH</th></tr></thead><tbody>${rowsHtml}</tbody></table>
@@ -298,6 +546,8 @@ module.exports = {
     const body = styles
       + `<style>${NAV.NAV_CSS}</style>`
       + '<div class="rp-lib"><a href="/coyote/report-library">Report Library — specialist reports, verdict-first →</a></div>'
+      + v2Html
+      + `<div class="sec-label" style="margin-top:22px">Day / period flash <span class="mono">(POS-truthful · period nav)</span><span class="rule"></span></div>`
       + NAV.renderNavStrip(m.nav, '/coyote/reports', esc)
       + yoyHtml
       + comparatorHtml
