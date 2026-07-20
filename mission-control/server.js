@@ -151,6 +151,7 @@ const PAGES = [
   require('./ui/pages/coyote/operations.js'),
   require('./ui/pages/coyote/reports.js'),
   require('./ui/pages/coyote/report-library.js'),
+  require('./ui/pages/coyote/rota-review.js'),
   require('./ui/pages/coyote/yoy-seasonality.js'),
   require('./ui/pages/coyote/labour.js'),
   require('./ui/pages/coyote/recipes.js'),
