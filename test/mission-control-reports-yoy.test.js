@@ -34,9 +34,9 @@ function makeDb() {
 }
 const ctxFor = (db, tab) => ({ q: (sql, p) => DATA.safeSelect(db, sql, p), now: 1782800000000, query: tab ? { tab } : {} });
 
-test('reports contract intact after the RCC restructure', () => {
-  assert.equal(reports.key, 'reports');
-  assert.equal(reports.route, '/coyote/reports');
+test('revenue contract after the nav restructure (page-map amendment 2026-07-21)', () => {
+  assert.equal(reports.key, 'revenue');
+  assert.equal(reports.route, '/coyote/revenue');
   assert.equal(reports.title, 'Revenue');
 });
 

@@ -50,3 +50,16 @@ test('rota-review history: each ok run carries its verdict £', () => {
   assert.match(out.body, /K \+£17 · F −£124/, 'verdict column carries the week-on-week numbers');
   assert.match(out.body, /verdict \(\+ over \/ − under\)/);
 });
+
+test('nav restructure (page-map amendment 2026-07-21): Reports section groups Revenue + Library + Rota Review; old paths 308 to the new home with query preserved', () => {
+  const S = require('../mission-control/ui/shared.js');
+  const coyote = S.WORKSPACES.find((w) => w.key === 'coyote');
+  const reportsGroup = coyote.groups.find((g) => g.group === 'Reports');
+  assert.ok(reportsGroup, 'the Reports section exists');
+  assert.deepEqual(reportsGroup.items.map((i) => i.key), ['revenue', 'report-library', 'rota-review'], 'Revenue + Library + Rota Review, in order');
+  assert.equal(reportsGroup.items[0].route, '/coyote/revenue');
+  const srv = require('node:fs').readFileSync(require('node:path').join(__dirname, '../mission-control/server.js'), 'utf8');
+  assert.match(srv, /'\/coyote\/reports': '\/coyote\/revenue'/, 'the old RCC path redirects');
+  assert.match(srv, /'\/coyote\/yoy': '\/coyote\/revenue'/, 'chained redirects flattened — no double hop');
+  assert.match(srv, /'\/reports': '\/coyote\/revenue'/);
+});

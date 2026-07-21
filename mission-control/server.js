@@ -192,14 +192,16 @@ for (const p of PAGES) PAGE_BY_ROUTE[p.route] = p;
 // reaching '/health' falls through to the redirect below. '/' lands on the daily-driver front door
 // (/coyote/overview), not the console. Factory-ready: a new workspace adds its own prefix, no engine change.
 const LEGACY_REDIRECTS = {
+  // Nav restructure (page-map amendment 2026-07-21): the RCC renamed Revenue under the Reports section.
+  '/coyote/reports': '/coyote/revenue',
   '/': '/coyote/overview',
   // page-map audit 2026-07-21: Operations cut (dead since birth), YoY merged into Reports
   '/coyote/operations': '/coyote/overview',
-  '/coyote/yoy': '/coyote/reports',
+  '/coyote/yoy': '/coyote/revenue',  // no double-hop — straight to the new home
   '/claw/agents': '/claw/engine',
   '/claw/health': '/claw/engine',
   '/overview': '/coyote/overview',
-  '/reports': '/coyote/reports',
+  '/reports': '/coyote/revenue',
   '/labour': '/coyote/labour',
   '/recipes': '/coyote/recipes',
   '/reviews': '/coyote/reviews',

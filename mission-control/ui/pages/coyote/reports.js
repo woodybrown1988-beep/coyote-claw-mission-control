@@ -546,7 +546,7 @@ function channelMonthStats(rv2) {
 }
 
 module.exports = {
-  key: 'reports', route: '/coyote/reports', workspace: 'coyote', title: 'Revenue',
+  key: 'revenue', route: '/coyote/revenue', workspace: 'coyote', title: 'Revenue',
   sub: 'Revenue Command Centre — all five tabs live · contribution gated on recipe costing · covers via OpenTable (not wired)',
 
   getSection(db, ctx) {
@@ -780,7 +780,7 @@ module.exports = {
 
     // ---- subtab nav: 5 links, mock's .tabs/.tab grammar; ?tab only (nothing else preserved) ----
     const tabsNav = `<div class="r-tabs">${TABS.map((t) =>
-      `<a class="r-tab${t.key === tab ? ' active' : ''}" href="/coyote/reports?tab=${t.key}">${esc(t.label)}</a>`).join('')}</div>`;
+      `<a class="r-tab${t.key === tab ? ' active' : ''}" href="/coyote/revenue?tab=${t.key}">${esc(t.label)}</a>`).join('')}</div>`;
 
     // ============================ EXECUTIVE (P1) ============================
     const renderExecutive = () => {
