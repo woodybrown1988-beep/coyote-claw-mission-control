@@ -125,6 +125,17 @@ function getSection(db, ctx) {
   }));
 
   const snapRow = snapRes.ok && snapRes.rows.length ? snapRes.rows[0] : null;
+  // 12-month blended rating trend (all platforms, monthly mean of stored overall) — the tiles'
+  // point-in-time ratings get their direction (audit design change #3). Months with no rated
+  // review yield NO point (the sparkline breaks rather than interpolates).
+  const ratingTrendRes = q(
+    `SELECT substr(reviewed_date, 1, 7) AS ym, AVG(overall) AS avg
+       FROM review_corpus WHERE overall IS NOT NULL AND reviewed_date IS NOT NULL
+      GROUP BY ym ORDER BY ym DESC LIMIT 12`
+  );
+  const ratingTrend = (ratingTrendRes.ok ? ratingTrendRes.rows : []).reverse()
+    .map((r) => ({ v: r.avg == null ? null : Number(r.avg) }));
+
   const snapshot = snapRow
     ? {
         total: toIntOrNull(snapRow.total),
@@ -141,7 +152,7 @@ function getSection(db, ctx) {
       }
     : null;
 
-  return { ok: true, cards, trends, escalations, snapshot, pendingTotal, qpage };
+  return { ok: true, cards, trends, escalations, snapshot, ratingTrend, pendingTotal, qpage };
 }
 
 // =====================================================================================
@@ -172,17 +183,25 @@ function renderEscalationBanner(escalations) {
 
 // Honest ratings line as tiles: real stored ratings + the actionable-30d queue + the lifetime backlog
 // (the "959") demoted to historical context. NEVER a fabricated number — '—' when not yet ingested.
-function renderRatings(snap) {
+function renderRatings(snap, ratingTrend) {
   if (!snap) {
     return '<div class="banner muted">Review snapshot not yet ingested — ratings + the awaiting backlog appear after the daily ingest.</div>';
   }
   const win = snap.window ? S.escapeHtml(snap.window) : 'rating';
+  // the trend tile: latest monthly blended mean + its 12-month spark (S.kpiTile — the shared
+  // component; no spark renders when <2 rated months exist, never a faked line)
+  const lastAvg = (ratingTrend || []).map((p) => p.v).filter((v) => v != null).pop();
+  const trendTile = S.kpiTile({
+    lab: 'Trend · 12mo', val: lastAvg == null ? '—' : lastAvg.toFixed(2),
+    sub: 'monthly mean · all platforms', points: ratingTrend || [], width: 120, height: 26,
+  });
   return `<div class="tiles">
     <div class="tile blue"><div class="lab">Google</div><div class="val">${fmtRating(snap.google)}</div><div class="sub">${win}</div></div>
     <div class="tile green"><div class="lab">TripAdvisor</div><div class="val">${fmtRating(snap.tripadvisor)}</div><div class="sub">${win}</div></div>
     <div class="tile amber"><div class="lab">OpenTable</div><div class="val">${fmtRating(snap.opentable)}</div><div class="sub">${win}</div></div>
     <div class="tile"><div class="lab">Actionable · 30d</div><div class="val">${S.fmtInt(snap.awaitingRecentText)}</div><div class="sub g">recent text · the live queue</div></div>
     <div class="tile muted"><div class="lab">Awaiting · lifetime</div><div class="val">${S.fmtInt(snap.awaiting)}</div><div class="sub">historical · not a queue</div></div>
+    ${trendTile}
   </div>`;
 }
 
@@ -271,7 +290,7 @@ function render(section, ctx) {
   const stamp = `review snapshot · ${inner}`;
 
   const escalationBanner = renderEscalationBanner(model.escalations || []);
-  const ratings = renderRatings(snap);
+  const ratings = renderRatings(snap, model.ratingTrend);
   const rising = renderRising(model.trends || []);
 
   const awaitingTap = cards.filter((c) => c.platform === 'google' && c.status === 'awaiting_approval').length;

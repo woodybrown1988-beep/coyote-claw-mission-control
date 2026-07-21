@@ -380,6 +380,21 @@ function css() {
   footer{margin-top:22px;font-family:var(--font-mono);font-size:10px;color:var(--muted)}`;
 }
 
+// THE board-wide KPI tile (audit 2026-07-21 design change #3 — Reports' ATV tile is the template).
+// One component so every headline number CAN carry its trend: standard tile markup + an optional
+// sparkline under the sub. points = [{v}] oldest-first (any numeric scale — pence, %, stars);
+// <2 real values renders NO svg (a one-point "trend" is noise, never faked). rulePence draws the
+// dashed target line (same convention as the £38 QR rule). Delegates to reporting.svgSparkline —
+// pure, tested, gap-aware (null points break the line rather than interpolate).
+const REP = require('./reporting.js');
+function sparkline(points, opts) {
+  return REP.svgSparkline({ points: points || [], ...(opts || {}) });
+}
+function kpiTile({ tone = '', lab, val, sub = '', points = null, color = '#22D3EE', rulePence = null, width = 150, height = 34 }) {
+  const spark = points ? sparkline(points, { color, rulePence, width, height }) : '';
+  return `<div class="tile ${tone}"><div class="lab">${lab}</div><div class="val">${val}</div>${sub ? `<div class="sub">${sub}</div>` : ''}${spark}</div>`;
+}
+
 module.exports = {
   escapeHtml,
   freshness,
@@ -387,6 +402,8 @@ module.exports = {
   agoLabel,
   fmtGbpPence,
   fmtInt,
+  kpiTile,
+  sparkline,
   renderShell,
   renderSidebar,
   css,

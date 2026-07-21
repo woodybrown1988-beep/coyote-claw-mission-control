@@ -117,7 +117,10 @@ module.exports = {
         `<div><span class="k ${i.kind.toLowerCase()}">${esc(i.kind)}</span> ${esc(i.date)} ${esc(i.part)} · ${Number(i.hours).toFixed(1)}h ${i.kind === 'OVER' ? '−' : '+'}${gbp(i.pence)} · ${esc(String(i.note).slice(0, 140))}</div>`).join('');
       const mixes = Object.entries(rep.mixNotes || {}).filter(([d]) => deptShown(d)).map(([d, note]) =>
         `<div class="rr-mix">MIX ${esc(d)}: ${esc(String(note))}</div>`).join('');
-      const gaps = (rep.gaps || []).map((g) => `<div class="rr-caption">GAP: ${esc(String(g))}</div>`).join('');
+      const gapList = (rep.gaps || []).map((g) => `<div class="rr-caption">GAP: ${esc(String(g))}</div>`);
+      const gaps = gapList.length > 1
+        ? `<details class="rr-details"><summary class="rr-caption">gaps &amp; assumptions (${gapList.length}) ▸</summary>${gapList.join('')}</details>`
+        : gapList.join('');
       const stamp = `<div class="rr-caption">run ${esc(ago(row.ran_at))} · trigger ${esc(row.trigger)}${rep.asOf ? ` · rota as of ${esc(new Date(Number(rep.asOf)).toISOString().slice(0, 16).replace('T', ' '))}Z` : ''} · baseline ${esc(rep.baseline ? `${rep.baseline.from}..${rep.baseline.to}` : '—')} · ruler: TRUE all-in ÷ ${label === 'FORWARD' ? 'forecast (RC daily targets)' : 'actual net (per-receipt record)'} · targets = banded formula</div>`;
       return `<div class="sec-label">${esc(label)} · w/c ${esc(rep.weekMonday)}<span class="rule"></span></div>
         <div class="rr-hero">${heroes || '<div class="banner muted">dept filtered out</div>'}</div>
