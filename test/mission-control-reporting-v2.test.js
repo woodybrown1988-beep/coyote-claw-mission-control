@@ -270,16 +270,17 @@ test('sparkline sparse rule: one point renders NOTHING (caller shows a value), t
   assert.match(REP.svgSparkline({ points: [{ v: 100 }, { v: 120 }] }), /<path /);
 });
 
-test('drivers tab: ~£0 integration channels never become an ATV card; the donut keeps them visible', () => {
+test('one home: the ATV small-multiples LEFT the drivers tab (P2 build); the donut keeps ping channels visible', () => {
   const db = makeDb();
   const ins = db.prepare(`INSERT INTO sales_receipts_api (receipt_id, business_date, type, cancelled, account_profile_code, net_without_tax_pence, net_with_tax_pence, tax_pence, updated_at) VALUES (?,?,?,?,?,?,?,?,1)`);
   for (let i = 0; i < 5; i++) ins.run(`NOISE-${i}`, '2026-06-20', 'SALE', 0, 'TAKEAWAY', 1, 1, 0);
-  // the pending drivers tab gates on the day-grain record — one live day is enough
   db.prepare(`INSERT INTO sales_day (business_date, net_sales_pence, gross_sales_pence, transactions, updated_at) VALUES ('2026-07-16', 100000, 120000, 10, 1)`).run();
+  // ATV's one home = the Executive strip; the per-channel monthly small-multiples were ruled
+  // P2-mock-absent and deleted with the drivers build — the grammar must be GONE
   const { html } = renderPage(db, 'drivers');
-  assert.doesNotMatch(html, /nm" title="TAKEAWAY"/, 'no ATV card for a £0.00-ATV ping channel');
-  const cards = (html.match(/ATV\/txn/g) || []).length;
-  assert.ok(cards >= 1 && cards <= 4, `1..4 ATV cards, got ${cards}`);
+  assert.doesNotMatch(html, /ATV\/txn/, 'no ATV small-multiple cards on drivers');
+  assert.doesNotMatch(html, /rv2-multi/, 'the small-multiples grammar is deleted');
+  assert.doesNotMatch(html, /ATV by channel/, 'the section is gone, not restyled');
   // never invisible: the Executive donut legend lists the ping channel with its recorded £
   const { html: ex } = renderPage(db, 'executive');
   assert.match(ex, /TAKEAWAY/, 'ping channel visible in the channel legend, never cleaned invisibly');

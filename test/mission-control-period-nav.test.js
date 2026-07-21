@@ -77,9 +77,10 @@ function makeDb() {
   return db;
 }
 const render = (db, query) => {
-  // the period-nav window survives ONLY on the pending RCC subtabs (drivers here); the nav
-  // strip must preserve the tab so a period click never bounces the operator to Executive
-  const ctx = { q: (sql, p) => DATA.safeSelect(db, sql, p), now: NOW, halt: { halted: false }, query: Object.assign({ tab: 'drivers' }, query || {}) };
+  // the period-nav window survives ONLY on the pending RCC subtabs (menu here — drivers is
+  // BUILT and 28d-anchored since P2); the nav strip must preserve the tab so a period click
+  // never bounces the operator to Executive
+  const ctx = { q: (sql, p) => DATA.safeSelect(db, sql, p), now: NOW, halt: { halted: false }, query: Object.assign({ tab: 'menu' }, query || {}) };
   return reports.render(reports.getSection(db, ctx), ctx).body;
 };
 
@@ -103,9 +104,9 @@ test('closed vs missing: zero-net captured day = CLOSED; uncaptured day = NO REC
 
 test('URL state: the nav strip is links (bookmarkable), tab preserved, custom form is a GET', () => {
   const body = render(makeDb(), { period: 'week' });
-  assert.ok(body.includes('href="/coyote/reports?tab=drivers&amp;period=week&amp;start=2026-06-22"'), 'back arrow is a shareable URL that KEEPS the subtab');
+  assert.ok(body.includes('href="/coyote/reports?tab=menu&amp;period=week&amp;start=2026-06-22"'), 'back arrow is a shareable URL that KEEPS the subtab');
   assert.ok(body.includes('method="GET" action="/coyote/reports"'), 'custom picker round-trips through the URL');
-  assert.ok(body.includes('<input type="hidden" name="tab" value="drivers"/>'), 'the custom form round-trips the subtab too');
+  assert.ok(body.includes('<input type="hidden" name="tab" value="menu"/>'), 'the custom form round-trips the subtab too');
   assert.ok(body.includes('the future has no record'), 'disabled forward arrow explains itself');
 });
 

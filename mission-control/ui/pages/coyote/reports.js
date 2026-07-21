@@ -1,13 +1,19 @@
 'use strict';
 // Reports — the REVENUE COMMAND CENTRE (RCC Stage 2, ruled 2026-07-21). ONE route (/coyote/reports),
 // five subtabs per the operator mock (docs/revenue-command-centre/ gap map + reference/mock-*.png):
-//   executive (P1 BUILT) · drivers (P2 pending) · menu (P5 pending) · reconciliation (P3 pending)
+//   executive (P1 BUILT) · drivers (P2 BUILT) · menu (P5 pending) · reconciliation (P3 pending)
 //   · forecast (P4 BUILT)
 // Contract unchanged: { key, route, title, sub, getSection, render }. SELECT-only via ctx.q.
 // ONE HOME PER FACT (the absorb rule): the old projection panel + long-range + YoY headline are
 // ABSORBED by the Forecast tab; the old channel-mix stack/QR hero by the Executive donut (the
-// migration table survives as its expand); the decomposition table lives on Executive. The three
+// migration table survives as its expand); the decomposition table lives on Executive. The two
 // pending tabs carry the surviving flash panels UNRESTYLED until their phase lands.
+// P2 ABSORPTION (this build): the old drivers-tab flash panels left the page entirely —
+//   • sales-by-hour bars → absorbed by the hourly heatmap + peak-hour KPI (their one home now);
+//   • labour section + daypart labour-vs-sales + margin (prime cost) → LABOUR canon; home =
+//     /coyote/labour (which already carries the scorecard/hero) — DELETED here, not copied there;
+//   • ATV small-multiples → DELETED (ATV lives on the Executive strip; the per-channel monthly
+//     detail was P2-mock-absent — ruled out of scope, not rehomed).
 // NO-FABRICATION rules baked in:
 //   • Executive KPI window = the LAST FULL Mon–Sun week vs the weekday-aligned week LY (−364d),
 //     premises-guarded — a non-comparable LY drops the delta and says so, never a raw cross-site %.
@@ -46,17 +52,16 @@ const QR_LABEL = 'STOREKIT ORDER & PAY';
 const QR_TARGET_PENCE = 3800; // the standing £38 net/txn decision (docs/qr-upsell-spec.md)
 const API_ERA_NOTE = 'window inside API-era coverage (from 2026-06-30)';
 
-// Channel palette for the drivers-tab ATV small-multiples (fixed per label; unknown labels
-// rotate the grey tail) — kept from the pre-RCC channel section, moved intact.
-const CHANNEL_COLORS = {
-  'EAT IN': '#22D3EE',
-  [QR_LABEL]: '#34D399',
-  'MON-FRI DEAL': '#60A5FA',
-  'Take-Away': '#FBBF24',
-  'ONLINE ORDER': '#A78BFA',
-  'PICKUP': '#F0843E',
-};
-const FALLBACK_COLORS = ['#7d8da5', '#5a6b84', '#93a7c4', '#465a72', '#a5b4c9'];
+// Drivers scorecard STATUS ruler — the RULED rota-review verdict classes, never invented:
+// daily formula budget = salaried_cost_pence + 22.4% × net (the ruled variable splits, K 14.3%
+// + F 8.1% combined); TRUE labour = actual_cost_pence (burdened); OVER only beyond the ruled
+// £45 materiality.
+const LABOUR_VAR_RATE = 0.224;
+const LABOUR_MATERIALITY_PENCE = 4500;
+// Drivers attachment classes — the DICT decides (acct_groups_api), never a product name-guess:
+// DRINK = the four ruled class names; SIDE = the pure FRYER-station family (FRYER but neither
+// GRIDDLE nor BUN — the griddle/bun hybrids are mains, not sides).
+const DRINK_CLASS_NAMES = ['HOT DRINKS', 'SOFT DRINKS', 'ALCOHOL', 'SHAKES'];
 
 // RCC donut palette in the mock's order: accent → blue → accent2 → purple → greys.
 const DONUT_COLORS = ['#e44b36', '#67a7ff', '#ffb34d', '#ad8cff', '#56616e', '#7d8da5'];
@@ -223,6 +228,121 @@ function buildExec(q, maxDate, rv2) {
   return exec;
 }
 
+// REVENUE DRIVERS (P2) — 28d KPI strip (anchored at the per-receipt max, the donut idiom),
+// hourly heatmap on the line grain (LOCAL London hour, ONLINE excluded — no true hour), the
+// designed capacity empty-state, and the 14-day trading scorecard on the RULED status classes.
+function buildDrivers(q, maxDate, rv2) {
+  const d = { apiMax: null, from: null, revHour: null, splh: null, peak: null, attach: null, heat: null, score: null };
+  const apiMax = rv2 && rv2.maxApiDate ? rv2.maxApiDate : null;
+
+  if (apiMax) {
+    const from = K.shiftDays(apiMax, -27);
+    d.apiMax = apiMax; d.from = from;
+
+    // ---- hour buckets: line grain per (day, UTC-hour bucket); ONLINE excluded from hour
+    // attribution (no true hour); untimed lines (time_of_sale_ms=0) never fake an hour ----
+    const buckets = rowsOf(q(
+      `SELECT r.business_date d, l.time_of_sale_ms/3600000 hb, SUM(l.net_without_tax_pence) net
+         FROM sales_receipt_lines_api l
+         JOIN sales_receipts_api r ON r.receipt_id = l.receipt_id
+         LEFT JOIN sales_channel_map_api m ON m.account_profile_code = COALESCE(r.account_profile_code,'')
+        WHERE ${SALE_WHERE} AND r.business_date BETWEEN ? AND ? AND l.time_of_sale_ms > 0
+          AND COALESCE(m.channel_label,'') <> 'ONLINE ORDER'
+        GROUP BY d, hb`, [from, apiMax]));
+    if (buckets.length) {
+      const online = rowsOf(q(
+        `SELECT SUM(l.net_without_tax_pence) net
+           FROM sales_receipt_lines_api l
+           JOIN sales_receipts_api r ON r.receipt_id = l.receipt_id
+           JOIN sales_channel_map_api m ON m.account_profile_code = COALESCE(r.account_profile_code,'')
+          WHERE ${SALE_WHERE} AND r.business_date BETWEEN ? AND ? AND m.channel_label = 'ONLINE ORDER'`, [from, apiMax]))[0];
+      const hourNet = new Map(); // London hour → 28d net
+      const cells = {}; // `${dowIdx}-${hour}` (Mon=0) → net, 11..21 only
+      const hourKeys = new Set(); // distinct (business_date, London hour)
+      let total = 0, outside = 0;
+      for (const r of buckets) {
+        const bkt = num(r.hb);
+        if (bkt === null) continue;
+        const net = num(r.net) || 0;
+        const h = londonHourOf(bkt * 3600000 + 1800000); // bucket midpoint — offset-constant
+        const date = String(r.d);
+        total += net;
+        hourKeys.add(`${date}|${h}`);
+        hourNet.set(h, (hourNet.get(h) || 0) + net);
+        const dow = (new Date(`${date}T12:00:00Z`).getUTCDay() + 6) % 7; // Mon-first
+        if (h >= 11 && h <= 21) cells[`${dow}-${h}`] = (cells[`${dow}-${h}`] || 0) + net;
+        else outside += net;
+      }
+      d.revHour = { net: total, hours: hourKeys.size };
+      let peak = null;
+      for (const [h, n] of hourNet) if (!peak || n > peak.net) peak = { hour: h, net: n };
+      d.peak = peak;
+      d.heat = { cells, total, outside, onlineExcluded: online ? num(online.net) || 0 : 0 };
+    }
+
+    // ---- attachment: share of sale receipts holding ≥1 line in the class (dict-decided) ----
+    const drinkGroups = rowsOf(q(
+      `SELECT code, name FROM acct_groups_api WHERE upper(name) IN (${DRINK_CLASS_NAMES.map(() => '?').join(',')}) ORDER BY code`, DRINK_CLASS_NAMES));
+    const sideGroups = rowsOf(q(
+      `SELECT code, name FROM acct_groups_api
+        WHERE upper(name) LIKE '%FRYER%' AND upper(name) NOT LIKE '%GRIDDLE%' AND upper(name) NOT LIKE '%BUN%' ORDER BY code`));
+    const attAgg = (codes, f, t) => {
+      const ph = codes.map(() => '?').join(',');
+      return rowsOf(q(
+        `SELECT COUNT(DISTINCT r.receipt_id) recs,
+                COUNT(DISTINCT CASE WHEN l.accounting_group IN (${ph}) THEN r.receipt_id END) withc
+           FROM sales_receipts_api r LEFT JOIN sales_receipt_lines_api l ON l.receipt_id = r.receipt_id
+          WHERE ${SALE_WHERE} AND r.business_date BETWEEN ? AND ?`, [...codes, f, t]))[0] || {};
+    };
+    const attachOf = (groups) => {
+      if (!groups.length) return { unmapped: true };
+      const codes = groups.map((g) => String(g.code));
+      const cur = attAgg(codes, from, apiMax);
+      if (!(num(cur.recs) > 0)) return null;
+      const pri = attAgg(codes, K.shiftDays(from, -28), K.shiftDays(apiMax, -28));
+      return {
+        names: groups.map((g) => String(g.name)),
+        cur: num(cur.withc) / num(cur.recs), recs: num(cur.recs),
+        prior: num(pri.recs) > 0 ? num(pri.withc) / num(pri.recs) : null,
+      };
+    };
+    d.attach = { drink: attachOf(drinkGroups), side: attachOf(sideGroups) };
+
+    // ---- SPLH: the cross-ruler intersection discipline (the labour page's fix) — net summed
+    // ONLY over days holding BOTH sales (net>0) AND a labour row; ÷ worked hours of those days ----
+    const spl = rowsOf(q(
+      `SELECT SUM(s.net_sales_pence) net, SUM(l.actual_minutes) mins, COUNT(*) days
+         FROM sales_day s JOIN labour_day l ON l.business_date = s.business_date
+        WHERE s.business_date BETWEEN ? AND ? AND s.net_sales_pence > 0`, [from, apiMax]))[0];
+    if (spl && num(spl.days) > 0 && num(spl.mins) > 0) d.splh = { net: num(spl.net) || 0, mins: num(spl.mins), days: num(spl.days) };
+  }
+
+  // ---- daily trading scorecard: last 14 recorded days; a missing sales day = an absent row ----
+  if (maxDate) {
+    const scFrom = K.shiftDays(maxDate, -13);
+    const days = rowsOf(q(
+      `SELECT business_date d, net_sales_pence net, discounts_pence disc
+         FROM sales_day WHERE business_date BETWEEN ? AND ? ORDER BY business_date`, [scFrom, maxDate]));
+    if (days.length) {
+      const ly = new Map();
+      for (const r of rowsOf(q(`SELECT business_date d, net_sales_pence net, premises p FROM v_sales_day_all WHERE business_date BETWEEN ? AND ?`, [K.shiftDays(scFrom, -364), K.shiftDays(maxDate, -364)])))
+        ly.set(String(r.d), { net: num(r.net), premises: String(r.p) });
+      const lab = new Map();
+      for (const r of rowsOf(q(`SELECT business_date d, actual_minutes am, actual_cost_pence ac, salaried_cost_pence sal FROM labour_day WHERE business_date BETWEEN ? AND ?`, [scFrom, maxDate])))
+        lab.set(String(r.d), { am: num(r.am), ac: num(r.ac), sal: num(r.sal) });
+      d.score = {
+        from: scFrom, to: maxDate,
+        rows: days.map((r) => ({
+          date: String(r.d), net: num(r.net) || 0, disc: num(r.disc),
+          twin: ly.get(K.shiftDays(String(r.d), -364)) || null,
+          lab: lab.get(String(r.d)) || null,
+        })),
+      };
+    }
+  }
+  return d;
+}
+
 // FORECAST (P4) — YTD facts, 3-year month sums, the journaled management override.
 function buildP4(q, nowYm) {
   const year = Number(nowYm.slice(0, 4));
@@ -259,28 +379,20 @@ function buildP4(q, nowYm) {
   return p4;
 }
 
-// Per-month channel stats from the per-receipt record (complete or MTD months only — the kept P2
-// rules): feeds the Executive migration expand + the drivers-tab ATV small-multiples.
+// Per-month channel stats from the per-receipt record (complete or MTD months only — the kept
+// rules): feeds the Executive migration expand (its ONE remaining consumer since the P2 build
+// deleted the drivers-tab ATV small-multiples).
 function channelMonthStats(rv2) {
   const isShown = (ym) => rv2.months[ym] && (rv2.months[ym].complete || (ym === rv2.nowYm && rv2.months[ym].okDays > 0));
   const yms = [...new Set(rv2.chanMonths.map((r) => String(r.ym)))].filter(isShown).sort();
   const byYm = new Map(yms.map((ym) => [ym, []]));
   for (const r of rv2.chanMonths) if (byYm.has(String(r.ym))) byYm.get(String(r.ym)).push({ label: String(r.label), net: num(r.net) || 0, txn: num(r.txn) || 0 });
-  // noise rule (kept): ≥2% share, >£1 ATV, top 4 — integration ping channels never become cards
-  const tot = new Map();
-  for (const rows of byYm.values()) for (const r of rows) {
-    const t = tot.get(r.label) || { net: 0, txn: 0 };
-    t.net += r.net; t.txn += r.txn; tot.set(r.label, t);
-  }
-  const totalNet = Math.max(1, [...tot.values()].reduce((s, t) => s + Math.max(0, t.net), 0));
-  const kept = [...tot.entries()].sort((a, b) => b[1].net - a[1].net)
-    .filter(([, t]) => t.net / totalNet >= 0.02 && t.txn > 0 && t.net / t.txn >= 100).slice(0, 4).map(([label]) => label);
-  return { yms, byYm, kept, completeYms: yms.filter((ym) => ym !== rv2.nowYm) };
+  return { yms, byYm };
 }
 
 module.exports = {
   key: 'reports', route: '/coyote/reports', workspace: 'coyote', title: 'Revenue',
-  sub: 'Revenue Command Centre — Executive & Forecast live · Drivers / Menu / Reconciliation pending · covers via OpenTable (not wired)',
+  sub: 'Revenue Command Centre — Executive / Drivers / Forecast live · Menu / Reconciliation pending · covers via OpenTable (not wired)',
 
   getSection(db, ctx) {
     const q = ctx && ctx.q;
@@ -355,8 +467,10 @@ module.exports = {
       }
     } else if (tab === 'forecast') {
       m.p4 = buildP4(q, nowYm);
+    } else if (tab === 'drivers') {
+      m.drivers = buildDrivers(q, maxDate, rv2);
     } else if (maxDate) {
-      // ---- pending tabs: the surviving flash panels on the period-nav window ----
+      // ---- pending tabs (menu / reconciliation): surviving flash panels on the period-nav window ----
       m.nav = NAV.resolveNav(query, maxDate, now, '/coyote/reports');
       const histRow = rowsOf(q('SELECT MIN(business_date) AS d FROM sales_day'))[0];
       m.histStart = histRow && histRow.d ? String(histRow.d) : null;
@@ -376,36 +490,9 @@ module.exports = {
              FROM sales_by_product WHERE business_date BETWEEN ? AND ? GROUP BY sku, product_name HAVING SUM(total_amount_pence) > 0 ORDER BY amt DESC LIMIT 8`, [from, to]));
         const prodsBottom = rowsOf(q(`SELECT product_name AS name, SUM(total_amount_pence) AS amt, SUM(quantity) AS qty
              FROM sales_by_product WHERE business_date BETWEEN ? AND ? GROUP BY sku, product_name HAVING SUM(total_amount_pence) > 0 ORDER BY amt ASC LIMIT 5`, [from, to]));
-        const hourly = rowsOf(q(`SELECT hour, SUM(net_sales_pence) AS net FROM sales_hourly WHERE business_date BETWEEN ? AND ? GROUP BY hour ORDER BY hour`, [from, to]));
-        // Margin coverage: share of product sales whose SKU has a COMPLETE recipe (≥1 line, no uncosted ingredient).
-        const cov = rowsOf(q(
-          `SELECT (SELECT COALESCE(SUM(total_amount_pence),0) FROM sales_by_product WHERE business_date BETWEEN ? AND ?) AS total_amt,
-                  (SELECT COALESCE(SUM(total_amount_pence),0) FROM sales_by_product sp WHERE sp.business_date BETWEEN ? AND ?
-                     AND sp.sku IN (SELECT p.lightspeed_sku FROM products p
-                       WHERE (SELECT COUNT(*) FROM recipe_lines rl WHERE rl.product_id=p.id) > 0
-                         AND (SELECT COUNT(*) FROM recipe_lines rl JOIN sub_items si ON si.id=rl.sub_item_id
-                                WHERE rl.product_id=p.id AND (si.pack_cost_pence IS NULL OR si.pack_qty IS NULL)) = 0)) AS costed_amt`,
-          [from, to, from, to]))[0] || { total_amt: 0, costed_amt: 0 };
-        // Labour (RotaCloud, TRUE cost = locked rates × 1.159 burden; salaried annual/365).
-        const lab = rowsOf(q(
-          `SELECT COUNT(*) AS days, SUM(scheduled_minutes) AS sm, SUM(actual_minutes) AS am,
-                  SUM(actual_paid_minutes) AS pm, SUM(scheduled_cost_pence) AS sc, SUM(actual_cost_pence) AS ac,
-                  SUM(salaried_cost_pence) AS sal, SUM(unmapped_actual_minutes) AS uam, SUM(unmapped_scheduled_minutes) AS usm
-             FROM labour_day WHERE business_date BETWEEN ? AND ?`, [from, to]))[0] || null;
-        // Labour % is computed against net for the SAME days labour covers — thin labour
-        // history must never dilute the % against a fuller sales period (no-fabrication).
-        const labNet = rowsOf(q(
-          `SELECT SUM(s.net_sales_pence) AS net, COUNT(*) AS days FROM sales_day s
-             JOIN labour_day l ON l.business_date = s.business_date
-            WHERE s.business_date BETWEEN ? AND ?`, [from, to]))[0] || null;
-        const labNames = [];
-        for (const r of rowsOf(q(`SELECT unmapped_names AS n FROM labour_day WHERE business_date BETWEEN ? AND ? AND unmapped_names IS NOT NULL AND unmapped_names != '[]'`, [from, to]))) {
-          try { for (const nm of JSON.parse(r.n)) if (labNames.indexOf(nm) < 0) labNames.push(nm); } catch (e) { /* keep going — a bad row never takes the flash down */ }
-        }
-        const labHourly = rowsOf(q(`SELECT hour, SUM(actual_minutes) AS am, SUM(actual_cost_pence) AS ac FROM labour_hourly WHERE business_date BETWEEN ? AND ? GROUP BY hour ORDER BY hour`, [from, to]));
         // CLOSED vs MISSING (edge honesty): captured zero-net day = CLOSED; no row = NO RECORD.
         const closed = rowsOf(q(`SELECT COUNT(*) AS n FROM sales_day WHERE business_date BETWEEN ? AND ? AND net_sales_pence = 0`, [from, to]))[0] || { n: 0 };
-        return { from, to, tot, payments, cats, prodsTop, prodsBottom, hourly, cov, lab, labNet, labNames, labHourly, closedDays: num(closed.n) || 0 };
+        return { from, to, tot, payments, cats, prodsTop, prodsBottom, closedDays: num(closed.n) || 0 };
       };
       m.current = build(m.nav.from, m.nav.to);
       m.comparator = m.nav.comparator ? build(m.nav.comparator.from, m.nav.comparator.to) : null;
@@ -464,6 +551,11 @@ module.exports = {
       .rcc .r-driver-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
       .rcc .r-driver-grid.g2{grid-template-columns:repeat(2,1fr)}
       @media(max-width:820px){.rcc .r-driver-grid{grid-template-columns:repeat(2,1fr)}}
+      /* drivers: hourly heatmap (mock's .heatmap/.hlabel/.day grammar, ported verbatim) */
+      .rcc .r-heatmap{display:grid;grid-template-columns:58px repeat(11,1fr);gap:5px;align-items:center}
+      .rcc .r-hlabel{color:#818b95;font-size:10px;text-align:center}
+      .rcc .r-hday{color:#b3bbc4;font-size:11px;font-weight:700}
+      @media(max-width:820px){.rcc .r-heatmap{grid-template-columns:42px repeat(11,32px);overflow:auto}}
       /* forecast: monthly clustered columns (mock's .monthly-plot grammar, ported) */
       .rcc .monthly-layout{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(320px,.45fr);gap:14px;margin-bottom:14px}
       @media(max-width:820px){.rcc .monthly-layout{grid-template-columns:1fr}}
@@ -499,11 +591,6 @@ module.exports = {
       .rp-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:8px}
       .rp-two{display:grid;grid-template-columns:1fr 1fr;gap:16px}
       @media(max-width:840px){.rp-two{grid-template-columns:1fr}}
-      .rp-bars{display:flex;align-items:flex-end;gap:3px;height:120px;padding:6px 0;border-bottom:1px solid rgba(255,255,255,.08)}
-      .rp-bar{flex:1;background:linear-gradient(180deg,#22D3EE,#0e7d8c);border-radius:3px 3px 0 0;min-height:2px;position:relative}
-      .rp-bar span{position:absolute;bottom:-17px;left:0;right:0;text-align:center;font-size:9px;color:var(--muted,#7a8)}
-      .rp-notwired{opacity:.72}
-      .rp-notwired .val{color:var(--amber,#e0b050)}
       .rp-hint{font-size:11px;color:var(--muted,#7a8);margin:-4px 0 14px}
       .rp-yoy-up{color:var(--green,#34d399)} .rp-yoy-down{color:var(--red,#f87171)}
       .rp-yoy-na{color:var(--muted,#7a8);font-style:italic}
@@ -515,11 +602,6 @@ module.exports = {
       .rv2-details summary::-webkit-details-marker{display:none}
       .rv2-details summary:hover,.rv2-details[open] summary{color:var(--text-2,#9ab)}
       .rv2-caption{font-family:var(--font-mono,monospace);font-size:10.5px;color:var(--muted,#7a8);margin:8px 2px 2px;line-height:1.55}
-      .rv2-multi{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:12px}
-      .rv2-multi .cell{background:rgba(255,255,255,.02);border:1px solid rgba(125,165,205,.08);border-radius:9px;padding:10px 12px}
-      .rv2-multi .nm{font-family:var(--font-mono,monospace);font-size:9.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--text-2,#9ab);margin-bottom:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-      .rv2-multi .v{font-family:var(--font-mono,monospace);font-size:16px;font-weight:600}
-      .rv2-multi .s{font-family:var(--font-mono,monospace);font-size:9.5px;color:var(--muted,#7a8);margin-bottom:3px}
     </style>`;
 
     // ---- subtab nav: 5 links, mock's .tabs/.tab grammar; ?tab only (nothing else preserved) ----
@@ -972,9 +1054,132 @@ module.exports = {
         ${planPanel}${govPanel}${script}`;
     };
 
-    // ============================ PENDING TABS (P2 / P3 / P5) ============================
+    // ============================ REVENUE DRIVERS (P2) ============================
+    const renderDrivers = () => {
+      const dv = m.drivers || {};
+      const att = dv.attach || {};
+      const DOWS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+      const HOURS = [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21];
+
+      // ---- KPI strip: 6 tiles on the 28d per-receipt window ----
+      const revHr = dv.revHour && dv.revHour.hours > 0 ? Math.round(dv.revHour.net / dv.revHour.hours) : null;
+      const splh = dv.splh ? Math.round(dv.splh.net / (dv.splh.mins / 60)) : null;
+      const attachKpi = (label, a, basisSub) => {
+        if (!dv.apiMax) return S.rcc.kpi({ label, value: '—', sub: 'needs the per-receipt line grain' });
+        if (a && a.unmapped) return S.rcc.kpi({ label, value: '—', sub: 'no matching class in the dict (acct_groups_api) — a name-guess would be fabrication' });
+        if (!a) return S.rcc.kpi({ label, value: '—', sub: 'no sale receipts in the window' });
+        return S.rcc.kpi({
+          label, value: `${(a.cur * 100).toFixed(1)}%`,
+          delta: a.prior != null ? { dir: a.cur >= a.prior ? 'up' : 'down', text: `${a.cur >= a.prior ? '▲' : '▼'} ${Math.abs((a.cur - a.prior) * 100).toFixed(1)} pp ` } : null,
+          sub: `${a.prior != null ? 'vs prior 28d' : 'first 28d window on record'} · ${basisSub}`,
+        });
+      };
+      const kpis = [
+        S.rcc.kpi({
+          label: 'Revenue / trading hour', value: revHr != null ? gbp0(revHr) : '—',
+          sub: revHr != null ? `net ÷ ${int(dv.revHour.hours)} observed (day, hour) buckets · ONLINE excluded` : 'no timed per-receipt lines yet',
+        }),
+        S.rcc.kpi({
+          label: 'Sales / labour hour', value: splh != null ? gbp(splh) : '—',
+          sub: splh != null ? `cross-ruler intersection days only · ${int(dv.splh.days)} day(s) · net ÷ worked hours` : 'no day holds both sales and labour in the window',
+        }),
+        S.rcc.kpi({
+          label: 'Peak revenue hour', value: dv.peak ? `${pad2(dv.peak.hour)}:00 ${gbp0(dv.peak.net)}` : '—',
+          sub: dv.peak ? 'top London hour by 28d line-grain net · ONLINE excluded' : 'no timed per-receipt lines yet',
+        }),
+        // Covers stay NOT WIRED — POS guest-count is not covers (canon); never a number here.
+        S.rcc.kpi({ label: 'Covers / transaction', value: 'not wired', sub: 'covers land with the OpenTable email wire — POS guest-count is never covers' }),
+        attachKpi('Drink attachment', att.drink, 'receipts with ≥1 drink-class line'),
+        attachKpi('Side attachment', att.side, 'sides = FRYER-station classes'),
+      ].join('');
+      const dictBits = [];
+      if (att.drink && att.drink.names) dictBits.push(`drink classes: ${att.drink.names.join(' + ')}`);
+      if (att.side && att.side.names) dictBits.push(`sides = FRYER-station classes: ${att.side.names.join(' + ')}`);
+      const kpiCaption = dv.apiMax
+        ? `<div class="rv2-caption">28d to ${esc(dv.apiMax)} (per-receipt max) · line grain (sales_receipt_lines_api) · hour KPIs on LOCAL London hour, ONLINE ORDER excluded (no true hour)${dictBits.length ? ` · ${esc(dictBits.join(' · '))}` : ''} · SPLH: cross-ruler intersection days only (sales_day ∩ labour_day)</div>`
+        : `<div class="rv2-caption">No per-receipt API record yet — the K-Series daily ingest fills the line grain; the hour, attachment and SPLH KPIs light up with it.</div>`;
+
+      // ---- hourly heatmap: Mon–Sun × 11:00–21:00, levels by quantile of trading cells ----
+      let heatBody;
+      if (dv.heat) {
+        const vals = Object.values(dv.heat.cells).sort((a, b) => a - b);
+        const level = (v) => Math.max(1, Math.ceil((vals.filter((x) => x <= v).length / vals.length) * 6));
+        const head = '<div></div>' + HOURS.map((h) => `<div class="r-hlabel">${h}</div>`).join('');
+        const grid = DOWS.map((nm, di) => `<div class="r-hday">${nm}</div>` + HOURS.map((h) => {
+          const v = dv.heat.cells[`${di}-${h}`];
+          return v ? S.rcc.heatCell(level(v), `${nm} ${pad2(h)}:00 — ${gbp(v)}`) : S.rcc.heatCell(null);
+        }).join('')).join('');
+        const onlineNote = dv.heat.onlineExcluded > 0
+          ? `${gbp(dv.heat.onlineExcluded)} ONLINE excluded — no true hour (the online-order ruling)`
+          : 'ONLINE ORDER lines excluded — no true hour (the online-order ruling)';
+        // hours outside the 11–21 grid with MATERIAL net (>2% of the window) get an honest
+        // note rather than silent omission; they always count in the KPI strip above
+        const outsideNote = dv.heat.outside > dv.heat.total * 0.02
+          ? ` · ${gbp(dv.heat.outside)} traded outside the 11:00–21:00 grid — not drawn here, counted in every KPI` : '';
+        heatBody = `<div class="r-heatmap">${head}${grid}</div>
+          <div class="r-mini-note">shade = revenue density (levels by quantile of trading cells; blank cell = no record) · ${esc(onlineNote)} · line grain, 28d to ${esc(dv.apiMax)}${esc(outsideNote)}</div>`;
+      } else {
+        heatBody = S.rcc.emptyState({ title: 'Hourly revenue heatmap', blocker: 'No timed per-receipt lines in the window — hour truth comes from time_of_sale_ms only, never an even spread.', unlock: 'the K-Series daily API ingest (line grain)' });
+      }
+      const heatPanel = S.rcc.panel({ title: 'Hourly revenue heatmap', sub: 'net revenue density by day and hour · last 28 days · ex-VAT', body: heatBody });
+
+      // ---- capacity and demand conversion: the DESIGNED not-wired state — the mock's column
+      // headers render (headers only, zero data rows, zero digits) until OpenTable lands ----
+      const capacityPanel = S.rcc.panel({
+        title: 'Capacity and demand conversion', sub: 'revenue opportunity by trading window',
+        body: `<table><thead><tr><th>Window</th><th class="r-num">Seat use</th><th class="r-num">RevPASH</th><th class="r-num">Wait / lost</th><th>Decision</th></tr></thead></table>`
+          + S.rcc.emptyState({ title: 'Capacity and demand conversion', blocker: 'covers, seat-use and wait-lost land with the OpenTable email wire — POS guest-count is never covers.', unlock: 'the OpenTable email export' }),
+      });
+
+      // ---- daily trading scorecard: last 14 recorded days, one row per RECORDED day ----
+      let scoreBody;
+      if (dv.score && dv.score.rows.length) {
+        const rowsHtml = dv.score.rows.map((r) => {
+          const dow = DOWS[(new Date(`${r.date}T12:00:00Z`).getUTCDay() + 6) % 7];
+          let yoy;
+          if (!r.twin || r.twin.net == null) yoy = `<span class="rp-yoy-na" title="no LY record (−364d twin)">—</span>`;
+          else if (r.twin.premises !== 'current') yoy = `<span class="rp-yoy-na" title="premises break — no raw YoY">—</span>`;
+          else if (!(r.twin.net > 0)) yoy = `<span class="rp-yoy-na" title="LY twin closed (zero net) — no %">—</span>`;
+          else {
+            const p = (r.net / r.twin.net - 1) * 100;
+            yoy = `<span class="${p >= 0 ? 'rp-yoy-up' : 'rp-yoy-down'}">${esc(pctStr(p))}</span>`;
+          }
+          const hrs = r.lab && r.lab.am != null ? r.lab.am / 60 : null;
+          const daySplh = hrs > 0 && r.net > 0 ? Math.round(r.net / hrs) : null;
+          const discPct = r.disc != null && r.net > 0 ? (r.disc / r.net) * 100 : null;
+          let chip;
+          if (!r.lab || r.lab.ac == null) chip = S.rcc.tag('no labour');
+          else {
+            const budget = (r.lab.sal || 0) + Math.round(LABOUR_VAR_RATE * r.net);
+            const delta = r.lab.ac - budget;
+            chip = delta > LABOUR_MATERIALITY_PENCE ? S.rcc.tag(`Over ${gbp(delta)}`, 'bad')
+              : delta <= 0 ? S.rcc.tag('Under formula', 'good')
+                : S.rcc.tag('On formula', 'good');
+          }
+          return `<tr><td>${esc(dow)} ${esc(r.date)}</td><td class="r-num mono">${gbp(r.net)}</td><td class="r-num mono">${yoy}</td>
+            <td class="r-num mono ash">—</td><td class="r-num mono ash">—</td>
+            <td class="r-num mono">${hrs != null ? `${hrs.toFixed(1)}h` : '—'}</td>
+            <td class="r-num mono">${daySplh != null ? gbp(daySplh) : '—'}</td>
+            <td class="r-num mono">${discPct != null ? `${discPct.toFixed(1)}%` : '—'}</td>
+            <td>${chip}</td></tr>`;
+        }).join('');
+        scoreBody = `<div style="overflow:auto"><table><thead><tr><th>Day</th><th class="r-num">Net revenue</th><th class="r-num">YoY</th><th class="r-num">Covers</th><th class="r-num">Spend / cover</th><th class="r-num">Labour hrs</th><th class="r-num">Sales / labour hr</th><th class="r-num">Discount %</th><th>Status</th></tr></thead><tbody>${rowsHtml}</tbody></table></div>
+          <div class="r-mini-note">last 14 recorded days to ${esc(dv.score.to)} — a missing sales day is an ABSENT row, never zeros · net/discounts: sales_day (day grain) · YoY: v_sales_day_all −364d weekday twin, premises-guarded · covers + spend/cover not wired (OpenTable) · labour hrs: labour_day worked minutes; day SPLH = net ÷ worked hours · STATUS: TRUE labour (actual_cost_pence, burdened) vs the banded formula budget = salaried + 22.4% × net (K 14.3% + F 8.1% combined — banded formula, rota-review spec); OVER only beyond the ruled £45 materiality.</div>`;
+      } else {
+        scoreBody = S.rcc.emptyState({ title: 'Daily trading scorecard', blocker: 'No day-grain sales record in the trailing 14 days.', unlock: 'the daily Lightspeed ingest' });
+      }
+      const scorePanel = S.rcc.panel({
+        title: 'Daily trading scorecard', sub: 'volume, spend and operational efficiency per trading day',
+        body: scoreBody,
+      });
+
+      return `<div class="r-grid r-kpi-grid">${kpis}</div>${kpiCaption}
+        <div class="r-grid r-two-col">${heatPanel}${capacityPanel}</div>
+        ${scorePanel}`;
+    };
+
+    // ============================ PENDING TABS (P3 / P5) ============================
     const PENDING_BANNERS = {
-      drivers: 'Phase 2 pending — interim panels below keep their pre-restyle form.',
       reconciliation: 'Phase 3 pending — the tender-to-bank match is the build; interim panels below keep their pre-restyle form.',
       menu: 'Phase 5 pending — costing the top-20 unlocks the full tab (59.5% of net sales in one afternoon).',
     };
@@ -1015,104 +1220,6 @@ module.exports = {
         parts.push(`<div class="rp-hint">${bits.join(' · ')}</div>`);
       }
 
-      if (which === 'drivers') {
-        // sales by hour (moved intact)
-        const hrs = p.hourly.filter((h) => num(h.net) != null);
-        const maxNet = hrs.reduce((mx, h) => Math.max(mx, num(h.net) || 0), 0) || 1;
-        const bars = hrs.map((h) => `<div class="rp-bar" style="height:${Math.max(2, Math.round((num(h.net) || 0) / maxNet * 108))}px" title="${esc(String(h.hour))}:00 — ${gbp(h.net)}"><span>${esc(String(h.hour))}</span></div>`).join('');
-        parts.push(`<div class="sec-label">Sales by hour<span class="rule"></span></div><div class="panel"><div class="panel-body">${bars ? `<div class="rp-bars">${bars}</div><div style="height:14px"></div>` : '<div class="empty-row">No hourly data.</div>'}</div></div>`);
-
-        // labour (RotaCloud · TRUE cost) — both numbers + variance; unmapped surfaced, never estimated
-        parts.push(`<div class="sec-label">Labour (RotaCloud · true cost)<span class="rule"></span></div>`);
-        const lb = p.lab;
-        if (!lb || !num(lb.days)) {
-          parts.push(`<div class="banner muted">No labour pulled for this period yet — the RotaCloud ingest (06:35 / 18:05 settlement) fills this in. Hours and cost are never estimated.</div>`);
-        } else {
-          const hrs2 = (mn) => (num(mn) != null ? (num(mn) / 60).toFixed(1) + 'h' : '—');
-          const sameDayNet = p.labNet && num(p.labNet.net) > 0 ? num(p.labNet.net) : null;
-          const pct = sameDayNet != null && num(lb.ac) != null ? (num(lb.ac) / sameDayNet) * 100 : null;
-          // £-CONSEQUENCE first (operator-locked): permitted = 30% × same-day net; the £
-          // delta leads, the % is the subtitle. Bands: green ≤30 · amber ≤33 · red >33.
-          const permitted = sameDayNet != null ? Math.round(sameDayNet * 0.30) : null;
-          const deltaPence = permitted != null && num(lb.ac) != null ? num(lb.ac) - permitted : null;
-          const ragColor = pct == null ? '' : pct <= 30 ? 'var(--green,#34d399)' : pct <= 33 ? 'var(--amber,#e0b050)' : 'var(--red,#f87171)';
-          const varMin = num(lb.am) != null && num(lb.sm) != null ? num(lb.am) - num(lb.sm) : null;
-          const partial = num(lb.days) && num(t.days) && num(lb.days) < num(t.days);
-          parts.push(`<div class="rp-grid">
-            <div class="tile"><div class="lab">vs the 30% target — true-cost ruler</div><div class="val"${ragColor ? ` style="color:${ragColor}"` : ''}>${deltaPence != null ? (deltaPence > 0 ? gbp(deltaPence) + ' OVER' : gbp(-deltaPence) + ' under') : '—'}</div><div class="sub">${deltaPence != null ? `${pct.toFixed(1)}% of net · permitted ${gbp(permitted)} at 30% · same-day net only` : 'needs same-day sales'}</div></div>
-            <div class="tile"><div class="lab">Labour cost (true)</div><div class="val">${gbp(lb.ac)}</div><div class="sub">rates + 15.9% burden · ${gbp(lb.sal)} salaried/365</div></div>
-            <div class="tile"><div class="lab">Rota'd → worked</div><div class="val">${hrs2(lb.sm)} → ${hrs2(lb.am)}</div><div class="sub">${varMin != null ? (varMin >= 0 ? '+' : '−') + hrs2(Math.abs(varMin)) + ' vs rota' : '—'} · paid ${hrs2(lb.pm)}</div></div>
-            <div class="tile"><div class="lab">Scheduled cost</div><div class="val">${gbp(lb.sc)}</div><div class="sub">what the rota would cost</div></div>
-            ${num(lb.uam) || num(lb.usm) ? `<div class="tile rp-notwired"><div class="lab">Unmapped staff</div><div class="val">${hrs2(Math.max(num(lb.uam) || 0, num(lb.usm) || 0))}</div><div class="sub">hours counted, cost EXCLUDED — ${esc(p.labNames.join(', ') || 'names in labour_day')} · fix rates.ts</div></div>` : ''}
-          </div>`);
-          if (partial) parts.push(`<div class="rp-hint">Labour covers ${esc(String(num(lb.days)))} of ${esc(String(num(t.days)))} sales day(s) — cost and % reflect only the covered days, never scaled up.</div>`);
-
-          // Daypart: labour cost per hour against the sales-by-hour curve. RotaCloud hours
-          // 24..29 are post-midnight wall-clock 0..5 of the same trading day — merged onto
-          // the matching sales hour.
-          const labBy = {};
-          for (const lh of p.labHourly) {
-            const wall = num(lh.hour) >= 24 ? num(lh.hour) - 24 : num(lh.hour);
-            if (!labBy[wall]) labBy[wall] = { am: 0, ac: 0 };
-            labBy[wall].am += num(lh.am) || 0;
-            labBy[wall].ac += num(lh.ac) || 0;
-          }
-          const salesBy = {};
-          for (const h of p.hourly) salesBy[num(h.hour)] = num(h.net) || 0;
-          const dayHours = [];
-          for (let hh = 0; hh < 24; hh++) if (salesBy[hh] != null || labBy[hh]) dayHours.push(hh);
-          if (dayHours.length) {
-            const rowsHtml = dayHours.map((hh) => {
-              const sNet = salesBy[hh] != null ? salesBy[hh] : null;
-              const l = labBy[hh];
-              const hp = l && sNet != null && sNet > 0 ? (l.ac / sNet) * 100 : null;
-              const hpColor = hp == null ? '' : hp <= 30 ? 'var(--green,#34d399)' : hp <= 50 ? 'var(--amber,#e0b050)' : 'var(--red,#f87171)';
-              const hourSplh = l && l.am > 0 && sNet != null ? gbp(Math.round(sNet / (l.am / 60))) : '—';
-              return `<tr><td class="mono">${esc(String(hh))}:00</td><td class="mono">${sNet != null ? gbp(sNet) : '—'}</td><td class="mono">${l ? gbp(Math.round(l.ac)) : '—'}</td><td class="mono ash">${l ? hrs2(l.am) : '—'}</td><td class="mono"${hpColor ? ` style="color:${hpColor}"` : ''}>${hp != null ? hp.toFixed(0) + '%' : '—'}</td><td class="mono ash">${hourSplh}</td></tr>`;
-            }).join('');
-            parts.push(`<div class="sec-label">Daypart — labour vs sales by hour<span class="rule"></span></div>
-              <div class="panel"><div class="panel-body"><table class="tbl"><thead><tr><th>hour</th><th>sales net</th><th>labour cost</th><th>hours</th><th>labour %</th><th>SPLH</th></tr></thead><tbody>${rowsHtml}</tbody></table>
-              <div class="rp-hint" style="margin-top:8px">Hourly labour % is a staffing-shape signal (a quiet 15:00 at 200% means FOH carried against thin trade) — the day headline above is the operating truth.</div></div></div>`);
-          }
-        }
-
-        // margin (not costed yet)
-        const cov = p.cov || {};
-        const covPct = num(cov.total_amt) && num(cov.total_amt) > 0 ? (num(cov.costed_amt) || 0) / num(cov.total_amt) : 0;
-        parts.push(`<div class="sec-label">Margin (prime cost)<span class="rule"></span></div>`);
-        if (covPct <= 0) {
-          parts.push(`<div class="banner muted">Not costed yet — <b>0% coverage</b>. Margin lights up once recipes/ingredient costs are entered in <a href="/coyote/recipes">Recipes &amp; Costs</a> (Slice 2). We never estimate a cost we don't have. <span class="ash">(Lightspeed's own margin figures are stored as a cross-check, not shown as truth.)</span></div>`);
-        } else {
-          parts.push(`<div class="banner muted">Recipes cover <b>${(covPct * 100).toFixed(1)}%</b> of product sales — margin shown for costed items only; the rest is a visible gap, never estimated.</div>`);
-        }
-
-        // ATV small-multiples (moved intact from the old channel-mix section; sparse rule kept)
-        if (m.rv2) {
-          const cs = channelMonthStats(m.rv2);
-          if (cs.kept.length) {
-            const colorOf = (label) => CHANNEL_COLORS[label] || FALLBACK_COLORS[Math.max(0, cs.kept.indexOf(label)) % FALLBACK_COLORS.length];
-            const multis = cs.kept.map((label) => {
-              const pts = cs.completeYms.map((ym) => {
-                const rs = (cs.byYm.get(ym) || []).filter((r) => r.label === label);
-                const tt = rs.reduce((s, r) => s + r.txn, 0);
-                return { v: tt > 0 ? Math.round(rs.reduce((s, r) => s + r.net, 0) / tt) : null };
-              });
-              const nPts = pts.filter((x) => x.v != null).length;
-              const lastPt = pts.filter((x) => x.v != null).pop();
-              const isQr = label === QR_LABEL;
-              const spark = REP.svgSparkline({ points: pts, color: colorOf(label), rulePence: isQr ? QR_TARGET_PENCE : null });
-              return `<div class="cell"><div class="nm" title="${esc(label)}">${esc(label)}</div>
-                <div class="v">${lastPt ? gbp(lastPt.v) : '—'}</div>
-                <div class="s">ATV/txn${isQr ? ' · £38 target' : ''}${!spark && nPts === 1 ? ' · one month of record' : ''}</div>${spark}</div>`;
-            }).join('');
-            parts.push(`<div class="sec-label">ATV by channel <span class="mono">(monthly, complete months · per-receipt)</span><span class="rule"></span></div>
-              <div class="rv2-multi" style="margin-bottom:10px">${multis}</div>`);
-          }
-        } else {
-          parts.push(`<div class="banner muted">ATV by channel needs the per-receipt API record — no per-receipt API record yet.</div>`);
-        }
-      }
-
       if (which === 'reconciliation') {
         const payTotal = p.payments.reduce((s, x) => s + (num(x.total) || 0), 0);
         const payRows = p.payments.map((x) => `<tr><td>${esc(x.name || '')}</td><td class="mono">${gbp(x.total)}</td><td class="mono ash">${gbp(x.tips)}</td></tr>`).join('');
@@ -1142,6 +1249,7 @@ module.exports = {
     let tabBody;
     if (tab === 'forecast') tabBody = renderForecast();
     else if (tab === 'executive') tabBody = renderExecutive();
+    else if (tab === 'drivers') tabBody = renderDrivers();
     else tabBody = renderPending(tab);
 
     const body = `<div class="rcc">`
