@@ -273,6 +273,10 @@ function buildExecutive(q, maxDate) {
 
 // ROTA VS ACTUAL — 14d sched-vs-actual chart, variance decomposition, daily reconciliation,
 // schedule accuracy, and the cost-definition (RC-screen vs TRUE) reconciliation card.
+// HOURS | COSTS toggle (COSTS default): the daily chart + the decomposition dual-render both
+// modes server-side; a client-only script swaps visibility (classList, no fetch, no state).
+// COSTS chart = labour_day TRUE £ (day grain, salaried INCLUDED); COSTS decomposition = shift
+// minutes × the shift's OWN rate_pence × 1.159 (shift grain; rate-less shifts price £0).
 function buildRota(q, maxDate) {
   if (!maxDate) return null;
   const r = { maxDate };
@@ -288,14 +292,25 @@ function buildRota(q, maxDate) {
     }));
 
   // ---- where the extra hours came from: labour_shifts AGGREGATE (no names; labour_shifts
-  // carries no department key and no per-shift timestamps — both stated on-panel) ----
+  // carries no department key and no per-shift timestamps — both stated on-panel). Each class
+  // ALSO carries a priced sum (COSTS mode): minutes × the shift's OWN rate_pence ÷ 60, rated
+  // shifts only — a NULL rate (clocked salaried always; deemed staff before 2026-07-21) keeps
+  // its MINUTES in `mins` but contributes £0 to `p` (its cost is annual/365 at day grain).
+  // Deemed staff (cc PR #88, from 2026-07-21) carry act = sched and variance 0 on both axes by
+  // construction, so they land in NO variance class — zero in both modes. ----
   const one = (sql) => rowsOf(q(sql, [from14, maxDate]))[0] || null;
   r.decomp = {
-    over: one(`SELECT COUNT(*) n, SUM(act_minutes - sched_minutes) mins FROM labour_shifts
+    over: one(`SELECT COUNT(*) n, SUM(act_minutes - sched_minutes) mins,
+                      SUM(CASE WHEN rate_pence IS NOT NULL THEN (act_minutes - sched_minutes) * rate_pence / 60.0 END) p
+                 FROM labour_shifts
                 WHERE business_date BETWEEN ? AND ? AND sched_minutes > 0 AND act_minutes > sched_minutes`),
-    unrota: one(`SELECT COUNT(*) n, SUM(act_minutes) mins FROM labour_shifts
+    unrota: one(`SELECT COUNT(*) n, SUM(act_minutes) mins,
+                        SUM(CASE WHEN rate_pence IS NOT NULL THEN act_minutes * rate_pence / 60.0 END) p
+                   FROM labour_shifts
                   WHERE business_date BETWEEN ? AND ? AND (sched_minutes IS NULL OR sched_minutes = 0) AND act_minutes > 0`),
-    under: one(`SELECT COUNT(*) n, SUM(sched_minutes - COALESCE(act_minutes, 0)) mins FROM labour_shifts
+    under: one(`SELECT COUNT(*) n, SUM(sched_minutes - COALESCE(act_minutes, 0)) mins,
+                       SUM(CASE WHEN rate_pence IS NOT NULL THEN (sched_minutes - COALESCE(act_minutes, 0)) * rate_pence / 60.0 END) p
+                  FROM labour_shifts
                  WHERE business_date BETWEEN ? AND ? AND sched_minutes > 0 AND COALESCE(act_minutes, 0) < sched_minutes`),
   };
 
@@ -721,6 +736,11 @@ module.exports = {
       .rcc .lbc-bar.sched{background:${S.rcc.tokens.blue}}
       .rcc .lbc-bar.act{background:${S.rcc.tokens.accent}}
       .rcc .lbc-daylabel{color:#7f8994;font-size:9px;margin:6px 0 4px;white-space:nowrap}
+      /* HOURS | COSTS segmented control (Rota vs Actual) — client-only mode swap, COSTS default */
+      .rcc .lbc-seg{display:inline-flex;gap:2px;border:1px solid #2e363f;background:#11161a;border-radius:9px;padding:2px;margin:0 0 12px}
+      .rcc .lbc-seg button{font-family:inherit;font-size:11px;font-weight:700;letter-spacing:.05em;color:#9ba4ae;background:none;border:0;border-radius:7px;padding:5px 14px;cursor:pointer}
+      .rcc .lbc-seg button.active{background:#232b33;color:#fff}
+      .rcc .lbc-hide{display:none}
       .rcc .lbc-bar.net{background:${S.rcc.tokens.blue}}
       .rcc .lbc-bar.dept{background:${S.rcc.tokens.cyan}}
       /* the P4 what-if slider grammar (reports forecast idiom) — CLIENT-side only here */
@@ -968,14 +988,18 @@ module.exports = {
       if (!r) return noWire('rota vs actual');
       const days = r.days || [];
 
-      // ---- (1) daily hours: 14d paired columns sched vs actual ----
+      // ---- (1) daily chart: 14d paired columns sched vs actual — DUAL-RENDERED (HOURS +
+      // COSTS panels both server-side; the client-only toggle swaps visibility, COSTS default).
+      // The HOURS branch is the pre-toggle chart UNCHANGED (the negative control — costs is an
+      // ADDITIVE layer); the shared day frame (all14/byDate/missing) is hoisted, output-identical.
+      const all14 = [];
+      for (let i = 13; i >= 0; i--) all14.push(K.shiftDays(r.maxDate, -i));
+      const byDate = new Map(days.map((d) => [d.date, d]));
+      const missing = all14.filter((iso) => !byDate.has(iso));
       let hoursBody;
       const withMins = days.filter((d) => d.sm != null || d.am != null);
       if (withMins.length) {
         const maxMin = Math.max(...withMins.flatMap((d) => [d.sm || 0, d.am || 0]), 1);
-        const all14 = [];
-        for (let i = 13; i >= 0; i--) all14.push(K.shiftDays(r.maxDate, -i));
-        const byDate = new Map(days.map((d) => [d.date, d]));
         const cols = all14.map((iso) => {
           const d = byDate.get(iso);
           if (!d) return `<div class="lbc-day" title="${esc(`${dowLabel(iso)} ${iso} — no labour record`)}"><div class="lbc-bars"></div><span class="lbc-daylabel">${esc(dayLabel(iso))}</span></div>`;
@@ -984,7 +1008,6 @@ module.exports = {
           const tip = `${dowLabel(iso)} ${iso} — rota'd ${hrs(d.sm)} · worked ${hrs(d.am)}`;
           return `<div class="lbc-day" title="${esc(tip)}"><div class="lbc-bars"><div class="lbc-bar sched" style="height:${hS}px"></div><div class="lbc-bar act" style="height:${hA}px"></div></div><span class="lbc-daylabel">${esc(dayLabel(iso))}</span></div>`;
         }).join('');
-        const missing = all14.filter((iso) => !byDate.has(iso));
         hoursBody = `<div class="lbc-pairs">${cols}</div>
           <div class="r-mini-note">hours only (minute grain, ruler-free) · labour_day scheduled vs actual minutes${missing.length ? ` · <b>${int(missing.length)} day(s) have no labour_day record</b> — absent${esc(juneNote(missing))}, never zero` : ''}.</div>`;
       } else {
@@ -994,6 +1017,35 @@ module.exports = {
         title: 'Daily hours: scheduled vs actual', sub: `14 days to ${r.maxDate}`,
         headRight: `<div class="r-legend"><span><i style="background:${S.rcc.tokens.blue}"></i>Scheduled</span><span><i style="background:${S.rcc.tokens.accent}"></i>Actual</span></div>`,
         body: hoursBody,
+      });
+
+      // COSTS mode: per day, sched vs actual TRUE £ from labour_day (scheduled_cost_pence /
+      // actual_cost_pence) — the day-grain truth INCLUDING the salaried slice. The Σ footer is
+      // a source-identity statement, not a second computation pretending independence.
+      let costChartBody;
+      const withCost = days.filter((d) => d.sc != null || d.ac != null);
+      if (withCost.length) {
+        const maxPence = Math.max(...withCost.flatMap((d) => [d.sc || 0, d.ac || 0]), 1);
+        const cols = all14.map((iso) => {
+          const d = byDate.get(iso);
+          if (!d) return `<div class="lbc-day" title="${esc(`${dowLabel(iso)} ${iso} — no labour record`)}"><div class="lbc-bars"></div><span class="lbc-daylabel">${esc(dayLabel(iso))}</span></div>`;
+          const hS = Math.max(2, Math.round(((d.sc || 0) / maxPence) * 140));
+          const hA = Math.max(2, Math.round(((d.ac || 0) / maxPence) * 140));
+          const tip = `${dowLabel(iso)} ${iso} — rota'd ${gbp(d.sc)} · worked ${gbp(d.ac)}`;
+          return `<div class="lbc-day" title="${esc(tip)}"><div class="lbc-bars"><div class="lbc-bar sched" style="height:${hS}px"></div><div class="lbc-bar act" style="height:${hA}px"></div></div><span class="lbc-daylabel">${esc(dayLabel(iso))}</span></div>`;
+        }).join('');
+        const acDays = days.filter((d) => d.ac != null);
+        const sumAc = acDays.reduce((s, d) => s + d.ac, 0);
+        costChartBody = `<div class="lbc-pairs">${cols}</div>
+          <div class="r-mini-note">TRUE all-in ruler (locked rates × 1.159 + salaried/365; deemed staff rota-priced from 2026-07-21) — matches the surrounding Labour Centre panels${missing.length ? ` · <b>${int(missing.length)} day(s) have no labour_day record</b> — absent${esc(juneNote(missing))}, never zero` : ''}.</div>
+          ${acDays.length ? `<div class="r-mini-note">Σ daily actual TRUE = ${gbp(sumAc)} — reconciles to labour_day (it IS labour_day — the source identity, stated; no second computation).</div>` : ''}`;
+      } else {
+        costChartBody = S.rcc.emptyState({ title: 'Daily cost — scheduled vs actual', blocker: 'no labour_day costs in the 14-day window.', unlock: 'the daily RotaCloud ingest' });
+      }
+      const costChartPanel = S.rcc.panel({
+        title: 'Daily cost: scheduled vs actual', sub: `14 days to ${r.maxDate} · TRUE £ (labour_day)`,
+        headRight: `<div class="r-legend"><span><i style="background:${S.rcc.tokens.blue}"></i>Scheduled</span><span><i style="background:${S.rcc.tokens.accent}"></i>Actual</span></div>`,
+        body: costChartBody,
       });
 
       // ---- (2) where the extra hours came from ----
@@ -1017,6 +1069,32 @@ module.exports = {
       const decompPanel = S.rcc.panel({
         title: 'Where the extra hours came from', sub: `shift-variance decomposition · 14 days to ${r.maxDate}`,
         body: decompBody,
+      });
+
+      // COSTS mode decomposition: each class prices its minutes at the shift's OWN rate_pence
+      // × 1.159 (shift grain). Counts + hours stay alongside the £ so the rate mix is readable —
+      // the same hours at U18 rates and at supervisor rates are different money. Rate-less
+      // shifts (clocked salaried always; deemed staff before 2026-07-21) keep their minutes in
+      // the hours figures and price £0 here — captioned, never estimated.
+      let costDecompBody;
+      if (anyShift) {
+        const pricedPence = (row) => Math.round((row && num(row.p) != null ? num(row.p) : 0) * BURDEN);
+        const cRows = [
+          { lab: `Over-rota'd shifts`, n: dOver ? num(dOver.n) || 0 : 0, mins: dOver ? num(dOver.mins) || 0 : 0, pence: pricedPence(dOver), color: S.rcc.tokens.bad },
+          { lab: `Unrota'd worked shifts`, n: dUn ? num(dUn.n) || 0 : 0, mins: dUn ? num(dUn.mins) || 0 : 0, pence: pricedPence(dUn), color: S.rcc.tokens.warn },
+          { lab: `Under-worked vs rota`, n: dUnder ? num(dUnder.n) || 0 : 0, mins: dUnder ? num(dUnder.mins) || 0 : 0, pence: pricedPence(dUnder), color: S.rcc.tokens.good },
+        ];
+        const maxP = Math.max(...cRows.map((x) => x.pence), 1);
+        costDecompBody = `<div class="r-meters">${cRows.map((x) => S.rcc.meterRow({
+          label: x.lab, pct: (x.pence / maxP) * 100, color: x.color, value: `${gbp(x.pence)} · ${int(x.n)} · ${hrs(x.mins)}`,
+        })).join('')}</div>
+        <div class="r-mini-note">minutes priced at each shift's OWN locked rate_pence × 1.159 burden (shift grain) · salaried minutes carry no shift rate — priced £0 here; their cost is annual/365 at day grain · deemed staff: rota = actual by rule — zero variance on both axes by construction · £ + counts + hours together: the rate mix stays readable · SITE-level aggregate (labour_shifts carries no department key — checked) · NO names — the surveillance boundary ruling.</div>`;
+      } else {
+        costDecompBody = S.rcc.emptyState({ title: 'Where the extra cost came from', blocker: 'no labour_shifts rows in the 14-day window.', unlock: 'the daily RotaCloud ingest (shift grain)' });
+      }
+      const costDecompPanel = S.rcc.panel({
+        title: 'Where the extra cost came from', sub: `shift-variance decomposition, priced at shift rates × 1.159 · 14 days to ${r.maxDate}`,
+        body: costDecompBody,
       });
 
       // ---- (3) daily labour reconciliation table ----
@@ -1078,9 +1156,32 @@ module.exports = {
       }
       const costPanel = S.rcc.panel({ title: 'Cost-definition reconciliation', sub: 'RC-screen vs TRUE — the two-ruler translation', body: costBody });
 
-      return `<div class="r-grid r-two-col">${hoursPanel}${decompPanel}</div>
+      // ---- the HOURS | COSTS toggle (COSTS default) — CLIENT-ONLY: both datasets are already
+      // in the markup above; the page script swaps visibility via classList only (no fetch, no
+      // state, nothing stored). PARSE-SAFE: no template-literal escapes are needed in this
+      // script — the served-script parse test guards the incident class regardless.
+      const modeWrap = (mode, html) => `<div class="lbc-mode${mode === 'hours' ? ' lbc-hide' : ''}" data-mode="${mode}">${html}</div>`;
+      const modeToggle = `<div class="lbc-seg" id="rv-mode" role="group" aria-label="Rota vs Actual mode — hours or TRUE costs">`
+        + `<button type="button" data-mode="hours">HOURS</button>`
+        + `<button type="button" data-mode="costs" class="active">COSTS</button></div>`;
+      const modeScript = `<script>(function(){
+        var seg=document.getElementById('rv-mode');
+        if(!seg)return;
+        var btns=seg.querySelectorAll('button[data-mode]');
+        var panes=document.querySelectorAll('.lbc-mode[data-mode]');
+        function set(mode){
+          var i;
+          for(i=0;i<btns.length;i++)btns[i].classList.toggle('active',btns[i].getAttribute('data-mode')===mode);
+          for(i=0;i<panes.length;i++)panes[i].classList.toggle('lbc-hide',panes[i].getAttribute('data-mode')!==mode);
+        }
+        for(var j=0;j<btns.length;j++)(function(b){
+          b.addEventListener('click',function(){set(b.getAttribute('data-mode'));});
+        })(btns[j]);
+      })();</script>`;
+
+      return `${modeToggle}<div class="r-grid r-two-col">${modeWrap('hours', hoursPanel)}${modeWrap('costs', costChartPanel)}${modeWrap('hours', decompPanel)}${modeWrap('costs', costDecompPanel)}</div>
         ${reconPanel}
-        <div class="r-grid r-two-col">${accPanel}${costPanel}</div>`;
+        <div class="r-grid r-two-col">${accPanel}${costPanel}</div>${modeScript}`;
     };
 
     // ============================ LABOUR FORECAST (L2) ============================
