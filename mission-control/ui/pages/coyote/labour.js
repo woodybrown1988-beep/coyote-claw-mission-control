@@ -3,10 +3,14 @@
 // docs/labour-centre/gap-map.md + the operator mock reference/mock-*.png). ONE route
 // (/coyote/labour — the operator ruled the centre TAKES the existing route), six subtabs:
 //   executive (default) · forecast · rota (Rota vs Actual) · kitchen · foh · coverage
-// L1 SCOPE: the shell + EXECUTIVE + ROTA VS ACTUAL fully built; forecast/kitchen/foh render
-// pending notes; coverage renders a pending note HOLDING the old labour page's un-absorbed
-// panels (staffing shape · today-live intraday · U18 WTR guard · rate parity) until their L2
-// homes are built.
+// L1 SCOPE: the shell + EXECUTIVE + ROTA VS ACTUAL fully built.
+// L2 SCOPE (this build): LABOUR FORECAST + KITCHEN + FRONT OF HOUSE built to the mock —
+//   forecast = interactive weekly forecast (what-if slider, CLIENT-side only, nothing stored)
+//   + five-band DERIVED curve + eight-week outlook + forward management view + calibration/
+//   guardrails canon; kitchen/foh = ONE shared dept renderer (day performance · role mix ·
+//   demand vs staffing · decision ratios). Coverage still renders a pending note HOLDING the
+//   old labour page's un-absorbed panels (staffing shape · today-live intraday · U18 WTR
+//   guard · rate parity) until its L2/L3 home is built.
 // ONE HOME PER FACT (the absorb rule) — what the old /coyote/labour page's panels became:
 //   • hero headline + 8-week labour-% spark → ABSORBED by the Executive KPI strip + 13-week
 //     control trend (deleted here, one home);
@@ -291,6 +295,215 @@ function buildRota(q, maxDate) {
   return r;
 }
 
+// LABOUR FORECAST (L2) — the banded formula pointed FORWARD. Bases (every one stated on-panel):
+//   • forecast net = published RC daily revenue targets (rota_ahead_budget — the site target is
+//     DUPLICATED across the per-dept rows, so DISTINCT dedups; the reports-tab gotcha) when the
+//     WHOLE week is published, else the revenue projection's calendar-day weekly share (the P4
+//     method via REP.computeProjection + the journaled override — one home, a pointer);
+//   • rota promise = the FORWARD rota-review verdict's plannedTruePence (incl. salaried
+//     apportionment — the canonical promise) when its week matches, else Σ published HOURLY
+//     shifts at locked rate × 1.159 (rota_ahead_shifts.sched_cost_true_pence; salaried/unmapped
+//     rota hours carry NO £ here — never estimated, hours stated);
+//   • salaried term = the last settled full week's Σ salaried_cost_pence (day-grain constant by
+//     construction, so the last settled week IS the forward value — an observed fact).
+// The five bands are the DERIVED view of the formula (the ruling: never hand-set rows) — the
+// levels are OBSERVED weekly-net quantiles, the % is the formula ÷ net at each level.
+function buildForecast(q, maxDate, now) {
+  const f = { today: new Date(now).toISOString().slice(0, 10) };
+  const nextFrom = K.shiftDays(K.weekMonday(f.today), 7);
+  f.week = { from: nextFrom, to: K.shiftDays(nextFrom, 6) };
+
+  // ---- the salaried term ----
+  f.sal = null;
+  if (maxDate) {
+    const wk = K.lastFullWeek(maxDate);
+    const r = rowsOf(q(`SELECT SUM(salaried_cost_pence) sal, COUNT(*) days FROM labour_day WHERE business_date BETWEEN ? AND ?`, [wk.from, wk.to]))[0];
+    if (r && num(r.days) > 0 && num(r.sal) != null) f.sal = { pence: num(r.sal), from: wk.from, to: wk.to };
+  }
+
+  // ---- the revenue projection (the P4 assembly verbatim; labour READS it — never a copy) ----
+  const nowYm = f.today.slice(0, 7);
+  const year = Number(nowYm.slice(0, 4));
+  const boundaryRow = rowsOf(q(`SELECT start_date FROM premises_regime WHERE name='current'`))[0];
+  const boundaryDate = boundaryRow && boundaryRow.start_date ? String(boundaryRow.start_date) : '2023-04-01';
+  const apiMonths = rowsOf(q(
+    `SELECT substr(r.business_date,1,7) AS ym, SUM(r.net_without_tax_pence) AS net, COUNT(*) AS txn
+       FROM sales_receipts_api r
+      WHERE r.cancelled = 0 AND (r.type IS NULL OR r.type NOT IN ('VOID','CANCEL','RECALL'))
+      GROUP BY ym ORDER BY ym`));
+  const ledgerMonths = rowsOf(q(
+    `SELECT substr(business_date,1,7) AS ym, COUNT(DISTINCT business_date) AS days
+       FROM sales_api_ingest_runs WHERE source='kseries-sales-daily' AND status='ok' GROUP BY ym`));
+  f.override = { pct: 0, storeMissing: false };
+  const ovRes = q(`SELECT pct FROM forecast_overrides ORDER BY id DESC LIMIT 1`);
+  if (ovRes && ovRes.ok) { if (ovRes.rows.length) f.override.pct = Number(ovRes.rows[0].pct) || 0; }
+  else f.override.storeMissing = true;
+  const fByYm = new Map();
+  f.method = null;
+  if (apiMonths.length || ledgerMonths.length) {
+    const months = REP.buildMonths({ apiMonths, ledgerMonths, nowYm });
+    const P = REP.computeProjection({ months, year, nowYm, boundaryDate, windowN: 6 });
+    f.method = P.ratio != null ? 'seasonal' : (P.ytdRatio != null ? 'simple' : null);
+    for (const fm of P.forecast) {
+      const v = fm.seasonalPence != null ? fm.seasonalPence : fm.simplePence;
+      if (v != null) fByYm.set(fm.ym, v * (1 + f.override.pct / 100));
+    }
+  }
+  // calendar-day share of the monthly projection — NO weekday shape is claimed; a week with any
+  // un-projectable month renders no share at all (honest null, never a partial dressed as whole).
+  const weeklyShare = (from) => {
+    let sum = 0;
+    for (let i = 0; i < 7; i++) {
+      const d = K.shiftDays(from, i);
+      const v = fByYm.get(d.slice(0, 7));
+      if (v == null) return null;
+      sum += v / REP.calDays(d.slice(0, 7));
+    }
+    return Math.round(sum);
+  };
+
+  // ---- per-week facts: published target (dedup'd, whole-week only), projection share,
+  // published-rota shift aggregate (NO names — aggregate SUMs only) ----
+  const weekFacts = (from) => {
+    const to = K.shiftDays(from, 6);
+    const tgt = rowsOf(q(`SELECT DISTINCT business_date d, revenue_target_pence t FROM rota_ahead_budget WHERE business_date BETWEEN ? AND ?`, [from, to]))
+      .filter((r) => num(r.t) != null);
+    const published = tgt.length === 7 ? tgt.reduce((s, r) => s + num(r.t), 0) : null;
+    const sh = rowsOf(q(
+      `SELECT COUNT(*) n,
+              SUM(CASE WHEN cost_basis='hourly' THEN sched_cost_true_pence END) hp,
+              SUM(CASE WHEN cost_basis='hourly' THEN sched_minutes ELSE 0 END) hm,
+              SUM(CASE WHEN cost_basis='salaried' THEN sched_minutes ELSE 0 END) sm,
+              SUM(CASE WHEN cost_basis='unmapped' THEN sched_minutes ELSE 0 END) um
+         FROM rota_ahead_shifts WHERE business_date BETWEEN ? AND ?`, [from, to]))[0] || null;
+    const share = weeklyShare(from);
+    return {
+      from, to, published, publishedDays: tgt.length, share,
+      basis: published != null ? 'published' : (share != null ? 'projection' : null),
+      basisNet: published != null ? published : share,
+      shifts: sh && num(sh.n) > 0
+        ? { n: num(sh.n) || 0, hourlyPence: num(sh.hp), hourlyMins: num(sh.hm) || 0, salMins: num(sh.sm) || 0, unmapMins: num(sh.um) || 0 }
+        : null,
+    };
+  };
+  f.outlook = [];
+  for (let w = 0; w < 8; w++) f.outlook.push(weekFacts(K.shiftDays(nextFrom, w * 7)));
+  f.next = f.outlook[0];
+
+  // ---- the FORWARD verdict for next week (the canonical promise incl. salaried) ----
+  f.fwd = null;
+  const fr = rowsOf(q(`SELECT report_json FROM rota_review_runs WHERE mode='forward' AND status='ok' AND week_monday = ? ORDER BY id DESC LIMIT 1`, [nextFrom]))[0];
+  if (fr && fr.report_json) {
+    try {
+      const rep = JSON.parse(String(fr.report_json));
+      let total = 0, n = 0; const byDept = {};
+      for (const v of rep.verdicts || []) {
+        if (num(v.plannedTruePence) == null) continue;
+        total += num(v.plannedTruePence); n += 1; byDept[String(v.dept || '')] = num(v.plannedTruePence);
+      }
+      if (n > 0) f.fwd = { total, byDept };
+    } catch (err) { /* unreadable run — the Rota Review page surfaces it */ }
+  }
+
+  // ---- five-band levels: trailing 26 full weeks of weekly net (sales_day) ----
+  f.bands = null;
+  const smaxRow = rowsOf(q(`SELECT MAX(business_date) d FROM sales_day`))[0];
+  if (smaxRow && smaxRow.d) {
+    const swk = K.lastFullWeek(String(smaxRow.d));
+    const from26 = K.shiftDays(swk.from, -175);
+    const byWeek = new Map();
+    for (const r of rowsOf(q(`SELECT business_date d, net_sales_pence n FROM sales_day WHERE business_date BETWEEN ? AND ?`, [from26, swk.to]))) {
+      const wfm = K.weekMonday(String(r.d));
+      const w = byWeek.get(wfm) || { days: 0, net: 0 };
+      w.days += 1; w.net += num(r.n) || 0;
+      byWeek.set(wfm, w);
+    }
+    const nets = [...byWeek.values()].filter((w) => w.days === 7).map((w) => w.net).sort((a, b) => a - b);
+    const excluded = [...byWeek.entries()].filter(([, w]) => w.days !== 7).map(([k]) => k);
+    const qtl = (p) => nets[Math.round((nets.length - 1) * p)];
+    f.bands = {
+      weeksUsed: nets.length, from: from26, to: swk.to, excluded,
+      levels: nets.length >= 5 ? [
+        { name: 'Low', p: 'min', net: qtl(0) },
+        { name: 'Lower', p: 'p25', net: qtl(0.25) },
+        { name: 'Median', p: 'p50', net: qtl(0.5) },
+        { name: 'Upper', p: 'p75', net: qtl(0.75) },
+        { name: 'High', p: 'max', net: qtl(1) },
+      ] : null,
+    };
+  }
+
+  // ---- forward management view: next 14 days, aggregated per day + dept (NO NAMES —
+  // rota_ahead_shifts carries user_name; it is aggregated away here by ruling) ----
+  f.fwdDays = rowsOf(q(
+    `SELECT business_date d, department dept, COUNT(*) n, SUM(sched_minutes) mins,
+            SUM(CASE WHEN cost_basis='hourly' THEN sched_cost_true_pence END) hp,
+            SUM(CASE WHEN cost_basis='hourly' THEN sched_minutes ELSE 0 END) hm,
+            SUM(CASE WHEN cost_basis<>'hourly' THEN sched_minutes ELSE 0 END) om
+       FROM rota_ahead_shifts WHERE business_date BETWEEN ? AND ?
+      GROUP BY d, dept ORDER BY d`, [K.shiftDays(f.today, 1), K.shiftDays(f.today, 14)]))
+    .map((r) => ({
+      date: String(r.d), dept: String(r.dept), n: num(r.n) || 0, mins: num(r.mins) || 0,
+      hourlyPence: num(r.hp), hourlyMins: num(r.hm) || 0, otherMins: num(r.om) || 0,
+    }));
+  return f;
+}
+
+// KITCHEN / FRONT OF HOUSE (L2) — ONE shared build parameterized by dept (mirror tabs).
+// Dept-keyed wires: labour_dept (daily minute + RC-cost grain — the ONLY settled dept key) and
+// rota_ahead_shifts (FUTURE rota — dept + role). labour_shifts and labour_hourly carry NO
+// department key (checked) — nothing here pretends otherwise; every non-dept-keyed fact states
+// its site-level basis on-panel.
+function buildDept(q, maxDate, dept, now) {
+  const d = { dept, maxDate, today: new Date(now).toISOString().slice(0, 10) };
+  if (maxDate) {
+    const from14 = K.shiftDays(maxDate, -13);
+    d.from14 = from14;
+    const sales = new Map();
+    for (const r of rowsOf(q(`SELECT business_date d, net_sales_pence net FROM sales_day WHERE business_date BETWEEN ? AND ?`, [from14, maxDate]))) sales.set(String(r.d), num(r.net));
+    const site = new Map();
+    for (const r of rowsOf(q(`SELECT business_date d, actual_minutes am FROM labour_day WHERE business_date BETWEEN ? AND ?`, [from14, maxDate]))) site.set(String(r.d), num(r.am));
+    const drows = new Map();
+    for (const r of rowsOf(q(`SELECT business_date d, act_minutes am, act_cost_rc_pence ac FROM labour_dept WHERE department = ? AND business_date BETWEEN ? AND ?`, [dept, from14, maxDate]))) drows.set(String(r.d), { am: num(r.am), ac: num(r.ac) });
+    d.days = [];
+    for (let i = 13; i >= 0; i--) {
+      const iso = K.shiftDays(maxDate, -i);
+      d.days.push({
+        date: iso,
+        net: sales.has(iso) ? sales.get(iso) : null,
+        siteAm: site.has(iso) ? site.get(iso) : null,
+        dep: drows.get(iso) || null,
+      });
+    }
+    // decision-ratio aggregates over the same 14-day window (intersection days for the %)
+    d.inter = rowsOf(q(
+      `SELECT SUM(ld.act_cost_rc_pence) ac, SUM(s.net_sales_pence) net, COUNT(*) days
+         FROM labour_dept ld JOIN sales_day s ON s.business_date = ld.business_date AND s.net_sales_pence > 0
+        WHERE ld.department = ? AND ld.business_date BETWEEN ? AND ?`, [dept, from14, maxDate]))[0] || null;
+    d.share = rowsOf(q(`SELECT department, SUM(act_minutes) am FROM labour_dept WHERE business_date BETWEEN ? AND ? GROUP BY department`, [from14, maxDate]))
+      .map((r) => ({ dept: String(r.department), am: num(r.am) || 0 }));
+  }
+  // the ruled MIX note — verbatim from the latest ok run carrying one for this dept
+  d.mix = null;
+  for (const mode of ['forward', 'hindsight']) {
+    const r = rowsOf(q(`SELECT week_monday, report_json FROM rota_review_runs WHERE mode = ? AND status = 'ok' ORDER BY id DESC LIMIT 1`, [mode]))[0];
+    if (!r || !r.report_json) continue;
+    try {
+      const rep = JSON.parse(String(r.report_json));
+      const note = rep.mixNotes && rep.mixNotes[dept];
+      if (note) { d.mix = { mode, week: String(r.week_monday), note: String(note) }; break; }
+    } catch (err) { /* unreadable run — the Rota Review page surfaces it */ }
+  }
+  // FUTURE role mix — rota_ahead_shifts carries dept + role (published rota, forward-looking);
+  // the settled shift wire carries roles but NO dept key, so a settled role mix stays a gap.
+  d.roles = rowsOf(q(
+    `SELECT COALESCE(role_name, '(no role set)') role, SUM(sched_minutes) mins, COUNT(*) n,
+            MIN(business_date) lo, MAX(business_date) hi
+       FROM rota_ahead_shifts WHERE department = ? AND business_date > ? GROUP BY role ORDER BY mins DESC`, [dept, d.today]))
+    .map((r) => ({ role: String(r.role), mins: num(r.mins) || 0, n: num(r.n) || 0, lo: String(r.lo), hi: String(r.hi) }));
+  return d;
+}
+
 // COVERAGE & PEOPLE (pending) — the holding pen for the old page's un-absorbed panels:
 // staffing shape (labour_hourly), today-live (labour_intraday), U18 WTR guard, rate parity.
 function buildCoverage(q) {
@@ -325,6 +538,8 @@ module.exports = {
     m.maxDate = mx && mx.d ? String(mx.d) : null;
     if (tab === 'executive') m.exec = buildExecutive(q, m.maxDate);
     if (tab === 'rota') m.rota = buildRota(q, m.maxDate);
+    if (tab === 'forecast') m.fc = buildForecast(q, m.maxDate, now);
+    if (tab === 'kitchen' || tab === 'foh') m.dept = buildDept(q, m.maxDate, tab, now);
     if (tab === 'coverage') m.cov = buildCoverage(q);
     return m;
   },
@@ -369,6 +584,16 @@ module.exports = {
       .rcc .lbc-bar.sched{background:${S.rcc.tokens.blue}}
       .rcc .lbc-bar.act{background:${S.rcc.tokens.accent}}
       .rcc .lbc-daylabel{color:#7f8994;font-size:9px;margin:6px 0 4px;white-space:nowrap}
+      .rcc .lbc-bar.net{background:${S.rcc.tokens.blue}}
+      .rcc .lbc-bar.dept{background:${S.rcc.tokens.cyan}}
+      /* the P4 what-if slider grammar (reports forecast idiom) — CLIENT-side only here */
+      .rcc .slider-wrap{border:1px solid #2e363f;background:#11161a;border-radius:12px;padding:13px;margin-top:12px}
+      .rcc .slider-head{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-bottom:9px}
+      .rcc .slider-head b{font-size:18px}
+      .rcc .slider-wrap input[type=range]{width:100%;accent-color:${S.rcc.tokens.accent}}
+      .rcc .lbc-drivers{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+      @media(max-width:900px){.rcc .lbc-drivers{grid-template-columns:1fr}}
+      .rcc .lbc-mix{font-family:var(--font-mono,monospace);font-size:11px;color:#9aa8b5;margin-top:10px}
       /* held coverage panels — the old labour page's grammar, carried with them */
       .lb-two{display:grid;grid-template-columns:1fr 1fr;gap:18px}
       @media(max-width:900px){.lb-two{grid-template-columns:1fr}}
@@ -717,12 +942,327 @@ module.exports = {
         <div class="r-grid r-two-col">${accPanel}${costPanel}</div>`;
     };
 
-    // ============================ PENDING TABS ============================
-    const pendingNote = (what) => `<div class="banner amber">PENDING — L2 builds this tab to the mock (${esc(what)}). No number renders here until it is computed honestly; nothing is mocked.</div>`;
+    // ============================ LABOUR FORECAST (L2) ============================
+    const renderForecastTab = () => {
+      const f = m.fc;
+      if (!f) return noWire('the labour forecast');
+      const wk = f.week;
+      const wf = f.next || null;
+      const sal = f.sal;
+      const basisNet = wf ? wf.basisNet : null;
+      const methodLabel = f.method === 'seasonal' ? 'seasonality-aware' : f.method === 'simple' ? 'simple YTD-YoY' : null;
+      const ovBit = f.override.storeMissing ? 'override store absent — 0% applied' : (f.override.pct === 0 ? 'override 0%' : `override ${f.override.pct > 0 ? '+' : '−'}${Math.abs(f.override.pct).toFixed(1)}% applied`);
+      const basisLabel = wf && wf.basis === 'published'
+        ? `published RC daily revenue targets — rota_ahead_budget, per-day, dept rows deduplicated (7/7 days)`
+        : wf && wf.basis === 'projection'
+          ? `the revenue projection's calendar-day weekly share (${methodLabel} P4 method · ${ovBit})${wf.publishedDays > 0 ? ` — only ${wf.publishedDays}/7 day(s) carry a published target, a partial week is never scaled up` : ' — no published targets this week'}`
+          : null;
 
-    const renderForecastTab = () => pendingNote('interactive weekly forecast on the banded formula, five-band target curve, eight-week outlook from rota_ahead + formula-on-projection, forward management view, band calibration cards');
-    const renderKitchenTab = () => pendingNote('kitchen day performance vs the 14.3% formula budget, role mix, demand vs staffing at line grain, decision ratios');
-    const renderFohTab = () => pendingNote('Front of House day performance vs the 8.1% formula budget, role mix, demand vs staffing, decision ratios — covers-per-FOH-hour stays OpenTable-gated');
+      // formula budget from the basis (derived at read; the salaried term is an observed fact)
+      const kVar = basisNet != null ? Math.round(VAR_RATE_DEPT.kitchen * basisNet) : null;
+      const fVar = basisNet != null ? Math.round(VAR_RATE_DEPT.foh * basisNet) : null;
+      const budget = basisNet != null ? Math.round(VAR_RATE * basisNet) + (sal ? sal.pence : 0) : null;
+      // promise: the FORWARD verdict (incl. salaried apportionment) preferred, else hourly TRUE
+      let promise = null, promiseSrc = null;
+      if (f.fwd) { promise = f.fwd.total; promiseSrc = 'verdict'; }
+      else if (wf && wf.shifts && wf.shifts.hourlyPence != null) { promise = wf.shifts.hourlyPence; promiseSrc = 'shifts'; }
+      const delta = promise != null && budget != null ? promise - budget : null;
+
+      let interactiveBody, script = '';
+      if (basisNet != null) {
+        const promiseCell = promise == null
+          ? (wf && wf.shifts
+            ? `<span class="ash">published rota carries no hourly-costed shifts — ${esc(hrs(wf.shifts.salMins + wf.shifts.unmapMins))} salaried/unmapped hours only (no £ is ever estimated)</span>`
+            : `<span class="ash">no published rota (rota_ahead_shifts empty for the week)</span>`)
+          : `${gbp(promise)} <span class="ash">${promiseSrc === 'verdict'
+            ? `FORWARD verdict incl. salaried apportionment${f.fwd && f.fwd.byDept.kitchen != null ? ` (K ${gbp(f.fwd.byDept.kitchen)}${f.fwd.byDept.foh != null ? ` · F ${gbp(f.fwd.byDept.foh)}` : ''})` : ''}`
+            : `Σ published hourly shifts at locked rate × 1.159${wf.shifts && (wf.shifts.salMins > 0 || wf.shifts.unmapMins > 0) ? ` — PARTIAL: ${hrs(wf.shifts.salMins)} salaried + ${hrs(wf.shifts.unmapMins)} unmapped rota hours carry no £ here` : ''}`}</span>`;
+        interactiveBody = `<table><tbody>
+            <tr><td>Forecast net — w/c ${esc(wk.from)}</td><td class="r-num mono" id="wf-net">${gbp(basisNet)}</td></tr>
+            <tr><td>Kitchen variable (14.3% × net)</td><td class="r-num mono" id="wf-k">${gbp(kVar)}</td></tr>
+            <tr><td>FOH variable (8.1% × net)</td><td class="r-num mono" id="wf-f">${gbp(fVar)}</td></tr>
+            <tr><td>Salaried (site, burdened day-grain)</td><td class="r-num mono">${sal ? gbp(sal.pence) : '<span class="ash">no settled week to source it — variable-only budget, stated</span>'}</td></tr>
+            <tr><td>Formula budget (salaried + 22.4% × net)</td><td class="r-num mono" id="wf-bud">${gbp(budget)}</td></tr>
+            <tr><td>Published rota promise</td><td class="r-num mono">${promiseCell}</td></tr>
+            <tr><td>Promise vs budget</td><td class="r-num mono">${delta != null ? signGbp(delta) : '—'}</td></tr>
+          </tbody></table>
+          <div class="slider-wrap">
+            <div class="slider-head"><div><div class="r-kpi-label">What-if: net basis ±15%</div><div class="r-panel-sub">what-if only, nothing stored — client-side arithmetic on this page, never persisted, never sent anywhere</div></div><b id="wf-val">0.0%</b></div>
+            <input id="wf-range" type="range" min="-15" max="15" step="0.5" value="0" data-net="${basisNet}" data-sal="${sal ? sal.pence : 0}">
+            <div class="r-mini-note">the slider rescales the net basis and re-derives the formula lines (textContent only); the promise and the verdict chip stay on the published basis. The journaled management override lives on the Revenue forecast — one home.</div>
+          </div>
+          <div class="r-mini-note">net basis = ${esc(basisLabel)} · budget = the ruled formula (salaried burdened + K 14.3% / F 8.1% × net)${sal ? ` — salaried from the last settled week ${esc(sal.from)} → ${esc(sal.to)} (day-grain constant by construction)` : ''} · promise ${promiseSrc === 'verdict' ? '= the FORWARD rota-review verdict (the canonical promise)' : promiseSrc === 'shifts' ? '= rota_ahead_shifts hourly TRUE only — salaried is day-apportioned in the engine, never estimated here' : 'awaits a published rota'} · OVER only beyond the ruled £45 materiality.</div>`;
+        script = `<script>(function(){
+          var s=document.getElementById('wf-range'),v=document.getElementById('wf-val');
+          if(!s||!v)return;
+          var net=Number(s.getAttribute('data-net'))||0,sal=Number(s.getAttribute('data-sal'))||0;
+          var el=function(id){return document.getElementById(id);};
+          var gbp=function(p){return '\\u00a3'+(p/100).toLocaleString('en-GB',{minimumFractionDigits:2,maximumFractionDigits:2});};
+          s.addEventListener('input',function(){
+            var pct=Number(s.value);var n=Math.round(net*(1+pct/100));
+            v.textContent=(pct>0?'+':pct<0?'\\u2212':'')+Math.abs(pct).toFixed(1)+'%';
+            el('wf-net').textContent=gbp(n);
+            el('wf-k').textContent=gbp(Math.round(0.143*n));
+            el('wf-f').textContent=gbp(Math.round(0.081*n));
+            el('wf-bud').textContent=gbp(Math.round(0.224*n)+sal);
+          });})();</script>`;
+      } else {
+        interactiveBody = S.rcc.emptyState({
+          title: 'Interactive weekly forecast',
+          blocker: 'no net basis for next week — neither a fully-published rota_ahead_budget week (RC daily targets) nor a computable revenue projection (per-receipt monthly record too thin).',
+          unlock: 'publish next week’s RotaCloud forecast, or let the K-Series per-receipt record fill',
+        });
+      }
+      const interactivePanel = S.rcc.panel({
+        title: 'Interactive weekly forecast', sub: `next week ${wk.from} → ${wk.to} · formula budget vs the published rota's promise · TRUE ruler`,
+        headRight: delta != null ? ruledChip(delta, 'OVER', 'UNDER budget', 'On budget') : S.rcc.tag(basisNet == null ? 'no forecast basis' : 'no published promise'),
+        body: interactiveBody,
+      });
+
+      // ---- five-band target curve (the DERIVED view — levels are observed quantiles) ----
+      let bandsBody;
+      if (f.bands && f.bands.levels) {
+        const rows = f.bands.levels.map((L) => {
+          const bud = Math.round(VAR_RATE * L.net) + (sal ? sal.pence : 0);
+          const pct = (bud / L.net) * 100;
+          return `<tr><td>${esc(L.name)} <span class="ash">${esc(L.p)}</span></td>
+            <td class="r-num mono">${gbp(L.net)}</td><td class="r-num mono">${gbp(bud)}</td>
+            <td class="r-num mono">${pct.toFixed(1)}%</td></tr>`;
+        }).join('');
+        bandsBody = `<table><thead><tr><th>Band</th><th class="r-num">Weekly net level</th><th class="r-num">Formula budget</th><th class="r-num">Budget % of net</th></tr></thead><tbody>${rows}</tbody></table>
+          <div class="r-mini-note">bands = observed weekly-net quantiles of the trailing 26 full weeks (${int(f.bands.weeksUsed)} full week(s) used, ${esc(f.bands.from)} → ${esc(f.bands.to)}) — the DERIVED view of the formula, never hand-set rows (the ruling): band % = (salaried + 22.4% × net) ÷ net at each level; the salaried term is fixed, so the % FALLS as net rises${sal ? '' : ' — the salaried term is unsourced (no settled labour week), so these are VARIABLE-ONLY budgets, flat at 22.4%'}${f.bands.excluded.length ? ` · ${int(f.bands.excluded.length)} partial week(s) excluded, not padded${esc(juneNote(f.bands.excluded))}` : ''} · ~30% of net at the High-band anchor is the ruled combined ceiling.</div>`;
+      } else {
+        bandsBody = S.rcc.emptyState({
+          title: 'Five-band target curve',
+          blocker: f.bands ? `only ${f.bands.weeksUsed} full sales week(s) in the trailing 26 — too thin to quote quantiles honestly.` : 'no sales_day record yet — the band levels are OBSERVED weekly-net quantiles, never hand-set.',
+          unlock: 'the daily Lightspeed ingest',
+        });
+      }
+      const bandsPanel = S.rcc.panel({
+        title: 'Five-band target curve', sub: 'revenue levels → formula budget % · the bands are DERIVED, never hand-set',
+        body: bandsBody,
+      });
+
+      // ---- eight-week outlook ----
+      const anyOutlook = f.outlook.some((w) => w.basisNet != null || w.shifts);
+      let outlookBody;
+      if (anyOutlook) {
+        const rows = f.outlook.map((w) => {
+          const wBud = w.basisNet != null ? Math.round(VAR_RATE * w.basisNet) + (sal ? sal.pence : 0) : null;
+          const wProm = w.shifts && w.shifts.hourlyPence != null ? w.shifts.hourlyPence : null;
+          const wDelta = wProm != null && wBud != null ? wProm - wBud : null;
+          return `<tr><td>${esc(dayLabel(w.from))} <span class="ash">w/c ${esc(w.from)}</span></td>
+            <td>${w.basis === 'published' ? S.rcc.tag('published', 'info') : w.basis === 'projection' ? S.rcc.tag('projection') : '<span class="ash">no basis</span>'}${w.basis !== 'published' && w.publishedDays > 0 ? ` <span class="ash">${int(w.publishedDays)}/7 targets</span>` : ''}</td>
+            <td class="r-num mono">${w.basisNet != null ? gbp(w.basisNet) : '—'}</td>
+            <td class="r-num mono">${wBud != null ? gbp(wBud) : '—'}</td>
+            <td class="r-num mono">${wProm != null ? gbp(wProm) : '<span class="ash">rota not published</span>'}</td>
+            <td>${wDelta != null ? ruledChip(wDelta, 'Over', 'Under budget', 'On budget') : w.shifts ? S.rcc.tag('hours only') : S.rcc.tag('rota not published')}</td></tr>`;
+        }).join('');
+        const salHours = f.outlook.reduce((s, w) => s + (w.shifts ? w.shifts.salMins + w.shifts.unmapMins : 0), 0);
+        outlookBody = `<div style="overflow:auto"><table><thead><tr><th>Week</th><th>Net basis</th><th class="r-num">Basis £</th><th class="r-num">Formula budget</th><th class="r-num">Rota promise</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table></div>
+          <div class="r-mini-note">basis: published = Σ RC daily revenue targets (rota_ahead_budget, dept rows deduplicated, whole weeks only) · projection = the revenue projection's calendar-day weekly share${methodLabel ? ` (${esc(methodLabel)} · ${esc(ovBit)})` : ''} · promise = Σ published HOURLY shifts at locked rate × 1.159${salHours > 0 ? ` — ${hrs(salHours)} salaried/unmapped rota hours across the window carry no £ here (day-apportioned in the engine / never estimated)` : ''} · an unpublished week SAYS so — never a zero, never an estimate.</div>`;
+      } else {
+        outlookBody = S.rcc.emptyState({
+          title: 'Eight-week outlook',
+          blocker: 'nothing to look out on — no published rota_ahead week, no published targets, and no computable projection share.',
+          unlock: 'publish forward rotas/forecasts in RotaCloud; the snapshot puller fills rota_ahead_*',
+        });
+      }
+      const outlookPanel = S.rcc.panel({
+        title: 'Eight-week outlook', sub: `w/c ${wk.from} onward · promise vs formula budget per week`,
+        body: outlookBody,
+      });
+
+      // ---- forward management view (NO NAMES — aggregate day + dept only) ----
+      let fwdBody;
+      if (f.fwdDays.length) {
+        const byDate = new Map();
+        for (const r of f.fwdDays) {
+          const d0 = byDate.get(r.date) || { kitchen: null, foh: null, unassigned: null };
+          d0[r.dept] = r; byDate.set(r.date, d0);
+        }
+        const cell = (r) => {
+          if (!r) return `<td class="r-num mono ash">—</td><td class="r-num mono ash">—</td>`;
+          const pounds = r.hourlyPence != null ? gbp(r.hourlyPence) : '<span class="ash">—</span>';
+          return `<td class="r-num mono">${hrs(r.mins)}</td><td class="r-num mono">${pounds}${r.otherMins > 0 ? ` <span class="ash">+${hrs(r.otherMins)} uncosted</span>` : ''}</td>`;
+        };
+        const rows = [...byDate.entries()].map(([date, d0]) =>
+          `<tr><td>${esc(dowLabel(date))} ${esc(date)}</td>${cell(d0.kitchen)}${cell(d0.foh)}<td class="r-num mono">${d0.unassigned ? hrs(d0.unassigned.mins) : '<span class="ash">—</span>'}</td></tr>`).join('');
+        fwdBody = `<div style="overflow:auto"><table><thead><tr><th>Day</th><th class="r-num">Kitchen hrs</th><th class="r-num">Kitchen £</th><th class="r-num">FOH hrs</th><th class="r-num">FOH £</th><th class="r-num">Unassigned hrs</th></tr></thead><tbody>${rows}</tbody></table></div>
+          <div class="r-mini-note">next 14 days of the PUBLISHED rota (rota_ahead_shifts snapshot), aggregated per day + department — the rota carries names; they are aggregated away here BY RULING (NO NAMES, the surveillance boundary) · £ = hourly shifts at locked rate × 1.159 (TRUE); salaried hours are day-apportioned in the engine and unmapped hours are never estimated — both render as uncosted hours, stated · a day with nothing published is simply absent.</div>`;
+      } else {
+        fwdBody = S.rcc.emptyState({
+          title: 'Forward management view',
+          blocker: 'no published forward rota in the next 14 days (rota_ahead_shifts is empty for the window).',
+          unlock: 'publish the rota in RotaCloud; the forward snapshot puller fills it',
+        });
+      }
+      const fwdPanel = S.rcc.panel({
+        title: 'Forward management view', sub: 'next 14 days · published rota per day + dept · aggregate only, NO names',
+        body: fwdBody,
+      });
+
+      // ---- calibration + guardrails (canon text — rulings, not data) ----
+      const calibPanel = S.rcc.panel({
+        title: 'How the bands are calibrated', sub: 'the ruled formula — canon, not data',
+        body: S.rcc.formula([
+          'dept TRUE budget = dept salaried (burdened) + var% × net',
+          'variable splits (ruled): kitchen 14.3% · FOH 8.1% · combined 22.4%',
+          'anchor: ~30% of net combined at the High band — % falls as net rises (salaried is fixed)',
+          'bands = observed weekly-net quantiles of the trailing 26 full weeks — a DERIVED view; band rows are never hand-set',
+          'OVER only beyond the ruled £45 materiality',
+          'TRUE ruler = locked rates × 1.159 employer burden + salaried/365 — RC screens translate on Rota vs Actual only, never mixed',
+        ]),
+      });
+      const guardPanel = S.rcc.panel({
+        title: 'Forecast guardrails', sub: 'standing rules this tab obeys',
+        body: S.rcc.formula([
+          'SPLH ceiling = p90 of observed weeks — "the best week that didn’t hurt": top-decile pace must show no speed/wait/accuracy damage in reviews, else the UNDER threshold drops to p75–80 (the hindsight run checks it)',
+          'what-if slider: client-side only, nothing stored — the journaled override lives on the Revenue forecast (one home)',
+          'forecast basis precedence: published RC targets (whole weeks) > projection weekly share; a partial week is stated, never scaled',
+          'surveillance boundary: people are rota-structural facts only — names never render on this centre',
+          'June 2026: trends STATE the labour hole (the Leon Mackay RotaCloud fix), never bridge it',
+        ]),
+      });
+
+      return `<div class="r-grid r-two-col">${interactivePanel}${bandsPanel}</div>
+        <div class="r-grid r-two-col">${outlookPanel}${fwdPanel}</div>
+        <div class="r-grid r-two-col">${calibPanel}${guardPanel}</div>${script}`;
+    };
+
+    // ============================ KITCHEN / FRONT OF HOUSE (L2, mirror) ============================
+    const renderDeptTab = (dept) => {
+      const d = m.dept;
+      const name = dept === 'kitchen' ? 'Kitchen' : 'Front of House';
+      const rate = VAR_RATE_DEPT[dept];
+      const rateStr = `${(rate * 100).toFixed(1)}%`;
+      if (!d) return noWire(`the ${name} department view`);
+
+      // ---- (1) day performance: 14 days · dept variable TRUE vs var% × net ----
+      let dayBody;
+      if (d.maxDate && d.days && d.days.length) {
+        const missingDept = d.days.filter((r) => !r.dep).map((r) => r.date);
+        const rows = d.days.map((r) => {
+          const trueVar = r.dep && r.dep.ac != null ? Math.round(r.dep.ac * BURDEN) : null;
+          const netOk = r.net != null && r.net > 0;
+          const bud = netOk ? Math.round(rate * r.net) : null;
+          const dl = trueVar != null && bud != null ? trueVar - bud : null;
+          const splh = netOk && num(r.siteAm) > 0 ? Math.round(r.net / (num(r.siteAm) / 60)) : null;
+          if (!r.dep) {
+            return `<tr><td>${esc(dowLabel(r.date))} ${esc(r.date)}</td>
+              <td class="r-num mono">${r.net != null ? gbp(r.net) : '<span class="ash">no sales record</span>'}</td>
+              <td class="r-num mono ash" colspan="3">no ${esc(name)} dept record</td>
+              <td>${S.rcc.tag('no dept record')}</td><td class="r-num mono ash">—</td><td class="r-num mono">${splh != null ? gbp(splh) : '—'}</td></tr>`;
+          }
+          return `<tr><td>${esc(dowLabel(r.date))} ${esc(r.date)}</td>
+            <td class="r-num mono">${r.net != null ? gbp(r.net) : '<span class="ash">no sales record</span>'}</td>
+            <td class="r-num mono">${trueVar != null ? gbp(trueVar) : '—'}</td>
+            <td class="r-num mono">${bud != null ? gbp(bud) : '—'}</td>
+            <td class="r-num mono">${dl != null ? signGbp(dl) : '—'}</td>
+            <td>${netOk ? ruledChip(dl, 'Over', 'Under budget', 'On budget') : S.rcc.tag('no net')}</td>
+            <td class="r-num mono">${hrs(r.dep.am)}</td>
+            <td class="r-num mono">${splh != null ? gbp(splh) : '—'}</td></tr>`;
+        }).join('');
+        dayBody = `<div style="overflow:auto"><table><thead><tr><th>Day</th><th class="r-num">Site net</th><th class="r-num">${esc(name)} variable TRUE £</th><th class="r-num">Var budget (${esc(rateStr)} × net)</th><th class="r-num">Δ £</th><th>Status</th><th class="r-num">${esc(name)} hrs</th><th class="r-num">Site SPLH</th></tr></thead><tbody>${rows}</tbody></table></div>
+          <div class="r-mini-note">variable TRUE = ${esc(name)} labour_dept hourly cost × 1.159 burden; the salaried term sits identically in the ruled dept budget (salaried burdened + ${esc(rateStr)} × net) and in TRUE cost, so it cancels and the delta is exact (the L1 dept-control discipline) · STATUS: OVER only beyond the ruled £45 materiality · a dept SPLH (site net ÷ dept hours) would be dishonest — it credits one department with the whole site's take — so dept HOURS render with the SITE SPLH (net ÷ site worked hours) as context, captioned${missingDept.length ? ` · ${int(missingDept.length)} day(s) have no ${esc(name)} labour_dept record — absent${esc(juneNote(missingDept))}, never zero` : ''}.</div>`;
+      } else {
+        dayBody = S.rcc.emptyState({ title: `${name} day performance`, blocker: 'no settled labour-day record yet (labour_day is empty) — the dept grain hangs off the same daily ingest.', unlock: 'the daily RotaCloud ingest' });
+      }
+      const dayPanel = S.rcc.panel({
+        title: `Day performance — ${name}`, sub: d.maxDate ? `14 days to ${d.maxDate} · dept variable TRUE vs the ruled ${rateStr} × net` : `dept variable TRUE vs the ruled ${rateStr} × net`,
+        body: dayBody,
+      });
+
+      // ---- (2) role mix: FUTURE from the published rota (dept+role live there); settled = gap ----
+      let roleBody;
+      if (d.roles && d.roles.length) {
+        const tot = d.roles.reduce((s, r) => s + r.mins, 0) || 1;
+        const meters = d.roles.map((r, i) => S.rcc.meterRow({
+          label: r.role, pct: (r.mins / tot) * 100,
+          color: [S.rcc.tokens.accent, S.rcc.tokens.blue, S.rcc.tokens.cyan, S.rcc.tokens.purple, S.rcc.tokens.warn][i % 5],
+          value: `${hrs(r.mins)} · ${int(r.n)} shift(s)`,
+        })).join('');
+        const lo = d.roles.reduce((s, r) => (s == null || r.lo < s ? r.lo : s), null);
+        const hi = d.roles.reduce((s, r) => (s == null || r.hi > s ? r.hi : s), null);
+        roleBody = `<div class="r-meters">${meters}</div>
+          <div class="r-mini-note">published rota, forward-looking (rota_ahead_shifts ${esc(lo || '')} → ${esc(hi || '')}) — the ONLY dept-keyed role grain in the wires; the settled shift wire (labour_shifts) carries roles but NO department key (checked), so a settled/backward role mix stays a named gap until the RotaCloud role export decision · senior-share vs the ruled &gt;40% MIX class is judged in the rota-review verdicts (see Decision ratios) · roles are structural facts — NO names, ever.</div>`;
+      } else {
+        roleBody = S.rcc.emptyState({
+          title: `${name} role mix`,
+          blocker: `per-dept role grain is not in the settled wires — labour_shifts carries roles but NO department key (checked) — and no published forward rota covers ${name} right now (rota_ahead_shifts, the one dept+role source, is empty for the dept).`,
+          unlock: 'the RotaCloud role export decision (settled grain), or a published forward rota (forward grain)',
+        });
+      }
+      const rolePanel = S.rcc.panel({ title: `Role mix — ${name}`, sub: 'forward role hours from the published rota · settled role-by-dept = named gap', body: roleBody });
+
+      // ---- (3) demand vs staffing: DAILY pairing (the honest grain) ----
+      let demandBody;
+      const pairDays = d.maxDate && d.days ? d.days : [];
+      const anyPair = pairDays.some((r) => (r.net != null && r.net > 0) || (r.dep && num(r.dep.am) > 0));
+      if (anyPair) {
+        const maxNet = Math.max(...pairDays.map((r) => (r.net != null ? r.net : 0)), 1);
+        const maxMin = Math.max(...pairDays.map((r) => (r.dep && num(r.dep.am) != null ? num(r.dep.am) : 0)), 1);
+        const cols = pairDays.map((r) => {
+          const hN = r.net != null ? Math.max(2, Math.round((r.net / maxNet) * 140)) : 0;
+          const hM = r.dep && num(r.dep.am) != null ? Math.max(2, Math.round((num(r.dep.am) / maxMin) * 140)) : 0;
+          const tip = `${dowLabel(r.date)} ${r.date} — ${r.net != null ? `${gbp(r.net)} net` : 'no sales record'} · ${r.dep && num(r.dep.am) != null ? `${hrs(r.dep.am)} ${name}` : `no ${name} dept record`}`;
+          return `<div class="lbc-day" title="${esc(tip)}"><div class="lbc-bars">${r.net != null ? `<div class="lbc-bar net" style="height:${hN}px"></div>` : ''}${r.dep && num(r.dep.am) != null ? `<div class="lbc-bar dept" style="height:${hM}px"></div>` : ''}</div><span class="lbc-daylabel">${esc(dayLabel(r.date))}</span></div>`;
+        }).join('');
+        demandBody = `<div class="lbc-pairs">${cols}</div>
+          <div class="r-mini-note">a PAIRING on two independent scales (site net £ vs ${esc(name)} worked hours), not a ratio · demand is SITE-wide — no dept-keyed demand exists · the mock's hour-by-hour overlay is NOT rendered: labour_hourly carries no department key (checked), and site-hourly staffing on a dept tab would be dishonest; it lands when the hourly wire carries a dept key — the demand side then comes from the per-receipt line grain on London hour with ONLINE excluded (no true hour, the standing ruling).</div>`;
+      } else {
+        demandBody = S.rcc.emptyState({
+          title: `Demand vs staffing — ${name}`,
+          blocker: 'no sales or dept-hours record in the 14-day window.',
+          unlock: 'the daily Lightspeed + RotaCloud ingests',
+        });
+      }
+      const demandPanel = S.rcc.panel({
+        title: `Demand vs staffing — ${name}`, sub: d.maxDate ? `daily pairing · 14 days to ${d.maxDate} · site net vs dept hours` : 'daily pairing · site net vs dept hours',
+        headRight: `<div class="r-legend"><span><i style="background:${S.rcc.tokens.blue}"></i>Site net</span><span><i style="background:${S.rcc.tokens.cyan}"></i>${esc(name)} hours</span></div>`,
+        body: demandBody,
+      });
+
+      // ---- (4) decision ratios ----
+      const interNet = d.inter && num(d.inter.net) > 0 ? num(d.inter.net) : null;
+      const interDays = d.inter ? num(d.inter.days) || 0 : 0;
+      const varPct = interNet != null && d.inter && num(d.inter.ac) != null ? ((num(d.inter.ac) * BURDEN) / interNet) * 100 : null;
+      const totAm = d.share ? d.share.reduce((s, x) => s + x.am, 0) : 0;
+      const meAm = d.share ? (d.share.find((x) => x.dept === dept) || { am: 0 }).am : 0;
+      const sharePct = totAm > 0 ? (meAm / totAm) * 100 : null;
+      const drivers = [
+        S.rcc.driver({
+          label: 'Variable % of net', value: varPct != null ? `${varPct.toFixed(1)}%` : '—',
+          sub: varPct != null ? `vs the ruled ${rateStr} target · dept TRUE variable ÷ net · ${interDays} intersection day(s)` : `vs the ruled ${rateStr} target — needs sales ∩ dept-labour days`,
+        }),
+        S.rcc.driver({
+          label: 'Share of labour hours', value: sharePct != null ? `${sharePct.toFixed(1)}%` : '—',
+          sub: sharePct != null ? `of all labour_dept worked hours · 14 days (paid basis, minute grain)` : 'no labour_dept hours in the window',
+        }),
+        S.rcc.driver({
+          label: dept === 'foh' ? 'Covers per FOH hour' : 'Covers per labour hour', value: '—',
+          sub: 'OpenTable-gated — POS guest-count is NOT covers (no-fabrication ruling); zero digits until the wire exists',
+        }),
+      ].join('');
+      const mixLine = d.mix
+        ? `<div class="lbc-mix">MIX ${esc(dept)} (${esc(d.mix.mode)} w/c ${esc(d.mix.week)}, verbatim): ${esc(d.mix.note)}</div>`
+        : `<div class="lbc-mix">MIX ${esc(dept)}: — <span class="ash">no rota-review MIX note for this dept on the latest runs (the ruled &gt;40% senior-mix class is judged there, not recomputed here)</span></div>`;
+      const ratiosPanel = S.rcc.panel({
+        title: `Decision ratios — ${name}`, sub: `the dept control numbers · TRUE ruler · vs the ruled ${rateStr} variable target`,
+        body: `<div class="lbc-drivers">${drivers}</div>${mixLine}
+          <div class="r-mini-note">variable % = labour_dept hourly cost × 1.159 ÷ net over the sales∩dept intersection days only (day-count labelled — the cross-ruler discipline) · hours share = labour_dept minute grain, RC paid basis (ruler-free) · senior mix = the rota-review MIX note VERBATIM — one home, never recomputed here.</div>`,
+      });
+
+      return `${dayPanel}
+        <div class="r-grid r-two-col">${demandPanel}${rolePanel}</div>
+        ${ratiosPanel}`;
+    };
+
+    const renderKitchenTab = () => renderDeptTab('kitchen');
+    const renderFohTab = () => renderDeptTab('foh');
+
+    // ============================ COVERAGE (pending, holds the old panels) ============================
+    const pendingNote = (what) => `<div class="banner amber">PENDING — the next stage builds this tab to the mock (${esc(what)}). No number renders here until it is computed honestly; nothing is mocked.</div>`;
 
     const renderCoverageTab = () => {
       const c = m.cov || {};

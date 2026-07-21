@@ -1,7 +1,9 @@
 'use strict';
 
 // Labour Centre L1 — the six-tab shell on /coyote/labour (the operator ruled the centre takes
-// the route), EXECUTIVE + ROTA VS ACTUAL built to the mock. Honesty under test:
+// the route), EXECUTIVE + ROTA VS ACTUAL built to the mock. (L2 built forecast/kitchen/foh —
+// their proofs live in mission-control-labour-centre-l2.test.js; this file keeps the shell,
+// the L1 tabs, and the cross-tab NO-NAMES / empty-DB boundary controls.) Honesty under test:
 //   • TRUE ruler (labour_day: locked rates × 1.159 burden + salaried/365) everywhere on the
 //     built tabs; RC-screen renders ONLY inside the cost-definition translation card;
 //   • formula budget = salaried + 22.4% × net (K 14.3% + F 8.1%), OVER only beyond the ruled
@@ -269,17 +271,15 @@ test('rota vs actual: cost-definition reconciliation — RC-screen vs TRUE side 
   assert.ok(body.includes('2.0h') && body.includes('uncosted in RC'), 'RC-uncosted minutes surfaced');
 });
 
-// ---------------- pending tabs + boundaries ----------------
+// ---------------- L2-built tabs + boundaries ----------------
 
-test('pending tabs: forecast/kitchen/foh are note-only; no mock number anywhere on them', () => {
+test('L2 built tabs: forecast/kitchen/foh no longer carry the pending note (L2 file owns their proofs); coverage still holds', () => {
   const db = makeDb();
   seedKpiWeek(db);
   for (const tabKey of ['forecast', 'kitchen', 'foh']) {
-    const body = renderTab(db, { tab: tabKey });
-    assert.ok(body.includes('PENDING'), `${tabKey} carries the pending note`);
-    assert.ok(body.includes('nothing is mocked'), `${tabKey} pledges no mock numbers`);
-    assert.ok(!/£\d[\d,]*\.\d{2}/.test(body), `${tabKey} renders no £ data value`);
+    assert.ok(!renderTab(db, { tab: tabKey }).includes('PENDING'), `${tabKey} is built (L2)`);
   }
+  assert.ok(renderTab(db, { tab: 'coverage' }).includes('PENDING'), 'coverage remains the pending holding pen');
 });
 
 test('NO-NAMES negative control: labour_shifts.user_name NEVER renders on ANY tab (surveillance boundary)', () => {
