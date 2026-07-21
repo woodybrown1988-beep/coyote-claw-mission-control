@@ -70,7 +70,12 @@ test('page: thread renders per-source — SQL block for boxquery, collapsed brie
   assert.equal(m.wired, true);
   assert.equal(m.total, 5);
   const out = chatPage.render(m, ctxFor(db));
-  assert.match(out.body, /class="ch-sql">SELECT SUM\(net_sales_pence\)/, 'boxquery SQL rendered as a block (acceptance: SQL shown)');
+  // VERBOSITY RULING: answer visible; SQL behind "show workings"; the answered ack FOLDS
+  assert.match(out.body, /£4,094\.83 net\./, 'the answer sentence is visible');
+  assert.match(out.body, /show workings ▸<\/summary><div class="ch-sql">SELECT SUM\(net_sales_pence\)/, 'SQL collapsed behind show-workings — present, never inline');
+  assert.match(out.body, /class="ch-meta">asked <time/, "the folded ack's timing rides the answer card");
+  assert.doesNotMatch(out.body, /Asking the box — answer \(with the query shown\)/, 'the ANSWERED router ack no longer renders standalone');
+  assert.match(out.body, /Sent to the Lead/, 'an UNanswered ack still renders (its answer is pending)');
   assert.match(out.body, /Rex · morning brief/, 'brief card labelled');
   assert.match(out.body, /<details class="ch-details"/, 'brief collapses');
   assert.match(out.body, /data-jobchip="bbbb2222-0000-0000-0000-000000000000">running…/, 'the running lead job carries a LIVE chip');
@@ -102,4 +107,34 @@ test('page NEGATIVE CONTROL: unwired DB (engine not deployed) → honest banner,
   assert.match(out.body, /Chat lands once the engine side deploys/);
   assert.match(out.stamp, /awaiting engine deploy/);
   assert.doesNotMatch(out.body, /id="ch-form"/, 'no input surface while the store is absent');
+});
+
+test('LENGTH GUARD (negative controls per canon): >10 lines collapses beyond the first paragraph; a short answer gets NO expander chrome', () => {
+  const db = makeDb();
+  const long = 'First paragraph line.\n\n' + Array.from({ length: 14 }, (_, i) => `detail line ${i + 1}`).join('\n');
+  db.prepare(`INSERT INTO chat_messages (direction, source, text, created_at) VALUES ('out', 'lead', ?, 1)`).run(long);
+  db.prepare(`INSERT INTO chat_messages (direction, source, text, created_at) VALUES ('out', 'lead', 'One line verdict.', 2)`).run();
+  const out = chatPage.render(chatPage.getSection(db, ctxFor(db)), ctxFor(db));
+  assert.match(out.body, /First paragraph line\.<details class="ch-workings"><summary>show more \(\d+ more lines\) ▸/, 'long → first paragraph + show more');
+  assert.match(out.body, /detail line 14/, 'the expander holds EVERYTHING — nothing deleted');
+  const oneLiner = /One line verdict\.(?![\s\S]{0,80}show more)/;
+  assert.match(out.body, oneLiner, 'short answer untouched, no expander chrome');
+});
+
+test('escalation cards: one line + expander (the long give-up detail collapses)', () => {
+  const db = makeDb();
+  const esc = '⚠ lead job 0f913cf8 escalated: build failed: empty build.\n\n' + Array.from({ length: 12 }, (_, i) => `- coder summary line ${i}`).join('\n');
+  db.prepare(`INSERT INTO chat_messages (direction, source, text, job_id, created_at) VALUES ('out', 'lead', ?, 'j1', 1)`).run(esc);
+  const out = chatPage.render(chatPage.getSection(db, ctxFor(db)), ctxFor(db));
+  assert.match(out.body, /escalated: build failed: empty build\.<details class="ch-workings"/, 'verdict line visible, mechanics collapsed');
+  assert.match(out.body, /coder summary line 11/, 'full detail in the expander');
+});
+
+test('LENGTH GUARD wall-of-lines edge: a >10-line single paragraph (Rex list style) still collapses after 4 lines', () => {
+  const db = makeDb();
+  const wall = Array.from({ length: 15 }, (_, i) => `🔴 item ${i + 1}`).join('\n'); // no blank lines
+  db.prepare(`INSERT INTO chat_messages (direction, source, text, created_at) VALUES ('out', 'rex', ?, 1)`).run(wall);
+  const out = chatPage.render(chatPage.getSection(db, ctxFor(db)), ctxFor(db));
+  assert.match(out.body, /item 4<details class="ch-workings"><summary>show more \(11 more lines\) ▸/, '4 lines visible, 11 collapsed');
+  assert.match(out.body, /item 15/, 'everything in the expander');
 });
