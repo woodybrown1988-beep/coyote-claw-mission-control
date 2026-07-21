@@ -28,27 +28,27 @@ test('kpiTile: >=2 points renders the sparkline; <2 points renders NONE (a one-p
   assert.doesNotMatch(gappy, /NaN/);
 });
 
-test('labour weekly % spark: CROSS-RULER INTERSECTION — a day without net>0 sales contributes NOTHING', () => {
+test('labour 13-week trend %: CROSS-RULER INTERSECTION — a day without net>0 sales contributes NOTHING', () => {
+  // (Centre L1: the old 8-week hero spark was ABSORBED by the Executive 13-week control trend —
+  // this pin moved with the discipline: intersection days only, never 0% or ∞ from a sales gap.)
   const db = new sqlite.DatabaseSync(':memory:');
-  db.exec(`CREATE TABLE labour_dept (business_date TEXT, department TEXT, sched_minutes INTEGER, act_minutes INTEGER,
-             sched_cost_rc_pence INTEGER, act_cost_rc_pence INTEGER, rc_uncosted_sched_min INTEGER DEFAULT 0,
-             rc_uncosted_act_min INTEGER DEFAULT 0, rc_uncosted_names TEXT DEFAULT '[]');
-           CREATE TABLE labour_budget (business_date TEXT, department TEXT, labour_pct REAL);
-           CREATE TABLE labour_shifts (business_date TEXT, user_name TEXT, sched_minutes INTEGER, act_minutes INTEGER, variance_minutes INTEGER, rate_pence INTEGER);
-           CREATE TABLE labour_hourly (business_date TEXT, hour INTEGER, actual_minutes INTEGER);
-           CREATE TABLE labour_rate_parity (user_name TEXT, role_id TEXT, role_name TEXT, kind TEXT, rc_value TEXT, locked_value TEXT);
-           CREATE TABLE labour_intraday (business_date TEXT, department TEXT, as_of_ms INTEGER, sched_minutes_full INTEGER, sched_cost_rc_full INTEGER, worked_minutes_so_far INTEGER, cost_rc_so_far INTEGER, uncosted_minutes INTEGER, clocked_in_now INTEGER, no_shows INTEGER, ref_date TEXT, ref_worked_minutes INTEGER, ref_net_pence INTEGER, ref_to_hour INTEGER);
-           CREATE TABLE labour_wtr_flags (business_date TEXT, user_name TEXT, kind TEXT);
+  db.exec(`CREATE TABLE labour_day (business_date TEXT PRIMARY KEY, scheduled_minutes INTEGER, actual_minutes INTEGER,
+             actual_paid_minutes INTEGER, scheduled_cost_pence INTEGER, actual_cost_pence INTEGER, salaried_cost_pence INTEGER,
+             unmapped_scheduled_minutes INTEGER, unmapped_actual_minutes INTEGER, unmapped_names TEXT, anomalies TEXT,
+             staff_scheduled INTEGER, staff_worked INTEGER, updated_at INTEGER);
            CREATE TABLE sales_day (business_date TEXT PRIMARY KEY, net_sales_pence INTEGER);`);
-  // two Mondays apart (distinct %W weeks): week A costs 10000p on 100000p net (10%);
-  // week B has a labour day with NO sales row → must be EXCLUDED, not counted as 0% or ∞
-  db.prepare(`INSERT INTO labour_dept (business_date, department, sched_minutes, act_minutes, sched_cost_rc_pence, act_cost_rc_pence) VALUES
-    ('2026-07-13','kitchen',480,480,10000,10000), ('2026-07-20','kitchen',480,480,12000,12000)`).run();
+  // one Mon–Sun week (w/c 2026-07-13, max = Sunday 07-19): the Monday holds labour AND sales
+  // (10000p TRUE on 100000p net = 10%); Tue + Sun hold labour with NO sales row → they must be
+  // EXCLUDED from the week's %, not counted as 0% or ∞
+  db.prepare(`INSERT INTO labour_day (business_date, actual_cost_pence, salaried_cost_pence) VALUES
+    ('2026-07-13', 10000, 0), ('2026-07-14', 12000, 0), ('2026-07-19', 5000, 0)`).run();
   db.prepare(`INSERT INTO sales_day (business_date, net_sales_pence) VALUES ('2026-07-13',100000)`).run();
   const m = labourPage.getSection(db, ctxFor(db));
-  assert.equal(m.hasData, true);
-  const vals = (m.weeklyPct || []).map((p) => p.v);
-  assert.deepEqual(vals, [10], 'ONLY the intersection week contributes (10%); the sales-less week is absent');
+  const wk = (m.exec.trend.weeks || []).find((w) => w.from === '2026-07-13');
+  assert.ok(wk, 'the seeded week is in the 13-week window');
+  assert.equal(wk.interDays, 1, 'ONLY the intersection day contributes');
+  assert.equal(wk.labourDays, 3, 'the sales-less labour days are counted as present, not bridged into the %');
+  assert.equal(wk.pct, 10, '10% — never diluted by sales-less days');
   const out = labourPage.render(m, ctxFor(db));
   assert.doesNotMatch(out.body, /NaN|Infinity/);
 });

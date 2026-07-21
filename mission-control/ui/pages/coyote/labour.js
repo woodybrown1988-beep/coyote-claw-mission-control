@@ -1,139 +1,381 @@
 'use strict';
-// Labour Analysis — the MANAGER SCORECARD. Contract: { key, route, title, sub, getSection, render }.
-// SELECT-only via ctx.q. This is the SECOND ruler and the page never mixes the two:
-//   • THIS TAB: PRE-BURDEN, mirrors RotaCloud's own arithmetic (their per-user rates, no
-//     employer burden, no salaried/365) — the numbers Calum (Kitchen) and Jordan (FOH)
-//     manage against in RotaCloud forecasting. £0-in-RotaCloud staff surfaced, never absorbed.
-//   • REPORTS TAB: TRUE COST (burden + salaried/365) — the operating truth.
-//
-// CROSS-RULER HONESTY (2026-07-03 redesign): labour % of net and SPLH need BOTH a labour
-// row AND a sales row for the same day. Labour history is now ~425 days deep; sales is
-// thin until its backfill lands. So every cross-ruler figure is computed ONLY over the
-// sales∩labour intersection and LABELLED with that day-count — never the full labour
-// window divided by a 1-day sliver of sales. Scorecard-ruler-only figures (hours,
-// pre-burden cost, budget-vs-actual £) use the full navigated window and need no sales.
+// Labour — the LABOUR COMMAND CENTRE (L1, built from the Stage-1 gap map
+// docs/labour-centre/gap-map.md + the operator mock reference/mock-*.png). ONE route
+// (/coyote/labour — the operator ruled the centre TAKES the existing route), six subtabs:
+//   executive (default) · forecast · rota (Rota vs Actual) · kitchen · foh · coverage
+// L1 SCOPE: the shell + EXECUTIVE + ROTA VS ACTUAL fully built; forecast/kitchen/foh render
+// pending notes; coverage renders a pending note HOLDING the old labour page's un-absorbed
+// panels (staffing shape · today-live intraday · U18 WTR guard · rate parity) until their L2
+// homes are built.
+// ONE HOME PER FACT (the absorb rule) — what the old /coyote/labour page's panels became:
+//   • hero headline + 8-week labour-% spark → ABSORBED by the Executive KPI strip + 13-week
+//     control trend (deleted here, one home);
+//   • dept scorecard blocks + bonus pacing + period nav → ABSORBED by the Executive department
+//     control + daily control strip (the RotaCloud-budget scorecard framing is superseded by
+//     the ruled formula budget; RC-screen arithmetic keeps its home in RotaCloud itself and in
+//     the Rota-vs-Actual cost-definition card);
+//   • cross-ruler % / SPLH block → ABSORBED by the Executive KPI strip (same intersection
+//     discipline);
+//   • clock-drift panel → ABSORBED by Rota vs Actual (aggregate decomposition + reconciliation
+//     — per-shift NAMES deliberately left behind, see the surveillance boundary below);
+//   • blended-rate sparklines → ABSORBED by the variance bridge's dept rate-mix effect;
+//   • staffing shape / today-live / WTR / rate parity → HELD on the coverage tab (L2 home).
+// THE RULERS (never mixed, every figure captioned):
+//   • TRUE (the operating truth): labour_day costs — locked rates × 1.159 employer burden +
+//     salaried/365 day-grain apportionment. THIS CENTRE'S BASIS.
+//   • RC-screen (the managers' RotaCloud arithmetic): labour_dept costs — RC's own per-user
+//     rates, pre-burden, salaried £0. Renders ONLY in the cost-definition reconciliation card,
+//     labelled. Standing ruling: RC screens are recomputed from LIVE rates, never cached.
+// THE RULED FORMULA (rota-review spec): dept TRUE budget = dept salaried burdened + var% × net
+// (kitchen 14.3%, FOH 8.1%; combined 22.4% — ~30% at the High-band anchor); OVER only beyond
+// the ruled £45 materiality.
+// CROSS-RULER HONESTY (load-bearing, inherited): labour % of net and SPLH divide matching
+// numerator and denominator over ONLY the sales∩labour intersection days, day-count labelled.
+// JUNE HOLE: labour_day has NO June 2026 rows (the backfill is blocked on the Leon Mackay
+// RotaCloud fix) — trends STATE the hole, never bridge it.
+// SURVEILLANCE BOUNDARY (ruling, gap map): people appear as rota-STRUCTURAL facts only — no
+// per-employee scoring/monitoring queues; labour_shifts user_name never renders on any tab.
+// The People exception queue is EXCLUDED-BY-RULING; the gap map records it.
+// Contract: { key, route, workspace, title, sub, getSection, render }. SELECT-only via ctx.q.
 const S = require('../../shared.js');
-const NAV = require('../../period-nav.js');
+const REP = require('../../reporting.js');
+const K = require('../../kpi.js');
 
 function rowsOf(res) { return res && res.ok && Array.isArray(res.rows) ? res.rows : []; }
 function num(v) { if (v === null || v === undefined) return null; const n = Number(v); return Number.isFinite(n) ? n : null; }
+const MONTHS_ABBR = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const DOWS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+const dowLabel = (iso) => DOWS[(new Date(`${iso}T12:00:00Z`).getUTCDay() + 6) % 7];
+const dayLabel = (iso) => `${Number(iso.slice(8, 10))} ${MONTHS_ABBR[Number(iso.slice(5, 7))] || ''}`;
+
+const TABS = [
+  { key: 'executive', label: 'Executive' },
+  { key: 'forecast', label: 'Labour Forecast' },
+  { key: 'rota', label: 'Rota vs Actual' },
+  { key: 'kitchen', label: 'Kitchen' },
+  { key: 'foh', label: 'Front of House' },
+  { key: 'coverage', label: 'Coverage & People' },
+];
+const TAB_KEYS = TABS.map((t) => t.key);
+
+// The ruled constants (rota-review spec — rulings, not data): variable splits, materiality,
+// employer burden. The formula budget derives at read time; nothing here is a stored value.
+const VAR_RATE = 0.224;           // kitchen 14.3% + FOH 8.1% combined
+const VAR_RATE_DEPT = { kitchen: 0.143, foh: 0.081 };
+const MATERIALITY_PENCE = 4500;   // the ruled £45 — OVER only beyond it
+const BURDEN = 1.159;             // employer burden multiplier on hourly TRUE
+
+// The June-2026 hole statement (stated once per affected panel, never bridged).
+const JUNE_HOLE = 'the June 2026 hole — the labour backfill is blocked on the Leon Mackay RotaCloud fix';
+function juneNote(missingDates) {
+  return missingDates.some((d) => String(d).startsWith('2026-06')) ? ` (incl. ${JUNE_HOLE})` : '';
+}
+
+// The ruled status classes vs a formula/plan budget delta (mirrors the Drivers scorecard):
+// OVER only beyond the £45 materiality; on/under both render good.
+function ruledChip(deltaPence, overWord, underWord, onWord) {
+  if (deltaPence == null) return S.rcc.tag('no labour');
+  return deltaPence > MATERIALITY_PENCE ? S.rcc.tag(`${overWord} ${S.fmtGbpPence(deltaPence)}`, 'bad')
+    : deltaPence <= 0 ? S.rcc.tag(underWord, 'good')
+      : S.rcc.tag(onWord, 'good');
+}
+
+// ---------------------------------------------------------------------------------------------
+// getSection builders — SELECT-only; every read degrades to an honest null on a missing table.
+// ---------------------------------------------------------------------------------------------
+
+// EXECUTIVE — last-full-week KPIs, 13-week control trend, attention queue, variance bridge,
+// department control, daily control strip. TRUE ruler throughout (RC never renders here).
+function buildExecutive(q, maxDate) {
+  if (!maxDate) return null;
+  const e = { maxDate };
+  const wk = K.lastFullWeek(maxDate);
+  e.week = wk;
+
+  // ---- week aggregates: full week (no sales needed) + the sales∩labour intersection ----
+  e.agg = rowsOf(q(
+    `SELECT SUM(scheduled_cost_pence) sc, SUM(actual_cost_pence) ac, SUM(actual_minutes) am,
+            SUM(actual_paid_minutes) apm, SUM(salaried_cost_pence) sal, COUNT(*) days
+       FROM labour_day WHERE business_date BETWEEN ? AND ?`, [wk.from, wk.to]))[0] || null;
+  e.inter = rowsOf(q(
+    `SELECT SUM(l.actual_cost_pence) ac, SUM(l.salaried_cost_pence) sal, SUM(l.actual_minutes) am,
+            SUM(s.net_sales_pence) net, COUNT(*) days
+       FROM labour_day l JOIN sales_day s ON s.business_date = l.business_date
+      WHERE l.business_date BETWEEN ? AND ? AND s.net_sales_pence > 0`, [wk.from, wk.to]))[0] || null;
+  e.ot = rowsOf(q(
+    `SELECT SUM(variance_minutes) mins, COUNT(*) n FROM labour_shifts
+      WHERE business_date BETWEEN ? AND ? AND variance_minutes > 0`, [wk.from, wk.to]))[0] || null;
+
+  // ---- 13-week control trend: weekly TRUE labour % over intersection days + the formula
+  // budget % ((Σsalaried + 22.4% × net) ÷ net). A week with no labour_day rows is a GAP. ----
+  const from13 = K.shiftDays(wk.from, -84);
+  const weeks = [];
+  const byFrom = new Map();
+  for (let i = 12; i >= 0; i--) {
+    const w = { from: K.shiftDays(wk.from, -7 * i), cost: 0, sal: 0, net: 0, interDays: 0, labourDays: 0 };
+    weeks.push(w); byFrom.set(w.from, w);
+  }
+  for (const r of rowsOf(q(
+    `SELECT l.business_date d, l.actual_cost_pence ac, l.salaried_cost_pence sal,
+            (SELECT s.net_sales_pence FROM sales_day s
+              WHERE s.business_date = l.business_date AND s.net_sales_pence > 0) net
+       FROM labour_day l WHERE l.business_date BETWEEN ? AND ?`, [from13, wk.to]))) {
+    const w = byFrom.get(K.weekMonday(String(r.d)));
+    if (!w) continue;
+    w.labourDays += 1;
+    if (num(r.net) > 0 && num(r.ac) != null) {
+      w.interDays += 1;
+      w.cost += num(r.ac) || 0;
+      w.sal += num(r.sal) || 0;
+      w.net += num(r.net) || 0;
+    }
+  }
+  e.trend = {
+    weeks: weeks.map((w) => ({
+      from: w.from, labourDays: w.labourDays, interDays: w.interDays,
+      pct: w.interDays > 0 && w.net > 0 ? (w.cost / w.net) * 100 : null,
+      budPct: w.interDays > 0 && w.net > 0 ? ((w.sal + VAR_RATE * w.net) / w.net) * 100 : null,
+    })),
+  };
+
+  // ---- owner attention queue: latest ok rota-review verdicts + WTR + parity + unmapped ----
+  e.verdicts = [];
+  for (const mode of ['forward', 'hindsight']) {
+    const r = rowsOf(q(`SELECT week_monday, report_json FROM rota_review_runs WHERE mode = ? AND status = 'ok' ORDER BY id DESC LIMIT 1`, [mode]))[0];
+    if (!r || !r.report_json) continue;
+    try {
+      const rep = JSON.parse(String(r.report_json));
+      for (const v of rep.verdicts || []) {
+        if (num(v.deltaPence) === null) continue;
+        e.verdicts.push({
+          mode, week: String(r.week_monday), dept: String(v.dept || ''),
+          deltaPence: num(v.deltaPence), budgetPence: num(v.budgetPence), salariedPence: num(v.salariedPence),
+        });
+      }
+    } catch (err) { /* unreadable run — the Rota Review page surfaces it */ }
+  }
+  e.hasRuns = rowsOf(q(`SELECT COUNT(*) n FROM rota_review_runs`))[0];
+  e.wtrCount = rowsOf(q(`SELECT COUNT(*) n FROM labour_wtr_flags`))[0];
+  e.parityCount = rowsOf(q(`SELECT COUNT(*) n FROM labour_rate_parity`))[0];
+  e.unmapped = [];
+  for (const r of rowsOf(q(`SELECT unmapped_names n FROM labour_day WHERE business_date BETWEEN ? AND ? AND unmapped_names IS NOT NULL AND unmapped_names != '[]'`, [wk.from, wk.to]))) {
+    try { for (const nm of JSON.parse(r.n)) if (e.unmapped.indexOf(nm) < 0) e.unmapped.push(nm); } catch (err) { /* never take the tab down */ }
+  }
+  e.unmapped.sort();
+
+  // ---- variance bridge components (week window). Shift effects run on the shift's locked
+  // rate × burden (TRUE hourly basis — salaried/365 is identical on both endpoints, so it
+  // cancels sched→actual); the dept rate-mix effect derives from labour_dept minute-rates,
+  // × burden onto the same basis. The remainder is labelled, never hidden. ----
+  const hoursVar = rowsOf(q(
+    `SELECT SUM(variance_minutes * rate_pence / 60.0) p, SUM(variance_minutes) mins
+       FROM labour_shifts WHERE business_date BETWEEN ? AND ?
+        AND sched_minutes > 0 AND act_minutes > 0 AND variance_minutes IS NOT NULL AND rate_pence IS NOT NULL`,
+    [wk.from, wk.to]))[0] || null;
+  const unrota = rowsOf(q(
+    `SELECT COUNT(*) n, SUM(act_minutes) mins, SUM(act_minutes * rate_pence / 60.0) p
+       FROM labour_shifts WHERE business_date BETWEEN ? AND ?
+        AND (sched_minutes IS NULL OR sched_minutes = 0) AND act_minutes > 0 AND rate_pence IS NOT NULL`,
+    [wk.from, wk.to]))[0] || null;
+  const unworked = rowsOf(q(
+    `SELECT COUNT(*) n, SUM(sched_minutes) mins, SUM(sched_minutes * rate_pence / 60.0) p
+       FROM labour_shifts WHERE business_date BETWEEN ? AND ?
+        AND sched_minutes > 0 AND (act_minutes IS NULL OR act_minutes = 0) AND rate_pence IS NOT NULL`,
+    [wk.from, wk.to]))[0] || null;
+  let rateMix = null;
+  const mixRows = rowsOf(q(
+    `SELECT department, SUM(sched_minutes) sm, SUM(act_minutes) am,
+            SUM(sched_cost_rc_pence) sc, SUM(act_cost_rc_pence) ac
+       FROM labour_dept WHERE business_date BETWEEN ? AND ? GROUP BY department`, [wk.from, wk.to]));
+  for (const r of mixRows) {
+    if (num(r.sm) > 0 && num(r.am) > 0 && num(r.sc) != null && num(r.ac) != null) {
+      rateMix = (rateMix || 0) + ((num(r.ac) / num(r.am)) - (num(r.sc) / num(r.sm))) * num(r.am);
+    }
+  }
+  e.bridge = {
+    sched: e.agg ? num(e.agg.sc) : null, actual: e.agg ? num(e.agg.ac) : null,
+    rateMix: rateMix != null ? Math.round(rateMix * BURDEN) : null,
+    hoursVar: hoursVar && num(hoursVar.p) != null ? Math.round(num(hoursVar.p) * BURDEN) : null,
+    hoursVarMins: hoursVar ? num(hoursVar.mins) : null,
+    unrota: unrota && num(unrota.p) != null ? Math.round(num(unrota.p) * BURDEN) : null,
+    unrotaN: unrota ? num(unrota.n) || 0 : 0,
+    unworked: unworked && num(unworked.p) != null ? -Math.round(num(unworked.p) * BURDEN) : null,
+    unworkedN: unworked ? num(unworked.n) || 0 : 0,
+  };
+
+  // ---- department control: dept VARIABLE TRUE (RC-screen hourly cost × burden) vs the dept
+  // variable budget (var% × intersection net) — the salaried term is identical on both sides
+  // of the ruled formula, so it cancels and the delta is EXACT. Intersection days only. ----
+  e.deptCtl = { interNet: e.inter ? num(e.inter.net) : null, interDays: e.inter ? num(e.inter.days) || 0 : 0, depts: [] };
+  const deptCost = rowsOf(q(
+    `SELECT ld.department, SUM(ld.act_cost_rc_pence) ac, SUM(ld.act_minutes) am
+       FROM labour_dept ld JOIN sales_day s ON s.business_date = ld.business_date AND s.net_sales_pence > 0
+      WHERE ld.business_date BETWEEN ? AND ? GROUP BY ld.department`, [wk.from, wk.to]));
+  for (const d of ['kitchen', 'foh']) {
+    const row = deptCost.find((r) => String(r.department) === d) || null;
+    const trueVar = row && num(row.ac) != null ? Math.round(num(row.ac) * BURDEN) : null;
+    const budget = e.deptCtl.interNet != null ? Math.round(VAR_RATE_DEPT[d] * e.deptCtl.interNet) : null;
+    e.deptCtl.depts.push({
+      dept: d, trueVar, budget,
+      delta: trueVar != null && budget != null ? trueVar - budget : null,
+      mins: row ? num(row.am) : null,
+    });
+  }
+
+  // ---- daily control strip: last 7 days ending at the labour anchor ----
+  const from7 = K.shiftDays(maxDate, -6);
+  const sales = new Map();
+  for (const r of rowsOf(q(`SELECT business_date d, net_sales_pence net FROM sales_day WHERE business_date BETWEEN ? AND ?`, [from7, maxDate])))
+    sales.set(String(r.d), num(r.net));
+  const lab = new Map();
+  for (const r of rowsOf(q(`SELECT business_date d, actual_cost_pence ac, salaried_cost_pence sal, actual_minutes am FROM labour_day WHERE business_date BETWEEN ? AND ?`, [from7, maxDate])))
+    lab.set(String(r.d), { ac: num(r.ac), sal: num(r.sal), am: num(r.am) });
+  e.strip = [];
+  for (let i = 6; i >= 0; i--) {
+    const d = K.shiftDays(maxDate, -i);
+    e.strip.push({ date: d, net: sales.get(d) != null ? sales.get(d) : null, lab: lab.get(d) || null });
+  }
+  return e;
+}
+
+// ROTA VS ACTUAL — 14d sched-vs-actual chart, variance decomposition, daily reconciliation,
+// schedule accuracy, and the cost-definition (RC-screen vs TRUE) reconciliation card.
+function buildRota(q, maxDate) {
+  if (!maxDate) return null;
+  const r = { maxDate };
+  const from14 = K.shiftDays(maxDate, -13);
+  r.from14 = from14;
+
+  r.days = rowsOf(q(
+    `SELECT business_date d, scheduled_minutes sm, actual_minutes am, actual_paid_minutes apm,
+            scheduled_cost_pence sc, actual_cost_pence ac
+       FROM labour_day WHERE business_date BETWEEN ? AND ? ORDER BY business_date`, [from14, maxDate]))
+    .map((x) => ({
+      date: String(x.d), sm: num(x.sm), am: num(x.am), apm: num(x.apm), sc: num(x.sc), ac: num(x.ac),
+    }));
+
+  // ---- where the extra hours came from: labour_shifts AGGREGATE (no names; labour_shifts
+  // carries no department key and no per-shift timestamps — both stated on-panel) ----
+  const one = (sql) => rowsOf(q(sql, [from14, maxDate]))[0] || null;
+  r.decomp = {
+    over: one(`SELECT COUNT(*) n, SUM(act_minutes - sched_minutes) mins FROM labour_shifts
+                WHERE business_date BETWEEN ? AND ? AND sched_minutes > 0 AND act_minutes > sched_minutes`),
+    unrota: one(`SELECT COUNT(*) n, SUM(act_minutes) mins FROM labour_shifts
+                  WHERE business_date BETWEEN ? AND ? AND (sched_minutes IS NULL OR sched_minutes = 0) AND act_minutes > 0`),
+    under: one(`SELECT COUNT(*) n, SUM(sched_minutes - COALESCE(act_minutes, 0)) mins FROM labour_shifts
+                 WHERE business_date BETWEEN ? AND ? AND sched_minutes > 0 AND COALESCE(act_minutes, 0) < sched_minutes`),
+  };
+
+  // ---- schedule accuracy: SITE-level ±15min (labour_shifts has NO department key — checked;
+  // the dept split lands when the shift wire carries one) + dept HOURS accuracy (labour_dept
+  // minute grain — hours only, ruler-free) ----
+  r.accuracy = one(`SELECT COUNT(*) n,
+        SUM(CASE WHEN ABS(COALESCE(act_minutes, 0) - sched_minutes) <= 15 THEN 1 ELSE 0 END) w
+      FROM labour_shifts WHERE business_date BETWEEN ? AND ? AND sched_minutes > 0`);
+  r.deptHours = rowsOf(q(
+    `SELECT department, SUM(sched_minutes) sm, SUM(act_minutes) am
+       FROM labour_dept WHERE business_date BETWEEN ? AND ? AND department IN ('kitchen','foh')
+      GROUP BY department`, [from14, maxDate]))
+    .map((x) => ({ dept: String(x.department), sm: num(x.sm), am: num(x.am) }));
+
+  // ---- cost-definition reconciliation: last full week, the two rulers side by side ----
+  const wk = K.lastFullWeek(maxDate);
+  r.week = wk;
+  r.rc = rowsOf(q(
+    `SELECT SUM(sched_cost_rc_pence) sc, SUM(act_cost_rc_pence) ac,
+            SUM(rc_uncosted_act_min) um, COUNT(DISTINCT business_date) days
+       FROM labour_dept WHERE business_date BETWEEN ? AND ?`, [wk.from, wk.to]))[0] || null;
+  r.trueWk = rowsOf(q(
+    `SELECT SUM(scheduled_cost_pence) sc, SUM(actual_cost_pence) ac, SUM(salaried_cost_pence) sal, COUNT(*) days
+       FROM labour_day WHERE business_date BETWEEN ? AND ?`, [wk.from, wk.to]))[0] || null;
+  return r;
+}
+
+// COVERAGE & PEOPLE (pending) — the holding pen for the old page's un-absorbed panels:
+// staffing shape (labour_hourly), today-live (labour_intraday), U18 WTR guard, rate parity.
+function buildCoverage(q) {
+  const c = {};
+  const hm = rowsOf(q(`SELECT MAX(business_date) d FROM labour_hourly`))[0];
+  c.hourMax = hm && hm.d ? String(hm.d) : null;
+  c.byHour = c.hourMax
+    ? rowsOf(q(`SELECT hour, SUM(actual_minutes) am FROM labour_hourly WHERE business_date BETWEEN ? AND ? GROUP BY hour ORDER BY hour`,
+        [K.shiftDays(c.hourMax, -13), c.hourMax]))
+    : [];
+  c.intraday = rowsOf(q(`SELECT business_date, department, as_of_ms, sched_minutes_full, sched_cost_rc_full, worked_minutes_so_far, cost_rc_so_far, uncosted_minutes, clocked_in_now, no_shows, ref_date, ref_worked_minutes, ref_net_pence, ref_to_hour FROM labour_intraday ORDER BY department`));
+  // U18 working-time flags — AGGREGATED per person/kind across ALL history (the systemic
+  // pattern; a 20-row tail hid it). Rules cited at ingest (WTR 1998 young workers).
+  c.wtr = rowsOf(q(`SELECT user_name, kind, COUNT(*) n, MAX(business_date) last FROM labour_wtr_flags GROUP BY user_name, kind`));
+  c.wtrTotal = rowsOf(q(`SELECT COUNT(*) n, COUNT(DISTINCT user_name) people, MIN(business_date) lo, MAX(business_date) hi FROM labour_wtr_flags`))[0] || null;
+  c.parity = rowsOf(q(`SELECT user_name, role_name, kind, rc_value, locked_value FROM labour_rate_parity ORDER BY user_name, role_id`));
+  return c;
+}
 
 module.exports = {
-  key: 'labour', route: '/coyote/labour', workspace: 'coyote', title: 'Labour Analysis',
-  sub: 'Manager scorecard · PRE-BURDEN, matches RotaCloud — true cost lives in Reports',
+  key: 'labour', route: '/coyote/labour', workspace: 'coyote', title: 'Labour',
+  sub: 'Labour command centre · TRUE-cost ruler (locked rates × 1.159 burden + salaried/365) — RC screens translate in Rota vs Actual, never mixed',
 
   getSection(db, ctx) {
     const q = ctx && ctx.q;
     const now = (ctx && ctx.now) || Date.now();
-    if (typeof q !== 'function') return { now, hasData: false };
-    const maxRow = rowsOf(q('SELECT MAX(business_date) AS d FROM labour_dept'))[0];
-    const maxDate = maxRow && maxRow.d ? String(maxRow.d) : null;
-    if (!maxDate) return { now, hasData: false };
-
-    const build = (from, to) => {
-      // Scorecard-ruler grains over the FULL navigated window (no sales needed).
-      const depts = rowsOf(q(
-        `SELECT department, SUM(sched_minutes) AS sm, SUM(act_minutes) AS am,
-                SUM(sched_cost_rc_pence) AS sc, SUM(act_cost_rc_pence) AS ac,
-                SUM(rc_uncosted_sched_min) AS usm, SUM(rc_uncosted_act_min) AS uam,
-                COUNT(*) AS days
-           FROM labour_dept WHERE business_date BETWEEN ? AND ? GROUP BY department`, [from, to]));
-      // Budget £ per dept = Σ(day labour % × that day's net) over the days budget+sales exist.
-      const budgets = rowsOf(q(
-        `SELECT b.department AS department, SUM(b.labour_pct * s.net_sales_pence) AS budget_pence,
-                MIN(b.labour_pct) AS pct_min, MAX(b.labour_pct) AS pct_max, COUNT(*) AS days
-           FROM labour_budget b JOIN sales_day s ON s.business_date = b.business_date
-          WHERE b.business_date BETWEEN ? AND ? AND s.net_sales_pence > 0 GROUP BY b.department`, [from, to]));
-
-      // CROSS-RULER INTERSECTION — days in-window with BOTH a labour row and a sales row
-      // (net>0). Every % / SPLH figure divides matching numerator and denominator over
-      // exactly these days. This is the fix for the year-view SPLH nonsense.
-      const interDept = rowsOf(q(
-        `SELECT ld.department AS department, SUM(ld.act_minutes) AS am,
-                SUM(ld.act_cost_rc_pence) AS ac, SUM(ld.sched_cost_rc_pence) AS sc
-           FROM labour_dept ld JOIN sales_day s ON s.business_date = ld.business_date
-          WHERE ld.business_date BETWEEN ? AND ? AND s.net_sales_pence > 0
-          GROUP BY ld.department`, [from, to]));
-      const interNet = rowsOf(q(
-        `SELECT SUM(net) AS net, COUNT(*) AS days FROM (
-           SELECT s.net_sales_pence AS net FROM sales_day s
-            WHERE s.business_date BETWEEN ? AND ? AND s.net_sales_pence > 0
-              AND s.business_date IN (SELECT business_date FROM labour_dept WHERE business_date BETWEEN ? AND ?))`,
-        [from, to, from, to]))[0] || null;
-
-      const salesDays = rowsOf(q(`SELECT COUNT(*) AS n FROM sales_day WHERE business_date BETWEEN ? AND ? AND net_sales_pence > 0`, [from, to]))[0] || null;
-      const names = [];
-      for (const r of rowsOf(q(`SELECT rc_uncosted_names AS n FROM labour_dept WHERE business_date BETWEEN ? AND ? AND rc_uncosted_names != '[]'`, [from, to]))) {
-        try { for (const nm of JSON.parse(r.n)) if (names.indexOf(nm) < 0) names.push(nm); } catch (e) { /* never take the tab down */ }
-      }
-      // Clock drift: rota'd vs worked per matched shift, £ at the shift's own PRE-BURDEN rate.
-      const drift = rowsOf(q(`SELECT user_name, business_date, sched_minutes, act_minutes, variance_minutes, rate_pence FROM labour_shifts WHERE business_date BETWEEN ? AND ? AND variance_minutes IS NOT NULL AND variance_minutes != 0 ORDER BY ABS(variance_minutes) DESC LIMIT 8`, [from, to]));
-      const driftTot = rowsOf(q(`SELECT SUM(CASE WHEN rate_pence IS NOT NULL THEN variance_minutes * rate_pence / 60.0 ELSE 0 END) AS pence, SUM(variance_minutes) AS mins FROM labour_shifts WHERE business_date BETWEEN ? AND ? AND variance_minutes IS NOT NULL`, [from, to]))[0] || null;
-      // Staffing shape: worked minutes by hour (ruler-free — hours only, no sales needed).
-      const byHour = rowsOf(q(`SELECT hour, SUM(actual_minutes) AS am FROM labour_hourly WHERE business_date BETWEEN ? AND ? GROUP BY hour ORDER BY hour`, [from, to]));
-      return { from, to, depts, budgets, interDept, interNet, salesDays, uncostedNames: names.sort(), drift, driftTot, byHour };
-    };
-
-    const nav = NAV.resolveNav(ctx.query, maxDate, now, '/coyote/labour');
-    const histRow = rowsOf(q('SELECT MIN(business_date) AS d FROM labour_dept'))[0];
-    // 8-week labour-% trend for the hero spark (audit design change #3 — every headline number
-    // carries its trend). Same CROSS-RULER INTERSECTION discipline as the period figures: a week
-    // contributes only its days holding BOTH a labour row and net>0 sales; day-net fetched once
-    // per day (never multiplied across dept rows). Pre-burden — the scorecard ruler, like the hero.
-    const weeklyPct = rowsOf(q(
-      `SELECT strftime('%Y-%W', d.business_date) AS wk, SUM(d.c) AS c, SUM(d.net) AS net
-         FROM (SELECT ld.business_date, SUM(ld.act_cost_rc_pence) AS c,
-                      (SELECT s.net_sales_pence FROM sales_day s
-                        WHERE s.business_date = ld.business_date AND s.net_sales_pence > 0) AS net
-                 FROM labour_dept ld
-                WHERE ld.business_date > date(?, '-56 days') AND ld.business_date <= ?
-                GROUP BY ld.business_date) d
-        WHERE d.net IS NOT NULL GROUP BY wk ORDER BY wk`, [maxDate, maxDate]))
-      .map((r) => ({ v: num(r.net) > 0 ? (num(r.c) / num(r.net)) * 100 : null }));
-    return {
-      now, hasData: true, maxDate, nav, weeklyPct,
-      histStart: histRow && histRow.d ? String(histRow.d) : null,
-      current: build(nav.from, nav.to),
-      comparator: nav.comparator ? build(nav.comparator.from, nav.comparator.to) : null,
-      headlineDay: build(maxDate, maxDate),
-      parity: rowsOf(q(`SELECT user_name, role_name, kind, rc_value, locked_value FROM labour_rate_parity ORDER BY user_name, role_id`)),
-      intraday: rowsOf(q(`SELECT business_date, department, as_of_ms, sched_minutes_full, sched_cost_rc_full, worked_minutes_so_far, cost_rc_so_far, uncosted_minutes, clocked_in_now, no_shows, ref_date, ref_worked_minutes, ref_net_pence, ref_to_hour FROM labour_intraday ORDER BY department`)),
-      // Blended pre-burden £/hr per dept per week — senior-heavy drift shows here.
-      blended: rowsOf(q(`SELECT department, strftime('%Y-%W', business_date) AS wk, MIN(business_date) AS wk_from, SUM(act_cost_rc_pence) AS ac, SUM(act_minutes) AS am FROM labour_dept WHERE department IN ('kitchen','foh') AND act_minutes > 0 GROUP BY department, wk ORDER BY wk`)),
-      // U18 working-time flags — AGGREGATED per person/kind across ALL history (the systemic
-      // pattern; a 20-row tail hid it). Rules cited at ingest (WTR 1998 young workers).
-      wtr: rowsOf(q(`SELECT user_name, kind, COUNT(*) AS n, MAX(business_date) AS last FROM labour_wtr_flags GROUP BY user_name, kind`)),
-      wtrTotal: rowsOf(q(`SELECT COUNT(*) AS n, COUNT(DISTINCT user_name) AS people, MIN(business_date) AS lo, MAX(business_date) AS hi FROM labour_wtr_flags`))[0] || null,
-    };
+    const query = (ctx && ctx.query) || {};
+    const tab = TAB_KEYS.includes(String(query.tab || '')) ? String(query.tab) : 'executive';
+    const m = { now, tab, maxDate: null };
+    if (typeof q !== 'function') return m;
+    const mx = rowsOf(q(`SELECT MAX(business_date) d FROM labour_day`))[0];
+    m.maxDate = mx && mx.d ? String(mx.d) : null;
+    if (tab === 'executive') m.exec = buildExecutive(q, m.maxDate);
+    if (tab === 'rota') m.rota = buildRota(q, m.maxDate);
+    if (tab === 'coverage') m.cov = buildCoverage(q);
+    return m;
   },
 
   render(section, ctx) {
     const m = section || {};
+    const tab = TAB_KEYS.includes(String(m.tab || '')) ? String(m.tab) : 'executive';
+    const now = m.now || (ctx && ctx.now) || Date.now();
     const esc = S.escapeHtml;
     const gbp = S.fmtGbpPence;
+    const int = S.fmtInt;
     const hrs = (mn) => (num(mn) != null ? (num(mn) / 60).toFixed(1) + 'h' : '—');
-    const pp = (v) => `${v >= 0 ? '+' : '−'}${Math.abs(v).toFixed(1)}pp`;
-    const DEPT_LABEL = { kitchen: 'Kitchen — Calum', foh: 'Front of House — Jordan', unassigned: 'Unassigned location' };
-    const daysInMonth = (dstr) => new Date(Date.UTC(Number(dstr.slice(0, 4)), Number(dstr.slice(5, 7)), 0)).getUTCDate();
+    const pct1 = (v) => (v != null ? `${v.toFixed(1)}%` : '—');
+    const signGbp = (p) => `${p >= 0 ? '+' : '−'}${gbp(Math.abs(p))}`;
 
-    const styles = `<style>
+    // Page styles: the RCC canon + the shell grammar (the reports/reservations idiom) + the
+    // page-local chart grammars + the lb-* subset the held coverage panels arrived in.
+    const styles = `<style>${S.rcc.css()}</style><style>
+      .rcc .r-tabs{display:flex;gap:4px;border-bottom:1px solid var(--rline);margin:0 0 14px;overflow:auto}
+      .rcc .r-tab{color:#9ba4ae;padding:11px 14px;font-weight:700;border-bottom:2px solid transparent;white-space:nowrap;text-decoration:none;font-size:13px}
+      .rcc .r-tab.active{color:#fff;border-bottom-color:var(--raccent)}
+      .rcc .r-grid{display:grid;gap:14px}
+      .rcc .r-kpi-grid{grid-template-columns:repeat(6,minmax(0,1fr));margin-bottom:8px}
+      .rcc .r-two-col{grid-template-columns:minmax(0,2fr) minmax(330px,1fr);margin-bottom:14px}
+      .rcc .r-three-col{grid-template-columns:repeat(3,minmax(0,1fr));margin-bottom:14px}
+      @media(max-width:1200px){.rcc .r-kpi-grid{grid-template-columns:repeat(3,1fr)}}
+      @media(max-width:1100px){.rcc .r-three-col{grid-template-columns:1fr}}
+      @media(max-width:820px){.rcc .r-two-col{grid-template-columns:1fr}.rcc .r-kpi-grid{grid-template-columns:repeat(2,1fr)}}
+      .rcc .r-legend{display:flex;gap:12px;flex-wrap:wrap;color:#aeb6bf;font-size:11px}
+      .rcc .r-legend i{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px}
+      .rcc .r-mini-note{color:#8f99a4;font-size:10.5px;margin-top:10px;line-height:1.5}
+      .rcc .r-meters{display:grid;gap:10px}
+      .rcc .chart-wrap{height:250px;position:relative}
+      .rcc .chart-wrap svg{width:100%;height:100%;display:block;overflow:visible}
+      .rcc .gridline{stroke:#2a3138;stroke-width:1}
+      .rcc .axistext{fill:#7f8994;font-size:11px}
+      .rcc .lbc-caption{font-family:var(--font-mono,monospace);font-size:10.5px;color:var(--muted,#7a8);margin:8px 2px 2px;line-height:1.55}
+      .rcc .lbc-pairs{display:flex;gap:8px;align-items:stretch;height:170px;padding:4px 2px 0}
+      .rcc .lbc-day{flex:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;border-bottom:1px solid #2a3138;min-width:0}
+      .rcc .lbc-bars{display:flex;gap:3px;align-items:flex-end;width:100%;height:140px;justify-content:center}
+      .rcc .lbc-bar{width:38%;max-width:16px;border-radius:3px 3px 1px 1px;min-height:2px}
+      .rcc .lbc-bar.sched{background:${S.rcc.tokens.blue}}
+      .rcc .lbc-bar.act{background:${S.rcc.tokens.accent}}
+      .rcc .lbc-daylabel{color:#7f8994;font-size:9px;margin:6px 0 4px;white-space:nowrap}
+      /* held coverage panels — the old labour page's grammar, carried with them */
       .lb-two{display:grid;grid-template-columns:1fr 1fr;gap:18px}
       @media(max-width:900px){.lb-two{grid-template-columns:1fr}}
       .lb-hint{font-size:12px;line-height:1.5;color:var(--muted,#8b98a5);margin:2px 0 12px}
-      .lb-ruler{font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:var(--amber,#e0b050);margin-bottom:14px;font-weight:600}
       .lb-sec{font-size:15px;font-weight:700;color:var(--text,#e8edf2);margin:26px 0 12px;display:flex;align-items:center;gap:10px}
       .lb-sec::after{content:"";flex:1;height:1px;background:rgba(255,255,255,.10)}
       .lb-sub{font-size:11px;font-weight:500;color:var(--muted,#8b98a5);text-transform:none;letter-spacing:0}
-      .lb-head{display:grid;grid-template-columns:1.4fr 1fr 1fr;gap:14px;margin-bottom:8px}
-      @media(max-width:820px){.lb-head{grid-template-columns:1fr}}
-      .lb-hero{background:linear-gradient(135deg,rgba(255,255,255,.05),rgba(255,255,255,.02));border:1px solid rgba(255,255,255,.10);border-radius:14px;padding:18px 20px}
-      .lb-hero .lab{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted,#8b98a5)}
-      .lb-hero .big{font-size:34px;font-weight:800;line-height:1.1;margin:6px 0 4px}
-      .lb-hero .sub{font-size:12px;color:var(--muted,#8b98a5)}
-      .lb-mini{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:14px 16px}
-      .lb-mini .lab{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted,#8b98a5)}
-      .lb-mini .big{font-size:22px;font-weight:700;margin:4px 0 2px}
-      .lb-mini .sub{font-size:11px;color:var(--muted,#8b98a5)}
       .lb-tbl{width:100%;border-collapse:collapse;font-size:13px}
       .lb-tbl th{text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted,#8b98a5);font-weight:600;padding:6px 10px;border-bottom:1px solid rgba(255,255,255,.10)}
       .lb-tbl td{padding:7px 10px;border-bottom:1px solid rgba(255,255,255,.05)}
@@ -143,287 +385,448 @@ module.exports = {
       .lb-bars{display:flex;align-items:flex-end;gap:3px;height:90px;padding:6px 10px 0}
       .lb-bar{flex:1;background:linear-gradient(180deg,var(--cyan,#22D3EE),#0e6f7d);border-radius:3px 3px 0 0;min-height:2px;position:relative}
       .lb-bar span{position:absolute;bottom:-16px;left:0;right:0;text-align:center;font-size:9px;color:var(--muted,#7a8695)}
-      .lb-hb{display:grid;grid-template-columns:130px 1fr 84px;gap:8px;align-items:center;padding:3px 12px;font-size:12px}
-      .lb-hb .track{background:rgba(255,255,255,.06);border-radius:4px;height:14px;position:relative;overflow:hidden}
-      .lb-hb .fill{position:absolute;top:0;bottom:0;border-radius:4px}
-      .lb-hb .amt{text-align:right;font-variant-numeric:tabular-nums;font-family:var(--mono,ui-monospace,monospace)}
-      .lb-spark{display:block}
-      .lb-pill{display:inline-block;font-size:10px;font-weight:700;padding:2px 8px;border-radius:20px}
       .lb-live{border:1px solid var(--cyan-dim,rgba(34,211,238,.28));border-radius:14px;padding:2px 16px 14px;margin-bottom:6px;background:rgba(34,211,238,.03)}
       .G{color:var(--green,#34d399)} .A{color:var(--amber,#e0b050)} .R{color:var(--red,#f87171)}
-      .bg-G{background:rgba(52,211,153,.16);color:#7ee7c0} .bg-A{background:rgba(224,176,80,.16);color:#f0cd88} .bg-R{background:rgba(248,113,113,.16);color:#f9a8a8}
     </style>`;
 
-    if (!m.hasData) {
-      return { stamp: 'awaiting labour data', body: styles + `<div class="lb-ruler">Manager scorecard — pre-burden, matches RotaCloud</div><div class="banner muted">No department labour yet. The RotaCloud ingest (hourly at :35) fills this in; nothing here is ever estimated. True cost (burden + salaried/365) lives in <a href="/coyote/reports">Reports</a>.</div>` };
-    }
+    const tabsNav = `<div class="r-tabs">${TABS.map((t) =>
+      `<a class="r-tab${t.key === tab ? ' active' : ''}" href="/coyote/labour?tab=${t.key}">${esc(t.label)}</a>`).join('')}</div>`;
 
-    // ---- small chart helpers (inline SVG / CSS, no deps) ----
-    const spark = (vals, w, h) => {
-      const nums = vals.filter((v) => v != null);
-      if (nums.length < 2) return '';
-      const lo = Math.min(...nums), hi = Math.max(...nums), rng = hi - lo || 1;
-      const pts = vals.map((v, i) => v == null ? null : `${(i / (vals.length - 1) * (w - 4) + 2).toFixed(1)},${(h - 3 - ((v - lo) / rng) * (h - 6)).toFixed(1)}`).filter(Boolean).join(' ');
-      const last = vals[vals.length - 1];
-      const lx = (w - 2).toFixed(1), ly = (h - 3 - ((last - lo) / rng) * (h - 6)).toFixed(1);
-      return `<svg class="lb-spark" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><polyline fill="none" stroke="var(--cyan,#22D3EE)" stroke-width="1.6" points="${pts}"/><circle cx="${lx}" cy="${ly}" r="2.2" fill="var(--cyan,#22D3EE)"/></svg>`;
-    };
+    const noWire = (what) => `<div class="banner muted">No settled labour-day record yet — ${what} light(s) up as the RotaCloud ingest fills <span class="mono">labour_day</span> (TRUE ruler: locked rates × 1.159 burden + salaried/365). Nothing here is ever estimated.</div>`;
 
-    // ---- HEADLINE: yesterday's £-consequence on THIS ruler (£ first, % subtitle) ----
-    const headline = () => {
-      const day = m.headlineDay;
-      const known = (day.depts || []).filter((d) => d.department === 'kitchen' || d.department === 'foh');
-      const ac = known.reduce((x, d) => x + (num(d.ac) || 0), 0);
-      const bud = (day.budgets || []).reduce((x, b) => x + (num(b.budget_pence) || 0), 0);
-      const net = day.interNet && num(day.interNet.net) > 0 ? num(day.interNet.net) : null;
-      const schedMin = known.reduce((x, d) => x + (num(d.sm) || 0), 0);
-      const actMin = known.reduce((x, d) => x + (num(d.am) || 0), 0);
-      const varMin = actMin - schedMin;
-      let heroCell;
-      if (known.length && bud) {
-        const delta = ac - Math.round(bud);
-        const cls = delta <= 0 ? 'G' : 'R';
-        heroCell = `<div class="lb-hero"><div class="lab">Latest settled day (${esc(m.maxDate)}) vs the managers' budgets — scorecard ruler</div>
-          <div class="big ${cls}">${delta <= 0 ? gbp(-delta) + ' under' : gbp(delta) + ' OVER'}</div>
-          <div class="sub">spent ${gbp(ac)} against ${gbp(Math.round(bud))} budgeted${net != null ? ` · ${((ac / net) * 100).toFixed(1)}% of net vs ${((bud / net) * 100).toFixed(1)}% budgeted` : ''} · pre-burden</div></div>`;
+    // ============================ EXECUTIVE ============================
+    const renderExecutiveTab = () => {
+      const e = m.exec;
+      if (!e) return noWire('the executive control view');
+      const wk = e.week;
+      const agg = e.agg && num(e.agg.days) > 0 ? e.agg : null;
+      const inter = e.inter && num(e.inter.days) > 0 && num(e.inter.net) > 0 ? e.inter : null;
+
+      // ---- (1) KPI strip: six tiles, every one captions its ruler ----
+      const labPct = inter ? (num(inter.ac) / num(inter.net)) * 100 : null;
+      const budPct = inter ? ((num(inter.sal) + VAR_RATE * num(inter.net)) / num(inter.net)) * 100 : null;
+      const splh = inter && num(inter.am) > 0 ? Math.round(num(inter.net) / (num(inter.am) / 60)) : null;
+      const otMins = e.ot && num(e.ot.mins) != null ? num(e.ot.mins) : null;
+      const schedVar = agg && num(agg.sc) != null && num(agg.ac) != null ? num(agg.ac) - num(agg.sc) : null;
+      const salShare = agg && num(agg.ac) > 0 && num(agg.sal) != null ? (num(agg.sal) / num(agg.ac)) * 100 : null;
+      const kpis = [
+        S.rcc.kpi({
+          label: 'Labour % of net', value: pct1(labPct),
+          delta: labPct != null && budPct != null
+            ? { dir: labPct <= budPct ? 'up' : 'down', text: `${labPct - budPct >= 0 ? '+' : '−'}${Math.abs(labPct - budPct).toFixed(1)}pp vs formula ${budPct.toFixed(1)}%` }
+            : null,
+          sub: inter ? `TRUE ÷ net · ${int(num(inter.days))} intersection day(s)` : 'no day holds both labour and sales this week',
+        }),
+        S.rcc.kpi({
+          label: 'Labour £ / week', value: agg ? gbp(num(agg.ac)) : '—',
+          sub: agg ? `TRUE all-in (burdened + salaried/365) · ${int(num(agg.days))} day(s)` : 'no labour_day rows this week',
+        }),
+        S.rcc.kpi({
+          label: 'SPLH', value: splh != null ? gbp(splh) : '—',
+          sub: inter ? `net ÷ worked hrs · intersection day(s) only` : 'needs sales ∩ labour days',
+        }),
+        S.rcc.kpi({
+          label: 'Overtime / variance hrs', value: otMins != null ? hrs(otMins) : '—',
+          sub: otMins != null ? `Σ positive shift variance (labour_shifts)` : 'no shift variance recorded this week',
+        }),
+        S.rcc.kpi({
+          label: 'Sched vs actual £', value: schedVar != null ? signGbp(schedVar) : '—',
+          sub: 'TRUE-basis approx · labour_day scheduled vs actual cost',
+        }),
+        S.rcc.kpi({
+          label: 'Salaried share', value: pct1(salShare),
+          sub: 'salaried/365 ÷ TRUE actual · labour_day',
+        }),
+      ].join('');
+      const kpiCaption = `<div class="lbc-caption">window = the last full Mon–Sun week ${esc(wk.from)} → ${esc(wk.to)} · ruler: TRUE all-in (labour_day — locked rates × 1.159 burden + salaried/365); RC-screen figures never render on this tab · % and SPLH divide over the sales∩labour intersection only (${inter ? int(num(inter.days)) : 0} day(s)) · formula budget = (Σ salaried + 22.4% × net) ÷ net — kitchen 14.3% + FOH 8.1%, the ruled variable splits.</div>`;
+
+      // ---- (2) 13-week labour control trend (absorbs the old page's 8-week hero spark) ----
+      const weeks = e.trend.weeks;
+      const gapWeeks = weeks.filter((w) => w.labourDays === 0);
+      const anyPct = weeks.some((w) => w.pct != null);
+      let trendBody;
+      if (anyPct) {
+        const T = 18, B = 218, L = 56, R = 866;
+        const vals = weeks.flatMap((w) => [w.pct, w.budPct]).filter((v) => v != null);
+        const vMax = Math.max(...vals) + 2, vMin = Math.max(0, Math.min(...vals) - 2);
+        const X = (i) => Math.round((L + (i * (R - L)) / Math.max(1, weeks.length - 1)) * 10) / 10;
+        const Y = (v) => Math.round((B - ((B - T) * (v - vMin)) / Math.max(0.001, vMax - vMin)) * 10) / 10;
+        const gridLines = [0, 1, 2, 3].map((i) => { const v = vMin + ((vMax - vMin) * i) / 3; return `<line x1="50" y1="${Y(v)}" x2="872" y2="${Y(v)}" class="gridline"/><text x="8" y="${Y(v) + 4}" class="axistext">${v.toFixed(1)}%</text>`; }).join('');
+        const series = (key, cls, dash) => REP.contiguousRuns(weeks.map((w, i) => ({ i, v: w[key] })), (p) => p.v != null)
+          .map((run) => run.length === 1
+            ? `<circle cx="${X(run[0].i)}" cy="${Y(run[0].v)}" r="3.5" fill="${cls}"/>`
+            : `<polyline points="${run.map((p) => `${X(p.i)},${Y(p.v)}`).join(' ')}" fill="none" stroke="${cls}" stroke-width="${dash ? 2 : 3}"${dash ? ' stroke-dasharray="5 4"' : ''}/>`).join('');
+        const xlabs = weeks.map((w, i) => (i % 2 === 0 ? `<text x="${X(i) - 14}" y="243" class="axistext">${esc(dayLabel(w.from))}</text>` : '')).join('');
+        trendBody = `<div class="chart-wrap"><svg viewBox="0 0 900 260" role="img" aria-label="Thirteen-week labour control trend">${gridLines}${series('budPct', S.rcc.tokens.warn, true)}${series('pct', S.rcc.tokens.accent, false)}${xlabs}</svg></div>`;
       } else {
-        heroCell = `<div class="lb-hero"><div class="lab">Latest settled day (${esc(m.maxDate)}) — scorecard ruler</div>
-          <div class="big">${gbp(ac)}</div>
-          <div class="sub">pre-burden labour · no RotaCloud budget set for this day</div></div>`;
+        trendBody = S.rcc.emptyState({ title: '13-week labour control trend', blocker: 'no week in the window holds both a labour_day record and net>0 sales.', unlock: 'the daily RotaCloud + Lightspeed ingests' });
       }
-      return `<div class="lb-head">${heroCell}
-        <div class="lb-mini"><div class="lab">Rota'd → worked</div><div class="big">${hrs(schedMin)} → ${hrs(actMin)}</div><div class="sub ${varMin > 0 ? 'A' : ''}">${varMin >= 0 ? '+' : '−'}${hrs(Math.abs(varMin))} vs rota</div></div>
-        <div class="lb-mini"><div class="lab">Labour % of net</div><div class="big${net != null ? '' : ''}">${net != null ? ((ac / net) * 100).toFixed(1) + '%' : '—'}</div><div class="sub">${net != null ? 'true cost in Reports' : 'needs sales'}</div>${S.sparkline(m.weeklyPct || [], { width: 120, height: 26 })}</div>
-      </div>`;
-    };
-
-    // ---- SCORECARD dept block: hours + pre-burden cost + budget/variance + pacing ----
-    const deptBlock = (p, d, isMonth) => {
-      const b = (p.budgets || []).find((x) => x.department === d.department) || null;
-      const budget = b && num(b.budget_pence) != null ? Math.round(num(b.budget_pence)) : null;
-      const pctTarget = b && num(b.pct_min) != null
-        ? (num(b.pct_min) === num(b.pct_max) ? (num(b.pct_min) * 100).toFixed(1) + '%' : `${(num(b.pct_min) * 100).toFixed(1)}–${(num(b.pct_max) * 100).toFixed(1)}%`)
-        : null;
-      const targetPct = b && num(b.pct_min) === num(b.pct_max) ? num(b.pct_min) * 100 : null;
-
-      const rows = [];
-      rows.push(`<tr><td>Budget (RotaCloud)</td><td class="n">—</td><td class="n">${budget != null ? gbp(budget) : '<span class="ash">not set</span>'}</td><td class="n">${pctTarget != null ? esc(pctTarget) : '—'}</td></tr>`);
-      rows.push(`<tr><td>Scheduled (rota)</td><td class="n">${hrs(d.sm)}</td><td class="n">${gbp(d.sc)}</td><td class="n">—</td></tr>`);
-      rows.push(`<tr><td>Actual (clocked)</td><td class="n">${hrs(d.am)}</td><td class="n">${gbp(d.ac)}</td><td class="n">—</td></tr>`);
-
-      const varLines = [];
-      if (budget != null && num(d.sc) != null) { const v = num(d.sc) - budget; varLines.push(`planned vs budget: ${v >= 0 ? '+' : '−'}${gbp(Math.abs(v))}`); }
-      if (budget != null && num(d.ac) != null) { const v = num(d.ac) - budget; varLines.push(`landed vs budget: ${v >= 0 ? '+' : '−'}${gbp(Math.abs(v))}`); }
-      const uncosted = (num(d.usm) || 0) > 0 || (num(d.uam) || 0) > 0
-        ? `<div class="lb-hint">⚠️ ${hrs(Math.max(num(d.usm) || 0, num(d.uam) || 0))} at £0 in RotaCloud (no stored rate) — matches what the manager sees in-app; the real cost of these staff lives in <a href="/coyote/reports">Reports</a>.</div>`
+      const gapCaption = gapWeeks.length
+        ? ` · <b>${int(gapWeeks.length)} week(s) render as GAPS</b> — no labour_day record${juneNote(gapWeeks.map((w) => w.from))}; gaps are stated, never bridged or interpolated`
         : '';
+      const trendPanel = S.rcc.panel({
+        title: '13-week labour control trend', sub: 'weekly TRUE labour % of net vs the formula budget % · sales∩labour intersection days',
+        headRight: `<div class="r-legend"><span><i style="background:${S.rcc.tokens.accent}"></i>Labour % (TRUE)</span><span><i style="background:${S.rcc.tokens.warn}"></i>Formula budget %</span></div>`,
+        body: trendBody + `<div class="r-mini-note">weekly labour % = Σ TRUE cost ÷ Σ net over each week's intersection days · budget % = (Σ salaried + 22.4% × net) ÷ net${gapCaption}. This trend ABSORBED the old labour hero spark — one home.</div>`,
+      });
 
-      // BONUS PACING (month only) — arithmetic restatement of the MTD ledger, no projection.
-      let pacing = '';
-      if (isMonth && budget != null && num(d.ac) != null) {
-        const delta = num(d.ac) - budget;
-        const covered = num(d.days) || 0;
-        const lastSettled = m.maxDate < p.to ? m.maxDate : p.to;
-        const remaining = Math.max(0, daysInMonth(p.from) - Number(lastSettled.slice(8, 10)));
-        if (remaining === 0) pacing = `<div class="lb-hint"><b>${delta > 0 ? '🔴' : '🟢'} Month closed ${delta > 0 ? gbp(delta) + ' OVER' : gbp(-delta) + ' under'} budget</b> across ${esc(String(covered))} settled day(s).</div>`;
-        else if (delta > 0) pacing = `<div class="lb-hint"><b>🔴 ${gbp(delta)} over budget</b> through ${esc(String(covered))} settled day(s) — the remaining ${esc(String(remaining))} day(s) must run a combined ${gbp(delta)} UNDER their daily budgets to land the month (≈${gbp(Math.round(delta / remaining))}/day).</div>`;
-        else pacing = `<div class="lb-hint"><b>🟢 ${gbp(-delta)} under budget</b> through ${esc(String(covered))} settled day(s) — a cushion of ≈${gbp(Math.round(-delta / remaining))}/day for the remaining ${esc(String(remaining))} day(s).</div>`;
+      // ---- (3) owner attention queue ----
+      const alerts = [];
+      for (const v of e.verdicts) {
+        alerts.push(S.rcc.alert({
+          title: `${v.dept.toUpperCase()} — ${v.mode.toUpperCase()} w/c ${v.week}`,
+          text: `rota-review verdict vs the formula budget${v.budgetPence != null ? ` ${gbp(v.budgetPence)}` : ''}${v.salariedPence != null ? ` (salaried ${gbp(v.salariedPence)} inside)` : ''}`,
+          impact: v.deltaPence > 0 ? `${gbp(v.deltaPence)} OVER` : `${gbp(-v.deltaPence)} under`,
+          tone: v.deltaPence > MATERIALITY_PENCE ? 'bad' : v.deltaPence > 0 ? undefined : 'good',
+        }));
       }
+      const wtrN = e.wtrCount ? num(e.wtrCount.n) || 0 : 0;
+      if (wtrN > 0) alerts.push(S.rcc.alert({ title: 'U18 working-time flags', text: 'WTR 1998 breaches across all history — the full per-person table holds on Coverage & People', impact: `${int(wtrN)} flag(s)`, tone: 'bad' }));
+      const parN = e.parityCount ? num(e.parityCount.n) || 0 : 0;
+      if (parN > 0) alerts.push(S.rcc.alert({ title: 'Rate parity findings', text: 'RotaCloud stored rates disagree with the locked table — RC screens mis-cost until fixed in RotaCloud (detail on Coverage & People)', impact: `${int(parN)} finding(s)` }));
+      if (e.unmapped.length) alerts.push(S.rcc.alert({ title: 'Unmapped shifts this week', text: `no stored mapping for: ${e.unmapped.join(', ')} — data hygiene, fix the mapping in RotaCloud`, impact: `${int(e.unmapped.length)} name(s)` }));
+      const hasRuns = e.hasRuns && num(e.hasRuns.n) > 0;
+      const queueBody = alerts.length
+        ? `<div style="display:grid;gap:8px">${alerts.join('')}</div>`
+        : `<div class="r-alert good"><div class="r-bar"></div><div><h4>All clear</h4><p>${hasRuns ? 'no verdict deltas, WTR flags, parity findings or unmapped shifts on record.' : 'no rota-review runs on record yet — the cadence timers persist them; no WTR/parity/unmapped findings.'}</p></div><div class="r-impact"></div></div>`;
+      const queuePanel = S.rcc.panel({
+        title: 'Owner attention queue', sub: 'ranked findings, £-valued · verdicts from the latest FORWARD + HINDSIGHT runs',
+        headRight: `<a class="r-pill" href="/coyote/rota-review">Rota Review report →</a>`,
+        body: queueBody + `<div class="r-mini-note">verdict receipts (history + full text) stay on the <a href="/coyote/rota-review" style="color:${S.rcc.tokens.accent2}">Rota Review report</a> — no duplication. The People exception queue is EXCLUDED BY RULING (surveillance boundary): people appear as rota-structural facts only.</div>`,
+      });
 
-      return `<div class="lb-card"><div class="lb-cardhead">${esc(DEPT_LABEL[d.department] || d.department)}${targetPct != null ? `<span class="lb-sub">target ${esc(pctTarget)}</span>` : ''}</div>
-        <table class="lb-tbl"><thead><tr><th></th><th style="text-align:right">hours</th><th style="text-align:right">cost (pre-burden)</th><th style="text-align:right">target %</th></tr></thead><tbody>${rows.join('')}</tbody></table>
-        ${varLines.length ? `<div class="lb-hint" style="margin:8px 12px 0">${esc(varLines.join(' · '))}</div>` : ''}
-        ${pacing}${uncosted}</div>`;
-    };
-
-    // ---- CROSS-RULER block: % of net + SPLH over the sales∩labour intersection ONLY ----
-    const crossRulerBlock = (p, label) => {
-      const known = ['kitchen', 'foh'].map((k) => (p.interDept || []).find((d) => d.department === k)).filter(Boolean);
-      const interNet = p.interNet && num(p.interNet.net) > 0 ? num(p.interNet.net) : null;
-      const interDays = p.interNet ? (num(p.interNet.days) || 0) : 0;
-      const coveredLabour = p.depts && p.depts.length ? Math.max.apply(null, p.depts.map((d) => num(d.days) || 0)) : 0;
-      if (interNet == null || interDays === 0) {
-        return `<div class="lb-sec">Labour % of net &amp; SPLH <span class="lb-sub">cross-ruler</span></div>
-          <div class="banner muted">Needs sales history — no day in this period has both a labour record and sales yet, so labour % and SPLH can't be computed honestly. They light up as the sales backfill lands. (Hours and pre-burden cost above stand alone.)</div>`;
+      // ---- (4) labour variance bridge (waterfall) ----
+      const b = e.bridge;
+      let bridgeBody;
+      if (b.sched != null && b.actual != null) {
+        const comps = [
+          { lab: 'Rate mix', v: b.rateMix, note: 'dept-level £/min drift (labour_dept) × burden' },
+          { lab: 'Hours var', v: b.hoursVar, note: `rota'd shifts run over/under (${b.hoursVarMins != null ? hrs(b.hoursVarMins) : '—'})` },
+          { lab: `Unrota'd`, v: b.unrota, note: `${int(b.unrotaN)} worked shift(s) with no rota line` },
+          { lab: 'Not worked', v: b.unworked, note: `${int(b.unworkedN)} rota'd shift(s) not worked` },
+        ];
+        const known = comps.reduce((x, c) => x + (c.v || 0), 0);
+        const remainder = (b.actual - b.sched) - known;
+        comps.push({ lab: 'Remainder', v: remainder, note: 'rounding + rate-less shifts + ruler-translation residue — labelled, never hidden' });
+        // waterfall geometry
+        const steps = [{ lab: 'Scheduled', abs: b.sched }];
+        let cum = b.sched;
+        for (const c of comps) { steps.push({ lab: c.lab, delta: c.v || 0, from: cum, to: cum + (c.v || 0) }); cum += c.v || 0; }
+        steps.push({ lab: 'Actual', abs: b.actual });
+        const lo = Math.min(...steps.map((s) => (s.abs != null ? 0 : Math.min(s.from, s.to))), 0);
+        const hi = Math.max(...steps.map((s) => (s.abs != null ? s.abs : Math.max(s.from, s.to))), 1);
+        const H = 190, T = 26;
+        const Y = (v) => Math.round((T + (H - T) * (1 - (v - lo) / Math.max(1, hi - lo))) * 10) / 10;
+        const W = 900, bw = Math.floor((W - 40) / steps.length) - 14;
+        const bars = steps.map((s, i) => {
+          const x = 24 + i * (bw + 14);
+          let y0, y1, fill;
+          if (s.abs != null) { y0 = Y(s.abs); y1 = Y(0); fill = i === 0 ? '#56616e' : S.rcc.tokens.accent; }
+          else { y0 = Y(Math.max(s.from, s.to)); y1 = Y(Math.min(s.from, s.to)); fill = s.delta >= 0 ? S.rcc.tokens.bad : S.rcc.tokens.good; }
+          const h = Math.max(2, y1 - y0);
+          const val = s.abs != null ? gbp(s.abs) : signGbp(s.delta);
+          return `<rect x="${x}" y="${y0}" width="${bw}" height="${h}" rx="3" fill="${fill}"/>`
+            + `<text x="${x + bw / 2}" y="${y0 - 6}" text-anchor="middle" class="axistext">${esc(val)}</text>`
+            + `<text x="${x + bw / 2}" y="${H + 16}" text-anchor="middle" class="axistext">${esc(s.lab)}</text>`;
+        }).join('');
+        bridgeBody = `<div class="chart-wrap" style="height:220px"><svg viewBox="0 0 ${W} ${H + 24}" role="img" aria-label="Labour variance bridge — scheduled to actual">${bars}</svg></div>
+          <div class="r-mini-note">${comps.map((c) => `${esc(c.lab)}: <b>${c.v != null ? esc(signGbp(c.v)) : '—'}</b> — ${esc(c.note)}`).join(' · ')}.</div>
+          <div class="r-mini-note">endpoints = labour_day scheduled → actual TRUE £ for ${esc(wk.from)} → ${esc(wk.to)} · shift effects at the shift's locked rate × 1.159 burden (salaried/365 sits identically in both endpoints, so it cancels) · AGGREGATE only — no person keys, ever.</div>`;
+      } else {
+        bridgeBody = S.rcc.emptyState({ title: 'Labour variance bridge', blocker: 'no labour_day scheduled + actual cost pair in the last full week.', unlock: 'the daily RotaCloud ingest' });
       }
-      const budgets = p.budgets || [];
-      const totMin = known.reduce((x, d) => x + (num(d.am) || 0), 0);
-      const cell = (deptKey, cost) => {
-        if (cost == null || interNet == null) return '—';
-        const pct = (cost / interNet) * 100;
-        const b = budgets.find((x) => x.department === deptKey);
-        const t = b && num(b.pct_min) === num(b.pct_max) ? num(b.pct_min) * 100 : null;
-        const cls = t == null ? '' : pct <= t ? ' class="G"' : pct <= t + 1 ? ' class="A"' : ' class="R"';
-        return `<span${cls}>${pct.toFixed(1)}%</span>`;
+      const bridgePanel = S.rcc.panel({
+        title: 'Labour variance bridge', sub: `scheduled → actual £, decomposed by driver · ${wk.from} → ${wk.to}`,
+        body: bridgeBody,
+      });
+
+      // ---- (5) department control ----
+      const dc = e.deptCtl;
+      const deptCard = (d) => {
+        const name = d.dept === 'kitchen' ? 'Kitchen' : 'Front of House';
+        const rate = `${(VAR_RATE_DEPT[d.dept] * 100).toFixed(1)}%`;
+        if (d.trueVar == null || d.budget == null) {
+          return S.rcc.panel({
+            title: `Department control — ${name}`, sub: `variable TRUE vs ${rate} × net`,
+            body: S.rcc.emptyState({ title: `${name} week control`, blocker: dc.interDays === 0 ? 'no sales∩labour intersection day this week — the budget side needs net.' : `no ${name} labour_dept rows on the intersection days.`, unlock: 'the daily ingests' }),
+          });
+        }
+        return S.rcc.panel({
+          title: `Department control — ${name}`, sub: `variable TRUE vs the ruled ${rate} × net · ${int(dc.interDays)} intersection day(s)`,
+          headRight: ruledChip(d.delta, 'OVER', 'UNDER budget', 'On budget'),
+          body: `<table><tbody>
+              <tr><td>Variable TRUE cost</td><td class="r-num mono">${gbp(d.trueVar)}</td></tr>
+              <tr><td>Variable budget (${esc(rate)} × ${gbp(dc.interNet)} net)</td><td class="r-num mono">${gbp(d.budget)}</td></tr>
+              <tr><td>Delta</td><td class="r-num mono">${signGbp(d.delta)}</td></tr>
+              <tr><td>Worked hours (intersection days)</td><td class="r-num mono">${hrs(d.mins)}</td></tr>
+            </tbody></table>
+            <div class="r-mini-note">variable TRUE = dept hourly cost × 1.159 burden; the salaried term sits identically in the ruled budget (salaried burdened + var% × net) and in TRUE cost, so it cancels and the delta is exact · OVER only beyond the ruled £45 materiality · senior-mix vs the ruled &gt;40% MIX threshold is omitted — labour_shifts carries no department key (the rota-review verdicts carry the ruled MIX notes).</div>`,
+        });
       };
-      const splh = (mn) => (mn > 0 ? gbp(Math.round(interNet / (mn / 60))) : '—');
-      const rows = known.map((d) => `<tr><td>${esc((DEPT_LABEL[d.department] || d.department).split(' — ')[0])}</td>
-        <td class="n">${cell(d.department, num(d.sc))}</td><td class="n">${cell(d.department, num(d.ac))}</td><td class="n">${splh(num(d.am) || 0)}</td></tr>`).join('');
-      const partial = interDays < coveredLabour;
-      return `<div class="lb-sec">Labour % of net &amp; SPLH <span class="lb-sub">cross-ruler · over ${esc(String(interDays))} day${interDays === 1 ? '' : 's'} with sales</span></div>
-        <div class="lb-card"><table class="lb-tbl"><thead><tr><th>dept</th><th style="text-align:right">scheduled %</th><th style="text-align:right">actual %</th><th style="text-align:right">SPLH</th></tr></thead>
-        <tbody>${rows}<tr><td><b>Site</b></td><td class="n">—</td><td class="n">—</td><td class="n"><b>${splh(totMin)}</b></td></tr></tbody></table>
-        <div class="lb-hint" style="margin:8px 12px 0">Actual % vs each dept's RotaCloud target (green on/under · amber ≤1pp · red over). SPLH = site net ÷ worked hours; target line arrives once the backfill gives our own best-week baseline — no invented benchmark until then.${partial ? ` Labour covers ${esc(String(coveredLabour))} day(s) here but only ${esc(String(interDays))} have sales — these cross-ruler figures use just those ${esc(String(interDays))}.` : ''}</div></div>`;
-    };
+      const deptRow = `<div class="r-grid r-three-col">${bridgePanel}${dc.depts.map(deptCard).join('')}</div>`;
 
-    // ---- staffing shape: worked minutes by hour (ruler-free) ----
-    const staffingShape = (p) => {
-      const hoursArr = (p.byHour || []).filter((h) => num(h.am) != null && num(h.am) > 0);
-      if (hoursArr.length < 2) return '';
-      const mx = Math.max(...hoursArr.map((h) => num(h.am) || 0)) || 1;
-      const bars = hoursArr.map((h) => { const hh = num(h.hour) >= 24 ? num(h.hour) - 24 : num(h.hour); return `<div class="lb-bar" style="height:${Math.max(2, Math.round((num(h.am) || 0) / mx * 80))}px" title="${esc(String(hh))}:00 — ${hrs(h.am)}"><span>${esc(String(hh))}</span></div>`; }).join('');
-      return `<div class="lb-sec">Staffing shape <span class="lb-sub">worked hours by hour of day · scorecard ruler</span></div>
-        <div class="lb-card"><div class="lb-bars">${bars}</div><div style="height:14px"></div>
-        <div class="lb-hint" style="margin:0 12px">Where worked hours land across the day — the shape you flex against trade (cross-check the sales curve on <a href="/coyote/reports">Reports</a>).</div></div>`;
-    };
-
-    // ---- clock drift: ranked bars + detail table ----
-    const driftBlock = (p, label) => {
-      if (!p.drift || !p.drift.length) return '';
-      const withCost = p.drift.map((r) => ({ ...r, dp: num(r.rate_pence) != null && num(r.variance_minutes) != null ? Math.round((num(r.variance_minutes) * num(r.rate_pence)) / 60) : null }));
-      const mx = Math.max(1, ...withCost.map((r) => Math.abs(r.dp || 0)));
-      const bars = withCost.filter((r) => r.dp != null).slice(0, 6).map((r) => {
-        const w = Math.round(Math.abs(r.dp) / mx * 100);
-        const over = (num(r.variance_minutes) || 0) > 0;
-        return `<div class="lb-hb"><div>${esc(r.user_name || '')}</div><div class="track"><div class="fill" style="width:${w}%;background:${over ? 'var(--amber,#e0b050)' : 'var(--cyan,#22D3EE)'}"></div></div><div class="amt ${over ? 'A' : ''}">${r.dp >= 0 ? '+' : '−'}${gbp(Math.abs(r.dp))}</div></div>`;
+      // ---- (6) daily control strip ----
+      const stripMissing = e.strip.filter((r) => !r.lab).map((r) => r.date);
+      const stripRows = e.strip.map((r) => {
+        if (!r.lab) {
+          return `<tr><td>${esc(dowLabel(r.date))} ${esc(r.date)}</td><td class="r-num mono">${r.net != null ? gbp(r.net) : '—'}</td>
+            <td class="r-num mono ash" colspan="3">no labour record</td><td>${S.rcc.tag('no labour')}</td><td class="r-num mono">—</td></tr>`;
+        }
+        const netOk = r.net != null && r.net > 0;
+        const pctV = netOk && r.lab.ac != null ? (r.lab.ac / r.net) * 100 : null;
+        const budV = netOk ? (((r.lab.sal || 0) + Math.round(VAR_RATE * r.net)) / r.net) * 100 : null;
+        const delta = netOk && r.lab.ac != null ? r.lab.ac - ((r.lab.sal || 0) + Math.round(VAR_RATE * r.net)) : null;
+        const daySplh = netOk && num(r.lab.am) > 0 ? Math.round(r.net / (num(r.lab.am) / 60)) : null;
+        return `<tr><td>${esc(dowLabel(r.date))} ${esc(r.date)}</td>
+          <td class="r-num mono">${r.net != null ? gbp(r.net) : '<span class="ash">no sales record</span>'}</td>
+          <td class="r-num mono">${gbp(r.lab.ac)}</td>
+          <td class="r-num mono">${pct1(pctV)}</td>
+          <td class="r-num mono">${pct1(budV)}</td>
+          <td>${netOk ? ruledChip(delta, 'Over', 'Under formula', 'On formula') : S.rcc.tag('no net')}</td>
+          <td class="r-num mono">${daySplh != null ? gbp(daySplh) : '—'}</td></tr>`;
       }).join('');
-      const dRows = withCost.map((r) => { const v = num(r.variance_minutes) || 0; return `<tr><td>${esc(r.user_name || '')}</td><td class="n">${esc(String(r.business_date))}</td><td class="n">${hrs(r.sched_minutes)}</td><td class="n">${hrs(r.act_minutes)}</td><td class="n${v > 0 ? ' A' : ''}">${v >= 0 ? '+' : '−'}${hrs(Math.abs(v))}</td><td class="n">${r.dp != null ? (r.dp >= 0 ? '+' : '−') + gbp(Math.abs(r.dp)) : '— <span class="ash">(salaried)</span>'}</td></tr>`; }).join('');
-      const tot = p.driftTot && num(p.driftTot.pence) != null ? Math.round(num(p.driftTot.pence)) : null;
-      return `<div class="lb-sec">Clock drift <span class="lb-sub">rota'd vs worked · ${esc(label)}</span></div>
-        <div class="lb-card">${bars ? `<div style="padding:8px 0 4px">${bars}</div>` : ''}
-        <table class="lb-tbl"><thead><tr><th>who</th><th style="text-align:right">date</th><th style="text-align:right">rota'd</th><th style="text-align:right">worked</th><th style="text-align:right">Δ hours</th><th style="text-align:right">Δ £ pre-burden</th></tr></thead><tbody>${dRows}</tbody></table>
-        ${tot != null ? `<div class="lb-hint" style="margin:8px 12px 0">Period drift total: <b>${tot >= 0 ? '+' : '−'}${gbp(Math.abs(tot))}</b> pre-burden (${esc(hrs(Math.abs(num(p.driftTot.mins) || 0)))} ${num(p.driftTot.mins) >= 0 ? 'over' : 'under'} rota). Positive = worked ran past the plan.</div>` : ''}</div>`;
+      const stripPanel = S.rcc.panel({
+        title: 'Daily control strip', sub: `last 7 days to ${e.maxDate} · TRUE labour vs the daily formula budget`,
+        body: `<div style="overflow:auto"><table><thead><tr><th>Day</th><th class="r-num">Net</th><th class="r-num">TRUE labour £</th><th class="r-num">Labour %</th><th class="r-num">Budget %</th><th>Status</th><th class="r-num">SPLH</th></tr></thead><tbody>${stripRows}</tbody></table></div>
+          <div class="r-mini-note">daily budget = salaried + 22.4% × net (the ruled splits) · STATUS: OVER only beyond the £45 materiality · an absent labour day says so${stripMissing.length ? esc(juneNote(stripMissing)) : ''} — never a zero · the labour DETAIL home is here; the Revenue Drivers scorecard keeps its cross-domain columns and points here.</div>`,
+      });
+
+      return `<div class="r-grid r-kpi-grid">${kpis}</div>${kpiCaption}
+        <div class="r-grid r-two-col">${trendPanel}${queuePanel}</div>
+        ${deptRow}${stripPanel}`;
     };
 
-    // ---- period body ----
-    const periodBody = (p, label, isMonth) => {
-      const covered = p.depts && p.depts.length ? Math.max.apply(null, p.depts.map((d) => num(d.days) || 0)) : 0;
-      if (!covered) return `<div class="banner muted">No record for this period — history starts ${esc(m.histStart || '(no labour history yet)')}. Nothing is interpolated; days without a record are never shown as zeros.</div>`;
-      const order = ['kitchen', 'foh'];
-      const known = order.map((k) => (p.depts || []).find((d) => d.department === k)).filter(Boolean);
-      const parts = [`<div class="lb-two">${known.map((d) => deptBlock(p, d, isMonth)).join('')}</div>`];
-      parts.push(crossRulerBlock(p, label));
-      parts.push(staffingShape(p));
-      parts.push(driftBlock(p, label));
-      const un = (p.depts || []).find((d) => d.department === 'unassigned');
-      if (un) parts.push(`<div class="banner">⚠️ ${hrs(un.sm)} rota'd / ${hrs(un.am)} clocked on an UNKNOWN RotaCloud location — not guessed into a department; fix the location in RotaCloud.</div>`);
-      return parts.filter(Boolean).join('\n');
-    };
+    // ============================ ROTA VS ACTUAL ============================
+    const renderRotaTab = () => {
+      const r = m.rota;
+      if (!r) return noWire('rota vs actual');
+      const days = r.days || [];
 
-    // ---- blended rate: sparkline per dept + current £/hr + Δ ----
-    const blendedHtml = () => {
-      const by = { kitchen: [], foh: [] };
-      for (const r of m.blended || []) if (by[r.department]) by[r.department].push(r);
-      const weeks = Math.max(by.kitchen.length, by.foh.length);
-      if (!weeks) return '';
-      const card = (dept) => {
-        const series = by[dept].map((r) => (num(r.am) > 0 ? num(r.ac) / (num(r.am) / 60) : null));
-        const cur = series.length ? series[series.length - 1] : null;
-        const prev = series.length > 1 ? series[series.length - 2] : null;
-        const dlt = cur != null && prev != null ? cur - prev : null;
-        return `<div class="lb-card"><div class="lb-cardhead">${esc((DEPT_LABEL[dept] || dept).split(' — ')[0])}<span class="lb-sub">${cur != null ? gbp(Math.round(cur)) + '/h' : '—'}${dlt != null ? ` · <span class="${dlt > 0 ? 'A' : 'G'}">${dlt >= 0 ? '+' : '−'}${gbp(Math.round(Math.abs(dlt)))} vs prior wk</span>` : ''}</span></div>
-          <div style="padding:6px 12px 12px">${series.filter((x) => x != null).length >= 2 ? spark(series, 260, 46) : '<span class="lb-hint">Thin history — the trend needs a second week to say anything; it appears as the record grows.</span>'}</div></div>`;
-      };
-      return `<div class="lb-sec">Blended rate <span class="lb-sub">pre-burden £/hr by week — catches senior-heavy scheduling</span></div><div class="lb-two">${card('kitchen')}${card('foh')}</div>`;
-    };
-
-    // ---- U18 WORKING-TIME GUARD: aggregate per-person breach summary ----
-    const wtrHtml = () => {
-      const flags = m.wtr || [];
-      if (!flags.length) return `<div class="banner muted">U18 working-time ✓ — no flags (8h/day · 40h/wk fixed · 22:00+ surfaced · 00:00–04:00 absolute; re-checked every ingest).</div>`;
-      const t = m.wtrTotal || {};
-      const byUser = new Map();
-      for (const f of flags) {
-        const u = byUser.get(f.user_name) || { name: f.user_name, day_over_8h: 0, week_over_40h: 0, night_22_24: 0, night_00_04: 0, last: '' };
-        u[f.kind] = num(f.n) || 0;
-        if (String(f.last) > u.last) u.last = String(f.last);
-        byUser.set(f.user_name, u);
+      // ---- (1) daily hours: 14d paired columns sched vs actual ----
+      let hoursBody;
+      const withMins = days.filter((d) => d.sm != null || d.am != null);
+      if (withMins.length) {
+        const maxMin = Math.max(...withMins.flatMap((d) => [d.sm || 0, d.am || 0]), 1);
+        const all14 = [];
+        for (let i = 13; i >= 0; i--) all14.push(K.shiftDays(r.maxDate, -i));
+        const byDate = new Map(days.map((d) => [d.date, d]));
+        const cols = all14.map((iso) => {
+          const d = byDate.get(iso);
+          if (!d) return `<div class="lbc-day" title="${esc(`${dowLabel(iso)} ${iso} — no labour record`)}"><div class="lbc-bars"></div><span class="lbc-daylabel">${esc(dayLabel(iso))}</span></div>`;
+          const hS = Math.max(2, Math.round(((d.sm || 0) / maxMin) * 140));
+          const hA = Math.max(2, Math.round(((d.am || 0) / maxMin) * 140));
+          const tip = `${dowLabel(iso)} ${iso} — rota'd ${hrs(d.sm)} · worked ${hrs(d.am)}`;
+          return `<div class="lbc-day" title="${esc(tip)}"><div class="lbc-bars"><div class="lbc-bar sched" style="height:${hS}px"></div><div class="lbc-bar act" style="height:${hA}px"></div></div><span class="lbc-daylabel">${esc(dayLabel(iso))}</span></div>`;
+        }).join('');
+        const missing = all14.filter((iso) => !byDate.has(iso));
+        hoursBody = `<div class="lbc-pairs">${cols}</div>
+          <div class="r-mini-note">hours only (minute grain, ruler-free) · labour_day scheduled vs actual minutes${missing.length ? ` · <b>${int(missing.length)} day(s) have no labour_day record</b> — absent${esc(juneNote(missing))}, never zero` : ''}.</div>`;
+      } else {
+        hoursBody = S.rcc.emptyState({ title: 'Daily hours — scheduled vs actual', blocker: 'no labour_day minutes in the 14-day window.', unlock: 'the daily RotaCloud ingest' });
       }
-      const people = [...byUser.values()].sort((a, b) => (b.day_over_8h + b.week_over_40h + b.night_00_04) - (a.day_over_8h + a.week_over_40h + a.night_00_04) || (b.night_22_24 - a.night_22_24));
-      const cellR = (n) => n > 0 ? `<span class="R">${n}</span>` : '<span class="ash">0</span>';
-      const cellA = (n) => n > 0 ? `<span class="A">${n}</span>` : '<span class="ash">0</span>';
-      const rows = people.map((u) => `<tr><td>${esc(u.name || '')}</td><td class="n">${cellR(u.day_over_8h)}</td><td class="n">${cellR(u.week_over_40h)}</td><td class="n">${cellR(u.night_00_04)}</td><td class="n">${cellA(u.night_22_24)}</td><td class="n"><span class="ash">${esc(u.last)}</span></td></tr>`).join('');
-      const hardTotal = people.reduce((x, u) => x + u.day_over_8h + u.week_over_40h + u.night_00_04, 0);
-      const span = t.lo && t.hi ? ` ${esc(String(t.lo))} → ${esc(String(t.hi))}` : '';
-      return `<div class="banner">🔴 <b>${num(t.n) || flags.reduce((x, f) => x + (num(f.n) || 0), 0)} U18 working-time flag${(num(t.n) || 0) === 1 ? '' : 's'}</b> across ${esc(String(num(t.people) || byUser.size))} young worker${(num(t.people) || 0) === 1 ? '' : 's'}${span}. <b class="R">${hardTotal}</b> are HARD legal limits (over-8h day / over-40h week / worked-past-midnight — no catering exception); the amber column is the permitted-with-conditions 22:00–24:00 window.</div>
-        <div class="lb-card"><table class="lb-tbl"><thead><tr><th>young worker</th><th style="text-align:right" class="R">over 8h day</th><th style="text-align:right" class="R">over 40h wk</th><th style="text-align:right" class="R">past midnight</th><th style="text-align:right" class="A">past 22:00</th><th style="text-align:right">last</th></tr></thead><tbody>${rows}</tbody></table>
-        <div class="lb-hint" style="margin:8px 12px 0">Limits: 8h/day &amp; 40h/week are fixed with no averaging (gov.uk/maximum-weekly-working-hours); 22:00–06:00 is restricted but catering is an excepted sector, while 00:00–04:00 is an absolute ban (gov.uk/night-working-hours). The red columns are rota-policy action items — raise with Calum &amp; Jordan.</div></div>`;
-    };
+      const hoursPanel = S.rcc.panel({
+        title: 'Daily hours: scheduled vs actual', sub: `14 days to ${r.maxDate}`,
+        headRight: `<div class="r-legend"><span><i style="background:${S.rcc.tokens.blue}"></i>Scheduled</span><span><i style="background:${S.rcc.tokens.accent}"></i>Actual</span></div>`,
+        body: hoursBody,
+      });
 
-    const parityHtml = () => {
-      if (!m.parity || m.parity.length === 0) return `<div class="banner muted">Rate parity ✓ — locked 2026/27 table and RotaCloud's stored rates agree (re-checked every ingest).</div>`;
-      const KIND = { role_rate_mismatch: 'rate differs', rc_missing_rate: 'no rate in RotaCloud (costs £0 in-app)', locked_missing_rate: 'not in locked table', salary_mismatch: 'salary differs', rc_missing_salary: 'salary missing in RotaCloud' };
-      const rows = m.parity.map((x) => `<tr><td>${esc(x.user_name || '')}</td><td>${esc(x.role_name || '—')}</td><td>${esc(KIND[x.kind] || x.kind)}</td><td class="n">${esc(x.rc_value || '—')}</td><td class="n">${esc(x.locked_value || '—')}</td></tr>`).join('');
-      return `<div class="banner">🔴 <b>${m.parity.length} rate discrepanc${m.parity.length === 1 ? 'y' : 'ies'}</b> between RotaCloud and the locked 2026/27 table — the managers' in-app % uses <i>their</i> rates, so this scorecard is unfair until fixed <b>in RotaCloud</b>.</div>
-        <div class="lb-card"><table class="lb-tbl"><thead><tr><th>who</th><th>role</th><th>finding</th><th style="text-align:right">RotaCloud</th><th style="text-align:right">locked table</th></tr></thead><tbody>${rows}</tbody></table></div>`;
-    };
+      // ---- (2) where the extra hours came from ----
+      const dOver = r.decomp.over, dUn = r.decomp.unrota, dUnder = r.decomp.under;
+      const anyShift = (dOver && num(dOver.n) > 0) || (dUn && num(dUn.n) > 0) || (dUnder && num(dUnder.n) > 0);
+      let decompBody;
+      if (anyShift) {
+        const rows = [
+          { lab: `Over-rota'd shifts`, n: dOver ? num(dOver.n) || 0 : 0, mins: dOver ? num(dOver.mins) || 0 : 0, color: S.rcc.tokens.bad },
+          { lab: `Unrota'd worked shifts`, n: dUn ? num(dUn.n) || 0 : 0, mins: dUn ? num(dUn.mins) || 0 : 0, color: S.rcc.tokens.warn },
+          { lab: `Under-worked vs rota`, n: dUnder ? num(dUnder.n) || 0 : 0, mins: dUnder ? num(dUnder.mins) || 0 : 0, color: S.rcc.tokens.good },
+        ];
+        const maxM = Math.max(...rows.map((x) => x.mins), 1);
+        decompBody = `<div class="r-meters">${rows.map((x) => S.rcc.meterRow({
+          label: x.lab, pct: (x.mins / maxM) * 100, color: x.color, value: `${int(x.n)} · ${hrs(x.mins)}`,
+        })).join('')}</div>
+        <div class="r-mini-note">early-in vs late-out CANNOT be split — labour_shifts carries no per-shift clock timestamps, only variance_minutes; what IS computable renders above · SITE-level aggregate (labour_shifts carries no department key — checked) · counts and hours only, NO names — the surveillance boundary ruling.</div>`;
+      } else {
+        decompBody = S.rcc.emptyState({ title: 'Where the extra hours came from', blocker: 'no labour_shifts rows in the 14-day window.', unlock: 'the daily RotaCloud ingest (shift grain)' });
+      }
+      const decompPanel = S.rcc.panel({
+        title: 'Where the extra hours came from', sub: `shift-variance decomposition · 14 days to ${r.maxDate}`,
+        body: decompBody,
+      });
 
-    // ---- TODAY — live panel (only on the landing view; own honesty) ----
-    const livePanel = () => {
-      const rows = (m.intraday || []).filter((r) => r.department !== 'unassigned');
-      const un = (m.intraday || []).find((r) => r.department === 'unassigned');
-      if (!rows.length && !un) return `<div class="lb-sec">Today — live</div><div class="banner muted">No intraday snapshot yet — the hourly pull (at :35) fills this in. Settled days appear below after the morning run.</div>`;
-      const asOf = num(rows[0] && rows[0].as_of_ms) || num(un && un.as_of_ms);
-      const lonTime = (ms) => new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/London', hour: '2-digit', minute: '2-digit' }).format(new Date(ms));
-      const ageMin = asOf != null ? Math.round((m.now - asOf) / 60000) : null;
-      const stale = ageMin != null && ageMin > 130;
-      const blocks = rows.map((r) => {
-        let inNow = []; try { inNow = JSON.parse(r.clocked_in_now || '[]'); } catch (e) { /* keep going */ }
-        const names = inNow.map((x) => `${esc(x.name)} <span class="ash">${lonTime(num(x.since_ms))}</span>`).join(' · ');
-        let noShows = []; try { noShows = JSON.parse(r.no_shows || '[]'); } catch (e) { /* keep going */ }
-        const noShowHtml = noShows.length ? `<tr><td class="R">NO-SHOW (15min+)</td><td class="R">${noShows.map((x) => `${esc(x.name)} <span class="mono">rota'd ${lonTime(num(x.rota_start_ms))}</span>`).join(' · ')}</td></tr>` : '';
-        return `<div class="lb-card"><div class="lb-cardhead">${esc(DEPT_LABEL[r.department] || r.department)}</div>
-          <table class="lb-tbl"><tbody>${noShowHtml}
-            <tr><td>Clocked in now (${inNow.length})</td><td>${names || '<span class="ash">nobody</span>'}</td></tr>
-            <tr><td>Worked so far</td><td class="n">${hrs(r.worked_minutes_so_far)} · ${gbp(r.cost_rc_so_far)} pre-burden</td></tr>
-            <tr><td>Rota'd today (full day)</td><td class="n">${hrs(r.sched_minutes_full)} · ${gbp(r.sched_cost_rc_full)}</td></tr>
+      // ---- (3) daily labour reconciliation table ----
+      let reconBody;
+      if (days.length) {
+        const rows = days.map((d) => {
+          const delta = d.sc != null && d.ac != null ? d.ac - d.sc : null;
+          return `<tr><td>${esc(dowLabel(d.date))} ${esc(d.date)}</td>
+            <td class="r-num mono">${hrs(d.sm)}</td><td class="r-num mono">${gbp(d.sc)}</td>
+            <td class="r-num mono">${hrs(d.am)}</td><td class="r-num mono">${gbp(d.ac)}</td>
+            <td class="r-num mono">${hrs(d.apm)}</td>
+            <td class="r-num mono">${delta != null ? signGbp(delta) : '—'}</td>
+            <td>${ruledChip(delta, 'Over sched', 'Under sched', 'On sched')}</td></tr>`;
+        }).join('');
+        reconBody = `<div style="overflow:auto"><table><thead><tr><th>Day</th><th class="r-num">Sched hrs</th><th class="r-num">Sched £</th><th class="r-num">Actual hrs</th><th class="r-num">Actual £</th><th class="r-num">Paid hrs</th><th class="r-num">Δ £</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table></div>
+          <div class="r-mini-note">£ = TRUE ruler (labour_day, burdened + salaried/365) · paid hrs = actual_paid_minutes (RotaCloud's paid figure) · a missing day is an ABSENT row, never zeros · STATUS vs schedule: over only beyond the ruled £45 materiality.</div>`;
+      } else {
+        reconBody = S.rcc.emptyState({ title: 'Daily labour reconciliation', blocker: 'no labour_day rows in the 14-day window.', unlock: 'the daily RotaCloud ingest' });
+      }
+      const reconPanel = S.rcc.panel({ title: 'Daily labour reconciliation', sub: 'scheduled vs actual vs paid · TRUE £', body: reconBody });
+
+      // ---- (4) department schedule accuracy ----
+      const acc = r.accuracy;
+      let accBody = '';
+      if (acc && num(acc.n) > 0) {
+        const pctIn = (num(acc.w) / num(acc.n)) * 100;
+        accBody += `<div class="r-callout"><strong>${pctIn.toFixed(1)}%</strong> of ${int(num(acc.n))} rota'd shift(s) landed within ±15 min of plan — <b>SITE-level</b>: labour_shifts carries no department key (checked), so a per-dept shift-accuracy split is not computable; it lands when the shift wire carries one.</div>`;
+      } else {
+        accBody += S.rcc.emptyState({ title: 'Shift accuracy', blocker: `no rota'd labour_shifts rows in the window.`, unlock: 'the daily RotaCloud ingest (shift grain)' });
+      }
+      if (r.deptHours.length) {
+        const rows = r.deptHours.map((d) => {
+          const dev = d.sm > 0 && d.am != null ? ((d.am - d.sm) / d.sm) * 100 : null;
+          return `<tr><td>${esc(d.dept === 'kitchen' ? 'Kitchen' : 'Front of House')}</td>
+            <td class="r-num mono">${hrs(d.sm)}</td><td class="r-num mono">${hrs(d.am)}</td>
+            <td class="r-num mono">${dev != null ? `${dev >= 0 ? '+' : '−'}${Math.abs(dev).toFixed(1)}%` : '—'}</td></tr>`;
+        }).join('');
+        accBody += `<div style="margin-top:10px"><table><thead><tr><th>Dept</th><th class="r-num">Sched hrs</th><th class="r-num">Actual hrs</th><th class="r-num">Hours dev</th></tr></thead><tbody>${rows}</tbody></table></div>
+          <div class="r-mini-note">dept rows = labour_dept minute grain (hours only, ruler-free) — the closest dept-keyed accuracy the wire carries.</div>`;
+      }
+      const accPanel = S.rcc.panel({ title: 'Department schedule accuracy', sub: `14 days to ${r.maxDate}`, body: accBody });
+
+      // ---- (5) cost-definition reconciliation: the ruling card ----
+      const rc = r.rc && num(r.rc.days) > 0 ? r.rc : null;
+      const tw = r.trueWk && num(r.trueWk.days) > 0 ? r.trueWk : null;
+      let costBody;
+      if (rc || tw) {
+        const row = (label, a, b) => `<tr><td>${esc(label)}</td><td class="r-num mono">${a != null ? gbp(a) : '—'}</td><td class="r-num mono">${b != null ? gbp(b) : '—'}</td></tr>`;
+        const delta = rc && tw && num(rc.ac) != null && num(tw.ac) != null ? num(tw.ac) - num(rc.ac) : null;
+        costBody = `<table><thead><tr><th>${esc(`Week ${r.week.from} → ${r.week.to}`)}</th><th class="r-num">RC-screen (pre-burden)</th><th class="r-num">TRUE (operating truth)</th></tr></thead><tbody>
+            ${row('Scheduled £', rc ? num(rc.sc) : null, tw ? num(tw.sc) : null)}
+            ${row('Actual £', rc ? num(rc.ac) : null, tw ? num(tw.ac) : null)}
+            ${row('Salaried inside', rc ? 0 : null, tw ? num(tw.sal) : null)}
           </tbody></table>
-          ${num(r.uncosted_minutes) ? `<div class="lb-hint" style="margin:0 12px">${hrs(r.uncosted_minutes)} so far at £0 in the scorecard ruler (salaried/unrated) — true cost lands in Reports tomorrow.</div>` : ''}</div>`;
-      }).join('');
-      const r0 = rows[0] || un;
-      let refLine = '';
-      if (r0 && r0.ref_date != null) {
-        const wd = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][new Date(String(r0.ref_date) + 'T12:00:00Z').getUTCDay()];
-        const soFarMin = rows.reduce((x, rr) => x + (num(rr.worked_minutes_so_far) || 0), 0);
-        refLine = `<div class="lb-hint">Reference — last ${esc(wd)} (${esc(String(r0.ref_date))}, settled) by ${esc(String(num(r0.ref_to_hour)))}:00: ${hrs(r0.ref_worked_minutes)} worked · ${gbp(r0.ref_net_pence)} net taken. Today so far: ${hrs(soFarMin)}. Context only — never a projection.</div>`;
-      } else if (r0) {
-        refLine = `<div class="lb-hint">No settled same-weekday reference exists yet (thin history) — context arrives as the record grows; nothing is borrowed from other weekdays.</div>`;
+          ${delta != null ? `<div class="r-callout" style="margin-top:10px">actual delta <strong>${signGbp(delta)}</strong> = ×1.159 employer burden on hourly + salaried/365 apportionment (RC shows salaried at £0${rc && num(rc.um) > 0 ? ` — ${hrs(num(rc.um))} uncosted in RC this week` : ''}) + locked-vs-RC rate differences (see Rate parity, Coverage &amp; People).</div>` : ''}
+          <div class="r-mini-note">RC-screen = labour_dept (RotaCloud's own per-user rates, pre-burden — what Calum and Jordan manage against in-app) · TRUE = labour_day (locked rates × 1.159 + salaried/365) · <b>RC screens recomputed from LIVE rates, never cached</b> — the standing ruling · the two rulers are never compared as like-for-like; this card exists to translate, not to blend.</div>`;
+      } else {
+        costBody = S.rcc.emptyState({ title: 'Cost-definition reconciliation', blocker: 'no labour rows in the last full week on either ruler.', unlock: 'the daily RotaCloud ingest' });
       }
-      return `<div class="lb-sec">Today — live <span class="lb-sub">${esc(rows[0] ? String(rows[0].business_date) : '')} · ${asOf != null ? (stale ? '⚠️ STALE, last snapshot ' : 'as of ') + esc(lonTime(asOf)) + (stale ? ` (${Math.round(ageMin / 60)}h ago — check coyote-rotacloud-ingest)` : ', refreshes hourly at :35') : ''} · partial-day figures, never a day result</span></div>`
-        + `<div class="lb-live">${refLine}<div class="lb-two">${blocks}</div>${un ? `<div class="banner">⚠️ ${hrs(un.worked_minutes_so_far)} today on an UNKNOWN RotaCloud location — fix the location in RotaCloud.</div>` : ''}</div>`;
+      const costPanel = S.rcc.panel({ title: 'Cost-definition reconciliation', sub: 'RC-screen vs TRUE — the two-ruler translation', body: costBody });
+
+      return `<div class="r-grid r-two-col">${hoursPanel}${decompPanel}</div>
+        ${reconPanel}
+        <div class="r-grid r-two-col">${accPanel}${costPanel}</div>`;
     };
 
-    // Custom-range comparator (scorecard cost vs the preceding same-length window).
-    const comparatorHtml = () => {
-      if (!m.nav.comparator || !m.comparator) return '';
-      const sumAc = (per) => (per.depts || []).filter((d) => d.department !== 'unassigned').reduce((x, d) => x + (num(d.ac) || 0), 0);
-      const cur = sumAc(m.current), prevC = sumAc(m.comparator);
-      const prevDays = (m.comparator.depts || []).length ? Math.max.apply(null, m.comparator.depts.map((d) => num(d.days) || 0)) : 0;
-      if (!prevDays) return `<div class="lb-hint">Comparator (${esc(m.nav.comparator.label)}): no record — history starts ${esc(m.histStart || '?')}.</div>`;
-      const dlt = cur - prevC;
-      const curDays = (m.current.depts || [])[0] ? num(m.current.depts[0].days) || 0 : 0;
-      return `<div class="lb-hint">vs ${esc(m.nav.comparator.label)}: labour ${gbp(prevC)} → ${gbp(cur)} (${dlt >= 0 ? '+' : '−'}${gbp(Math.abs(dlt))}, pre-burden${prevDays < curDays ? ` · comparator covers only ${prevDays} day(s)` : ''}).</div>`;
+    // ============================ PENDING TABS ============================
+    const pendingNote = (what) => `<div class="banner amber">PENDING — L2 builds this tab to the mock (${esc(what)}). No number renders here until it is computed honestly; nothing is mocked.</div>`;
+
+    const renderForecastTab = () => pendingNote('interactive weekly forecast on the banded formula, five-band target curve, eight-week outlook from rota_ahead + formula-on-projection, forward management view, band calibration cards');
+    const renderKitchenTab = () => pendingNote('kitchen day performance vs the 14.3% formula budget, role mix, demand vs staffing at line grain, decision ratios');
+    const renderFohTab = () => pendingNote('Front of House day performance vs the 8.1% formula budget, role mix, demand vs staffing, decision ratios — covers-per-FOH-hour stays OpenTable-gated');
+
+    const renderCoverageTab = () => {
+      const c = m.cov || {};
+      const parts = [pendingNote('combined coverage-vs-required heatmap, aggregate people KPIs, compliance ratios — below, the panels this centre inherited from the old labour page HOLD here until their L2 home is built. The People exception queue is EXCLUDED BY RULING (surveillance boundary) and does not render')];
+
+      // ---- staffing shape (held) — worked minutes by hour, ruler-free ----
+      const hoursArr = (c.byHour || []).filter((h) => num(h.am) != null && num(h.am) > 0);
+      if (hoursArr.length >= 2) {
+        const mx = Math.max(...hoursArr.map((h) => num(h.am) || 0)) || 1;
+        const bars = hoursArr.map((h) => { const hh = num(h.hour) >= 24 ? num(h.hour) - 24 : num(h.hour); return `<div class="lb-bar" style="height:${Math.max(2, Math.round((num(h.am) || 0) / mx * 80))}px" title="${esc(String(hh))}:00 — ${hrs(h.am)}"><span>${esc(String(hh))}</span></div>`; }).join('');
+        parts.push(`<div class="lb-sec">Staffing shape <span class="lb-sub">worked hours by hour of day · 14 days to ${esc(c.hourMax || '')} · minute grain, ruler-free</span></div>
+          <div class="lb-card"><div class="lb-bars">${bars}</div><div style="height:14px"></div>
+          <div class="lb-hint" style="margin:0 12px">Where worked hours land across the day — the shape you flex against trade. Becomes the coverage-vs-required heatmap in L2.</div></div>`);
+      } else {
+        parts.push(`<div class="lb-sec">Staffing shape</div><div class="banner muted">No hourly staffing record yet (labour_hourly) — the RotaCloud ingest fills it; nothing is estimated.</div>`);
+      }
+
+      // ---- today-live (held) — the intraday snapshot with its own honesty ----
+      const DEPT_LABEL = { kitchen: 'Kitchen — Calum', foh: 'Front of House — Jordan', unassigned: 'Unassigned location' };
+      const rows = (c.intraday || []).filter((r) => r.department !== 'unassigned');
+      const un = (c.intraday || []).find((r) => r.department === 'unassigned');
+      if (!rows.length && !un) {
+        parts.push(`<div class="lb-sec">Today — live</div><div class="banner muted">No intraday snapshot yet — the hourly pull (at :35) fills this in.</div>`);
+      } else {
+        const asOf = num(rows[0] && rows[0].as_of_ms) || num(un && un.as_of_ms);
+        const lonTime = (ms) => new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/London', hour: '2-digit', minute: '2-digit' }).format(new Date(ms));
+        const ageMin = asOf != null ? Math.round((now - asOf) / 60000) : null;
+        const stale = ageMin != null && ageMin > 130;
+        const blocks = rows.map((r) => {
+          let inNow = []; try { inNow = JSON.parse(r.clocked_in_now || '[]'); } catch (e) { /* keep going */ }
+          const names = inNow.map((x) => `${esc(x.name)} <span class="ash">${lonTime(num(x.since_ms))}</span>`).join(' · ');
+          let noShows = []; try { noShows = JSON.parse(r.no_shows || '[]'); } catch (e) { /* keep going */ }
+          const noShowHtml = noShows.length ? `<tr><td class="R">NO-SHOW (15min+)</td><td class="R">${noShows.map((x) => `${esc(x.name)} <span class="mono">rota'd ${lonTime(num(x.rota_start_ms))}</span>`).join(' · ')}</td></tr>` : '';
+          return `<div class="lb-card"><div class="lb-cardhead">${esc(DEPT_LABEL[r.department] || r.department)}</div>
+            <table class="lb-tbl"><tbody>${noShowHtml}
+              <tr><td>Clocked in now (${inNow.length})</td><td>${names || '<span class="ash">nobody</span>'}</td></tr>
+              <tr><td>Worked so far</td><td class="n">${hrs(r.worked_minutes_so_far)} · ${gbp(r.cost_rc_so_far)} pre-burden RC-screen</td></tr>
+              <tr><td>Rota'd today (full day)</td><td class="n">${hrs(r.sched_minutes_full)} · ${gbp(r.sched_cost_rc_full)}</td></tr>
+            </tbody></table>
+            ${num(r.uncosted_minutes) ? `<div class="lb-hint" style="margin:0 12px">${hrs(r.uncosted_minutes)} so far at £0 in the RC-screen ruler (salaried/unrated) — the TRUE cost lands in labour_day tomorrow.</div>` : ''}</div>`;
+        }).join('');
+        const r0 = rows[0] || un;
+        let refLine = '';
+        if (r0 && r0.ref_date != null) {
+          const wd = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][new Date(String(r0.ref_date) + 'T12:00:00Z').getUTCDay()];
+          const soFarMin = rows.reduce((x, rr) => x + (num(rr.worked_minutes_so_far) || 0), 0);
+          refLine = `<div class="lb-hint">Reference — last ${esc(wd)} (${esc(String(r0.ref_date))}, settled) by ${esc(String(num(r0.ref_to_hour)))}:00: ${hrs(r0.ref_worked_minutes)} worked · ${gbp(r0.ref_net_pence)} net taken. Today so far: ${hrs(soFarMin)}. Context only — never a projection.</div>`;
+        } else if (r0) {
+          refLine = `<div class="lb-hint">No settled same-weekday reference exists yet (thin history) — context arrives as the record grows; nothing is borrowed from other weekdays.</div>`;
+        }
+        parts.push(`<div class="lb-sec">Today — live <span class="lb-sub">${esc(rows[0] ? String(rows[0].business_date) : '')} · ${asOf != null ? (stale ? '⚠️ STALE, last snapshot ' : 'as of ') + esc(lonTime(asOf)) + (stale ? ` (${Math.round(ageMin / 60)}h ago — check coyote-rotacloud-ingest)` : ', refreshes hourly at :35') : ''} · partial-day figures, never a day result · RC-screen ruler (the in-app view)</span></div>`
+          + `<div class="lb-live">${refLine}<div class="lb-two">${blocks}</div>${un ? `<div class="banner">⚠️ ${hrs(un.worked_minutes_so_far)} today on an UNKNOWN RotaCloud location — fix the location in RotaCloud.</div>` : ''}</div>`);
+      }
+
+      // ---- U18 working-time guard (held) ----
+      parts.push(`<div class="lb-sec">U18 working-time guard <span class="lb-sub">WTR 1998 young workers — all history · regulatory, ruled compliant to render</span></div>`);
+      const flags = c.wtr || [];
+      if (!flags.length) {
+        parts.push(`<div class="banner muted">U18 working-time ✓ — no flags (8h/day · 40h/wk fixed · 22:00+ surfaced · 00:00–04:00 absolute; re-checked every ingest).</div>`);
+      } else {
+        const t = c.wtrTotal || {};
+        const byUser = new Map();
+        for (const f of flags) {
+          const u = byUser.get(f.user_name) || { name: f.user_name, day_over_8h: 0, week_over_40h: 0, night_22_24: 0, night_00_04: 0, last: '' };
+          u[f.kind] = num(f.n) || 0;
+          if (String(f.last) > u.last) u.last = String(f.last);
+          byUser.set(f.user_name, u);
+        }
+        const people = [...byUser.values()].sort((a, b) => (b.day_over_8h + b.week_over_40h + b.night_00_04) - (a.day_over_8h + a.week_over_40h + a.night_00_04) || (b.night_22_24 - a.night_22_24));
+        const cellR = (n) => n > 0 ? `<span class="R">${n}</span>` : '<span class="ash">0</span>';
+        const cellA = (n) => n > 0 ? `<span class="A">${n}</span>` : '<span class="ash">0</span>';
+        const wtrRows = people.map((u) => `<tr><td>${esc(u.name || '')}</td><td class="n">${cellR(u.day_over_8h)}</td><td class="n">${cellR(u.week_over_40h)}</td><td class="n">${cellR(u.night_00_04)}</td><td class="n">${cellA(u.night_22_24)}</td><td class="n"><span class="ash">${esc(u.last)}</span></td></tr>`).join('');
+        const hardTotal = people.reduce((x, u) => x + u.day_over_8h + u.week_over_40h + u.night_00_04, 0);
+        const span = t.lo && t.hi ? ` ${esc(String(t.lo))} → ${esc(String(t.hi))}` : '';
+        parts.push(`<div class="banner">🔴 <b>${num(t.n) || flags.reduce((x, f) => x + (num(f.n) || 0), 0)} U18 working-time flag${(num(t.n) || 0) === 1 ? '' : 's'}</b> across ${esc(String(num(t.people) || byUser.size))} young worker${(num(t.people) || 0) === 1 ? '' : 's'}${span}. <b class="R">${hardTotal}</b> are HARD legal limits (over-8h day / over-40h week / worked-past-midnight — no catering exception); the amber column is the permitted-with-conditions 22:00–24:00 window.</div>
+          <div class="lb-card"><table class="lb-tbl"><thead><tr><th>young worker</th><th style="text-align:right" class="R">over 8h day</th><th style="text-align:right" class="R">over 40h wk</th><th style="text-align:right" class="R">past midnight</th><th style="text-align:right" class="A">past 22:00</th><th style="text-align:right">last</th></tr></thead><tbody>${wtrRows}</tbody></table>
+          <div class="lb-hint" style="margin:8px 12px 0">Limits: 8h/day &amp; 40h/week are fixed with no averaging (gov.uk/maximum-weekly-working-hours); 22:00–06:00 is restricted but catering is an excepted sector, while 00:00–04:00 is an absolute ban (gov.uk/night-working-hours). The red columns are rota-policy action items — raise with Calum &amp; Jordan.</div></div>`);
+      }
+
+      // ---- rate parity (held) ----
+      parts.push(`<div class="lb-sec">Rate parity <span class="lb-sub">locked table vs RotaCloud · payroll correctness, ruled compliant to render</span></div>`);
+      if (!c.parity || c.parity.length === 0) {
+        parts.push(`<div class="banner muted">Rate parity ✓ — locked 2026/27 table and RotaCloud's stored rates agree (re-checked every ingest).</div>`);
+      } else {
+        const KIND = { role_rate_mismatch: 'rate differs', rc_missing_rate: 'no rate in RotaCloud (costs £0 in-app)', locked_missing_rate: 'not in locked table', salary_mismatch: 'salary differs', rc_missing_salary: 'salary missing in RotaCloud' };
+        const pRows = c.parity.map((x) => `<tr><td>${esc(x.user_name || '')}</td><td>${esc(x.role_name || '—')}</td><td>${esc(KIND[x.kind] || x.kind)}</td><td class="n">${esc(x.rc_value || '—')}</td><td class="n">${esc(x.locked_value || '—')}</td></tr>`).join('');
+        parts.push(`<div class="banner">🔴 <b>${c.parity.length} rate discrepanc${c.parity.length === 1 ? 'y' : 'ies'}</b> between RotaCloud and the locked 2026/27 table — the managers' in-app % uses <i>their</i> rates, so the RC screens are unfair until fixed <b>in RotaCloud</b>.</div>
+          <div class="lb-card"><table class="lb-tbl"><thead><tr><th>who</th><th>role</th><th>finding</th><th style="text-align:right">RotaCloud</th><th style="text-align:right">locked table</th></tr></thead><tbody>${pRows}</tbody></table></div>`);
+      }
+
+      return parts.join('\n');
     };
 
-    // Live panel shows ONLY on the landing view (period=day at the latest settled day) —
-    // navigating to a historical period must not surface today's live snapshot.
-    const showLive = m.nav.period === 'day' && m.nav.from === m.maxDate;
+    const tabBody = tab === 'rota' ? renderRotaTab()
+      : tab === 'forecast' ? renderForecastTab()
+      : tab === 'kitchen' ? renderKitchenTab()
+      : tab === 'foh' ? renderFohTab()
+      : tab === 'coverage' ? renderCoverageTab()
+      : renderExecutiveTab();
 
-    const body = styles
-      + `<style>${NAV.NAV_CSS}</style>`
-      + `<div class="lb-ruler">Manager scorecard — pre-burden, matches RotaCloud · never compare with Reports' true cost (burden + salaried/365)</div>`
-      + headline()
-      + (showLive ? livePanel() : '')
-      + `<div class="lb-sec">Analysis <span class="lb-sub">${m.nav.period === 'month' ? 'calendar month = the bonus period' : 'navigate periods below'}</span></div>`
-      + NAV.renderNavStrip(m.nav, '/coyote/labour', esc)
-      + comparatorHtml()
-      + periodBody(m.current, m.nav.label, m.nav.period === 'month')
-      + blendedHtml()
-      + `<div class="lb-sec">U18 working-time guard <span class="lb-sub">WTR 1998 young workers — all history</span></div>`
-      + wtrHtml()
-      + `<div class="lb-sec">Rate parity <span class="lb-sub">locked table vs RotaCloud</span></div>`
-      + parityHtml();
-
-    return { stamp: `labour · <span class="mono">RotaCloud · ${esc(m.maxDate)}</span>`, body };
+    const body = `<div class="rcc">` + styles + tabsNav + tabBody + `</div>`;
+    const stamp = m.maxDate
+      ? `labour · <span class="mono">RotaCloud · ${esc(m.maxDate)}</span>`
+      : 'labour · <span class="none">awaiting labour-day record</span>';
+    return { stamp, body };
   },
 };
