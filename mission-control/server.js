@@ -158,6 +158,12 @@ function handleRequest(req, res) {
 // ---- multi-page router (ops-centre) ----
 const SHARED = require('./ui/shared.js');
 const DATA = require('./ui/data.js');
+// MC CHAT stale-tab self-heal (incident 2026-07-21: a tab open across a deploy kept rendering
+// with pre-deploy page JS forever — the short-poll delivered new data into old code). The rev
+// changes on every server start; the chat page embeds it and the poll returns it — a mismatch
+// reloads the page (only when the input is empty, never clobbering a half-typed message).
+const SERVER_REV = String(Date.now());
+
 const PAGES = [
   require('./ui/pages/coyote/overview.js'),
   require('./ui/pages/claw/engine.js'),
@@ -229,6 +235,7 @@ function servePage(page, res, url) {
       halt: buildHaltModel(readHaltFileExists(), readPausedValue(db)),
       // URL query → period navigation state (validated page-side; bookmarkable views).
       query: url ? Object.fromEntries(url.searchParams) : {},
+      serverRev: SERVER_REV,
     };
     const section = page.getSection(db, ctx);
     rendered = page.render(section, ctx) || { stamp: '', body: '' };
@@ -543,7 +550,7 @@ function chatUpdates(db, afterId, jobIds) {
       const row = db.prepare(`SELECT status FROM jobs WHERE id = ?`).get(id);
       if (row) jobs[id] = String(row.status);
     }
-    return { ok: true, messages, jobs };
+    return { ok: true, rev: SERVER_REV, messages, jobs };
   } catch (e) {
     return { ok: false, error: 'chat store unavailable' };
   }
