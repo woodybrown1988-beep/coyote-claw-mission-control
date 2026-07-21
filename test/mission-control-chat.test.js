@@ -154,3 +154,16 @@ test('stale-tab self-heal (incident 2026-07-21): the rev rides the page + the po
   const upd = chatUpdates(db, 0, []);
   assert.ok(upd.rev && typeof upd.rev === 'string', 'the poll carries the server rev');
 });
+
+test('INVARIANT (incident 2026-07-21): every <script> the chat page serves must PARSE — a template-literal escaping slip killed the whole poll silently', () => {
+  const db = makeDb();
+  db.prepare(`INSERT INTO chat_messages (direction, text, created_at) VALUES ('in', 'q', 1)`).run();
+  const ctx = { ...ctxFor(db), serverRev: 'R1' };
+  const out = chatPage.render(chatPage.getSection(db, ctx), ctx);
+  const scripts = [...out.body.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
+  assert.ok(scripts.length >= 1, 'the page ships its script');
+  for (const scr of scripts) new Function(scr); // throws SyntaxError on a broken script — the incident shape
+  // and the escapes must arrive as JS escapes, not raw characters
+  assert.match(scripts[0], /split\('\\n'\)/, "'\\n' survives the template as an escape, not a raw newline");
+  assert.match(scripts[0], /\\x60\\x60\\x60/, 'the fence regex survives as escapes');
+});

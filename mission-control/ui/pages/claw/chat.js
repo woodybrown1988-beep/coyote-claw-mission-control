@@ -179,9 +179,9 @@ module.exports = {
           .finally(function(){ busy = false; document.getElementById('ch-send').disabled = false; });
       });
       function collapsedText(target, text){
-        var lines = String(text).split('\n');
+        var lines = String(text).split('\\n');
         if (lines.length <= 10) { target.appendChild(document.createTextNode(text)); return; }
-        var head = lines.slice(0, 4).join('\n');
+        var head = lines.slice(0, 4).join('\\n');
         target.appendChild(document.createTextNode(head));
         var det = document.createElement('details'); det.className = 'ch-workings';
         var sum = document.createElement('summary'); sum.textContent = 'show more (' + (lines.length - 4) + ' more lines) ▸';
@@ -209,13 +209,13 @@ module.exports = {
           }
         }
         // ANSWER-FIRST (verbosity ruling): fenced SQL → prose + muted meta + collapsed workings
-        var fence = /\x60\x60\x60\n?([\s\S]*?)\x60\x60\x60/.exec(String(m.text));
+        var fence = /\\x60\\x60\\x60\\n?([\\s\\S]*?)\\x60\\x60\\x60/.exec(String(m.text));
         if (m.direction === 'out' && fence) {
           var prose = String(m.text).slice(0, fence.index).trim();
           var after = String(m.text).slice(fence.index + fence[0].length).trim();
           var p = document.createElement('div'); collapsedText(p, prose); d.appendChild(p);
           var meta = document.createElement('div'); meta.className = 'ch-meta';
-          meta.textContent = after ? after.split('\n').join(' · ') : 'answered just now';
+          meta.textContent = after ? after.split('\\n').join(' · ') : 'answered just now';
           d.appendChild(meta);
           var det = document.createElement('details'); det.className = 'ch-workings';
           var sum = document.createElement('summary'); sum.textContent = 'show workings ▸';
