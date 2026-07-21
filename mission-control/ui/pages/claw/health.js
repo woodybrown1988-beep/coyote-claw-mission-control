@@ -123,11 +123,24 @@ function getSection(db, ctx) {
     ref: r.detail ? String(r.detail) : String(r.job_id || ''),
     kind: 'pr',
   }));
+  // audit 2026-07-21: refs were raw JSON with the same PR listed 3× — parse to repo#N + link,
+  // dedupe by the PR itself (newest kept), never print machine strings on a human surface.
+  const parseRef = (s2) => {
+    try {
+      const j = JSON.parse(s2.ref);
+      const url = j.prUrl || j.url || null;
+      const num = j.number != null ? Number(j.number) : (url ? Number((String(url).match(/\/pull\/(\d+)/) || [])[1]) : null);
+      const repo = url ? String(url).replace(/^https:\/\/github\.com\//, '').split('/pull/')[0].split('/').pop() : null;
+      if (num != null && Number.isFinite(num)) return { ...s2, ref: `${repo || 'pr'} #${num}`, url, prKey: `${repo}#${num}` };
+    } catch (e) { /* not JSON — leave as-is */ }
+    return { ...s2, url: null, prKey: null };
+  };
   const seen = new Set();
   const ships = shipJobs.concat(prEvents)
+    .map(parseRef)
     .sort((a, b) => b.when - a.when)
     .filter((s) => {
-      const key = s.kind + '|' + s.ref + '|' + s.when;
+      const key = s.prKey || (s.kind + '|' + s.ref + '|' + s.when);
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
@@ -352,7 +365,7 @@ function shipsPanel(m) {
       return `<tr>
         <td class="mono">${when}</td>
         <td>${tag} ${esc(s.label)}</td>
-        <td class="mono">${esc(s.ref || '—')}</td>
+        <td class="mono">${s.url ? `<a href="${esc(s.url)}" style="color:var(--cyan,#22D3EE)">${esc(s.ref)}</a>` : esc(s.ref || '—')}</td>
       </tr>`;
     }).join('');
   }
