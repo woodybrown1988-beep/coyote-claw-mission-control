@@ -137,7 +137,12 @@ test('decomposition (now in Reports): identity sums exactly; Overview verdict li
   const jan = rm.decomp.find((r) => r.month === '2026-01');
   assert.ok(jan && !jan.d && jan.reason, 'unrecorded month refuses honestly');
   const rout = reports.render(rm, ctx);
+  // the decomposition's ONE home = the EXECUTIVE tab (default): current month as r-driver cards
+  // (new RCC markup) + the full monthly table behind the expand
   assert.match(rout.body, /decomposition — which lever moved each month/);
+  assert.match(rout.body, /r-driver/, 'current-month split renders as RCC driver cards');
+  assert.match(rout.body, /Growth from spend<\/small><strong>\+£1,400\.00<\/strong>/, 'July MTD spend effect on the card');
+  assert.match(rout.body, /SPEND-led/, 'lead lever named on the card');
   // Overview carries the VERDICT LINE only
   const m = overview.getSection(db, ctx);
   assert.ok(m.decompNow && m.decompNow.lead === 'spend', 'July MTD is spend-led');

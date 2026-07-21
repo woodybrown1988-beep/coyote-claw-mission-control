@@ -82,6 +82,14 @@ function handleRequest(req, res) {
     return;
   }
 
+  // FORECAST OVERRIDE (RCC P4) — the FOURTH narrow write-path, same discipline: one INSERT into
+  // the forecast_overrides journal, hard caps, pure apply fn. The ruling: every NON-ZERO override
+  // carries its reason; zero (a reset) may omit it. Absent table = cc #86 not deployed → honest 503.
+  if (req.method === 'POST' && url.pathname === '/api/forecast-override') {
+    handleForecastOverride(req, res);
+    return;
+  }
+
   if (req.method === 'POST' && url.pathname === '/api/recipe-action') {
     handleRecipeAction(req, res);
     return;
@@ -528,6 +536,52 @@ function handleChatMessage(req, res) {
     if (!opened.ok) { sendJson(res, 503, { ok: false, error: 'database unavailable for write' }); return; }
     try {
       const result = applyChatMessage(opened.db, parsed, Date.now());
+      sendJson(res, result.status || 400, result);
+    } finally {
+      try { opened.db.close(); } catch (_) { /* close failure is not user-actionable */ }
+    }
+  });
+}
+
+// ===================================================================================================
+// FORECAST OVERRIDE (RCC P4) — applyForecastOverride is PURE (db, body, now) like applyChatMessage:
+// one journal INSERT, validation only, no forecast maths here (the page re-forecasts at every read;
+// the override is the ONLY stored input). Exported for tests.
+function applyForecastOverride(db, body, now) {
+  const pct = Number(body && body.pct);
+  // ±50 mirrors the schema backstop; the UI slider is ±15 — the server is the wider hard wall
+  if (!Number.isFinite(pct) || pct < -50 || pct > 50) {
+    return { ok: false, status: 400, error: 'pct must be a number between -50 and 50' };
+  }
+  let reason = typeof (body && body.reason) === 'string' ? body.reason.trim() : '';
+  if (reason.length > 500) return { ok: false, status: 400, error: 'reason too long (500 char cap)' };
+  // THE RULING: a non-zero override is an auditable operator assumption — it needs its reason.
+  if (pct !== 0 && !reason) return { ok: false, status: 400, error: 'a non-zero override needs its reason' };
+  if (pct === 0 && !reason) reason = 'reset';
+  try {
+    const r = db.prepare(`INSERT INTO forecast_overrides (pct, reason, created_at) VALUES (?, ?, ?)`).run(pct, reason, now);
+    return { ok: true, status: 200, id: Number(r.lastInsertRowid), pct, reason };
+  } catch (e) {
+    // table absent = the cc-side schema PR has not deployed — honest 503, never a silent drop
+    return { ok: false, status: 503, error: 'override store not deployed (cc #86)' };
+  }
+}
+
+function handleForecastOverride(req, res) {
+  let raw = '';
+  let tooBig = false;
+  req.on('data', (chunk) => {
+    raw += chunk;
+    if (raw.length > 8192) { tooBig = true; req.destroy(); }
+  });
+  req.on('end', () => {
+    if (tooBig) { sendJson(res, 413, { ok: false, error: 'payload too large' }); return; }
+    let parsed;
+    try { parsed = JSON.parse(raw || '{}'); } catch (_) { sendJson(res, 400, { ok: false, error: 'invalid json' }); return; }
+    const opened = openWritableDatabase();
+    if (!opened.ok) { sendJson(res, 503, { ok: false, error: 'database unavailable for write' }); return; }
+    try {
+      const result = applyForecastOverride(opened.db, parsed, Date.now());
       sendJson(res, result.status || 400, result);
     } finally {
       try { opened.db.close(); } catch (_) { /* close failure is not user-actionable */ }
@@ -3460,5 +3514,6 @@ module.exports = {
   parseCsv,
   spendLevel,
   applyChatMessage,
+  applyForecastOverride,
   chatUpdates,
 };

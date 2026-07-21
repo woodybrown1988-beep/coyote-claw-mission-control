@@ -54,7 +54,8 @@ function seedLabourDay(db, date, over) {
 }
 
 function renderReports(db, query) {
-  const ctx = { q: (sql, p) => DATA.safeSelect(db, sql, p), now: NOW, halt: { halted: false }, query: query || {} };
+  // labour lives on the DRIVERS subtab since the RCC restructure (one home per fact)
+  const ctx = { q: (sql, p) => DATA.safeSelect(db, sql, p), now: NOW, halt: { halted: false }, query: Object.assign({ tab: 'drivers' }, query || {}) };
   return reports.render(reports.getSection(db, ctx), ctx).body;
 }
 
