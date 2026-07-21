@@ -49,15 +49,23 @@ function getSection(db, ctx) {
   const now = ctx && Number.isFinite(ctx.now) ? ctx.now : Date.now();
   const q = ctx.q;
 
-  // The action queue: STORED drafts not yet responded/skipped/snoozed, newest first, joined to corpus.
+  // The action queue (audit 2026-07-21 fix): TRIAGE order — low-star (≤3) first, then OLDEST
+  // first — with paging. The old newest-8 render hid 71 of 79 pending and the oldest could
+  // NEVER surface. `?qpage=N` pages through; the header states showing-X-of-Y honestly.
+  const qpage = Math.max(0, parseInt((ctx.query && ctx.query.qpage) || '0', 10) || 0);
+  const pendingRow = q(
+    `SELECT COUNT(*) AS c FROM review_drafts rd
+      WHERE rd.draft_status NOT IN ('responded','skipped')
+        AND (rd.snoozed_until IS NULL OR rd.snoozed_until < ?)`, [now]);
+  const pendingTotal = (pendingRow && pendingRow.ok && pendingRow.rows[0]) ? Number(pendingRow.rows[0].c) || 0 : 0;
   const draftsRes = q(
     `SELECT rc.review_id, rc.platform, rc.overall, rc.reviewer, rc.reviewed_date, rc.text,
             rd.draft_text, rd.draft_status, rd.review_url, rd.guard_flagged
        FROM review_drafts rd JOIN review_corpus rc ON rd.review_id = rc.review_id
       WHERE rd.draft_status NOT IN ('responded','skipped')
         AND (rd.snoozed_until IS NULL OR rd.snoozed_until < ?)
-      ORDER BY rc.reviewed_date DESC LIMIT 8`,
-    [now]
+      ORDER BY (COALESCE(rc.overall, 5) <= 3) DESC, rc.reviewed_date ASC LIMIT 10 OFFSET ?`,
+    [now, qpage * 10]
   );
   const tagsRes = q(`SELECT review_id, issue_code FROM review_issues`);
   const trendsRes = q(
@@ -133,7 +141,7 @@ function getSection(db, ctx) {
       }
     : null;
 
-  return { ok: true, cards, trends, escalations, snapshot };
+  return { ok: true, cards, trends, escalations, snapshot, pendingTotal, qpage };
 }
 
 // =====================================================================================
@@ -271,13 +279,19 @@ function render(section, ctx) {
     ? `<div class="rcards">${cards.map(renderCard).join('')}</div>`
     : '<div class="banner muted">No drafts in the queue — drafts generate on the daily ingest (responded / skipped / snoozed are filtered out).</div>';
 
+  const total = Number(model.pendingTotal) || cards.length;
+  const qpage = Number(model.qpage) || 0;
+  const pager = total > (qpage + 1) * 10 || qpage > 0
+    ? `<div style="margin-top:10px;font-size:12px" class="mono">${qpage > 0 ? `<a href="/coyote/reviews?qpage=${qpage - 1}" style="color:var(--cyan,#22D3EE)">← newer-triage</a> · ` : ''}showing ${S.fmtInt(qpage * 10 + 1)}–${S.fmtInt(Math.min((qpage + 1) * 10, total))} of ${S.fmtInt(total)} pending (low-star + oldest first)${total > (qpage + 1) * 10 ? ` · <a href="/coyote/reviews?qpage=${qpage + 1}" style="color:var(--cyan,#22D3EE)">next 10 →</a>` : ''}</div>`
+    : '';
   const panel = `<div class="panel">
-    <div class="panel-head"><h2>Action queue</h2><span class="meta">${S.fmtInt(cards.length)} in queue · ${S.fmtInt(
+    <div class="panel-head"><h2>Action queue</h2><span class="meta">${S.fmtInt(total)} pending · showing ${S.fmtInt(cards.length)} (low-star + oldest first) · ${S.fmtInt(
     awaitingTap
   )} awaiting Telegram tap</span></div>
     <div class="panel-body">
       ${rising}
       ${cardsHtml}
+      ${pager}
     </div>
   </div>`;
 

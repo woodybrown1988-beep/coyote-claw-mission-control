@@ -28,7 +28,7 @@ module.exports = {
       `SELECT id, mode, week_monday, ran_at, status, trigger, report_json
          FROM rota_review_runs WHERE mode = ? AND status = 'ok' ORDER BY id DESC LIMIT 1`, [mode]))[0] || null;
     const history = rowsOf(q(
-      `SELECT id, mode, week_monday, ran_at, status, trigger FROM rota_review_runs ORDER BY id DESC LIMIT 14`));
+      `SELECT id, mode, week_monday, ran_at, status, trigger, report_json FROM rota_review_runs ORDER BY id DESC LIMIT 14`));
     // the reviews-loop staleness caveat (HINDSIGHT): the issue extractor's last write
     const extractedMax = rowsOf(q(`SELECT MAX(extracted_at) m FROM review_issues`))[0];
     // planned-vs-worked drift: the latest ok FORWARD run for the SAME week as the hindsight
@@ -151,9 +151,18 @@ module.exports = {
       }
     }
 
+    // audit 2026-07-21: the receipts carry their VERDICT £ — a history without numbers is a log,
+    // not a record for week-on-week manager conversations.
+    const verdictOf = (r) => {
+      const rep = parse(r);
+      if (!rep || !Array.isArray(rep.verdicts)) return '—';
+      return rep.verdicts.map((v) => v.deltaPence == null ? `${v.dept[0].toUpperCase()} —`
+        : `${v.dept[0].toUpperCase()} ${v.deltaPence > 0 ? '+' : '−'}£${Math.round(Math.abs(v.deltaPence) / 100).toLocaleString('en-GB')}`).join(' · ');
+    };
     const histRows = (m.history || []).map((r) => `<tr>
       <td class="mono">${esc(r.week_monday)}</td><td class="mono">${esc(r.mode)}</td><td class="mono ash">${esc(r.trigger)}</td>
       <td class="mono">${r.status === 'ok' ? '<span class="sdot green"></span> ok' : '<span class="sdot red"></span> FAILED'}</td>
+      <td class="mono">${esc(r.status === 'ok' ? verdictOf(r) : '—')}</td>
       <td class="mono ash">${esc(ago(r.ran_at))}</td></tr>`).join('');
 
     const body = styles
@@ -162,7 +171,7 @@ module.exports = {
       + modeSection('FORWARD', m.forward, '')
       + modeSection('HINDSIGHT', m.hindsight, hindExtra)
       + `<div class="sec-label">Run history <span class="mono">(the week-on-week receipts)</span><span class="rule"></span></div>
-         <div class="panel"><div class="panel-body"><table class="tbl"><thead><tr><th>week</th><th>mode</th><th>trigger</th><th>status</th><th>ran</th></tr></thead><tbody>${histRows}</tbody></table></div></div>`;
+         <div class="panel"><div class="panel-body"><table class="tbl"><thead><tr><th>week</th><th>mode</th><th>trigger</th><th>status</th><th>verdict (+ over / − under)</th><th>ran</th></tr></thead><tbody>${histRows}</tbody></table></div></div>`;
 
     const latestMs = Math.max(...(m.history || []).map((r) => Number(r.ran_at) || 0), 0);
     return { stamp: latestMs ? `latest run · <span class="mono">${esc(ago(latestMs))}</span>` : '', body };

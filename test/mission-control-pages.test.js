@@ -198,7 +198,10 @@ test('reviews BOUNDARY: data-op write affordance ONLY on TA/OT, never on a Googl
   // isolate the Google card region and assert it carries no write affordance
   const gi = out.body.indexOf('b-google');
   if (gi >= 0) {
-    const region = out.body.slice(gi, gi + 1400);
+    // bound the region at the NEXT card's opening — a fixed slice bled into the following
+    // TA/OT card once the queue gained triage ordering (audit W2 fix); the invariant is per-card
+    const next = out.body.indexOf('class="rcard ', gi + 1);
+    const region = out.body.slice(gi, next > gi ? next : gi + 1400);
     assert.doesNotMatch(region, /data-op=/, 'Google card has no board write path');
     assert.doesNotMatch(region, /data-review=/, 'Google card has no review-action wrapper');
   }
