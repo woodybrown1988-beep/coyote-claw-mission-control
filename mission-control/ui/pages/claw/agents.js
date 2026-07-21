@@ -467,10 +467,10 @@ module.exports = {
         const waiting = j.status === 'awaiting_signoff'
           ? 'waiting on the operator · ' + fmtDur(now - num(j.updated_at))
           : 'held ' + S.agoLabel(now - num(j.updated_at));
-        cards.push(Object.assign(base, { col: 'blocked', variant: 'you', task: { strong: typeLabel, tail: ' — ' + cp.verb + '.' }, waitPill: { tone: 'you', text: cp.pill }, button: { label: cp.btn }, time: waiting, _trackJob: j.id, _trackMode: 'gate' }));
+        cards.push(Object.assign(base, { col: 'blocked', variant: 'you', task: { strong: typeLabel, tail: ' — ' + cp.verb + '.' }, waitPill: { tone: 'you', text: cp.pill }, button: { label: cp.btn }, time: waiting, _ageMs: now - num(j.updated_at), _trackJob: j.id, _trackMode: 'gate' }));
         trackJobIds.add(j.id);
       } else if (b === 'blocked_dept') {
-        cards.push(Object.assign(base, { col: 'blocked', variant: 'dept', task: { strong: typeLabel, tail: ' — awaiting another desk.' }, waitPill: { tone: 'dept', text: 'Waiting on ' + deptNameFor(j) + ' Dept' }, time: 'blocked ' + S.agoLabel(now - num(j.updated_at)) }));
+        cards.push(Object.assign(base, { col: 'blocked', variant: 'dept', task: { strong: typeLabel, tail: ' — awaiting another desk.' }, waitPill: { tone: 'dept', text: 'Waiting on ' + deptNameFor(j) + ' Dept' }, time: 'blocked ' + S.agoLabel(now - num(j.updated_at)), _ageMs: now - num(j.updated_at) }));
       } else if (b === 'working') {
         cards.push(Object.assign(base, { col: 'working', variant: 'w', task: { strong: typeLabel, tail: ' running.' }, time: 'running ' + fmtDur(now - num(j.updated_at)), _trackJob: j.id, _trackMode: 'working' }));
         trackJobIds.add(j.id);
@@ -517,7 +517,17 @@ module.exports = {
       { id: 'blocked', cls: 'blocked', label: 'Blocked' },
       { id: 'done', cls: 'done', label: 'Done' },
     ];
-    const columns = COLS.map((col) => ({ ...col, cards: cards.filter((c) => c.col === col.id) }));
+    // TRIAGE (audit 2026-07-21): the blocked column reads oldest-first (a 48-day-held item led
+    // the audit's red wall from the BOTTOM); give-ups older than 7 days move to a collapsed
+    // AGING group — still listed, still ackable (the default-surface convention stands; only
+    // the presentation ages).
+    const AGING_MS = 7 * 86_400_000;
+    const columns = COLS.map((col) => {
+      const colCards = cards.filter((c) => c.col === col.id);
+      if (col.id !== 'blocked') return { ...col, cards: colCards };
+      const sorted = colCards.slice().sort((a, b) => (b._ageMs || 0) - (a._ageMs || 0));
+      return { ...col, cards: sorted.filter((c) => (c._ageMs || 0) < AGING_MS), aging: sorted.filter((c) => (c._ageMs || 0) >= AGING_MS) };
+    });
 
     return {
       halt: ctx.halt || { halted: false },
@@ -581,11 +591,15 @@ module.exports = {
     }
     function colHtml(col) {
       const body = col.cards.length ? col.cards.map(cardHtml).join('') : '';
+      const aging = (col.aging && col.aging.length)
+        ? '<details style="margin-top:8px"><summary style="font-family:var(--font-mono,monospace);font-size:10.5px;color:var(--muted,#7a8);cursor:pointer;list-style:none">aging (' + col.aging.length + ') — held over 7 days ▸</summary>' + col.aging.map(cardHtml).join('') + '</details>'
+        : '';
+      const total = col.cards.length + ((col.aging && col.aging.length) || 0);
       return (
         '<div class="col ' + col.cls + '">' +
         '<div class="col-head"><span class="col-name"><i></i>' + esc(col.label) + '</span>' +
-        '<span class="col-count">' + col.cards.length + '</span></div>' +
-        body +
+        '<span class="col-count">' + total + '</span></div>' +
+        body + aging +
         '</div>'
       );
     }

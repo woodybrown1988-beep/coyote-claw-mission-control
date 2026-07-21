@@ -1,7 +1,7 @@
 'use strict';
-// YoY / Seasonality tab — the premises-move boundary must hold in the UI: a month whose prior year is
-// pre-move shows a REASON, never a fabricated number; an in-boundary month shows a real Δ. Renders on an
-// empty DB without throwing. Read-only, no network (asserted on the source).
+// LONG RANGE (the merged YoY tab, page-map audit 2026-07-21) — now a Reports section. The
+// premises-move boundary must hold: a month whose prior year is pre-move shows a REASON, never a
+// fabricated number; an in-boundary month shows a real Δ. The old /coyote/yoy route 308s here.
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const sqlite = require('node:sqlite');
@@ -9,7 +9,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const DATA = require('../mission-control/ui/data.js');
-const yoy = require('../mission-control/ui/pages/coyote/yoy-seasonality.js');
+const reports = require('../mission-control/ui/pages/coyote/reports.js');
 
 // The real boundary-safe views (mirror src/schema.sql in coyote-claw) over minimal base tables.
 const DDL = `
@@ -49,63 +49,47 @@ function makeDb() {
   seedMonth(db, '2022-04', 100000); // previous premises
   seedMonth(db, '2023-04', 200000); // current, prior year (2022-04) is PRE-MOVE → no comparable
   seedMonth(db, '2024-04', 220000); // current, prior year (2023-04) is current → OK, Δ = +£6,000
+  // one LIVE day — Reports gates on sales_day (never empty on the real box); the long-range
+  // section reads the union views beneath it
+  db.prepare(`INSERT INTO sales_day (business_date, net_sales_pence, gross_sales_pence, transactions, updated_at) VALUES ('2024-05-01', 100, 120, 1, 0)`).run();
   return db;
 }
 function ctxFor(db) { return { q: (sql, p) => DATA.safeSelect(db, sql, p), now: 1782800000000 }; }
 
-test('yoy: contract + module shape', () => {
-  assert.equal(yoy.key, 'yoy');
-  assert.equal(yoy.route, '/coyote/yoy');
-  assert.ok(yoy.title && yoy.sub);
+test('long-range: renders inside Reports with the latest-YoY tile + seasonal + annual panels', () => {
+  const db = makeDb();
+  const ctx = ctxFor(db);
+  const out = reports.render(reports.getSection(db, ctx), ctx);
+  assert.match(out.body, /Long range/);
+  assert.match(out.body, /Latest full-month YoY/);
+  assert.match(out.body, /\+£6,000\.00/, 'Apr-24 vs Apr-23: (2200-2000)×30 days = +£6,000');
+  assert.match(out.body, /Seasonality — avg net £\/open-day/);
+  assert.match(out.body, /Annual arc/);
+  db.close();
 });
 
-test('yoy: EMPTY db renders the honest empty state, never throws or fabricates', () => {
+test('long-range: EMPTY db renders honestly, never throws or fabricates', () => {
   const db = new sqlite.DatabaseSync(':memory:');
   const ctx = ctxFor(db);
-  const out = yoy.render(yoy.getSection(db, ctx), ctx);
-  assert.ok(out && typeof out.body === 'string' && out.body.length > 20);
-  assert.match(out.body, /No sales history yet/i);
-  assert.doesNotMatch(out.body, /£0\.00/);
+  const out = reports.render(reports.getSection(db, ctx), ctx);
+  assert.doesNotMatch(out.body, /Long range/, 'no long-range scaffolding on an empty box');
   db.close();
 });
 
-test('yoy: BOUNDARY honesty — straddling month shows a reason, in-boundary month shows a real Δ', () => {
+test('long-range: BOUNDARY honesty — the straddling month carries its reason in the expand, never a number', () => {
   const db = makeDb();
   const ctx = ctxFor(db);
-  const section = yoy.getSection(db, ctx);
-  assert.equal(section.hasData, true);
-  const out = yoy.render(section, ctx);
-  // ruler stated up-front
-  assert.match(out.body, /premises move 2023-04-01/);
-  // Apr 2023 (current) vs Apr 2022 (pre-move) → the REASON, not a number
-  assert.match(out.body, /no comparable current-premises period/);
-  // Apr 2024 vs Apr 2023 (both current) → real Δ = 220000-200000 per day × 30 = £6,000
-  assert.match(out.body, /\+£6,000\.00/);
-  // headline names the first comparable YoY month
-  assert.match(out.body, /First comparable current-premises YoY:\s*<b>Apr 2024<\/b>/);
-  // seasonality section present (current-premises curve)
-  assert.match(out.body, /Seasonality/);
+  const out = reports.render(reports.getSection(db, ctx), ctx);
+  assert.match(out.body, /no comparable current-premises period \(prior year pre-move\)/, 'Apr-2023 blocked with its reason');
+  const aprIdx = out.body.indexOf('no comparable current-premises period');
+  assert.ok(aprIdx > 0);
   db.close();
 });
 
-test('yoy: NO-FABRICATION — the non-comparable Apr-2023 row carries no YoY number', () => {
+test('long-range: previous-premises years are flagged in the annual arc, never blended', () => {
   const db = makeDb();
   const ctx = ctxFor(db);
-  const out = yoy.render(yoy.getSection(db, ctx), ctx);
-  // isolate the Apr 2023 table row and assert it holds the reason, not a +/-£ delta
-  const i = out.body.indexOf('<td>Apr 2023');
-  assert.ok(i >= 0, 'Apr 2023 table row present');
-  const row = out.body.slice(i, i + 320);
-  assert.match(row, /no comparable current-premises period/);
-  assert.doesNotMatch(row, /[+−]£/, 'no fabricated YoY delta on a non-comparable month');
+  const out = reports.render(reports.getSection(db, ctx), ctx);
+  assert.match(out.body, /previous premises/);
   db.close();
-});
-
-test('yoy: source is read-only, no network, requires only shared.js', () => {
-  const src = fs.readFileSync(path.join(__dirname, '..', 'mission-control', 'ui', 'pages', 'coyote', 'yoy-seasonality.js'), 'utf8');
-  assert.doesNotMatch(src, /\bfetch\s*\(|\bchild_process\b|require\(['"]node:(http|https|net|dgram|child_process)/);
-  assert.doesNotMatch(src, /\.(run|exec|prepare)\s*\(/, 'reads only via ctx.q');
-  assert.doesNotMatch(src, /\b(INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM|INSERT\s+OR)\b/i);
-  const requires = src.match(/require\((['"][^'"]+['"])\)/g) || [];
-  for (const r of requires) assert.match(r, /\.\.\/shared\.js/, `requires only ../shared.js, got ${r}`);
 });

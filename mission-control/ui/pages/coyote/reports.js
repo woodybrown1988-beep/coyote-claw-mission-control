@@ -145,8 +145,17 @@ module.exports = {
     const yoyCols = 'month, net_pence, days, cal_days, complete, prior_year_month, prior_year_net_pence, yoy_delta_pence, yoy_status';
     const yoyAnchor = rowsOf(q(`SELECT ${yoyCols} FROM v_sales_month_yoy WHERE month = ?`, [anchorMonth]))[0] || null;
     const yoyLatestOk = rowsOf(q(`SELECT ${yoyCols} FROM v_sales_month_yoy WHERE premises='current' AND yoy_status='ok' ORDER BY month DESC LIMIT 1`))[0] || null;
+    // LONG RANGE (page-map audit 2026-07-21: the YoY tab's two unique panels merged here;
+    // /coyote/yoy now 308s to this page). Boundary-safe views; premises honesty condensed to
+    // one caveat line with the full monthly table behind an expand.
+    const longRange = {
+      regime: (() => { const o = {}; for (const r of rowsOf(q('SELECT name, start_date, end_date, note FROM premises_regime'))) o[r.name] = r; return o; })(),
+      yoySeries: rowsOf(q(`SELECT ${yoyCols} FROM v_sales_month_yoy WHERE premises='current' ORDER BY month DESC`)),
+      seasonality: rowsOf(q(`SELECT month_of_year, days, open_days, net_pence, avg_net_per_open_day_pence FROM v_seasonality_current ORDER BY month_of_year`)),
+      byYear: rowsOf(q(`SELECT substr(business_date,1,4) AS yr, premises, COUNT(*) AS days, SUM(net_sales_pence>0) AS open_days, SUM(net_sales_pence) AS net FROM v_sales_day_all GROUP BY yr, premises ORDER BY yr`)),
+    };
     return {
-      now, hasData: true, maxDate, nav, rv2,
+      now, hasData: true, maxDate, nav, rv2, longRange,
       histStart: histRow && histRow.d ? String(histRow.d) : null,
       yoyAnchor, yoyLatestOk,
       current: build(nav.from, nav.to),
@@ -676,10 +685,55 @@ module.exports = {
         : `<div class="rp-hint">vs ${esc(m.nav.comparator.label)}: net ${gbp(prevNet)} → ${gbp(curNet)}${curNet != null && prevNet != null ? ` (${curNet - prevNet >= 0 ? '+' : '−'}${gbp(Math.abs(curNet - prevNet))})` : ''}${prevDays < (num((m.current.tot || {}).days) || 0) ? ` · comparator covers only ${prevDays} day(s)` : ''}.</div>`;
     }
 
+    // ---- LONG RANGE (merged YoY tab, page-map audit 2026-07-21) ----
+    let longRangeHtml = '';
+    if (m.longRange && (m.longRange.seasonality.length || m.longRange.byYear.length)) {
+      const lr = m.longRange;
+      const cur = lr.regime && lr.regime.current;
+      const boundary = cur ? String(cur.start_date) : '2023-04-01';
+      const okRows = (lr.yoySeries || []).filter((r) => r.yoy_status === 'ok');
+      const latest = okRows[0] || null;
+      const signed = (d) => num(d) == null ? '—' : `${num(d) >= 0 ? '+' : '−'}${gbp(Math.abs(num(d)))}`;
+      const pctS = (d, base) => (num(d) != null && num(base)) ? `${d >= 0 ? '+' : '−'}${Math.abs(num(d) / num(base) * 100).toFixed(1)}%` : '—';
+      const seas = (lr.seasonality || []).filter((r) => num(r.avg_net_per_open_day_pence) != null);
+      const maxAvg = seas.reduce((mx, r) => Math.max(mx, num(r.avg_net_per_open_day_pence) || 0), 0) || 1;
+      const bars = seas.map((r) => {
+        const v = num(r.avg_net_per_open_day_pence) || 0;
+        const mn = MONTHS_ABBR[Number(r.month_of_year)] || r.month_of_year;
+        return `<div class="rp-bar" style="height:${Math.max(2, Math.round(v / maxAvg * 108))}px" title="${esc(mn)} — ${gbp(v)}/open-day"><span>${esc(String(mn))}</span></div>`;
+      }).join('');
+      const curYear = String(m.maxDate).slice(0, 4);
+      const yearRows = (lr.byYear || []).map((r) => {
+        const isPrev = r.premises === 'previous';
+        const note = r.yr === '2022' ? ' <span class="ash">(from Feb — opening)</span>' : (r.yr === curYear ? ' <span class="ash">(to date)</span>' : '');
+        const avg = num(r.open_days) ? Math.round(num(r.net) / num(r.open_days)) : null;
+        return `<tr${isPrev ? ' style="opacity:.55"' : ''}><td>${esc(r.yr)}${note}${isPrev ? ' <span class="chip">previous premises</span>' : ''}</td><td class="mono ash">${int(num(r.open_days))}</td><td class="mono">${gbp(r.net)}</td><td class="mono ash">${gbp(avg)}</td></tr>`;
+      }).join('');
+      const yoyRows = (lr.yoySeries || []).map((r) => {
+        const comparable = r.yoy_status === 'ok';
+        return `<tr><td>${esc(monthLabel(r.month))}${!r.complete ? ` <span class="ash">(${int(num(r.days))}/${int(num(r.cal_days))}d)</span>` : ''}</td>
+          <td class="mono">${gbp(r.net_pence)}</td><td class="mono ash">${comparable ? gbp(r.prior_year_net_pence) : '—'}</td>
+          <td class="mono">${comparable ? `<span class="${num(r.yoy_delta_pence) >= 0 ? 'rp-yoy-up' : 'rp-yoy-down'}">${signed(r.yoy_delta_pence)} <span class="ash">${pctS(r.yoy_delta_pence, r.prior_year_net_pence)}</span></span>` : `<span class="rp-yoy-na">${esc(r.yoy_status)}</span>`}</td></tr>`;
+      }).join('');
+      longRangeHtml = `<div class="sec-label" style="margin-top:22px">Long range <span class="mono">(current premises · move ${esc(boundary)})</span><span class="rule"></span></div>
+        <div class="rp-grid">
+          <div class="tile ${latest && num(latest.yoy_delta_pence) >= 0 ? 'green' : ''}"><div class="lab">Latest full-month YoY</div>
+            <div class="val">${latest ? signed(latest.yoy_delta_pence) : '—'}</div>
+            <div class="sub">${latest ? `${esc(monthLabel(latest.month))} vs ${esc(monthLabel(latest.prior_year_month))} · ${pctS(latest.yoy_delta_pence, latest.prior_year_net_pence)}` : 'no complete comparable month yet'}</div></div>
+        </div>
+        <div class="rp-two">
+          <div><div class="sec-label">Seasonality — avg net £/open-day<span class="rule"></span></div><div class="panel"><div class="panel-body">${bars ? `<div class="rp-bars">${bars}</div><div style="height:14px"></div>` : '<div class="empty-row">—</div>'}</div></div></div>
+          <div><div class="sec-label">Annual arc<span class="rule"></span></div><div class="panel"><div class="panel-body">${yearRows ? `<table class="tbl"><thead><tr><th>year</th><th>open days</th><th>net</th><th>avg/open-day</th></tr></thead><tbody>${yearRows}</tbody></table>` : '<div class="empty-row">—</div>'}</div></div></div>
+        </div>
+        <details class="rv2-details"><summary>monthly YoY table (current premises; the move blocks non-comparable months with their reason) ▸</summary>
+          <div class="panel" style="margin-top:8px"><div class="panel-body"><table class="tbl"><thead><tr><th>month</th><th>net</th><th>prior year</th><th>YoY Δ</th></tr></thead><tbody>${yoyRows || ''}</tbody></table></div></div></details>`;
+    }
+
     const body = styles
       + `<style>${NAV.NAV_CSS}</style>`
       + '<div class="rp-lib"><a href="/coyote/report-library">Report Library — specialist reports, verdict-first →</a></div>'
       + v2Html
+      + longRangeHtml
       + `<div class="sec-label" style="margin-top:22px">Day / period flash <span class="mono">(POS-truthful · period nav)</span><span class="rule"></span></div>`
       + NAV.renderNavStrip(m.nav, '/coyote/reports', esc)
       + yoyHtml

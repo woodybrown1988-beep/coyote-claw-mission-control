@@ -15,7 +15,6 @@ const PAGES = {
   agents: require('../mission-control/ui/pages/claw/agents.js'),
   reviews: require('../mission-control/ui/pages/coyote/reviews.js'),
   issues: require('../mission-control/ui/pages/coyote/issues.js'),
-  operations: require('../mission-control/ui/pages/coyote/operations.js'),
   recipes: require('../mission-control/ui/pages/coyote/recipes.js'),
   health: require('../mission-control/ui/pages/claw/health.js'),
 };
@@ -205,22 +204,6 @@ test('reviews BOUNDARY: data-op write affordance ONLY on TA/OT, never on a Googl
     assert.doesNotMatch(region, /data-op=/, 'Google card has no board write path');
     assert.doesNotMatch(region, /data-review=/, 'Google card has no review-action wrapper');
   }
-});
-
-test('operations: EMPTY kpi_snapshot → "not wired", and a NULL labour_pct never fabricates 0%', () => {
-  // empty
-  let db = makeDb();
-  let ctx = ctxFor(db);
-  let out = PAGES.operations.render(PAGES.operations.getSection(db, ctx), ctx);
-  assert.match(out.body, /not yet wired|not wired/i);
-  assert.doesNotMatch(out.body, />0%</, 'no fabricated 0% on empty');
-  db.close();
-  // populated but NULL labour_pct → '—', never '0%'
-  db = makeDb((d) => d.prepare(`INSERT INTO kpi_snapshot (period,covers,revenue_pence,labour_pct,atv_pence,source,as_of,fetched_at) VALUES ('2026-06-29',84,312050,NULL,3715,'coyote-intel','2026-06-29T23:00:00Z',?)`).run(NOW));
-  ctx = ctxFor(db);
-  out = PAGES.operations.render(PAGES.operations.getSection(db, ctx), ctx);
-  assert.doesNotMatch(out.body, />0%</, 'NULL labour_pct must not render a fabricated 0%');
-  db.close();
 });
 
 test('issues: escalation surfaced + log-action safe-write form present', () => {

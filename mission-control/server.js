@@ -145,17 +145,14 @@ const SHARED = require('./ui/shared.js');
 const DATA = require('./ui/data.js');
 const PAGES = [
   require('./ui/pages/coyote/overview.js'),
-  require('./ui/pages/claw/agents.js'),
+  require('./ui/pages/claw/engine.js'),
   require('./ui/pages/coyote/reviews.js'),
   require('./ui/pages/coyote/issues.js'),
-  require('./ui/pages/coyote/operations.js'),
   require('./ui/pages/coyote/reports.js'),
   require('./ui/pages/coyote/report-library.js'),
   require('./ui/pages/coyote/rota-review.js'),
-  require('./ui/pages/coyote/yoy-seasonality.js'),
   require('./ui/pages/coyote/labour.js'),
   require('./ui/pages/coyote/recipes.js'),
-  require('./ui/pages/claw/health.js'),
 ];
 const PAGE_BY_ROUTE = {};
 for (const p of PAGES) PAGE_BY_ROUTE[p.route] = p;
@@ -166,6 +163,11 @@ for (const p of PAGES) PAGE_BY_ROUTE[p.route] = p;
 // (/coyote/overview), not the console. Factory-ready: a new workspace adds its own prefix, no engine change.
 const LEGACY_REDIRECTS = {
   '/': '/coyote/overview',
+  // page-map audit 2026-07-21: Operations cut (dead since birth), YoY merged into Reports
+  '/coyote/operations': '/coyote/overview',
+  '/coyote/yoy': '/coyote/reports',
+  '/claw/agents': '/claw/engine',
+  '/claw/health': '/claw/engine',
   '/overview': '/coyote/overview',
   '/reports': '/coyote/reports',
   '/labour': '/coyote/labour',

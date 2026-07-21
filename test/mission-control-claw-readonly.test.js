@@ -17,7 +17,7 @@ test('registry: /claw = console pages only, flagged read-only, all under /claw/*
   assert.ok(claw, 'claw workspace exists');
   assert.equal(claw.readOnly, true, 'claw is flagged read-only');
   const keys = claw.groups.flatMap((g) => g.items.map((i) => i.key)).sort();
-  assert.deepEqual(keys, ['agents', 'health'], 'claw = agents + health (job states / spend / gates live inside them)');
+  assert.deepEqual(keys, ['engine'], 'claw = ONE engine room (agents + health merged, page-map audit 2026-07-21)');
   for (const g of claw.groups) for (const it of g.items) assert.match(it.route, /^\/claw\//, `${it.key} routes under /claw`);
 });
 
