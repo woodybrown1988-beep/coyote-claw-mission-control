@@ -1,9 +1,12 @@
 'use strict';
-// Overview page — the 4-layer cockpit (ops-centre skin). Contract: { key, route, title, sub, getSection(db,ctx), render(section,ctx) }.
-// getSection: SELECT-only via ctx.q. render: returns { stamp, body } using ../shared.js helpers.
-// Layers: (1) ACTION BAND — what needs you, (2) RISING-ISSUES STRIP, (3) KPI TILES, (4) SYSTEM STRIP.
-// READ-ONLY / navigational only: the overview links to the page that owns each safe write — it never
-// renders a write control itself (no data-op, no log-form). No fabricated numbers; honest freshness.
+// Overview — the cockpit, redesigned per the 2026-07-21 audit: "vital information without
+// overload". Layers: (1) ACTION BAND — what needs you; (2) RISING ISSUES; (3) THE WEEK —
+// yesterday + last full week as VERDICT tiles; (4) WEEK AHEAD — the board's only forward panel
+// (forecast vs rota'd labour per day + the FORWARD rota verdict); (5) VERDICT LINES that link
+// out to each number's ONE home (decomposition → Reports, QR ATV → Reports, labour → Labour /
+// Rota Review) — the old P2/P3/P4 tables are gone from here (the decomposition table now lives
+// in Reports); (6) SYSTEM — alert-only: renders a single green line unless something is red.
+// READ-ONLY / navigational; no fabricated numbers; honest freshness everywhere.
 const S = require('../../shared.js');
 const K = require('../../kpi.js');
 
@@ -11,19 +14,12 @@ const K = require('../../kpi.js');
 // a target, not a measured value, so it may live here per the canonical-source ruling.
 const QR_TARGET_PENCE = 3800;
 
-function toInt(v) {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : 0;
-}
-function row(res) {
-  return res && res.ok && res.rows && res.rows.length ? res.rows[0] : null;
-}
-function rows(res) {
-  return res && res.ok && res.rows ? res.rows : [];
-}
+function toInt(v) { const n = Number(v); return Number.isFinite(n) ? n : 0; }
+function row(res) { return res && res.ok && res.rows && res.rows.length ? res.rows[0] : null; }
+function rows(res) { return res && res.ok && res.rows ? res.rows : []; }
 
 module.exports = {
-  key: "overview", route: "/coyote/overview", workspace: "coyote", title: "Overview", sub: "The cockpit · what needs you, at a glance",
+  key: 'overview', route: '/coyote/overview', workspace: 'coyote', title: 'Overview', sub: 'The cockpit · what needs you, then the week behind and the week ahead',
 
   getSection(db, ctx) {
     const q = ctx.q;
@@ -33,12 +29,10 @@ module.exports = {
     const dayStart = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
 
     // (1a) jobs awaiting YOUR sign-off / plan feedback
-    const signoff = toInt((row(q(
-      `SELECT COUNT(*) c FROM jobs WHERE status = 'awaiting_signoff'`)) || {}).c);
-    const planfb = toInt((row(q(
-      `SELECT COUNT(*) c FROM jobs WHERE status = 'awaiting_plan_feedback'`)) || {}).c);
+    const signoff = toInt((row(q(`SELECT COUNT(*) c FROM jobs WHERE status = 'awaiting_signoff'`)) || {}).c);
+    const planfb = toInt((row(q(`SELECT COUNT(*) c FROM jobs WHERE status = 'awaiting_plan_feedback'`)) || {}).c);
 
-    // (1b) review reply queue — split manual (TA/OT, copy & post on-board) vs Google (Telegram tap, off-board)
+    // (1b) review reply queue — manual (copy & post) vs Google (Telegram tap)
     const draftRows = rows(q(
       `SELECT platform, COUNT(*) c FROM review_drafts
         WHERE draft_status NOT IN ('responded','skipped','posted')
@@ -53,188 +47,148 @@ module.exports = {
     const replyTotal = manualReplies + googleReplies;
 
     // (1c) escalations — ALLERGEN prominent
-    const escRows = rows(q(
-      `SELECT issue_code, status, identified_at FROM review_actions
-        WHERE escalate = 1 ORDER BY identified_at DESC`));
+    const escRows = rows(q(`SELECT issue_code, status, identified_at FROM review_actions WHERE escalate = 1 ORDER BY identified_at DESC`));
     let allergen = 0;
     for (const r of escRows) if (/allergen/i.test(String(r.issue_code || ''))) allergen += 1;
-
     const needsYou = signoff + planfb + replyTotal + escRows.length;
 
-    // (2) rising issues — latest computed set, rising only
+    // (2) rising issues
     const rising = rows(q(
       `SELECT issue_code, count_current, count_prior FROM issue_trends
         WHERE computed_at = (SELECT MAX(computed_at) FROM issue_trends) AND rising = 1
         ORDER BY count_current DESC`));
 
-    // ============ (3) BUSINESS KPI FEED — computed AT READ TIME from librarian.db ============
-    // Canonical-source ruling (coyote-claw CLAUDE.md "Canonical sources"): operational numbers live
-    // in the DB only; every value below is derived fresh per request — no stored copies, no
-    // snapshot table. Counts are TRANSACTIONS (guest checks — the trustworthy series;
-    // pos_guest_count is a POS artifact, NOT real covers, and is never rendered as covers).
+    // ============ (3) THE WEEK — computed AT READ TIME (canonical-source ruling) ============
     const kpiMaxRow = row(q(`SELECT MAX(business_date) d FROM v_sales_day_all WHERE premises='current'`));
     const kpiMax = kpiMaxRow && kpiMaxRow.d ? String(kpiMaxRow.d) : null;
 
-    // ---- P1: last full week (Mon–Sun) vs same week LY. −364d keeps weekday alignment. ----
+    // Yesterday (the latest settled day) vs the same weekday LY (−364d keeps weekday alignment).
+    let yesterday = null;
+    if (kpiMax) {
+      const ly = K.shiftDays(kpiMax, -364);
+      const one = (dt) => row(q(`SELECT net_sales_pence net, transactions txn, premises FROM v_sales_day_all WHERE business_date = ?`, [dt]));
+      const cur = one(kpiMax), prior = one(ly);
+      yesterday = {
+        date: kpiMax, net: cur ? toInt(cur.net) : null, txn: cur ? toInt(cur.txn) : null,
+        lyDate: ly, lyNet: prior ? toInt(prior.net) : null, lyTxn: prior ? toInt(prior.txn) : null,
+        comparable: !!(prior && String(prior.premises) === 'current'),
+      };
+    }
+
+    // Last full week (Mon–Sun) vs same week LY (premises-guarded).
     let week = null;
     if (kpiMax) {
       const w = K.lastFullWeek(kpiMax);
       const ly = { from: K.shiftDays(w.from, -364), to: K.shiftDays(w.to, -364) };
       const agg = (a, b) => row(q(
-        `SELECT SUM(net_sales_pence) net, SUM(transactions) txn, COUNT(*) days,
-                SUM(premises = 'current') curdays
+        `SELECT SUM(net_sales_pence) net, SUM(transactions) txn, COUNT(*) days, SUM(premises = 'current') curdays
            FROM v_sales_day_all WHERE business_date BETWEEN ? AND ?`, [a, b])) || {};
       const cur = agg(w.from, w.to), prior = agg(ly.from, ly.to);
-      // Premises guard: no raw YoY across the 2023-04-01 move (the two-ruler CLAUDE.md rule).
       const comparable = toInt(prior.days) > 0 && toInt(prior.curdays) === toInt(prior.days);
       week = {
-        from: w.from, to: w.to, lyFrom: ly.from, lyTo: ly.to,
-        net: toInt(cur.net), txn: toInt(cur.txn), days: toInt(cur.days),
-        lyNet: toInt(prior.net), lyTxn: toInt(prior.txn), lyDays: toInt(prior.days),
-        comparable,
+        from: w.from, to: w.to, net: toInt(cur.net), txn: toInt(cur.txn), days: toInt(cur.days),
+        lyNet: toInt(prior.net), lyTxn: toInt(prior.txn), lyDays: toInt(prior.days), comparable,
       };
     }
 
-    // ---- P2: monthly decomposition, current year vs LY. The diagnostic core:
-    //   ΔR = (C1−C0)·A0 [volume effect] + (A1−A0)·C1 [spend effect] — exact identity.
-    // Current month compared MTD (days 1..maxDay both years); incomplete/pre-move months carry a
-    // reason and never a fabricated split.
-    const decomp = [];
+    // ============ (4) WEEK AHEAD — forecast vs rota'd labour per day + the FORWARD verdict ============
+    // Sources: rota_ahead_budget (RC daily forecast targets) + rota_ahead_shifts (published rota,
+    // hourly TRUE per shift; salaried is FIXED and lives in the FORWARD verdict, not per-day rows)
+    // + the latest ok FORWARD run in rota_review_runs. Unpublished days say so — never zeros.
+    const ahead = { days: [], forward: null, asOf: null };
+    {
+      const budgets = rows(q(`SELECT DISTINCT business_date d, revenue_target_pence t FROM rota_ahead_budget ORDER BY d LIMIT 8`));
+      const shifts = rows(q(
+        `SELECT business_date d, SUM(sched_minutes) mins, SUM(sched_cost_true_pence) hourly, COUNT(*) n, MAX(as_of) as_of
+           FROM rota_ahead_shifts GROUP BY business_date ORDER BY d LIMIT 8`));
+      const byDay = new Map(shifts.map((r) => [String(r.d), r]));
+      for (const b of budgets) {
+        const s = byDay.get(String(b.d));
+        ahead.days.push({
+          date: String(b.d), forecast: toInt(b.t) || null,
+          rotaMins: s ? toInt(s.mins) : null, rotaHourly: s ? toInt(s.hourly) : null, shifts: s ? toInt(s.n) : 0,
+        });
+        if (s && s.as_of) ahead.asOf = Math.max(ahead.asOf || 0, toInt(s.as_of));
+      }
+      const fwd = row(q(`SELECT week_monday, ran_at, report_json FROM rota_review_runs WHERE mode='forward' AND status='ok' ORDER BY id DESC LIMIT 1`));
+      if (fwd && fwd.report_json) {
+        try {
+          const rep = JSON.parse(String(fwd.report_json));
+          const unpublished = (rep.gaps || []).some((g) => String(g).includes('PARTIALLY PUBLISHED'));
+          ahead.forward = {
+            week: String(fwd.week_monday), ranAt: toInt(fwd.ran_at), unpublished,
+            verdicts: (rep.verdicts || []).map((v) => ({ dept: v.dept, deltaPence: v.deltaPence })),
+          };
+        } catch (e) { /* unreadable run — the rota-review page surfaces it */ }
+      }
+    }
+
+    // ============ (5) VERDICT LINES — one line per demoted table, linking to its ONE home ============
+    // (a) decomposition verdict: the CURRENT month's lever (table now lives in Reports)
+    let decompNow = null;
     if (kpiMax) {
-      const yr = kpiMax.slice(0, 4);
-      const lyYr = String(Number(yr) - 1);
       const curMonth = kpiMax.slice(0, 7);
       const maxDay = kpiMax.slice(8, 10);
-      const monthAgg = (ym, dayCap) => row(q(
-        `SELECT SUM(net_sales_pence) net, SUM(transactions) txn, COUNT(*) days,
-                SUM(premises = 'current') curdays
-           FROM v_sales_day_all
-          WHERE substr(business_date, 1, 7) = ? AND substr(business_date, 9, 2) <= ?`,
-        [ym, dayCap])) || {};
-      const calDays = (ym) => new Date(Date.UTC(Number(ym.slice(0, 4)), Number(ym.slice(5, 7)), 0)).getUTCDate();
-      for (let m = 1; m <= 12; m++) {
-        const ym = `${yr}-${String(m).padStart(2, '0')}`;
-        if (ym > curMonth) break;
-        const partial = ym === curMonth;
-        const cap = partial ? maxDay : '31';
-        const lyYm = `${lyYr}-${String(m).padStart(2, '0')}`;
-        const a = monthAgg(ym, cap), b = monthAgg(lyYm, cap);
-        let reason = null;
-        if (toInt(b.days) === 0) reason = 'no prior-year record';
-        else if (toInt(a.curdays) !== toInt(a.days) || toInt(b.curdays) !== toInt(b.days)) reason = 'premises break — no raw YoY';
-        else if (!partial && (toInt(a.days) < calDays(ym) || toInt(b.days) < calDays(lyYm))) reason = `incomplete record (${toInt(a.days)}/${calDays(ym)} vs ${toInt(b.days)}/${calDays(lyYm)} days)`;
-        const d = reason === null ? K.decompose(toInt(b.txn), toInt(b.net), toInt(a.txn), toInt(a.net)) : null;
-        decomp.push({
-          month: ym, partial, mtdDay: partial ? maxDay : null,
-          net: toInt(a.net), txn: toInt(a.txn), lyNet: toInt(b.net), lyTxn: toInt(b.txn),
-          d, reason: reason !== null ? reason : (d === null ? 'zero transactions — no split' : null),
-        });
+      const lyYm = `${Number(kpiMax.slice(0, 4)) - 1}-${kpiMax.slice(5, 7)}`;
+      const monthAgg = (ym, cap) => row(q(
+        `SELECT SUM(net_sales_pence) net, SUM(transactions) txn, COUNT(*) days, SUM(premises = 'current') curdays
+           FROM v_sales_day_all WHERE substr(business_date, 1, 7) = ? AND substr(business_date, 9, 2) <= ?`, [ym, cap])) || {};
+      const a = monthAgg(curMonth, maxDay), b = monthAgg(lyYm, maxDay);
+      if (toInt(b.days) > 0 && toInt(a.curdays) === toInt(a.days) && toInt(b.curdays) === toInt(b.days)) {
+        const dd = K.decompose(toInt(b.txn), toInt(b.net), toInt(a.txn), toInt(a.net));
+        if (dd) decompNow = { month: curMonth, mtdDay: maxDay, delta: dd.delta, lead: dd.lead, lyNet: toInt(b.net) };
       }
     }
-
-    // ---- P3: ATV by channel, weekly. Channel data exists only from the sales_by_channel floor
-    // (2026-06-30 onward — the ranged backfill carried day totals only). Days with day-totals-only
-    // are counted as "no channel split", never rendered as zeros. ----
-    const channels = { weeks: [], floor: null };
-    const chFloorRow = row(q(`SELECT MIN(business_date) d FROM sales_by_channel`));
-    if (chFloorRow && chFloorRow.d) {
-      channels.floor = String(chFloorRow.d);
-      const chRows = rows(q(
-        `SELECT business_date, profile_name, SUM(net_sales_pence) net, SUM(transactions) txn
-           FROM sales_by_channel GROUP BY business_date, profile_name`));
-      const dayRows = rows(q(
-        `SELECT business_date FROM v_sales_day_all WHERE business_date >= ? AND net_sales_pence > 0`,
-        [channels.floor]));
-      const wk = new Map(); // monday → { ch: Map(name→{net,txn}), chDays: Set, salesDays: Set }
-      const bucket = (mon) => {
-        if (!wk.has(mon)) wk.set(mon, { ch: new Map(), chDays: new Set(), salesDays: new Set() });
-        return wk.get(mon);
-      };
-      for (const r of chRows) {
-        const b = bucket(K.weekMonday(String(r.business_date)));
-        const key = String(r.profile_name);
-        const cur = b.ch.get(key) || { net: 0, txn: 0 };
-        cur.net += toInt(r.net); cur.txn += toInt(r.txn);
-        b.ch.set(key, cur);
-        b.chDays.add(String(r.business_date));
-      }
-      for (const r of dayRows) bucket(K.weekMonday(String(r.business_date))).salesDays.add(String(r.business_date));
-      for (const mon of [...wk.keys()].sort()) {
-        const b = wk.get(mon);
-        const atv = (name) => { const c = b.ch.get(name); return c && c.txn > 0 ? c.net / c.txn : null; };
-        const eat = b.ch.get('EAT IN') || { net: 0, txn: 0 };
-        const deal = b.ch.get('MON-FRI DEAL') || { net: 0, txn: 0 };
-        channels.weeks.push({
-          monday: mon,
-          eatIn: atv('EAT IN'), deal: atv('MON-FRI DEAL'),
-          server: (eat.txn + deal.txn) > 0 ? (eat.net + deal.net) / (eat.txn + deal.txn) : null,
-          qr: atv('STOREKIT ORDER & PAY'), online: atv('ONLINE ORDER'), takeaway: atv('Take-Away'),
-          chDays: b.chDays.size, salesDays: b.salesDays.size,
-          noSplit: Math.max(0, b.salesDays.size - b.chDays.size),
-        });
-      }
-    }
-
-    // ---- P4: labour % weekly vs the DB-CANONICAL monthly budgets — the scorecard's ruler
-    // (labour_budget × same-day net; pre-burden act_cost_rc_pence over cross-ruler intersection
-    // days — the same ruler as /coyote/labour, NOT the vault policy numbers: two-ruler rule per
-    // CLAUDE.md). Weeks with no labour rows render "awaiting rota backfill" — never interpolated. ----
-    const labourWeeks = [];
+    // (b) QR ATV, trailing 28 settled days from the PER-RECEIPT record (the one source — the old
+    // P3 table computed the same fact from the scraper table: the audit's deepest violation)
+    let qr = null;
     if (kpiMax) {
-      const w0 = K.lastFullWeek(kpiMax);
-      for (let i = 7; i >= 0; i--) {
-        const from = K.shiftDays(w0.from, -7 * i), to = K.shiftDays(w0.to, -7 * i);
-        const act = row(q(
-          `SELECT SUM(ld.act_cost_rc_pence) cost, COUNT(DISTINCT ld.business_date) days
-             FROM labour_dept ld JOIN v_sales_day_all s ON s.business_date = ld.business_date
-            WHERE ld.business_date BETWEEN ? AND ? AND s.net_sales_pence > 0`, [from, to])) || {};
-        const actNet = row(q(
-          `SELECT SUM(net) net FROM (
-             SELECT DISTINCT s.business_date, s.net_sales_pence AS net
-               FROM v_sales_day_all s JOIN labour_dept ld ON ld.business_date = s.business_date
-              WHERE s.business_date BETWEEN ? AND ? AND s.net_sales_pence > 0)`, [from, to])) || {};
-        const bud = row(q(
-          `SELECT SUM(b.labour_pct * s.net_sales_pence) pence FROM labour_budget b
-             JOIN v_sales_day_all s ON s.business_date = b.business_date
-            WHERE b.business_date BETWEEN ? AND ? AND s.net_sales_pence > 0`, [from, to])) || {};
-        const budNet = row(q(
-          `SELECT SUM(net) net FROM (
-             SELECT DISTINCT s.business_date, s.net_sales_pence AS net
-               FROM v_sales_day_all s JOIN labour_budget b ON b.business_date = s.business_date
-              WHERE s.business_date BETWEEN ? AND ? AND s.net_sales_pence > 0)`, [from, to])) || {};
-        const actCost = toInt(act.cost), aNet = toInt(actNet.net), bNet = toInt(budNet.net);
-        labourWeeks.push({
-          from, to, labourDays: toInt(act.days),
-          actPct: aNet > 0 && toInt(act.days) > 0 ? (actCost / aNet) * 100 : null,
-          budPct: bNet > 0 ? (Number(bud.pence || 0) / bNet) * 100 : null,
-        });
-      }
+      const from = K.shiftDays(kpiMax, -27);
+      const r = row(q(
+        `SELECT SUM(r.net_without_tax_pence) net, COUNT(*) txn
+           FROM sales_receipts_api r JOIN sales_channel_map_api m ON m.account_profile_code = COALESCE(r.account_profile_code,'')
+          WHERE r.business_date BETWEEN ? AND ? AND m.channel_label = 'STOREKIT ORDER & PAY'
+            AND r.cancelled = 0 AND (r.type IS NULL OR r.type NOT IN ('VOID','CANCEL','RECALL'))`, [from, kpiMax]));
+      if (r && toInt(r.txn) > 0) qr = { atv: toInt(r.net) / toInt(r.txn), txn: toInt(r.txn), from, to: kpiMax };
+    }
+    // (c) labour verdict: last full week, scorecard ruler (the tables live in Labour / Rota Review)
+    let labourWeek = null;
+    if (kpiMax) {
+      const w = K.lastFullWeek(kpiMax);
+      const act = row(q(
+        `SELECT SUM(ld.act_cost_rc_pence) cost, COUNT(DISTINCT ld.business_date) days
+           FROM labour_dept ld JOIN v_sales_day_all s ON s.business_date = ld.business_date
+          WHERE ld.business_date BETWEEN ? AND ? AND s.net_sales_pence > 0`, [w.from, w.to])) || {};
+      const actNet = row(q(
+        `SELECT SUM(net) net FROM (
+           SELECT DISTINCT s.business_date, s.net_sales_pence AS net
+             FROM v_sales_day_all s JOIN labour_dept ld ON ld.business_date = s.business_date
+            WHERE s.business_date BETWEEN ? AND ? AND s.net_sales_pence > 0)`, [w.from, w.to])) || {};
+      const bud = row(q(
+        `SELECT SUM(b.labour_pct * s.net_sales_pence) pence FROM labour_budget b
+           JOIN v_sales_day_all s ON s.business_date = b.business_date
+          WHERE b.business_date BETWEEN ? AND ? AND s.net_sales_pence > 0`, [w.from, w.to])) || {};
+      const aNet = toInt(actNet.net);
+      labourWeek = {
+        from: w.from, to: w.to, days: toInt(act.days),
+        actPct: aNet > 0 && toInt(act.days) > 0 ? (toInt(act.cost) / aNet) * 100 : null,
+        budPct: aNet > 0 ? (Number(bud.pence || 0) / aNet) * 100 : null,
+      };
     }
 
-    // (4) system strip
+    // (6) system strip — gathered always, RENDERED only when something is off
     const lastIngest = toInt((row(q(`SELECT MAX(fetched_at) f FROM review_snapshot`)) || {}).f);
-    const spent = toInt((row(q(
-      `SELECT COALESCE(SUM(cost_pence),0) s FROM spend_log WHERE created_at >= ?`, [monthStart])) || {}).s);
+    const spent = toInt((row(q(`SELECT COALESCE(SUM(cost_pence),0) s FROM spend_log WHERE created_at >= ?`, [monthStart])) || {}).s);
     const ceilRow = row(q(`SELECT value FROM system_state WHERE key = 'monthly_ceiling_pence' LIMIT 1`));
     const ceiling = ceilRow ? toInt(ceilRow.value) : 0;
-    const doneToday = toInt((row(q(
-      `SELECT COUNT(*) c FROM jobs WHERE status = 'done' AND updated_at >= ?`, [dayStart])) || {}).c);
+    const doneToday = toInt((row(q(`SELECT COUNT(*) c FROM jobs WHERE status = 'done' AND updated_at >= ?`, [dayStart])) || {}).c);
 
     return {
-      now,
-      needsYou,
-      signoff, planfb,
-      manualReplies, googleReplies, replyTotal,
+      now, needsYou, signoff, planfb, manualReplies, googleReplies, replyTotal,
       escalations: escRows.length, allergen,
-      rising: rising.map((r) => ({
-        code: r.issue_code,
-        cur: toInt(r.count_current),
-        prior: toInt(r.count_prior),
-      })),
-      kpiMax, week, decomp, channels, labourWeeks,
-      lastIngest,
-      spent, ceiling,
-      doneToday,
+      rising: rising.map((r) => ({ code: r.issue_code, cur: toInt(r.count_current), prior: toInt(r.count_prior) })),
+      kpiMax, yesterday, week, ahead, decompNow, qr, labourWeek,
+      lastIngest, spent, ceiling, doneToday,
       halt: ctx.halt || { halted: false, source: '' },
     };
   },
@@ -244,228 +198,135 @@ module.exports = {
     const now = m.now || (ctx && ctx.now) || Date.now();
     const esc = S.escapeHtml;
     const parts = [];
+    const gbp = (p) => S.fmtGbpPence(Math.round(p));
+    const signedGbp = (p) => `${p >= 0 ? '+' : '−'}${gbp(Math.abs(p))}`;
+    const pct = (cur, base) => (base > 0 ? `${cur >= base ? '+' : '−'}${Math.abs(((cur - base) / base) * 100).toFixed(1)}%` : '—');
+    const MONTHS = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const monthLabel = (ym) => `${MONTHS[Number(ym.slice(5, 7))]} ${ym.slice(0, 4)}`;
+    const dowShort = (iso) => ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][new Date(`${iso}T12:00:00Z`).getUTCDay()];
 
-    // ---- stamp: freshness of the latest review_snapshot ----
     const stampFresh = S.freshness(m.lastIngest || 0, now);
-    let stampInner;
-    if (stampFresh.cls === 'fresh') stampInner = `<b>${stampFresh.label}</b>`;
-    else if (stampFresh.cls === 'stale') stampInner = `<span class="stale">${stampFresh.label}</span>`;
-    else stampInner = `<span class="none">${stampFresh.label}</span>`;
-    const stamp = `review ingest · ${stampInner}`;
+    const stamp = `review ingest · ${stampFresh.cls === 'fresh' ? `<b>${stampFresh.label}</b>` : `<span class="${stampFresh.cls}">${stampFresh.label}</span>`}`;
 
     // ============ (1) ACTION BAND ============
     parts.push(`<div class="sec-label">What needs you<span class="rule"></span></div>`);
     if (!m.needsYou) {
-      parts.push(
-        `<div class="banner muted"><span class="sdot green"></span>&nbsp; All clear — nothing is waiting on your tap right now. The fleet runs itself; you'll see a red marker here the moment a job or reply needs you.</div>`);
+      parts.push(`<div class="banner muted"><span class="sdot green"></span>&nbsp; All clear — nothing is waiting on your tap right now. You'll see a red marker here the moment a job or reply needs you.</div>`);
     } else {
       const tiles = [];
-
-      // (a) sign-off
       const signTotal = (m.signoff || 0) + (m.planfb || 0);
       const signSubBits = [];
       if (m.signoff) signSubBits.push(`${S.fmtInt(m.signoff)} build sign-off`);
       if (m.planfb) signSubBits.push(`${S.fmtInt(m.planfb)} plan feedback`);
-      tiles.push(
-        `<div class="tile ${signTotal ? 'red' : 'muted'}">
-           <div class="lab">Awaiting your sign-off</div>
-           <div class="val">${S.fmtInt(signTotal)}</div>
-           <div class="sub${signTotal ? ' r' : ''}">${signTotal ? esc(signSubBits.join(' · ')) : 'no jobs held at a gate'}</div>
-           <div><a class="tag" href="/claw/agents">Open Agents →</a></div>
-         </div>`);
-
-      // (b) review reply queue
+      tiles.push(`<div class="tile ${signTotal ? 'red' : 'muted'}">
+         <div class="lab">Awaiting your sign-off</div><div class="val">${S.fmtInt(signTotal)}</div>
+         <div class="sub${signTotal ? ' r' : ''}">${signTotal ? esc(signSubBits.join(' · ')) : 'no jobs held at a gate'}</div>
+         <div><a class="tag" href="/claw/engine">Open the engine room →</a></div></div>`);
       const replySub = m.replyTotal
-        ? `${S.fmtInt(m.manualReplies)} to copy &amp; post · ${S.fmtInt(m.googleReplies)} Google (tap)`
-        : 'reply queue clear';
-      tiles.push(
-        `<div class="tile ${m.replyTotal ? '' : 'muted'}">
-           <div class="lab">Review replies</div>
-           <div class="val">${S.fmtInt(m.replyTotal || 0)}</div>
-           <div class="sub">${replySub}</div>
-           <div><a class="tag" href="/coyote/reviews">Go to queue →</a></div>
-         </div>`);
-
-      // (c) escalations — ALLERGEN prominent
+        ? `${S.fmtInt(m.manualReplies)} to copy &amp; post · ${S.fmtInt(m.googleReplies)} Google (tap)` : 'reply queue clear';
+      tiles.push(`<div class="tile ${m.replyTotal ? '' : 'muted'}">
+         <div class="lab">Review replies</div><div class="val">${S.fmtInt(m.replyTotal || 0)}</div>
+         <div class="sub">${replySub}</div><div><a class="tag" href="/coyote/reviews">Go to queue →</a></div></div>`);
       const escSub = m.allergen
         ? `<span class="sub r">⚠ ALLERGEN · ${S.fmtInt(m.allergen)}</span>`
         : (m.escalations ? `${S.fmtInt(m.escalations)} open` : 'none escalated');
-      tiles.push(
-        `<div class="tile ${m.escalations ? 'amber' : 'muted'}">
-           <div class="lab">Escalations</div>
-           <div class="val">${S.fmtInt(m.escalations || 0)}</div>
-           <div class="sub${m.allergen ? '' : (m.escalations ? ' a' : '')}">${escSub}</div>
-           <div><a class="tag" href="/coyote/issues">Open Issues →</a></div>
-         </div>`);
-
+      tiles.push(`<div class="tile ${m.escalations ? 'amber' : 'muted'}">
+         <div class="lab">Escalations</div><div class="val">${S.fmtInt(m.escalations || 0)}</div>
+         <div class="sub${m.allergen ? '' : (m.escalations ? ' a' : '')}">${escSub}</div>
+         <div><a class="tag" href="/coyote/issues">Open Issues →</a></div></div>`);
       parts.push(`<div class="tiles">${tiles.join('')}</div>`);
     }
 
-    // ============ (2) RISING-ISSUES STRIP ============
-    parts.push(`<div class="sec-label">Rising issues<span class="rule"></span></div>`);
+    // ============ (2) RISING ISSUES ============
     if (m.rising && m.rising.length) {
+      parts.push(`<div class="sec-label">Rising issues<span class="rule"></span></div>`);
       const chips = m.rising.map((r) => {
         const sharp = (r.prior === 0) || ((r.cur - r.prior) >= r.prior);
-        const tone = sharp ? 'amber' : 'cyan';
-        return `<a class="chip ${tone}" href="/coyote/issues">${esc(r.code)} ↑${S.fmtInt(r.cur)} <span class="muted">(was ${S.fmtInt(r.prior)})</span></a>`;
+        return `<a class="chip ${sharp ? 'amber' : 'cyan'}" href="/coyote/issues">${esc(r.code)} ↑${S.fmtInt(r.cur)} <span class="muted">(was ${S.fmtInt(r.prior)})</span></a>`;
       }).join('');
       parts.push(`<div class="tiles" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center">${chips}</div>`);
-    } else {
-      parts.push(`<div class="banner muted">No rising issues in the latest trend window.</div>`);
     }
 
-    // ============ (3) BUSINESS KPI FEED — four panels, all computed at read time ============
-    const gbp = (p) => S.fmtGbpPence(Math.round(p));
-    const gbpK = (p) => `£${(p / 100000).toFixed(1)}k`;
-    const pct1 = (v) => (v === null || v === undefined ? '—' : `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`);
-    const atvF = (p) => (p === null || p === undefined ? '<span class="muted">no split</span>' : `£${(p / 100).toFixed(2)}`);
-    parts.push(`<style>
-      .kpi-tbl{width:100%;border-collapse:collapse;font-size:12px}
-      .kpi-tbl th{text-align:right;color:#7d8aa5;font-weight:600;padding:4px 8px;border-bottom:1px solid #1e2a3f}
-      .kpi-tbl th:first-child,.kpi-tbl td:first-child{text-align:left}
-      .kpi-tbl td{text-align:right;padding:4px 8px;border-bottom:1px solid #141d2e;font-variant-numeric:tabular-nums}
-      .kpi-pos{color:#34d399}.kpi-neg{color:#f87171}.kpi-dim{color:#7d8aa5}
-      .kpi-panel{background:#0d1524;border:1px solid #1e2a3f;border-radius:10px;padding:12px;margin:8px 0}
-      .kpi-panel .plab{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#7d8aa5;margin-bottom:8px}
-      .kpi-verdict{font-size:13px;padding:10px 12px;border-radius:8px;background:#101c30;border:1px solid #223252;margin:8px 0}
-    </style>`);
-    parts.push(`<div class="sec-label">Business — computed live from librarian.db (no stored copies)<span class="rule"></span></div>`);
-
-    // ---- P1: headline strip ----
-    const wv = m.week;
-    if (wv && wv.days > 0) {
-      const atv = wv.txn > 0 ? wv.net / wv.txn : null;
-      const lyAtv = wv.lyTxn > 0 ? wv.lyNet / wv.lyTxn : null;
-      const dNet = wv.comparable ? K.pctDelta(wv.net, wv.lyNet) : null;
-      const dTxn = wv.comparable ? K.pctDelta(wv.txn, wv.lyTxn) : null;
-      const dAtv = wv.comparable && atv !== null && lyAtv !== null ? K.pctDelta(atv, lyAtv) : null;
-      const dcls = (v) => (v === null ? 'kpi-dim' : v < 0 ? 'kpi-neg' : 'kpi-pos');
-      const lySub = wv.comparable
-        ? `vs ${esc(wv.lyFrom)}…${esc(wv.lyTo)} LY`
-        : 'LY window not comparable (premises rule)';
-      const wtiles = [
-        `<div class="tile green"><div class="lab">Net (ex-VAT) · wk ${esc(wv.from)}…${esc(wv.to)}</div><div class="val">${gbp(wv.net)}</div><div class="sub"><span class="${dcls(dNet)}">${pct1(dNet)}</span> ${lySub}</div></div>`,
-        `<div class="tile blue"><div class="lab">Transactions (checks)</div><div class="val">${S.fmtInt(wv.txn)}</div><div class="sub"><span class="${dcls(dTxn)}">${pct1(dTxn)}</span> ${wv.comparable ? `LY ${S.fmtInt(wv.lyTxn)}` : 'no LY comparison'}</div></div>`,
-        `<div class="tile"><div class="lab">Blended ATV /txn</div><div class="val">${atv === null ? '—' : atvF(atv)}</div><div class="sub"><span class="${dcls(dAtv)}">${pct1(dAtv)}</span> ${lyAtv !== null && wv.comparable ? `LY ${atvF(lyAtv)}` : ''}</div></div>`,
-      ];
-      parts.push(`<div class="tiles">${wtiles.join('')}</div>`);
-      if (wv.days < 7) parts.push(`<div class="banner muted">Only ${wv.days}/7 days of the week have a sales record — deltas reflect the recorded days.</div>`);
+    // ============ (3) THE WEEK — yesterday + last full week, verdict tiles ============
+    parts.push(`<div class="sec-label">The week<span class="rule"></span></div>`);
+    if (!m.kpiMax) {
+      parts.push(`<div class="banner muted">No sales record yet — the daily ingest fills this in.</div>`);
     } else {
-      parts.push(`<div class="banner muted">No sales record yet — the headline strip lights up with the first ingested day.</div>`);
-    }
-
-    // ---- P2: the decomposition — which lever is leaking ----
-    parts.push(`<div class="kpi-panel"><div class="plab">Revenue delta decomposition — volume (fewer checks) vs spend (lower £/head) · monthly vs LY</div>`);
-    const dm = (m.decomp || []).filter(Boolean);
-    if (dm.length) {
-      // verdict line for the CURRENT month (the last row)
-      const curRow = dm[dm.length - 1];
-      if (curRow && curRow.d) {
-        const d = curRow.d;
-        const pc = K.pctDelta(curRow.net, curRow.lyNet);
-        parts.push(`<div class="kpi-verdict"><b>${esc(curRow.month)}${curRow.partial ? ` MTD (to day ${esc(String(Number(curRow.mtdDay)))})` : ''}: ${pct1(pc)} — ${d.lead === 'volume' ? 'COVERS-led' : 'SPEND-led'}.</b> Volume effect ${d.volume < 0 ? '−' : '+'}${gbp(Math.abs(d.volume))}, spend effect ${d.spend < 0 ? '−' : '+'}${gbp(Math.abs(d.spend))} (sum = actual delta ${d.delta < 0 ? '−' : '+'}${gbp(Math.abs(d.delta))}${d.checkOk ? ' ✓' : ' ✗ CHECK FAILED'}).</div>`);
+      const t = [];
+      if (m.yesterday && m.yesterday.net != null) {
+        const y = m.yesterday;
+        const cmp = y.comparable && y.lyNet != null && y.lyNet > 0;
+        t.push(`<div class="tile ${cmp && y.net >= y.lyNet ? 'green' : ''}">
+          <div class="lab">${esc(dowShort(y.date))} ${esc(y.date)} (latest settled)</div>
+          <div class="val">${gbp(y.net)}</div>
+          <div class="sub">${S.fmtInt(y.txn)} txn${cmp ? ` · ${pct(y.net, y.lyNet)} vs ${esc(dowShort(y.lyDate))} LY (${gbp(y.lyNet)})` : ' · no comparable LY day'}</div></div>`);
       }
-      // bars: shared scale across months
-      const scale = Math.max(1, ...dm.filter((r) => r.d).map((r) => Math.max(Math.abs(r.d.volume), Math.abs(r.d.spend))));
-      const W = 300, C = W / 2;
-      const bar = (v, y, color) => {
-        const len = Math.min(C - 2, Math.abs(v) / scale * (C - 2));
-        const x = v < 0 ? C - len : C;
-        return `<rect x="${x.toFixed(1)}" y="${y}" width="${Math.max(1, len).toFixed(1)}" height="7" rx="1.5" fill="${color}"/>`;
-      };
-      const rowsHtml = dm.map((r) => {
-        const label = `${esc(r.month)}${r.partial ? ' <span class="kpi-dim">MTD</span>' : ''}`;
-        if (!r.d) return `<tr><td>${label}</td><td colspan="4" class="kpi-dim" style="text-align:left">${esc(r.reason || 'not comparable')}</td></tr>`;
-        const d = r.d;
-        const svg = `<svg width="${W}" height="18" style="vertical-align:middle"><line x1="${C}" y1="0" x2="${C}" y2="18" stroke="#223252" stroke-width="1"/>${bar(d.volume, 1, '#60a5fa')}${bar(d.spend, 10, '#f59e0b')}</svg>`;
-        const cls = (v) => (v < 0 ? 'kpi-neg' : 'kpi-pos');
-        return `<tr><td>${label}</td><td style="text-align:center">${svg}</td>` +
-          `<td class="${cls(d.volume)}">${d.volume < 0 ? '−' : '+'}${gbpK(Math.abs(d.volume))}</td>` +
-          `<td class="${cls(d.spend)}">${d.spend < 0 ? '−' : '+'}${gbpK(Math.abs(d.spend))}</td>` +
-          `<td class="${cls(d.delta)}">${d.delta < 0 ? '−' : '+'}${gbpK(Math.abs(d.delta))}${d.checkOk ? '' : ' ✗'}</td></tr>`;
-      }).join('');
-      parts.push(`<table class="kpi-tbl"><thead><tr><th>month</th><th style="text-align:center"><span style="color:#60a5fa">■</span> volume · <span style="color:#f59e0b">■</span> spend</th><th>volume fx</th><th>spend fx</th><th>Δ net</th></tr></thead><tbody>${rowsHtml}</tbody></table>`);
-      parts.push(`<div class="kpi-dim" style="font-size:11px;margin-top:6px">volume fx = Δchecks × LY ATV · spend fx = ΔATV × current checks — the two sum exactly to Δ net (identity; ✗ would flag a computation fault). Counts are transactions, not covers.</div>`);
-    } else {
-      parts.push(`<div class="banner muted">No monthly record yet.</div>`);
+      if (m.week) {
+        const w = m.week;
+        t.push(`<div class="tile ${w.comparable && w.net >= w.lyNet ? 'green' : ''}">
+          <div class="lab">Last full week ${esc(w.from)} → ${esc(w.to)}</div>
+          <div class="val">${gbp(w.net)}</div>
+          <div class="sub">${S.fmtInt(w.txn)} txn${w.comparable ? ` · ${pct(w.net, w.lyNet)} net / ${pct(w.txn, w.lyTxn)} txn vs same week LY` : ' · LY not comparable (premises guard)'}</div></div>`);
+      }
+      parts.push(`<div class="tiles" style="grid-template-columns:repeat(2,minmax(240px,1fr))">${t.join('')}</div>`);
     }
-    parts.push(`</div>`);
 
-    // ---- P3: ATV by channel, weekly ----
-    parts.push(`<div class="kpi-panel"><div class="plab">ATV by channel · weekly /txn — QR tracked against the £38 checkpoint (decision, qr-upsell-spec:87)</div>`);
-    const cw = (m.channels && m.channels.weeks) || [];
-    if (cw.length) {
-      const qrCell = (v) => {
-        if (v === null || v === undefined) return '<span class="muted">no split</span>';
-        const ok = v >= QR_TARGET_PENCE;
-        return `<span class="${ok ? 'kpi-pos' : 'kpi-neg'}">£${(v / 100).toFixed(2)}</span>`;
-      };
-      const rowsHtml = cw.map((r) => {
-        const gap = r.eatIn !== null && r.qr !== null ? r.eatIn - r.qr : null;
-        return `<tr><td>wk ${esc(r.monday)}</td><td>${atvF(r.eatIn)}</td><td>${atvF(r.deal)}</td><td>${atvF(r.server)}</td>` +
-          `<td>${qrCell(r.qr)}</td><td>${atvF(r.online)}</td><td>${atvF(r.takeaway)}</td>` +
-          `<td class="${gap !== null && gap > 1000 ? 'kpi-neg' : 'kpi-dim'}">${gap === null ? '—' : `£${(gap / 100).toFixed(2)}`}</td>` +
-          `<td class="kpi-dim">${r.noSplit ? `${r.noSplit}d no channel split` : `${r.chDays}/${r.salesDays}d`}</td></tr>`;
-      }).join('');
-      parts.push(`<table class="kpi-tbl"><thead><tr><th>week</th><th>EAT IN</th><th>MON-FRI DEAL</th><th>server blend</th><th>QR (vs £38)</th><th>online</th><th>takeaway</th><th>EAT-IN−QR gap</th><th>coverage</th></tr></thead><tbody>${rowsHtml}</tbody></table>`);
-      parts.push(`<div class="kpi-dim" style="font-size:11px;margin-top:6px">Channel data exists from ${esc(m.channels.floor || '')} (day-totals-only days say "no channel split", never zeros). server blend = EAT IN + MON-FRI DEAL. The EAT-IN−QR gap is the signal this panel tracks.</div>`);
+    // ============ (4) WEEK AHEAD — the forward panel ============
+    parts.push(`<div class="sec-label">The week ahead<span class="rule"></span></div>`);
+    if (!m.ahead || !m.ahead.days.length) {
+      parts.push(`<div class="banner muted">No forward rota/forecast on file yet — the rota-ahead pull (daily 10:00) fills this in. <a href="/coyote/rota-review" style="color:var(--cyan,#22D3EE)">Rota Review →</a></div>`);
     } else {
-      parts.push(`<div class="banner muted">No channel-split data yet — sales_by_channel is empty. Day totals exist; channel ATV appears when the split lands.</div>`);
+      let fwdLine = '';
+      if (m.ahead.forward) {
+        const f = m.ahead.forward;
+        const vs = f.verdicts.map((v) => v.deltaPence == null ? `${esc(v.dept)}: no budget`
+          : `${esc(v.dept)} ${v.deltaPence > 0 ? `<span style="color:var(--amber,#FBBF24)">${signedGbp(v.deltaPence)} vs formula</span>` : `<span style="color:var(--green,#34D399)">${signedGbp(v.deltaPence)} vs formula</span>`}`).join(' · ');
+        fwdLine = `<div class="rp-hint" style="margin:6px 0 10px">FORWARD verdict w/c ${esc(f.week)}: ${vs}${f.unpublished ? ' · <span style="color:var(--amber,#FBBF24)">kitchen rota unpublished — provisional</span>' : ''} · <a href="/coyote/rota-review" style="color:var(--cyan,#22D3EE)">full report →</a></div>`;
+      }
+      const rowsHtml = m.ahead.days.map((r) => `<tr>
+        <td class="mono">${esc(dowShort(r.date))} ${esc(r.date.slice(5))}</td>
+        <td class="mono">${r.forecast != null ? gbp(r.forecast) : '—'}</td>
+        <td class="mono">${r.shifts > 0 ? `${(toInt(r.rotaMins) / 60).toFixed(1)}h · ${gbp(toInt(r.rotaHourly))}` : '<span class="rp-yoy-na">rota not published</span>'}</td>
+      </tr>`).join('');
+      parts.push(`${fwdLine}<div class="panel"><div class="panel-body">
+        <table class="tbl"><thead><tr><th>day</th><th>forecast net (RC)</th><th>rota'd labour (hourly TRUE £; salaried fixed sits in the verdict)</th></tr></thead><tbody>${rowsHtml}</tbody></table>
+        <div class="rp-hint" style="margin-top:6px">Forward bookings: none on file yet (OpenTable inbox) — demand model is history-only until files land.</div>
+      </div></div>`);
     }
-    parts.push(`</div>`);
 
-    // ---- P4: labour % weekly vs DB-canonical budgets ----
-    parts.push(`<div class="kpi-panel"><div class="plab">Labour % · weekly vs RotaCloud monthly budgets — the scorecard ruler (pre-burden), not the vault policy</div>`);
-    const lw = m.labourWeeks || [];
-    if (lw.length) {
-      const rowsHtml = lw.map((r) => {
-        if (r.labourDays === 0) return `<tr><td>wk ${esc(r.from)}</td><td colspan="3" class="kpi-dim" style="text-align:left">awaiting rota backfill — no labour record this week</td></tr>`;
-        const over = r.actPct !== null && r.budPct !== null && r.actPct > r.budPct;
-        return `<tr><td>wk ${esc(r.from)}${r.labourDays < 7 ? ` <span class="kpi-dim">(${r.labourDays}/7d)</span>` : ''}</td>` +
-          `<td class="${over ? 'kpi-neg' : 'kpi-pos'}">${r.actPct === null ? '—' : r.actPct.toFixed(1) + '%'}</td>` +
-          `<td class="kpi-dim">${r.budPct === null ? 'no budget set' : r.budPct.toFixed(1) + '%'}</td>` +
-          `<td class="${over ? 'kpi-neg' : 'kpi-dim'}">${r.actPct !== null && r.budPct !== null ? (r.actPct - r.budPct >= 0 ? '+' : '') + (r.actPct - r.budPct).toFixed(1) + 'pp' : '—'}</td></tr>`;
-      }).join('');
-      parts.push(`<table class="kpi-tbl"><thead><tr><th>week</th><th>actual %</th><th>budget %</th><th>Δ</th></tr></thead><tbody>${rowsHtml}</tbody></table>`);
-      parts.push(`<div class="kpi-dim" style="font-size:11px;margin-top:6px">Actual = pre-burden RC cost ÷ same-day net over days with BOTH records (the /coyote/labour ruler). Budget = Σ(day budget % × day net). Missing weeks are stated, never interpolated.</div>`);
+    // ============ (5) VERDICT LINES — each number's ONE home is a click away ============
+    const lines = [];
+    if (m.decompNow) {
+      const dd = m.decompNow;
+      lines.push(`<b>${esc(monthLabel(dd.month))} MTD (day ${esc(String(Number(dd.mtdDay)))})</b>: <span class="${dd.delta >= 0 ? 'rp-yoy-up' : 'rp-yoy-down'}">${signedGbp(dd.delta)} (${pct(dd.lyNet + dd.delta, dd.lyNet)})</span> vs LY — <b>${dd.lead === 'volume' ? 'COVERS-led' : 'SPEND-led'}</b> · <a href="/coyote/reports" style="color:var(--cyan,#22D3EE)">decomposition →</a>`);
+    }
+    if (m.qr) {
+      const at = m.qr.atv;
+      lines.push(`QR ATV <b>${gbp(at)}</b> (28d, ${S.fmtInt(m.qr.txn)} txn, per-receipt record) vs the £38 target${at >= QR_TARGET_PENCE ? ' ✓' : ` (<span class="rp-yoy-down">${gbp(QR_TARGET_PENCE - at)} short</span>)`} · <a href="/coyote/reports" style="color:var(--cyan,#22D3EE)">channel mix →</a>`);
+    }
+    if (m.labourWeek && m.labourWeek.actPct != null) {
+      const lw = m.labourWeek;
+      const over = lw.budPct != null && lw.actPct > lw.budPct;
+      lines.push(`Labour last week: <b>${lw.actPct.toFixed(1)}%</b> vs budget ${lw.budPct != null ? lw.budPct.toFixed(1) + '%' : '—'} (scorecard ruler, ${S.fmtInt(lw.days)}d)${over ? ' <span class="rp-yoy-down">over</span>' : ' <span class="rp-yoy-up">within</span>'} · <a href="/coyote/labour" style="color:var(--cyan,#22D3EE)">labour →</a> · <a href="/coyote/rota-review" style="color:var(--cyan,#22D3EE)">rota review →</a>`);
+    }
+    if (lines.length) {
+      parts.push(`<div class="sec-label">Verdicts<span class="rule"></span></div>`);
+      parts.push(`<div class="panel"><div class="panel-body" style="font-size:13px;line-height:2">${lines.map((l) => `<div>• ${l}</div>`).join('')}</div></div>`);
+    }
+
+    // ============ (6) SYSTEM — alert-only ============
+    const sysBad = [];
+    if (m.halt && m.halt.halted) sysBad.push(`<b>SYSTEM HALTED</b>${m.halt.source ? ` (${esc(String(m.halt.source))})` : ''}`);
+    if (m.ceiling > 0 && m.spent >= m.ceiling) sysBad.push(`metered spend ceiling REACHED (${gbp(m.spent)} of ${gbp(m.ceiling)})`);
+    else if (m.ceiling > 0 && m.spent >= m.ceiling * 0.8) sysBad.push(`metered spend at ${Math.round((m.spent / m.ceiling) * 100)}% of ceiling`);
+    if (stampFresh.cls !== 'fresh') sysBad.push(`review ingest ${stampFresh.cls === 'stale' ? 'STALE' : 'never ran'}`);
+    if (sysBad.length) {
+      parts.push(`<div class="sec-label">System<span class="rule"></span></div>`);
+      parts.push(`<div class="banner ${m.halt && m.halt.halted ? 'red' : 'amber'}">${sysBad.join(' · ')} · <a href="/claw/engine" style="color:inherit;text-decoration:underline">engine room →</a></div>`);
     } else {
-      parts.push(`<div class="banner muted">No labour weeks computable yet.</div>`);
+      parts.push(`<div class="rp-hint" style="margin-top:16px"><span class="sdot green"></span>&nbsp; system green · ${S.fmtInt(m.doneToday)} job(s) done today · spend ${gbp(m.spent)} of ${gbp(m.ceiling)} · <a href="/claw/engine" style="color:var(--muted,#7a8)">engine room →</a></div>`);
     }
-    parts.push(`</div>`);
 
-    // ============ (4) SYSTEM STRIP ============
-    parts.push(`<div class="sec-label">System<span class="rule"></span></div>`);
-    const stiles = [];
-
-    // ingest freshness
-    const ing = S.freshness(m.lastIngest || 0, now);
-    const ingTone = ing.cls === 'fresh' ? 'green' : (ing.cls === 'stale' ? 'amber' : 'muted');
-    const ingVal = ing.cls === 'fresh' ? 'LIVE' : (ing.cls === 'stale' ? 'STALE' : '—');
-    stiles.push(
-      `<div class="tile ${ingTone}"><div class="lab">Review ingest</div><div class="val">${ingVal}</div><div class="sub${ing.cls === 'stale' ? ' a' : ''}">${ing.label}</div></div>`);
-
-    // spend this month vs ceiling
-    const spent = m.spent || 0;
-    const ceiling = m.ceiling || 0;
-    let spendTone = 'green', spendCls = ' g';
-    if (ceiling > 0 && spent >= ceiling) { spendTone = 'red'; spendCls = ' r'; }
-    else if (ceiling > 0 && spent >= ceiling * 0.8) { spendTone = 'amber'; spendCls = ' a'; }
-    const ceilSub = ceiling > 0 ? `of ${S.fmtGbpPence(ceiling)} ceiling` : 'no ceiling set';
-    stiles.push(
-      `<div class="tile ${spendTone}"><div class="lab">Spend this month</div><div class="val">${S.fmtGbpPence(spent)}</div><div class="sub${ceiling > 0 ? spendCls : ''}">${ceilSub}</div></div>`);
-
-    // jobs done today
-    stiles.push(
-      `<div class="tile blue"><div class="lab">Jobs done today</div><div class="val">${S.fmtInt(m.doneToday || 0)}</div><div class="sub">since 00:00 UTC</div></div>`);
-
-    // halt state
-    const halted = !!(m.halt && m.halt.halted);
-    const haltSrc = m.halt && m.halt.source ? esc(String(m.halt.source)) : '';
-    stiles.push(
-      `<div class="tile ${halted ? 'red' : 'green'}"><div class="lab">System state</div><div class="val">${halted ? 'HALTED' : 'LIVE'}</div><div class="sub${halted ? ' r' : ' g'}">${halted ? ('halt · ' + (haltSrc || 'operator')) : 'claims + poller running'}</div></div>`);
-
-    parts.push(`<div class="tiles">${stiles.join('')}</div>`);
-
-    return { stamp, body: parts.join('\n') };
+    return { stamp, body: `<style>.rp-hint{font-size:11px;color:var(--muted,#7a8)}.rp-yoy-up{color:var(--green,#34d399)}.rp-yoy-down{color:var(--red,#f87171)}.rp-yoy-na{color:var(--muted,#7a8);font-style:italic}</style>` + parts.join('\n') };
   },
 };

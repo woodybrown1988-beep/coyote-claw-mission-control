@@ -1,13 +1,14 @@
 'use strict';
 
-// Overview business KPI feed — computed at read time from librarian.db (canonical-source ruling:
-// no stored copies). Honesty under test:
-//   • the decomposition identity: volume + spend effects SUM EXACTLY to the actual revenue delta;
-//   • the current-month verdict line names the leading lever (covers-led vs spend-led);
-//   • day-totals-only days render "no channel split", NEVER zeros;
-//   • weeks with no labour rows render "awaiting rota backfill", never interpolated;
-//   • QR weekly ATV matches a direct sales_by_channel query (parity);
-//   • no raw YoY across the premises break (the LY window guard).
+// Overview (redesigned, audit 2026-07-21) + the decomposition's new home in Reports.
+// Honesty under test:
+//   • the decomposition identity still sums EXACTLY (table now in Reports; Overview carries the
+//     current-month VERDICT LINE naming the lever);
+//   • QR ATV verdict line reads the PER-RECEIPT record (parity vs direct SQL) — the old
+//     scraper-sourced P3 table is gone (the audit's deepest violation);
+//   • labour verdict line: scorecard-ruler % vs budget, last full week;
+//   • WEEK AHEAD: forecast vs rota'd per day; unpublished days say so, never zeros;
+//   • no raw YoY across the premises break; empty DB degrades honestly.
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const sqlite = require('node:sqlite');
@@ -68,6 +69,11 @@ function makeDb() {
     CREATE TABLE sales_by_channel (business_date TEXT, profile_id TEXT, profile_name TEXT, net_sales_pence INTEGER, gross_sales_pence INTEGER, pos_guest_count INTEGER, transactions INTEGER, tips_pence INTEGER, discounts_pence INTEGER, updated_at INTEGER, PRIMARY KEY (business_date, profile_id));
     CREATE TABLE labour_dept (business_date TEXT, department TEXT, sched_minutes INTEGER, act_minutes INTEGER, sched_cost_rc_pence INTEGER, act_cost_rc_pence INTEGER, rc_uncosted_sched_min INTEGER, rc_uncosted_act_min INTEGER, rc_uncosted_names TEXT, updated_at INTEGER, PRIMARY KEY (business_date, department));
     CREATE TABLE labour_budget (business_date TEXT, department TEXT, labour_pct REAL, updated_at INTEGER, PRIMARY KEY (business_date, department));
+    CREATE TABLE sales_receipts_api (receipt_id TEXT PRIMARY KEY, business_date TEXT, type TEXT, cancelled INTEGER, account_profile_code TEXT, net_without_tax_pence INTEGER);
+    CREATE TABLE sales_channel_map_api (account_profile_code TEXT PRIMARY KEY, profile_name TEXT, channel_label TEXT);
+    CREATE TABLE rota_ahead_budget (business_date TEXT, department TEXT, labour_pct REAL, revenue_target_pence INTEGER, as_of INTEGER, PRIMARY KEY (business_date, department));
+    CREATE TABLE rota_ahead_shifts (business_date TEXT, rc_shift_id INTEGER, sched_minutes INTEGER, sched_cost_true_pence INTEGER, department TEXT, as_of INTEGER);
+    CREATE TABLE rota_review_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, mode TEXT, week_monday TEXT, ran_at INTEGER, status TEXT, trigger TEXT, report_json TEXT);
   `);
   db.prepare(`INSERT INTO premises_regime VALUES ('previous','2022-02-20','2023-03-31',''),('current','2023-04-01',NULL,'moved')`).run();
   return db;
@@ -82,7 +88,7 @@ function seedSales(db) {
   const hist = db.prepare(`INSERT INTO sales_day_history (business_date, net_sales_pence, transactions, updated_at) VALUES (?,?,?,0)`);
   for (let d = 1; d <= 30; d++) hist.run(`2025-06-${pad(d)}`, 120000, 60); // LY June: ATV £20, 60 txn/day
   for (let d = 1; d <= 30; d++) day.run(`2026-06-${pad(d)}`, 100000, 50);  // June: ATV £20, 50 txn/day → covers-led
-  for (let d = 1; d <= 14; d++) hist.run(`2025-07-${pad(d)}`, 100000, 50); // LY July MTD: ATV £20
+  for (let d = 1; d <= 15; d++) hist.run(`2025-07-${pad(d)}`, 100000, 50); // LY July MTD (+d15 = yesterday's −364d weekday twin): ATV £20
   for (let d = 1; d <= 14; d++) day.run(`2026-07-${pad(d)}`, 110000, 50);  // July MTD: ATV £22 → spend-led
 }
 
@@ -110,123 +116,133 @@ function seedLabour(db) {
   // June weeks intentionally have NO labour_dept rows → "awaiting rota backfill"
 }
 
-test('overview KPIs: decomposition sums to the delta, verdict names the lever, headline strip is honest', () => {
+const reports = require('../mission-control/ui/pages/coyote/reports.js');
+
+test('decomposition (now in Reports): identity sums exactly; Overview verdict line names the lever', () => {
   const db = makeDb();
   seedSales(db);
   const ctx = ctxFor(db);
-  const m = overview.getSection(db, ctx);
-
-  // June: pure covers-led. C0=1800 R0=3.6M · C1=1500 R1=3.0M → volume −600000, spend 0.
-  const june = m.decomp.find((r) => r.month === '2026-06');
+  // Reports carries the table
+  const rm = reports.getSection(db, ctx);
+  const june = rm.decomp.find((r) => r.month === '2026-06');
   assert.ok(june && june.d, 'June decomposes');
   assert.equal(june.d.volume, -600000);
   assert.equal(june.d.spend, 0);
-  assert.equal(june.d.delta, june.d.volume + june.d.spend, 'volume + spend === actual delta');
-  assert.ok(june.d.checkOk);
+  assert.ok(june.d.checkOk, 'volume + spend === delta');
   assert.equal(june.d.lead, 'volume');
-
-  // July MTD (to day 14): pure spend-led. Δ=+140000 all spend.
-  const july = m.decomp.find((r) => r.month === '2026-07');
-  assert.ok(july && july.partial && july.d, 'July compares MTD');
-  assert.equal(july.d.volume, 0);
+  const july = rm.decomp.find((r) => r.month === '2026-07');
+  assert.ok(july && july.partial && july.d);
   assert.equal(july.d.spend, 140000);
   assert.equal(july.d.lead, 'spend');
-
-  // months with no record carry a reason, never a split
-  const jan = m.decomp.find((r) => r.month === '2026-01');
+  const jan = rm.decomp.find((r) => r.month === '2026-01');
   assert.ok(jan && !jan.d && jan.reason, 'unrecorded month refuses honestly');
-
-  // headline strip: wk 07-06..07-12 vs LY 07-07..07-13, +10% net, 0% txn
-  assert.equal(m.week.from, '2026-07-06');
-  assert.equal(m.week.lyFrom, '2025-07-07');
-  assert.equal(m.week.net, 770000);
-  assert.equal(m.week.lyNet, 700000);
-  assert.equal(m.week.txn, m.week.lyTxn);
-  assert.ok(m.week.comparable);
-
+  const rout = reports.render(rm, ctx);
+  assert.match(rout.body, /decomposition — which lever moved each month/);
+  // Overview carries the VERDICT LINE only
+  const m = overview.getSection(db, ctx);
+  assert.ok(m.decompNow && m.decompNow.lead === 'spend', 'July MTD is spend-led');
   const out = overview.render(m, ctx);
-  assert.match(out.body, /SPEND-led/, 'current-month verdict names the lever');
-  assert.match(out.body, /sum = actual delta/, 'the reconciliation check is rendered');
-  assert.doesNotMatch(out.body, /CHECK FAILED/);
+  assert.match(out.body, /SPEND-led/);
+  assert.match(out.body, /decomposition →/, 'links to the ONE home');
   db.close();
 });
 
-test('overview KPIs: channel weeks — missing-split day says "no channel split", QR parity vs direct SQL, £38 reference', () => {
+test('overview: THE WEEK — yesterday + last full week verdict tiles, premises-honest', () => {
   const db = makeDb();
   seedSales(db);
-  seedChannels(db);
   const ctx = ctxFor(db);
   const m = overview.getSection(db, ctx);
-
-  const wk = m.channels.weeks.find((w) => w.monday === '2026-07-06');
-  assert.ok(wk, 'the seeded week exists');
-  assert.equal(wk.noSplit, 1, '2026-07-08 counted as day-totals-only');
-  assert.equal(wk.chDays, 6);
-  assert.equal(wk.salesDays, 7);
-
-  // parity: page QR ATV === direct sales_by_channel query for the same window
-  const direct = DATA.safeSelect(db,
-    `SELECT SUM(net_sales_pence) * 1.0 / SUM(transactions) atv FROM sales_by_channel
-      WHERE profile_name = 'STOREKIT ORDER & PAY' AND business_date BETWEEN '2026-07-06' AND '2026-07-12'`).rows[0];
-  assert.equal(wk.qr, Number(direct.atv), 'QR weekly ATV matches the direct query');
-  assert.equal(wk.qr, 3300, '£33.00/txn');
-  assert.equal(wk.eatIn, 4500);
-  assert.equal(Math.round(wk.server), Math.round((45000 * 6 + 11100 * 6) / (10 * 6 + 3 * 6)), 'server blend = EAT IN + MON-FRI DEAL');
-
+  assert.equal(m.week.from, '2026-07-06');
+  assert.equal(m.week.net, 770000);
+  assert.equal(m.week.lyNet, 700000);
+  assert.ok(m.week.comparable);
+  assert.equal(m.yesterday.date, '2026-07-14');
+  assert.equal(m.yesterday.net, 110000);
+  assert.equal(m.yesterday.lyNet, 100000, '−364d same-weekday LY');
   const out = overview.render(m, ctx);
-  assert.match(out.body, /1d no channel split/, 'the gap is stated');
-  const panel = out.body.slice(out.body.indexOf('ATV by channel'), out.body.indexOf('Labour %'));
-  assert.ok(panel.length > 100, 'channel panel present');
-  assert.doesNotMatch(panel, /£0\.00/, 'never a fabricated zero ATV in the channel panel');
-  assert.match(out.body, /vs £38/, 'the QR checkpoint reference (decision, qr-upsell-spec:87)');
+  assert.match(out.body, /Last full week 2026-07-06/);
+  assert.match(out.body, /\+10\.0% vs/, 'yesterday verdict carries the LY comparison');
   db.close();
 });
 
-test('overview KPIs: labour weeks — actual vs budget on the scorecard ruler; missing weeks say "awaiting rota backfill"', () => {
+test('overview: QR verdict line reads the PER-RECEIPT record (parity vs direct SQL) + £38 reference', () => {
+  const db = makeDb();
+  seedSales(db);
+  db.prepare(`INSERT INTO sales_channel_map_api VALUES ('storekit_orderpay','Storekit','STOREKIT ORDER & PAY')`).run();
+  const ins = db.prepare(`INSERT INTO sales_receipts_api VALUES (?,?,?,0,'storekit_orderpay',?)`);
+  for (let d = 6; d <= 12; d++) for (let i = 0; i < 5; i++) ins.run(`Q${d}-${i}`, `2026-07-${pad(d)}`, 'SALE', 3300);
+  ins.run('QV', '2026-07-10', 'VOID', 99999); // must be excluded
+  const ctx = ctxFor(db);
+  const m = overview.getSection(db, ctx);
+  const direct = DATA.safeSelect(db,
+    `SELECT SUM(net_without_tax_pence) * 1.0 / COUNT(*) atv FROM sales_receipts_api
+      WHERE account_profile_code = 'storekit_orderpay' AND cancelled = 0 AND type = 'SALE'`).rows[0];
+  assert.equal(m.qr.atv, Number(direct.atv), 'parity with the direct per-receipt query');
+  assert.equal(m.qr.atv, 3300);
+  const out = overview.render(m, ctx);
+  assert.match(out.body, /vs the £38 target/);
+  assert.match(out.body, /per-receipt record/, 'source stated');
+  db.close();
+});
+
+test('overview: labour verdict line — scorecard % vs budget, last full week', () => {
   const db = makeDb();
   seedSales(db);
   seedLabour(db);
   const ctx = ctxFor(db);
   const m = overview.getSection(db, ctx);
-
-  const wk = m.labourWeeks.find((w) => w.from === '2026-07-06');
-  assert.ok(wk && wk.labourDays === 7, 'the labour week is complete');
-  // actual: 7×(14000+11000)=175000 over net 770000 → 22.727…%
-  assert.ok(Math.abs(wk.actPct - (175000 / 770000) * 100) < 0.001);
-  // budget: (0.133+0.103)×net / net = 23.6%
-  assert.ok(Math.abs(wk.budPct - 23.6) < 0.001);
-
-  const juneWk = m.labourWeeks.find((w) => w.from === '2026-06-15');
-  assert.ok(juneWk && juneWk.labourDays === 0, 'a June week has no labour rows');
-  assert.equal(juneWk.actPct, null, 'never interpolated');
-
+  assert.ok(Math.abs(m.labourWeek.actPct - (175000 / 770000) * 100) < 0.001);
+  assert.ok(Math.abs(m.labourWeek.budPct - 23.6) < 0.001);
   const out = overview.render(m, ctx);
-  assert.match(out.body, /awaiting rota backfill/);
-  assert.match(out.body, /scorecard ruler \(pre-burden\), not the vault policy/);
+  assert.match(out.body, /Labour last week: <b>22\.7%<\/b> vs budget 23\.6%/);
+  assert.match(out.body, /rota review →/);
   db.close();
 });
 
-test('overview KPIs: premises guard — an LY window on the old site refuses raw YoY', () => {
+test('overview: WEEK AHEAD — forecast vs rota, unpublished honesty, FORWARD verdict line', () => {
   const db = makeDb();
-  // world where the last full week is 2024-03 (current premises) but LY = 2023-03 (pre-move)
+  seedSales(db);
+  const b = db.prepare(`INSERT INTO rota_ahead_budget VALUES (?,?,0.138,?,1)`);
+  b.run('2026-07-15', 'kitchen', 400000);
+  b.run('2026-07-16', 'kitchen', 420000);
+  db.prepare(`INSERT INTO rota_ahead_shifts VALUES ('2026-07-15', 1, 480, 11300, 'kitchen', 5)`).run();
+  // 07-16 has a budget but NO shifts → "rota not published"
+  db.prepare(`INSERT INTO rota_review_runs (mode, week_monday, ran_at, status, trigger, report_json) VALUES ('forward','2026-07-13',1,'ok','manual',?)`)
+    .run(JSON.stringify({ verdicts: [{ dept: 'kitchen', deltaPence: -83000 }], gaps: ['kitchen rota looks PARTIALLY PUBLISHED (1 shift(s) on the whole week)'] }));
+  const ctx = ctxFor(db);
+  const m = overview.getSection(db, ctx);
+  assert.equal(m.ahead.days.length, 2);
+  assert.equal(m.ahead.forward.unpublished, true);
+  const out = overview.render(m, ctx);
+  assert.match(out.body, /The week ahead/);
+  assert.match(out.body, /8\.0h · £113\.00/, 'rota d 07-15: 480min, £113 hourly TRUE');
+  assert.match(out.body, /rota not published/, '07-16 honest');
+  assert.match(out.body, /FORWARD verdict w\/c 2026-07-13/);
+  assert.match(out.body, /kitchen rota unpublished — provisional/);
+  db.close();
+});
+
+test('overview: premises guard — an LY window on the old site refuses raw YoY', () => {
+  const db = makeDb();
   const day = db.prepare(`INSERT INTO sales_day (business_date, net_sales_pence, transactions, updated_at) VALUES (?,?,?,0)`);
   const hist = db.prepare(`INSERT INTO sales_day_history (business_date, net_sales_pence, transactions, updated_at) VALUES (?,?,?,0)`);
-  for (let d = 18; d <= 26; d++) day.run(`2024-03-${pad(d)}`, 90000, 40);   // current premises
-  for (let d = 18; d <= 28; d++) hist.run(`2023-03-${pad(d)}`, 60000, 35);  // OLD premises
+  for (let d = 18; d <= 26; d++) day.run(`2024-03-${pad(d)}`, 90000, 40);
+  for (let d = 18; d <= 28; d++) hist.run(`2023-03-${pad(d)}`, 60000, 35);
   const ctx = ctxFor(db);
   const m = overview.getSection(db, ctx);
   assert.ok(m.week && m.week.days > 0);
-  assert.equal(m.week.comparable, false, 'pre-move LY window is not comparable');
+  assert.equal(m.week.comparable, false);
   const out = overview.render(m, ctx);
-  assert.match(out.body, /LY window not comparable \(premises rule\)/);
+  assert.match(out.body, /LY not comparable \(premises guard\)/);
   db.close();
 });
 
-test('overview KPIs: EMPTY db degrades to honest banners (no throw, no fabrication)', () => {
+test('overview: EMPTY db degrades to honest banners (no throw, no fabrication)', () => {
   const db = makeDb();
   const ctx = ctxFor(db);
   const out = overview.render(overview.getSection(db, ctx), ctx);
   assert.match(out.body, /No sales record yet/);
-  assert.match(out.body, /No monthly record yet|No channel-split data yet/);
+  assert.match(out.body, /No forward rota\/forecast on file yet/);
+  assert.doesNotMatch(out.body, /£0\.00.*vs.*LY/, 'no fabricated comparisons');
   db.close();
 });
