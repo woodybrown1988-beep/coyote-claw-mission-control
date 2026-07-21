@@ -76,7 +76,7 @@ test('registry: /claw = console pages only, flagged read-only, all under /claw/*
   assert.ok(claw, 'claw workspace exists');
   assert.equal(claw.readOnly, true, 'claw is flagged read-only');
   const keys = claw.groups.flatMap((g) => g.items.map((i) => i.key)).sort();
-  assert.deepEqual(keys, ['engine'], 'claw = ONE engine room (agents + health merged, page-map audit 2026-07-21)');
+  assert.deepEqual(keys, ['chat', 'engine'], 'claw = the engine room + Chat (ruling mc-chat-approved 2026-07-21 — the frontdoor web transport)');
   for (const g of claw.groups) for (const it of g.items) assert.match(it.route, /^\/claw\//, `${it.key} routes under /claw`);
 });
 
@@ -84,10 +84,18 @@ test('NO /claw page source emits a write affordance (would cross the nonce trust
   // A console button/POST/fetch is the forbidden thing. Read-only surfaces link OUT to Telegram instead.
   const writeAffordance = /data-op=|data-log-action|method\s*=\s*["']?\s*post|fetch\s*\(|\/api\//i;
   assert.ok(clawFiles.length >= 2, 'agents + health present');
-  for (const f of clawFiles) {
+  // CARVE-OUT (ruling mc-chat-approved 2026-07-21, supersedes 'Chat tab: killed'): chat.js is the
+  // frontdoor WEB TRANSPORT — its ONE write is POST /api/chat-message (a transport row; routing
+  // stays box-side). Every OTHER claw page remains strictly read-only; this exemption is by NAME,
+  // never a loosened pattern.
+  for (const f of clawFiles.filter((x) => x !== 'chat.js')) {
     const src = fs.readFileSync(path.join(CLAW_DIR, f), 'utf8');
     assert.doesNotMatch(src, writeAffordance, `${f}: /claw is read-only — no action button; actions are Telegram taps`);
   }
+  // and the chat page's write surface is EXACTLY the two chat endpoints — nothing else
+  const chatSrc = fs.readFileSync(path.join(CLAW_DIR, 'chat.js'), 'utf8');
+  const apis = [...chatSrc.matchAll(/\/api\/[a-z-]+/g)].map((m) => m[0]);
+  assert.deepEqual([...new Set(apis)].sort(), ['/api/chat-message', '/api/chat-updates'], 'chat touches ONLY its own transport endpoints (no review/recipe/gate paths)');
 });
 
 test('engine Failed jobs hero counts only failed learn-validate jobs in its dormant annotation', () => {
