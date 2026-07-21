@@ -2,8 +2,9 @@
 // Reservations Centre R1 — the six-tab shell + the REVIEWS & RECOVERY tab (the wired reviews
 // dept) on /coyote/reservations. Every expected number is HAND-COMPUTED in the fixture comments,
 // never re-derived through the module. Pinned here:
-//   (a) SHELL: default tab = executive, 6 subtab links, ?tab= switches, the FIVE non-reviews
-//       tabs each carry the ONE honest R2 line (verbatim), the reviews tab does not;
+//   (a) SHELL: default tab = executive, 6 subtab links, ?tab= switches; R2 UPDATE: the five
+//       non-reviews tabs now render designed gate-states (mission-control-reservations-r2.test.js)
+//       — the R1 pending note is GONE everywhere;
 //   (b) KPI STRIP: newest snapshot wins (an older decoy must not render); stars ride real
 //       ratings only; response rate = Google replied ÷ Google total ONLY (a TA has_reply=1
 //       decoy must NOT blend); reviews last 90d counts by reviewed_date incl. the >= edge;
@@ -17,7 +18,8 @@
 //   (f) ACTIONS: newest 8 of review_actions — status chips per class, '—' when open,
 //       before→after ONLY when both rates exist (a before-only decoy must not render);
 //   (g) READINESS: real statuses — Ready paths, the absent-store OpenTable sentence, the
-//       present-store paths, guest identity 'not started', the fs-vs-db caption;
+//       present-store paths, guest identity 'not started', the fs-vs-db caption (R2: the panel
+//       LIVES ON EXECUTIVE now — its mock home; the deletion-from-reviews pin is in the R2 file);
 //   (h) NO-MOCK-NUMBERS: an EMPTY db renders no rating digit and no star anywhere;
 //   (i) REGISTRY: Reports group order = revenue, report-library, rota-review, reservations;
 //       server.js requires the page after reports.js.
@@ -106,6 +108,7 @@ const render = (db, query) => {
   return page.render(page.getSection(db, ctx), ctx).body;
 };
 
+// The R1 pending line — R2 shipped the gate-states, so this must never render again.
 const R2_NOTE = 'R2 gate-state build pending — every panel here needs the OpenTable weekly export (inbox: no files received yet).';
 const slice = (body, from, to) => {
   const a = body.indexOf(from);
@@ -131,16 +134,14 @@ test('shell: executive is the default tab, 6 subtab links, ?tab= switches, garba
   db.close();
 });
 
-test('shell: the FIVE non-reviews tabs carry the ONE honest R2 line verbatim; the reviews tab does not', () => {
+test('shell (R2): the five non-reviews tabs render designed gate-states — the R1 pending note is GONE everywhere', () => {
   const db = makeDb();
   seedReviews(db);
-  for (const t of ['executive', 'demand', 'behaviour', 'capacity', 'customers']) {
+  for (const t of ['executive', 'demand', 'behaviour', 'capacity', 'customers', 'reviews']) {
     const body = render(db, { tab: t });
-    assert.ok(body.includes(`<div class="r-note">${R2_NOTE}</div>`), `${t} carries the R2 note`);
-    assert.doesNotMatch(body, /class="r-card r-kpi"|class="r-card r-panel"/, `${t} renders NO panels in R1`);
+    assert.ok(!body.includes(R2_NOTE), `${t} never claims to be pending — R2 shipped its gate-states`);
+    assert.match(body, /class="r-card r-panel"/, `${t} renders real panel shells`);
   }
-  const rv = render(db, { tab: 'reviews' });
-  assert.ok(!rv.includes(R2_NOTE), 'the built tab never claims to be pending');
   db.close();
 });
 
@@ -253,7 +254,7 @@ test('actions: newest 8, status chips per class, "—" when open, before→after
   const db = makeDb();
   seedReviews(db);
   const body = render(db);
-  const panel = slice(body, 'Reputation management actions', 'Data readiness');
+  const panel = slice(body, 'Reputation management actions', 'Recommended data architecture');
   // order: newest first
   assert.ok(panel.indexOf('ALLERGEN_HANDLING') < panel.indexOf('VALUE_PRICING'), 'newest first');
   assert.ok(panel.indexOf('VALUE_PRICING') < panel.indexOf('SERVICE_SPEED'));
@@ -278,11 +279,19 @@ test('actions: newest 8, status chips per class, "—" when open, before→after
 
 // ---------------- (g) data readiness ----------------
 
+// R2: the readiness panel lives on the EXECUTIVE tab now (its mock home — one home per fact);
+// these two tests render THAT tab. The reviews-tab deletion pin lives in the R2 file.
+const readinessSlice = (body) => {
+  const a = body.indexOf('Data readiness');
+  assert.ok(a >= 0, 'the readiness panel exists on executive');
+  return body.slice(a);
+};
+
 test('readiness: Ready paths real, the ABSENT OpenTable store says exactly so, identity not started, fs-vs-db caption', () => {
   const db = makeDb(); // has sales_receipts_api + review_corpus; NO opentable_reservations/covers_day tables
   seedReviews(db);
-  const body = render(db);
-  const panel = slice(body, 'Data readiness', 'Recommended data architecture');
+  const body = render(db, { tab: 'executive' });
+  const panel = readinessSlice(body);
   assert.equal((panel.match(/<span class="r-tag good">Ready<\/span>/g) || []).length, 2, 'per-receipt + reviews dept are Ready');
   assert.match(panel, /sales_receipts_api — per-receipt truth flowing/);
   assert.match(panel, /review_corpus \+ review_snapshot — the wired reviews dept/);
@@ -297,7 +306,7 @@ test('readiness: a PRESENT OpenTable store flips honestly — empty store ≠ ab
   const empty = makeDb();
   seedReviews(empty);
   empty.exec(`CREATE TABLE covers_day (business_date TEXT PRIMARY KEY, covers INTEGER)`);
-  const b1 = render(empty);
+  const b1 = render(empty, { tab: 'executive' });
   assert.match(b1, /reservation store present but empty — no export ingested yet/, 'present-but-empty is its own honest state');
   assert.doesNotMatch(b1, /no reservation store in the DB/, 'the absent-store sentence never fires when a store exists');
   empty.close();
@@ -306,8 +315,8 @@ test('readiness: a PRESENT OpenTable store flips honestly — empty store ≠ ab
   seedReviews(withRows);
   withRows.exec(`CREATE TABLE opentable_reservations (reservation_id TEXT PRIMARY KEY, business_date TEXT)`);
   withRows.prepare(`INSERT INTO opentable_reservations VALUES ('ot1','2026-07-01')`).run();
-  const b2 = render(withRows);
-  const panel = slice(b2, 'Data readiness', 'Recommended data architecture');
+  const b2 = render(withRows, { tab: 'executive' });
+  const panel = readinessSlice(b2);
   assert.equal((panel.match(/<span class="r-tag good">Ready<\/span>/g) || []).length, 3, 'the OpenTable row goes Ready with rows');
   assert.match(panel, /reservation rows present/);
   assert.doesNotMatch(panel, /no feed — 0 files received/);
@@ -342,7 +351,7 @@ test('NO-MOCK-NUMBERS: an EMPTY db renders no rating digit and no star anywhere 
   assert.doesNotMatch(body, /<polyline|class="rsv-vol"/, 'no chart geometry without data');
   assert.match(body, /no issue extractions yet \(review_issues is empty\)/, 'themes empty-state');
   assert.match(body, /no actions logged yet \(review_actions is empty\)/, 'actions empty-state');
-  assert.match(body, /<span class="r-tag bad">no rows<\/span>/, 'empty stores read "no rows", never Ready');
+  // (the readiness 'no rows' pin moved with the panel to the EXECUTIVE tab — see the R2 file)
   db.close();
 });
 
