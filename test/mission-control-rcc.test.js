@@ -61,3 +61,11 @@ test('Reservations Stage-1 extension: ONE new token (cyan) + stackCol/meterRow/s
   assert.match(S.rcc.stars(4.62), /★★★★★|★★★★☆/);
   assert.match(S.rcc.stars(99), /★★★★★/, 'clamped to 5');
 });
+
+test('Labour Centre Stage 1 verdict: the canon holds UNCHANGED — no new tokens, no forks (the mock is the RCC palette verbatim)', () => {
+  // the labour mock's --o #ff8b55 was ruled a near-collision with the canon's microbar stop
+  // #ff8a5b and NOT adopted; this pin fails if anyone quietly adds it as a token later
+  assert.equal(S.rcc.tokens.o, undefined, 'no --o token — one orange family');
+  assert.match(S.rcc.css(), /#ff8a5b/, "the canon's own orange stop is the family");
+  assert.equal(S.rcc.tokens.accent, '#e44b36');
+});
