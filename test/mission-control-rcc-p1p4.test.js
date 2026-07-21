@@ -269,9 +269,9 @@ test('applyForecastOverride: absent table → honest 503 naming the missing depl
 
 // ---------------- (d) no mock numbers ----------------
 
-test('NO-MOCK-NUMBERS: an EMPTY db renders ZERO £-figures on both built tabs', () => {
+test('NO-MOCK-NUMBERS: an EMPTY db renders ZERO £-figures on every built tab', () => {
   const db = makeDb(); // tables exist, no rows — the honest-empty worst case
-  for (const tab of ['executive', 'forecast']) {
+  for (const tab of ['executive', 'drivers', 'forecast']) {
     const body = render(db, { tab });
     assert.doesNotMatch(body, /£\d/, `${tab}: no £-figure may render from an empty box`);
     assert.match(body, /not wired|no [a-z-]* ?record|record filling|pending/i, `${tab}: honest empty states name themselves`);
