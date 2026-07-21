@@ -1,0 +1,642 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Coyote Burger — Revenue Command Centre</title>
+<style>
+  :root{
+    --bg:#0b0d10;
+    --panel:#14181d;
+    --panel2:#191e24;
+    --line:#2a3139;
+    --text:#f3f0e8;
+    --muted:#9ea7b2;
+    --accent:#e44b36;
+    --accent2:#ffb34d;
+    --good:#45c486;
+    --warn:#f0b64f;
+    --bad:#ef6b68;
+    --blue:#67a7ff;
+    --purple:#ad8cff;
+    --radius:16px;
+    --shadow:0 10px 30px rgba(0,0,0,.24);
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:linear-gradient(180deg,#090b0d 0%,#0d1014 100%);color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;font-size:14px}
+  .app{max-width:1580px;margin:0 auto;padding:22px}
+  .topbar{display:flex;justify-content:space-between;align-items:center;gap:18px;margin-bottom:14px}
+  .brand{display:flex;align-items:center;gap:14px}
+  .mark{width:46px;height:46px;border:1px solid #4b2a25;border-radius:12px;background:linear-gradient(145deg,#341813,#111418);display:grid;place-items:center;color:#ffddd7;font-weight:900;letter-spacing:-1px;box-shadow:var(--shadow)}
+  .brand h1{margin:0;font-size:22px;letter-spacing:-.5px}
+  .brand p{margin:3px 0 0;color:var(--muted);font-size:12px}
+  .status{display:flex;align-items:center;gap:9px;flex-wrap:wrap;justify-content:flex-end}
+  .pill{border:1px solid var(--line);background:#11151a;color:#c9d0d8;border-radius:999px;padding:8px 11px;font-size:12px;white-space:nowrap}
+  .pill.good{border-color:#24583f;color:#9de3bc;background:#10251b}
+  .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--good);margin-right:6px}
+  .controls{display:flex;align-items:center;gap:8px;flex-wrap:wrap;border:1px solid var(--line);background:#11151a;border-radius:14px;padding:10px;margin-bottom:14px}
+  .control{padding:8px 11px;border:1px solid #303740;border-radius:10px;background:#171c22;color:#e5e9ee;font-size:12px;min-width:132px}
+  .control strong{display:block;color:#8d96a0;font-size:10px;text-transform:uppercase;letter-spacing:.08em;margin-bottom:2px}
+  .spacer{flex:1}
+  .badge{font-size:11px;padding:6px 9px;border-radius:999px;background:#251713;color:#ffb8aa;border:1px solid #5d2c24}
+  .tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin:0 0 14px;overflow:auto}
+  .tab{background:transparent;border:0;color:#9ba4ae;padding:11px 14px;cursor:pointer;font-weight:700;border-bottom:2px solid transparent;white-space:nowrap}
+  .tab.active{color:#fff;border-bottom-color:var(--accent)}
+  .page{display:none}
+  .page.active{display:block}
+  .grid{display:grid;gap:14px}
+  .kpi-grid{grid-template-columns:repeat(6,minmax(0,1fr));margin-bottom:14px}
+  .card{background:linear-gradient(180deg,var(--panel) 0%,#12161a 100%);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow)}
+  .kpi{padding:16px;min-height:135px;position:relative;overflow:hidden}
+  .kpi:after{content:"";position:absolute;right:-28px;bottom:-35px;width:90px;height:90px;border-radius:50%;background:radial-gradient(circle,rgba(228,75,54,.12),rgba(228,75,54,0) 70%)}
+  .kpi-label{color:#a5aeb7;font-size:11px;text-transform:uppercase;letter-spacing:.085em;font-weight:800}
+  .kpi-value{font-size:26px;font-weight:850;letter-spacing:-.7px;margin-top:10px}
+  .kpi-sub{margin-top:7px;color:#abb3bc;font-size:12px}
+  .delta{font-weight:800;margin-right:5px}
+  .up{color:var(--good)} .down{color:var(--bad)} .flat{color:var(--warn)}
+  .microbar{height:5px;background:#252c33;border-radius:999px;margin-top:13px;overflow:hidden}
+  .microbar span{display:block;height:100%;background:linear-gradient(90deg,var(--accent),#ff8a5b);border-radius:999px}
+  .two-col{grid-template-columns:minmax(0,2fr) minmax(330px,1fr);margin-bottom:14px}
+  .three-col{grid-template-columns:1.1fr 1fr .85fr;margin-bottom:14px}
+  .panel{padding:17px;min-width:0}
+  .panel-head{display:flex;justify-content:space-between;align-items:flex-start;gap:14px;margin-bottom:14px}
+  .panel-title{font-size:14px;font-weight:850;margin:0}
+  .panel-sub{color:var(--muted);font-size:11px;margin-top:4px}
+  .legend{display:flex;gap:12px;flex-wrap:wrap;color:#aeb6bf;font-size:11px}
+  .legend i{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px}
+  .chart-wrap{height:250px;position:relative}
+  .chart-wrap svg{width:100%;height:100%;display:block;overflow:visible}
+  .gridline{stroke:#2a3138;stroke-width:1}
+  .axistext{fill:#7f8994;font-size:11px}
+  .line-current{fill:none;stroke:#ef6a50;stroke-width:3}
+  .line-target{fill:none;stroke:#f1b34c;stroke-width:2;stroke-dasharray:6 7}
+  .line-last{fill:none;stroke:#758190;stroke-width:2}
+  .area-current{fill:url(#areaGradient);opacity:.28}
+  .point{fill:#ef6a50;stroke:#171b20;stroke-width:3}
+  .callout{background:#191f25;border:1px solid #313943;border-radius:12px;padding:11px}
+  .callout strong{font-size:17px}
+  .alert-list{display:grid;gap:9px}
+  .alert{display:grid;grid-template-columns:9px 1fr auto;gap:10px;align-items:start;padding:11px;border:1px solid #2b3239;border-radius:12px;background:#12161a}
+  .alert .bar{width:5px;height:100%;min-height:40px;border-radius:99px;background:var(--warn)}
+  .alert.good .bar{background:var(--good)} .alert.bad .bar{background:var(--bad)}
+  .alert h4{margin:0 0 3px;font-size:12px}
+  .alert p{margin:0;color:#98a2ac;font-size:11px;line-height:1.45}
+  .impact{font-size:11px;font-weight:800;white-space:nowrap;color:#f2c66f}
+  .bars{display:grid;gap:12px}
+  .barrow{display:grid;grid-template-columns:116px 1fr 70px;gap:10px;align-items:center}
+  .barrow .label{color:#c9d0d6;font-size:12px}
+  .track{height:12px;background:#252c33;border-radius:999px;overflow:hidden;display:flex}
+  .seg{height:100%}
+  .value{text-align:right;font-weight:750;font-size:12px}
+  .mini-note{color:#8f99a4;font-size:10px;margin-top:10px}
+  .donut-wrap{display:flex;align-items:center;gap:20px}
+  .donut{width:150px;height:150px;border-radius:50%;background:conic-gradient(var(--accent) 0 67%,var(--blue) 67% 84%,var(--accent2) 84% 93%,var(--purple) 93% 100%);position:relative;flex:0 0 auto}
+  .donut:after{content:"";position:absolute;inset:26px;border-radius:50%;background:#14181d;border:1px solid #2a3139}
+  .donut-center{position:absolute;inset:0;display:grid;place-items:center;text-align:center;z-index:2;font-weight:900;font-size:19px}
+  .donut-center small{display:block;color:#8f99a4;font-size:10px;font-weight:600;margin-top:3px}
+  .donut-legend{display:grid;gap:10px;flex:1}
+  .drow{display:grid;grid-template-columns:10px 1fr auto;gap:8px;align-items:center;color:#c7ced5;font-size:12px}
+  .drow span:first-child{width:8px;height:8px;border-radius:3px}
+  .drow b{color:#fff}
+  table{width:100%;border-collapse:collapse}
+  th{text-align:left;color:#89939e;font-size:10px;text-transform:uppercase;letter-spacing:.07em;padding:10px;border-bottom:1px solid var(--line);white-space:nowrap}
+  td{padding:11px 10px;border-bottom:1px solid #222930;color:#d5dbe1;font-size:12px;white-space:nowrap}
+  tr:last-child td{border-bottom:0}
+  .num{text-align:right}
+  .tag{display:inline-block;padding:5px 7px;border-radius:7px;font-size:10px;font-weight:800;background:#20272e;color:#c5ccd4;border:1px solid #303941}
+  .tag.good{color:#8ee1b4;background:#10251b;border-color:#24583f}
+  .tag.warn{color:#f3c76f;background:#2b2111;border-color:#5c4822}
+  .tag.bad{color:#f4a09f;background:#2a1718;border-color:#5d2e30}
+  .heatmap{display:grid;grid-template-columns:58px repeat(11,1fr);gap:5px;align-items:center}
+  .hlabel{color:#818b95;font-size:10px;text-align:center}
+  .day{color:#b3bbc4;font-size:11px;font-weight:700}
+  .cell{height:28px;border-radius:6px;background:#1c2329;border:1px solid #273039;position:relative}
+  .l1{background:#17242b}.l2{background:#18333a}.l3{background:#244c4f}.l4{background:#6b4c2d}.l5{background:#8a3d31}.l6{background:#b44736}
+  .cell:hover:after{content:attr(data-tip);position:absolute;z-index:5;bottom:34px;left:50%;transform:translateX(-50%);background:#080a0c;border:1px solid #39434d;border-radius:8px;color:#fff;padding:6px 8px;font-size:10px;white-space:nowrap;box-shadow:0 10px 24px rgba(0,0,0,.4)}
+  .driver-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+  .driver{border:1px solid #2c343c;border-radius:12px;background:#12161a;padding:12px}
+  .driver small{display:block;color:#8d97a2;text-transform:uppercase;letter-spacing:.07em;font-size:9px;font-weight:800}
+  .driver strong{display:block;margin-top:7px;font-size:18px}
+  .driver p{margin:4px 0 0;color:#8e98a2;font-size:10px}
+  .waterfall{display:flex;align-items:flex-end;gap:8px;height:210px;padding:18px 8px 30px;border-bottom:1px solid #303842;position:relative}
+  .wf-col{flex:1;text-align:center;position:relative;min-width:48px}
+  .wf-bar{margin:0 auto;width:68%;border-radius:8px 8px 3px 3px;background:linear-gradient(180deg,#e6654f,#b83e2e);min-height:8px;position:relative}
+  .wf-col.neg .wf-bar{background:linear-gradient(180deg,#5c6876,#39434e)}
+  .wf-col.total .wf-bar{background:linear-gradient(180deg,#4dc58a,#2d895c)}
+  .wf-val{position:absolute;top:-20px;width:100%;font-size:10px;font-weight:800}
+  .wf-lab{position:absolute;top:calc(100% + 8px);left:50%;transform:translateX(-50%);width:96px;color:#8e98a2;font-size:9px;line-height:1.2}
+  .matrix{display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;height:300px;border-left:1px solid #39424b;border-bottom:1px solid #39424b;position:relative}
+  .quad{border-right:1px dashed #303943;border-top:1px dashed #303943;padding:10px;color:#717c87;font-size:10px}
+  .bubble{position:absolute;border-radius:50%;display:grid;place-items:center;text-align:center;border:2px solid rgba(255,255,255,.22);font-size:9px;font-weight:850;color:#fff;box-shadow:0 7px 18px rgba(0,0,0,.35)}
+  .b1{width:74px;height:74px;left:64%;top:17%;background:#bd4938}.b2{width:62px;height:62px;left:48%;top:34%;background:#805f34}.b3{width:54px;height:54px;left:70%;top:54%;background:#356d78}.b4{width:48px;height:48px;left:27%;top:60%;background:#5d536f}.b5{width:42px;height:42px;left:17%;top:31%;background:#394e58}
+  .axis-y{position:absolute;left:-36px;top:46%;transform:rotate(-90deg);color:#7f8994;font-size:10px}.axis-x{position:absolute;bottom:-24px;left:46%;color:#7f8994;font-size:10px}
+  .recon-grid{display:grid;grid-template-columns:1.25fr .75fr;gap:14px}
+  .recon-total{display:flex;justify-content:space-between;padding:13px 10px;border-top:1px solid #3a434c;font-weight:900}
+  .formula{background:#0d1115;border:1px solid #2d363f;border-radius:12px;padding:12px;color:#cbd2d9;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;line-height:1.7}
+  .source-map{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+  .source{border:1px solid #2d353d;background:#12161a;border-radius:12px;padding:12px}
+  .source h4{margin:0 0 6px;font-size:12px}.source p{margin:0;color:#909aa4;font-size:10px;line-height:1.45}
+  .source .sync{margin-top:9px;color:#7fe0ae;font-size:10px;font-weight:800}
+  .forecast{display:grid;grid-template-columns:1.45fr .55fr;gap:14px}
+  .scenario{display:grid;gap:10px}
+  .scenario-row{display:grid;grid-template-columns:1fr auto;gap:12px;align-items:center;border:1px solid #2c343c;border-radius:12px;padding:12px;background:#12161a}
+  .scenario-row h4{margin:0;font-size:12px}.scenario-row p{margin:3px 0 0;color:#8d97a1;font-size:10px}
+  .scenario-row strong{font-size:18px}
+
+  .tag.info{color:#c4b7ff;background:#201a35;border-color:#4b3d78}
+  .monthly-layout{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(320px,.45fr);gap:14px;margin-bottom:14px}
+  .monthly-chart-shell{display:grid;grid-template-columns:48px 1fr;gap:8px;min-height:350px}
+  .y-axis{position:relative;height:292px;color:#7f8994;font-size:10px}
+  .y-axis span{position:absolute;right:0;transform:translateY(50%)}
+  .monthly-plot{height:292px;display:grid;grid-template-columns:repeat(12,minmax(48px,1fr));gap:7px;align-items:end;padding:12px 4px 0;position:relative;border-bottom:1px solid #3b444e;background:repeating-linear-gradient(to top,transparent 0,transparent calc(25% - 1px),#293039 calc(25% - 1px),#293039 25%)}
+  .month-group{height:280px;display:grid;grid-template-rows:1fr 20px;gap:4px;min-width:0}
+  .month-bars{display:flex;align-items:flex-end;justify-content:center;gap:3px;height:256px;position:relative}
+  .month-name{text-align:center;color:#8b959f;font-size:10px;font-weight:700}
+  .mbar{width:25%;max-width:17px;min-width:7px;height:var(--h);min-height:3px;border-radius:4px 4px 1px 1px;position:relative;cursor:default;transition:filter .15s ease,transform .15s ease}
+  .mbar:hover{filter:brightness(1.22);transform:translateY(-2px)}
+  .mbar:hover:after{content:attr(data-tip);position:absolute;z-index:10;bottom:calc(100% + 7px);left:50%;transform:translateX(-50%);background:#080a0c;border:1px solid #3a444e;border-radius:8px;color:#fff;padding:6px 8px;font-size:10px;white-space:nowrap;box-shadow:0 10px 24px rgba(0,0,0,.45)}
+  .y2024{background:#56616e}.y2025{background:#67a7ff}.y2026{background:#e44b36}.forecast-bar{background:repeating-linear-gradient(135deg,#e44b36 0,#e44b36 4px,#702c25 4px,#702c25 8px);border:1px dashed #ff9f8f}
+  .forecast-controls{display:grid;gap:12px}
+  .forecast-rule{border:1px solid #3a3230;background:#1b1514;border-radius:12px;padding:13px}
+  .forecast-rule strong{display:block;font-size:18px;margin:5px 0}.forecast-rule p{margin:0;color:#9ca5af;font-size:11px;line-height:1.5}
+  .slider-wrap{border:1px solid #2e363f;background:#11161a;border-radius:12px;padding:13px}
+  .slider-head{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-bottom:9px}.slider-head b{font-size:18px}.slider-wrap input{width:100%;accent-color:#e44b36}
+  .forecast-months{display:grid;gap:7px}.forecast-month-row{display:grid;grid-template-columns:42px 1fr 64px 62px;gap:8px;align-items:center;font-size:11px}.forecast-month-row .track{height:8px}.forecast-month-row .num{font-weight:800}
+  .forecast-note{border-left:3px solid var(--accent2);padding:9px 11px;background:#191711;color:#b8b0a4;font-size:11px;line-height:1.5;border-radius:0 9px 9px 0}
+  .classification-key{display:grid;grid-template-columns:repeat(4,1fr);gap:9px;margin-top:12px}
+  .class-card{border:1px solid #2d353d;border-radius:11px;background:#11161a;padding:10px}.class-card h4{margin:0 0 4px;font-size:11px}.class-card p{margin:0;color:#8f99a3;font-size:9px;line-height:1.4}
+  .quad.opportunity{background:linear-gradient(135deg,rgba(173,140,255,.09),transparent)}.quad.winner{background:linear-gradient(135deg,rgba(69,196,134,.1),transparent)}.quad.dog{background:linear-gradient(135deg,rgba(239,107,104,.09),transparent)}.quad.workhorse{background:linear-gradient(135deg,rgba(240,182,79,.08),transparent)}
+  .pb1{width:76px;height:76px;left:67%;top:14%;background:#2e8a60}.pb2{width:68px;height:68px;left:71%;top:59%;background:#8d682b}.pb3{width:57px;height:57px;left:52%;top:27%;background:#387d6b}.pb4{width:50px;height:50px;left:19%;top:21%;background:#6654a3}.pb5{width:54px;height:54px;left:55%;top:65%;background:#7a5d31}.pb6{width:44px;height:44px;left:17%;top:68%;background:#8d3c3b}.pb7{width:46px;height:46px;left:30%;top:39%;background:#4d5f8d}
+  .decline-row{display:grid;grid-template-columns:1.3fr 60px 70px 58px 1fr;gap:8px;align-items:center;padding:10px 0;border-bottom:1px solid #252d34;font-size:11px}.decline-row:last-child{border-bottom:0}.decline-row.head{color:#808a94;font-size:9px;text-transform:uppercase;letter-spacing:.06em;font-weight:800}.decline-row strong{font-size:12px}.decline-row .action{color:#aab2ba;line-height:1.3}
+  .method-box{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:12px}.method{border:1px solid #2b333b;border-radius:11px;background:#101419;padding:11px}.method b{font-size:11px}.method p{margin:5px 0 0;color:#8d97a1;font-size:9px;line-height:1.45}
+
+  .footer{margin-top:15px;color:#717b85;font-size:10px;text-align:right}
+  .mobile-warning{display:none}
+  @media (max-width:1200px){.classification-key{grid-template-columns:repeat(2,1fr)}.kpi-grid{grid-template-columns:repeat(3,1fr)}.three-col{grid-template-columns:1fr}.source-map{grid-template-columns:repeat(2,1fr)}.driver-grid{grid-template-columns:repeat(2,1fr)}}
+  @media (max-width:820px){.monthly-layout{grid-template-columns:1fr}.monthly-chart-shell{overflow-x:auto;grid-template-columns:42px minmax(760px,1fr)}.method-box{grid-template-columns:1fr}.app{padding:12px}.topbar{align-items:flex-start}.status{display:none}.kpi-grid{grid-template-columns:repeat(2,1fr)}.two-col,.recon-grid,.forecast{grid-template-columns:1fr}.controls{align-items:stretch}.control{flex:1;min-width:150px}.spacer{display:none}.heatmap{grid-template-columns:42px repeat(11,32px);overflow:auto}.source-map{grid-template-columns:1fr}.three-col{grid-template-columns:1fr}.donut-wrap{flex-direction:column}.mobile-warning{display:block;color:#d5aa63;font-size:11px;margin:0 0 10px}}
+  @media (max-width:520px){.classification-key{grid-template-columns:1fr}.decline-row{grid-template-columns:1fr 52px 58px}.decline-row .mix,.decline-row .action{display:none}.kpi-grid{grid-template-columns:1fr}.brand h1{font-size:18px}.driver-grid{grid-template-columns:1fr}.barrow{grid-template-columns:94px 1fr 52px}.chart-wrap{height:220px}}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="topbar">
+    <div class="brand">
+      <div class="mark">CB</div>
+      <div><h1>Revenue Command Centre</h1><p>Coyote Burger · Executive revenue, growth and cash-control dashboard</p></div>
+    </div>
+    <div class="status">
+      <span class="pill good"><span class="dot"></span>All core sources loaded</span>
+      <span class="pill">POS completeness 100%</span>
+      <span class="pill">Reconciled 99.98%</span>
+    </div>
+  </div>
+
+  <div class="controls">
+    <div class="control"><strong>Reporting period</strong>Mon 13 – Sun 19 Jul 2026</div>
+    <div class="control"><strong>Comparison</strong>Same week last year</div>
+    <div class="control"><strong>Location</strong>Coyote Burger · Inverness</div>
+    <div class="control"><strong>View</strong>Net revenue ex VAT</div>
+    <div class="spacer"></div>
+    <span class="badge">ILLUSTRATIVE MOCK DATA</span>
+  </div>
+
+  <div class="tabs">
+    <button class="tab active" data-tab="executive">Executive</button>
+    <button class="tab" data-tab="drivers">Revenue Drivers</button>
+    <button class="tab" data-tab="menu">Menu Growth</button>
+    <button class="tab" data-tab="reconciliation">Reconciliation</button>
+    <button class="tab" data-tab="forecast">Revenue Forecast</button>
+  </div>
+
+  <div class="mobile-warning">For the full command-centre layout, view on desktop or tablet in landscape.</div>
+
+  <section class="page active" id="executive">
+    <div class="grid kpi-grid">
+      <div class="card kpi"><div class="kpi-label">Net revenue · ex VAT</div><div class="kpi-value">£24,860</div><div class="kpi-sub"><span class="delta up">▲ 8.4%</span> vs LY · <span class="up">+3.6%</span> vs budget</div><div class="microbar"><span style="width:78%"></span></div></div>
+      <div class="card kpi"><div class="kpi-label">Gross sales · inc VAT</div><div class="kpi-value">£29,832</div><div class="kpi-sub"><span class="delta up">▲ £2,304</span> vs LY</div><div class="microbar"><span style="width:74%"></span></div></div>
+      <div class="card kpi"><div class="kpi-label">Covers</div><div class="kpi-value">1,435</div><div class="kpi-sub"><span class="delta up">▲ 4.9%</span> vs LY · 205/day</div><div class="microbar"><span style="width:69%"></span></div></div>
+      <div class="card kpi"><div class="kpi-label">Average spend / cover</div><div class="kpi-value">£20.79</div><div class="kpi-sub"><span class="delta up">▲ 3.4%</span> vs LY · target £20.50</div><div class="microbar"><span style="width:82%"></span></div></div>
+      <div class="card kpi"><div class="kpi-label">Average transaction</div><div class="kpi-value">£39.56</div><div class="kpi-sub"><span class="delta up">▲ 2.1%</span> · 754 closed checks</div><div class="microbar"><span style="width:76%"></span></div></div>
+      <div class="card kpi"><div class="kpi-label">Revenue quality score</div><div class="kpi-value">93 / 100</div><div class="kpi-sub"><span class="delta up">▲ 4 pts</span> low leakage · clean cash</div><div class="microbar"><span style="width:93%"></span></div></div>
+    </div>
+
+    <div class="grid two-col">
+      <div class="card panel">
+        <div class="panel-head"><div><h3 class="panel-title">8-week net revenue trend</h3><div class="panel-sub">Actual vs target and same weeks last year · ex VAT</div></div><div class="legend"><span><i style="background:#ef6a50"></i>Actual</span><span><i style="background:#f1b34c"></i>Target</span><span><i style="background:#758190"></i>Last year</span></div></div>
+        <div class="chart-wrap">
+          <svg viewBox="0 0 900 260" role="img" aria-label="Eight week net revenue trend">
+            <defs><linearGradient id="areaGradient" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#ef6a50"/><stop offset="100%" stop-color="#ef6a50" stop-opacity="0"/></linearGradient></defs>
+            <line x1="54" y1="30" x2="870" y2="30" class="gridline"/><line x1="54" y1="84" x2="870" y2="84" class="gridline"/><line x1="54" y1="138" x2="870" y2="138" class="gridline"/><line x1="54" y1="192" x2="870" y2="192" class="gridline"/>
+            <text x="9" y="34" class="axistext">£26k</text><text x="9" y="88" class="axistext">£24k</text><text x="9" y="142" class="axistext">£22k</text><text x="9" y="196" class="axistext">£20k</text>
+            <path d="M60 185 L175 151 L290 170 L405 117 L520 130 L635 94 L750 108 L865 61 L865 220 L60 220 Z" class="area-current"/>
+            <polyline points="60,185 175,151 290,170 405,117 520,130 635,94 750,108 865,61" class="line-current"/>
+            <polyline points="60,164 175,153 290,143 405,132 520,121 635,110 750,99 865,88" class="line-target"/>
+            <polyline points="60,197 175,178 290,185 405,162 520,153 635,147 750,140 865,113" class="line-last"/>
+            <circle cx="865" cy="61" r="6" class="point"/>
+            <text x="58" y="243" class="axistext">W22</text><text x="173" y="243" class="axistext">W23</text><text x="288" y="243" class="axistext">W24</text><text x="403" y="243" class="axistext">W25</text><text x="518" y="243" class="axistext">W26</text><text x="633" y="243" class="axistext">W27</text><text x="748" y="243" class="axistext">W28</text><text x="846" y="243" class="axistext">W29</text>
+          </svg>
+        </div>
+        <div class="driver-grid">
+          <div class="driver"><small>Growth from volume</small><strong class="up">+£1,185</strong><p>More covers, mainly dinner</p></div>
+          <div class="driver"><small>Growth from spend</small><strong class="up">+£837</strong><p>Higher drinks and doubles</p></div>
+          <div class="driver"><small>Channel / mix gain</small><strong class="up">+£214</strong><p>StoreKit basket strength</p></div>
+          <div class="driver"><small>Leakage drag</small><strong class="down">−£310</strong><p>Discounts and refunds</p></div>
+        </div>
+      </div>
+
+      <div class="card panel">
+        <div class="panel-head"><div><h3 class="panel-title">Decision feed</h3><div class="panel-sub">Only exceptions with a financial action</div></div><span class="tag warn">5 open</span></div>
+        <div class="alert-list">
+          <div class="alert bad"><div class="bar"></div><div><h4>Side attachment fell 4.2 percentage points</h4><p>Drop is concentrated in Friday/Saturday dine-in checks after 18:00.</p></div><div class="impact">≈ £420/wk</div></div>
+          <div class="alert"><div class="bar"></div><div><h4>Friday 18:00–20:00 is capacity constrained</h4><p>94% estimated seat utilisation; demand is being lost rather than converted.</p></div><div class="impact">Growth cap</div></div>
+          <div class="alert"><div class="bar"></div><div><h4>Two staff logins exceed discount threshold</h4><p>Discount rate above 4%; review reasons and approval trail.</p></div><div class="impact">£186</div></div>
+          <div class="alert good"><div class="bar"></div><div><h4>StoreKit order-at-table basket is outperforming</h4><p>Average check is 18% above counter-entered dine-in orders.</p></div><div class="impact">Scale prompt</div></div>
+          <div class="alert good"><div class="bar"></div><div><h4>Payment control is clean</h4><p>Only £5.00 variance across £32,010 of tenders.</p></div><div class="impact">0.02%</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid three-col">
+      <div class="card panel">
+        <div class="panel-head"><div><h3 class="panel-title">Revenue by service channel</h3><div class="panel-sub">Share, growth and basket size</div></div></div>
+        <div class="donut-wrap">
+          <div class="donut"><div class="donut-center">£24.9k<small>net revenue</small></div></div>
+          <div class="donut-legend">
+            <div class="drow"><span style="background:#e44b36"></span><div>Dine-in POS <small class="up">+7.1%</small></div><b>67%</b></div>
+            <div class="drow"><span style="background:#67a7ff"></span><div>StoreKit at-table <small class="up">+15.4%</small></div><b>17%</b></div>
+            <div class="drow"><span style="background:#ffb34d"></span><div>LivePepper collection <small class="up">+4.6%</small></div><b>9%</b></div>
+            <div class="drow"><span style="background:#ad8cff"></span><div>Walk-in takeaway <small class="down">−2.3%</small></div><b>7%</b></div>
+          </div>
+        </div>
+      </div>
+      <div class="card panel">
+        <div class="panel-head"><div><h3 class="panel-title">Revenue by daypart</h3><div class="panel-sub">Net revenue mix and YoY movement</div></div></div>
+        <div class="bars">
+          <div class="barrow"><div class="label">Lunch</div><div class="track"><span class="seg" style="width:31%;background:#67a7ff"></span></div><div class="value">31% <span class="flat">+0.7%</span></div></div>
+          <div class="barrow"><div class="label">Afternoon</div><div class="track"><span class="seg" style="width:13%;background:#ad8cff"></span></div><div class="value">13% <span class="up">+6.2%</span></div></div>
+          <div class="barrow"><div class="label">Dinner</div><div class="track"><span class="seg" style="width:51%;background:#e44b36"></span></div><div class="value">51% <span class="up">+12.8%</span></div></div>
+          <div class="barrow"><div class="label">Late</div><div class="track"><span class="seg" style="width:5%;background:#ffb34d"></span></div><div class="value">5% <span class="down">−3.1%</span></div></div>
+        </div>
+        <div class="mini-note">Decision use: opening hours, staffing, offer timing and capacity allocation.</div>
+      </div>
+      <div class="card panel">
+        <div class="panel-head"><div><h3 class="panel-title">Revenue quality</h3><div class="panel-sub">Leakage as % of pre-leakage sales</div></div></div>
+        <div class="bars">
+          <div class="barrow"><div class="label">Discounts</div><div class="track"><span class="seg" style="width:42%;background:#f0b64f"></span></div><div class="value">2.1%</div></div>
+          <div class="barrow"><div class="label">Comps / offers</div><div class="track"><span class="seg" style="width:18%;background:#ad8cff"></span></div><div class="value">0.7%</div></div>
+          <div class="barrow"><div class="label">Refunds</div><div class="track"><span class="seg" style="width:12%;background:#ef6b68"></span></div><div class="value">0.4%</div></div>
+          <div class="barrow"><div class="label">Voids</div><div class="track"><span class="seg" style="width:15%;background:#758190"></span></div><div class="value">0.5%</div></div>
+        </div>
+        <div class="mini-note">Target: total leakage below 3.5%; every item must retain a reason, approver and staff login.</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="page" id="drivers">
+    <div class="grid kpi-grid">
+      <div class="card kpi"><div class="kpi-label">Revenue / trading hour</div><div class="kpi-value">£582</div><div class="kpi-sub"><span class="up">▲ 6.7%</span> vs LY</div></div>
+      <div class="card kpi"><div class="kpi-label">Sales / labour hour</div><div class="kpi-value">£64.24</div><div class="kpi-sub"><span class="up">▲ 4.1%</span> · RotaCloud actuals</div></div>
+      <div class="card kpi"><div class="kpi-label">Peak RevPASH</div><div class="kpi-value">£8.68</div><div class="kpi-sub"><span class="up">▲ 9.2%</span> · Fri/Sat dinner</div></div>
+      <div class="card kpi"><div class="kpi-label">Covers / transaction</div><div class="kpi-value">1.90</div><div class="kpi-sub"><span class="up">▲ 2.7%</span> larger parties</div></div>
+      <div class="card kpi"><div class="kpi-label">Drink attachment</div><div class="kpi-value">69.2%</div><div class="kpi-sub"><span class="up">▲ 3.8 pp</span></div></div>
+      <div class="card kpi"><div class="kpi-label">Side attachment</div><div class="kpi-value">83.6%</div><div class="kpi-sub"><span class="down">▼ 4.2 pp</span> investigate</div></div>
+    </div>
+
+    <div class="grid two-col">
+      <div class="card panel">
+        <div class="panel-head"><div><h3 class="panel-title">Hourly revenue heatmap</h3><div class="panel-sub">Net revenue intensity by day and hour · hover for mock values</div></div></div>
+        <div class="heatmap">
+          <div></div><div class="hlabel">11</div><div class="hlabel">12</div><div class="hlabel">13</div><div class="hlabel">14</div><div class="hlabel">15</div><div class="hlabel">16</div><div class="hlabel">17</div><div class="hlabel">18</div><div class="hlabel">19</div><div class="hlabel">20</div><div class="hlabel">21</div>
+          <div class="day">Mon</div><div class="cell l1" data-tip="£96"></div><div class="cell l3" data-tip="£218"></div><div class="cell l3" data-tip="£246"></div><div class="cell l2" data-tip="£175"></div><div class="cell l1" data-tip="£112"></div><div class="cell l2" data-tip="£154"></div><div class="cell l3" data-tip="£231"></div><div class="cell l4" data-tip="£362"></div><div class="cell l4" data-tip="£390"></div><div class="cell l3" data-tip="£284"></div><div class="cell l2" data-tip="£138"></div>
+          <div class="day">Tue</div><div class="cell l1" data-tip="£104"></div><div class="cell l3" data-tip="£230"></div><div class="cell l3" data-tip="£252"></div><div class="cell l2" data-tip="£183"></div><div class="cell l1" data-tip="£119"></div><div class="cell l2" data-tip="£161"></div><div class="cell l3" data-tip="£247"></div><div class="cell l4" data-tip="£381"></div><div class="cell l4" data-tip="£412"></div><div class="cell l3" data-tip="£299"></div><div class="cell l2" data-tip="£146"></div>
+          <div class="day">Wed</div><div class="cell l1" data-tip="£111"></div><div class="cell l3" data-tip="£241"></div><div class="cell l4" data-tip="£274"></div><div class="cell l2" data-tip="£193"></div><div class="cell l1" data-tip="£127"></div><div class="cell l2" data-tip="£175"></div><div class="cell l3" data-tip="£266"></div><div class="cell l4" data-tip="£410"></div><div class="cell l5" data-tip="£475"></div><div class="cell l4" data-tip="£351"></div><div class="cell l2" data-tip="£170"></div>
+          <div class="day">Thu</div><div class="cell l2" data-tip="£128"></div><div class="cell l3" data-tip="£258"></div><div class="cell l4" data-tip="£289"></div><div class="cell l2" data-tip="£205"></div><div class="cell l2" data-tip="£143"></div><div class="cell l2" data-tip="£190"></div><div class="cell l4" data-tip="£302"></div><div class="cell l5" data-tip="£498"></div><div class="cell l5" data-tip="£552"></div><div class="cell l4" data-tip="£409"></div><div class="cell l3" data-tip="£215"></div>
+          <div class="day">Fri</div><div class="cell l2" data-tip="£162"></div><div class="cell l4" data-tip="£307"></div><div class="cell l4" data-tip="£348"></div><div class="cell l3" data-tip="£255"></div><div class="cell l2" data-tip="£188"></div><div class="cell l3" data-tip="£249"></div><div class="cell l5" data-tip="£488"></div><div class="cell l6" data-tip="£742"></div><div class="cell l6" data-tip="£798"></div><div class="cell l5" data-tip="£620"></div><div class="cell l4" data-tip="£374"></div>
+          <div class="day">Sat</div><div class="cell l3" data-tip="£224"></div><div class="cell l5" data-tip="£478"></div><div class="cell l5" data-tip="£536"></div><div class="cell l4" data-tip="£402"></div><div class="cell l3" data-tip="£268"></div><div class="cell l4" data-tip="£356"></div><div class="cell l5" data-tip="£590"></div><div class="cell l6" data-tip="£815"></div><div class="cell l6" data-tip="£866"></div><div class="cell l6" data-tip="£736"></div><div class="cell l5" data-tip="£490"></div>
+          <div class="day">Sun</div><div class="cell l3" data-tip="£206"></div><div class="cell l5" data-tip="£456"></div><div class="cell l5" data-tip="£501"></div><div class="cell l4" data-tip="£382"></div><div class="cell l3" data-tip="£244"></div><div class="cell l3" data-tip="£286"></div><div class="cell l4" data-tip="£420"></div><div class="cell l5" data-tip="£585"></div><div class="cell l5" data-tip="£610"></div><div class="cell l4" data-tip="£442"></div><div class="cell l3" data-tip="£235"></div>
+        </div>
+      </div>
+      <div class="card panel">
+        <div class="panel-head"><div><h3 class="panel-title">Capacity and demand conversion</h3><div class="panel-sub">Revenue opportunity by trading window</div></div></div>
+        <table>
+          <thead><tr><th>Window</th><th class="num">Seat use</th><th class="num">RevPASH</th><th class="num">Wait / lost</th><th>Decision</th></tr></thead>
+          <tbody>
+            <tr><td>Fri 18:00–20:00</td><td class="num">94%</td><td class="num">£9.72</td><td class="num">18 covers</td><td><span class="tag bad">Capacity action</span></td></tr>
+            <tr><td>Sat 18:00–20:00</td><td class="num">96%</td><td class="num">£10.34</td><td class="num">23 covers</td><td><span class="tag bad">Capacity action</span></td></tr>
+            <tr><td>Sun 12:00–14:00</td><td class="num">83%</td><td class="num">£7.20</td><td class="num">4 covers</td><td><span class="tag good">Healthy</span></td></tr>
+            <tr><td>Mon–Thu 15:00–17:00</td><td class="num">29%</td><td class="num">£2.10</td><td class="num">—</td><td><span class="tag warn">Demand action</span></td></tr>
+          </tbody>
+        </table>
+        <div class="callout" style="margin-top:13px"><div class="kpi-label">Estimated recoverable weekly revenue</div><strong>£760–£1,050</strong><div class="kpi-sub">Shift demand toward shoulder times, improve table reset speed and tighten reservation pacing.</div></div>
+      </div>
+    </div>
+
+    <div class="card panel">
+      <div class="panel-head"><div><h3 class="panel-title">Daily trading scorecard</h3><div class="panel-sub">A single table that explains whether sales growth came from volume, spend or operational efficiency</div></div></div>
+      <div style="overflow:auto"><table>
+        <thead><tr><th>Day</th><th class="num">Net revenue</th><th class="num">YoY</th><th class="num">Covers</th><th class="num">Spend / cover</th><th class="num">Labour hrs</th><th class="num">Sales / labour hr</th><th class="num">Discount %</th><th>Status</th></tr></thead>
+        <tbody>
+          <tr><td>Monday</td><td class="num">£2,575</td><td class="num up">+4.1%</td><td class="num">163</td><td class="num">£18.96</td><td class="num">47</td><td class="num">£54.79</td><td class="num">1.8%</td><td><span class="tag good">On plan</span></td></tr>
+          <tr><td>Tuesday</td><td class="num">£2,712</td><td class="num up">+5.7%</td><td class="num">171</td><td class="num">£19.03</td><td class="num">49</td><td class="num">£55.35</td><td class="num">1.7%</td><td><span class="tag good">On plan</span></td></tr>
+          <tr><td>Wednesday</td><td class="num">£2,940</td><td class="num up">+7.2%</td><td class="num">183</td><td class="num">£19.28</td><td class="num">51</td><td class="num">£57.65</td><td class="num">2.0%</td><td><span class="tag good">On plan</span></td></tr>
+          <tr><td>Thursday</td><td class="num">£3,230</td><td class="num up">+8.6%</td><td class="num">195</td><td class="num">£19.88</td><td class="num">54</td><td class="num">£59.81</td><td class="num">2.2%</td><td><span class="tag good">Strong</span></td></tr>
+          <tr><td>Friday</td><td class="num">£4,325</td><td class="num up">+11.9%</td><td class="num">241</td><td class="num">£21.54</td><td class="num">63</td><td class="num">£68.65</td><td class="num">2.8%</td><td><span class="tag warn">Leakage</span></td></tr>
+          <tr><td>Saturday</td><td class="num">£5,160</td><td class="num up">+13.7%</td><td class="num">285</td><td class="num">£21.73</td><td class="num">69</td><td class="num">£74.78</td><td class="num">2.5%</td><td><span class="tag bad">Capacity</span></td></tr>
+          <tr><td>Sunday</td><td class="num">£3,918</td><td class="num up">+7.5%</td><td class="num">197</td><td class="num">£23.87</td><td class="num">54</td><td class="num">£72.56</td><td class="num">1.6%</td><td><span class="tag good">Strong</span></td></tr>
+        </tbody>
+      </table></div>
+    </div>
+  </section>
+
+  <section class="page" id="menu">
+    <div class="grid kpi-grid">
+      <div class="card kpi"><div class="kpi-label">Products declining &gt;5%</div><div class="kpi-value">4</div><div class="kpi-sub">Same comparable period vs 2025</div></div>
+      <div class="card kpi"><div class="kpi-label">Weekly revenue at risk</div><div class="kpi-value">£1.8k</div><div class="kpi-sub">Items losing units or menu mix</div></div>
+      <div class="card kpi"><div class="kpi-label">Winners</div><div class="kpi-value">3</div><div class="kpi-sub"><span class="up">High demand + strong contribution</span></div></div>
+      <div class="card kpi"><div class="kpi-label">Workhorses</div><div class="kpi-value">2</div><div class="kpi-sub">Popular but margin needs protection</div></div>
+      <div class="card kpi"><div class="kpi-label">Opportunities</div><div class="kpi-value">2</div><div class="kpi-sub">Good economics, low awareness</div></div>
+      <div class="card kpi"><div class="kpi-label">Dogs</div><div class="kpi-value">1</div><div class="kpi-sub"><span class="down">Rework, replace or remove</span></div></div>
+    </div>
+
+    <div class="grid two-col">
+      <div class="card panel">
+        <div class="panel-head"><div><h3 class="panel-title">Menu engineering portfolio</h3><div class="panel-sub">Popularity vs contribution profit per item · bubble size = current-period revenue · arrow/momentum is shown in the table below</div></div></div>
+        <div class="matrix">
+          <div class="quad opportunity"><strong>OPPORTUNITIES / PUZZLES</strong><br>High contribution · low popularity</div>
+          <div class="quad winner"><strong>WINNERS / STARS</strong><br>High contribution · high popularity</div>
+          <div class="quad dog"><strong>DOGS</strong><br>Low contribution · low popularity</div>
+          <div class="quad workhorse"><strong>WORKHORSES / PLOWHORSES</strong><br>Low contribution · high popularity</div>
+          <div class="bubble pb1">Bacon<br>Cheese</div>
+          <div class="bubble pb2">Cheese<br>burger</div>
+          <div class="bubble pb3">Hangry<br>Bird</div>
+          <div class="bubble pb4">Vegan<br>BBQ</div>
+          <div class="bubble pb5">OG Dirty<br>Fries</div>
+          <div class="bubble pb6">Mac &amp;<br>Cheese</div>
+          <div class="bubble pb7">Brisket<br>Chilli</div>
+          <div class="axis-y">Contribution profit / item</div><div class="axis-x">Sales popularity →</div>
+        </div>
+        <div class="classification-key">
+          <div class="class-card"><h4 class="up">Winners</h4><p>Protect availability, feature prominently and use in paid creative. Avoid unnecessary discounting.</p></div>
+          <div class="class-card"><h4 class="flat">Workhorses</h4><p>Keep because guests want them, but improve recipe cost, price architecture or add-on conversion.</p></div>
+          <div class="class-card"><h4 style="color:#b9a5ff">Opportunities</h4><p>Profitable but under-ordered. Improve naming, menu position, photography and staff prompts.</p></div>
+          <div class="class-card"><h4 class="down">Dogs</h4><p>Low popularity and weak economics. Rework once, then remove unless strategically necessary.</p></div>
+        </div>
+      </div>
+
+      <div class="card panel">
+        <div class="panel-head"><div><h3 class="panel-title">Same-period decline watch</h3><div class="panel-sub">Unit movement is primary; revenue alone can hide falling demand after a price increase</div></div><span class="tag bad">4 flagged</span></div>
+        <div class="decline-row head"><div>Item</div><div class="num">Units</div><div class="num">Revenue</div><div class="num mix">Mix</div><div class="action">Recommended response</div></div>
+        <div class="decline-row"><div><strong>Mac &amp; Cheese Balls</strong><br><span class="tag bad">Dog</span></div><div class="num down">−18.6%</div><div class="num down">−8.2%</div><div class="num down mix">−0.5pp</div><div class="action">Rework product/price for four weeks; remove if no recovery.</div></div>
+        <div class="decline-row"><div><strong>Brisket Chilli Beef</strong><br><span class="tag info">Opportunity</span></div><div class="num down">−16.5%</div><div class="num down">−11.2%</div><div class="num down mix">−0.7pp</div><div class="action">Test new menu name, image and server recommendation before cutting.</div></div>
+        <div class="decline-row"><div><strong>OG Dirty Fries</strong><br><span class="tag warn">Workhorse</span></div><div class="num down">−12.5%</div><div class="num down">−3.8%</div><div class="num down mix">−1.1pp</div><div class="action">Fix side attachment and placement; do not discount the whole menu.</div></div>
+        <div class="decline-row"><div><strong>Cheeseburger</strong><br><span class="tag warn">Price masking</span></div><div class="num down">−2.6%</div><div class="num up">+0.8%</div><div class="num down mix">−0.7pp</div><div class="action">Revenue looks stable, but unit demand is eroding. Investigate substitution.</div></div>
+        <div class="forecast-note" style="margin-top:12px"><strong>Deletion rule:</strong> do not remove an item solely because sales are low. Remove only when popularity, contribution, momentum and strategic role are all weak.</div>
+      </div>
+    </div>
+
+    <div class="card panel">
+      <div class="panel-head"><div><h3 class="panel-title">Canonical product performance</h3><div class="panel-sub">Current comparable period vs the same dates and trading days in 2025 · single/double and renamed variants consolidated</div></div><span class="tag good">Zero-value modifiers excluded</span></div>
+      <div style="overflow:auto"><table>
+        <thead><tr><th>Canonical item</th><th>Type</th><th class="num">Units CY</th><th class="num">Units LY</th><th class="num">Unit YoY</th><th class="num">Revenue YoY</th><th class="num">Mix shift</th><th class="num">Contribution / item</th><th>Decision</th></tr></thead>
+        <tbody>
+          <tr><td>Bacon Cheeseburger</td><td><span class="tag good">Winner</span></td><td class="num">286</td><td class="num">251</td><td class="num up">+13.9%</td><td class="num up">+15.1%</td><td class="num up">+1.2pp</td><td class="num">£8.10</td><td>Feature in ads; protect stock and execution</td></tr>
+          <tr><td>Hangry Bird</td><td><span class="tag good">Winner</span></td><td class="num">188</td><td class="num">168</td><td class="num up">+11.9%</td><td class="num up">+12.4%</td><td class="num up">+0.6pp</td><td class="num">£8.25</td><td>Increase prominence and upsell pairings</td></tr>
+          <tr><td>Smokehouse BBQ</td><td><span class="tag good">Winner</span></td><td class="num">172</td><td class="num">166</td><td class="num up">+3.6%</td><td class="num up">+4.2%</td><td class="num up">+0.1pp</td><td class="num">£8.00</td><td>Hold position; monitor ingredient inflation</td></tr>
+          <tr><td>Cheeseburger</td><td><span class="tag warn">Workhorse</span></td><td class="num">301</td><td class="num">309</td><td class="num down">−2.6%</td><td class="num up">+0.8%</td><td class="num down">−0.7pp</td><td class="num">£6.55</td><td>Improve contribution; identify substitution</td></tr>
+          <tr><td>OG Dirty Fries</td><td><span class="tag warn">Workhorse</span></td><td class="num">223</td><td class="num">255</td><td class="num down">−12.5%</td><td class="num down">−3.8%</td><td class="num down">−1.1pp</td><td class="num">£4.35</td><td>Rebuild attachment with prompts and placement</td></tr>
+          <tr><td>Vegan BBQ</td><td><span class="tag info">Opportunity</span></td><td class="num">75</td><td class="num">63</td><td class="num up">+19.0%</td><td class="num up">+18.9%</td><td class="num up">+0.4pp</td><td class="num">£7.95</td><td>Test photography and targeted exposure</td></tr>
+          <tr><td>Brisket Chilli Beef</td><td><span class="tag info">Opportunity</span></td><td class="num">81</td><td class="num">97</td><td class="num down">−16.5%</td><td class="num down">−11.2%</td><td class="num down">−0.7pp</td><td class="num">£7.80</td><td>Reposition before removal; margin is still good</td></tr>
+          <tr><td>Mac &amp; Cheese Balls</td><td><span class="tag bad">Dog</span></td><td class="num">118</td><td class="num">145</td><td class="num down">−18.6%</td><td class="num down">−8.2%</td><td class="num down">−0.5pp</td><td class="num">£3.15</td><td>Four-week rework test, then replace/remove</td></tr>
+        </tbody>
+      </table></div>
+      <div class="method-box">
+        <div class="method"><b>Popularity</b><p>Use unit share within the relevant category, not revenue share. Price changes should not make an item appear more popular.</p></div>
+        <div class="method"><b>Contribution</b><p>Net selling price less ingredient, packaging and directly attributable channel cost. Refresh recipe costs monthly.</p></div>
+        <div class="method"><b>Momentum overlay</b><p>Compare units, revenue and mix with the same dates, weekdays and opening pattern last year to avoid calendar distortion.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="page" id="reconciliation">
+    <div class="grid kpi-grid">
+      <div class="card kpi"><div class="kpi-label">Expected tenders</div><div class="kpi-value">£32,010</div><div class="kpi-sub">Sales £29,832 + tips £2,178</div></div>
+      <div class="card kpi"><div class="kpi-label">Processed / banked</div><div class="kpi-value">£32,005</div><div class="kpi-sub">Before card fees</div></div>
+      <div class="card kpi"><div class="kpi-label">Gross variance</div><div class="kpi-value">−£5.00</div><div class="kpi-sub"><span class="up">0.02%</span> within tolerance</div></div>
+      <div class="card kpi"><div class="kpi-label">Processor fees</div><div class="kpi-value">£474</div><div class="kpi-sub">1.56% of card volume</div></div>
+      <div class="card kpi"><div class="kpi-label">Refunds</div><div class="kpi-value">£126</div><div class="kpi-sub">0.42% of gross sales</div></div>
+      <div class="card kpi"><div class="kpi-label">Unresolved exceptions</div><div class="kpi-value">2</div><div class="kpi-sub">Both under £10</div></div>
+    </div>
+
+    <div class="recon-grid">
+      <div class="card panel">
+        <div class="panel-head"><div><h3 class="panel-title">Tender-to-bank reconciliation</h3><div class="panel-sub">POS is the commercial baseline; processors prove collection and payouts prove cash</div></div><span class="tag good">Pass</span></div>
+        <table>
+          <thead><tr><th>Channel</th><th class="num">POS tender</th><th class="num">Processor / bank gross</th><th class="num">Variance</th><th class="num">Fees</th><th class="num">Expected payout</th><th>Status</th></tr></thead>
+          <tbody>
+            <tr><td>Lightspeed Payments</td><td class="num">£21,780</td><td class="num">£21,780</td><td class="num">£0</td><td class="num">£327</td><td class="num">£21,453</td><td><span class="tag good">Matched</span></td></tr>
+            <tr><td>StoreKit / Adyen</td><td class="num">£5,820</td><td class="num">£5,820</td><td class="num">£0</td><td class="num">£93</td><td class="num">£5,727</td><td><span class="tag good">Matched</span></td></tr>
+            <tr><td>LivePepper / Stripe</td><td class="num">£2,700</td><td class="num">£2,700</td><td class="num">£0</td><td class="num">£54</td><td class="num">£2,646</td><td><span class="tag good">Matched</span></td></tr>
+            <tr><td>Cash</td><td class="num">£1,710</td><td class="num">£1,705</td><td class="num down">−£5</td><td class="num">—</td><td class="num">£1,705</td><td><span class="tag warn">Review</span></td></tr>
+          </tbody>
+        </table>
+        <div class="recon-total"><span>Total</span><span>£32,010 &nbsp; | &nbsp; variance −£5.00</span></div>
+      </div>
+      <div class="card panel">
+        <div class="panel-head"><div><h3 class="panel-title">Control formulas</h3><div class="panel-sub">Definitions that prevent false revenue</div></div></div>
+        <div class="formula">
+          Menu sales inc VAT<br>
+          − item discounts<br>
+          − comps / offers<br>
+          − refunds<br>
+          = recognised gross revenue inc VAT<br><br>
+          recognised gross revenue ÷ 1.20<br>
+          = net revenue ex VAT<br><br>
+          POS tenders + tips<br>
+          − processor gross receipts<br>
+          = collection variance<br><br>
+          processor gross − fees − refunds<br>
+          = expected payout
+        </div>
+      </div>
+    </div>
+
+    <div class="grid two-col" style="margin-top:14px">
+      <div class="card panel">
+        <div class="panel-head"><div><h3 class="panel-title">Gross-to-net revenue bridge</h3><div class="panel-sub">Separates commercial leakage, tax and non-revenue cash</div></div></div>
+        <div class="waterfall">
+          <div class="wf-col"><div class="wf-bar" style="height:175px"><div class="wf-val">£31,104</div></div><div class="wf-lab">Menu sales inc VAT</div></div>
+          <div class="wf-col neg"><div class="wf-bar" style="height:44px"><div class="wf-val">−£654</div></div><div class="wf-lab">Discounts</div></div>
+          <div class="wf-col neg"><div class="wf-bar" style="height:26px"><div class="wf-val">−£218</div></div><div class="wf-lab">Comps</div></div>
+          <div class="wf-col neg"><div class="wf-bar" style="height:20px"><div class="wf-val">−£126</div></div><div class="wf-lab">Refunds</div></div>
+          <div class="wf-col neg"><div class="wf-bar" style="height:18px"><div class="wf-val">−£274</div></div><div class="wf-lab">Other corrections</div></div>
+          <div class="wf-col"><div class="wf-bar" style="height:165px"><div class="wf-val">£29,832</div></div><div class="wf-lab">Recognised gross</div></div>
+          <div class="wf-col neg"><div class="wf-bar" style="height:90px"><div class="wf-val">−£4,972</div></div><div class="wf-lab">VAT</div></div>
+          <div class="wf-col total"><div class="wf-bar" style="height:138px"><div class="wf-val">£24,860</div></div><div class="wf-lab">Net revenue ex VAT</div></div>
+        </div>
+      </div>
+      <div class="card panel">
+        <div class="panel-head"><div><h3 class="panel-title">Exception ledger</h3><div class="panel-sub">Every difference has an owner and state</div></div></div>
+        <table>
+          <thead><tr><th>Date</th><th>Source</th><th>Issue</th><th class="num">Value</th><th>Owner</th><th>Status</th></tr></thead>
+          <tbody>
+            <tr><td>18 Jul</td><td>Cash</td><td>Banking short</td><td class="num">£5.00</td><td>FOH</td><td><span class="tag warn">Disputed</span></td></tr>
+            <tr><td>17 Jul</td><td>Lightspeed</td><td>Void link check</td><td class="num">£4.90</td><td>Finance</td><td><span class="tag warn">Approved</span></td></tr>
+            <tr><td>15 Jul</td><td>Adyen</td><td>Payout timing</td><td class="num">£0.00</td><td>Finance</td><td><span class="tag good">Resolved</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section class="page" id="forecast">
+    <div class="grid kpi-grid">
+      <div class="card kpi"><div class="kpi-label">2026 actual YTD</div><div class="kpi-value">£681k</div><div class="kpi-sub">To 19 Jul · net revenue ex VAT</div></div>
+      <div class="card kpi"><div class="kpi-label">YTD vs 2025</div><div class="kpi-value down">−5.0%</div><div class="kpi-sub">£32k behind same months last year</div></div>
+      <div class="card kpi"><div class="kpi-label">Full-year forecast</div><div class="kpi-value" id="fyForecast">£1.323m</div><div class="kpi-sub"><span id="fyDelta" class="down">−5.0%</span> vs 2025</div></div>
+      <div class="card kpi"><div class="kpi-label">Future revenue after 19 Jul</div><div class="kpi-value" id="remainingForecast">£642k</div><div class="kpi-sub">Revenue available to future labour planning</div></div>
+      <div class="card kpi"><div class="kpi-label">Carry-forward factor</div><div class="kpi-value" id="carryFactor">95.0%</div><div class="kpi-sub">2025 month × current YTD index</div></div>
+      <div class="card kpi"><div class="kpi-label">Forecast vs 2024</div><div class="kpi-value up" id="vs2024">+0.8%</div><div class="kpi-sub">Despite being below 2025</div></div>
+    </div>
+
+    <div class="monthly-layout">
+      <div class="card panel">
+        <div class="panel-head"><div><h3 class="panel-title">Monthly revenue: 2024 vs 2025 vs 2026</h3><div class="panel-sub">Net revenue ex VAT · 2026 Jan–Jun actual; July blended actual + forecast; Aug–Dec forecast using the current YTD performance index</div></div><div class="legend"><span><i style="background:#56616e"></i>2024</span><span><i style="background:#67a7ff"></i>2025</span><span><i style="background:#e44b36"></i>2026 actual</span><span><i style="background:repeating-linear-gradient(135deg,#e44b36 0,#e44b36 4px,#702c25 4px,#702c25 8px)"></i>2026 forecast</span></div></div>
+        <div class="monthly-chart-shell">
+          <div class="y-axis"><span style="bottom:100%">£160k</span><span style="bottom:75%">£120k</span><span style="bottom:50%">£80k</span><span style="bottom:25%">£40k</span><span style="bottom:0">£0</span></div>
+          <div class="monthly-plot" id="monthlyPlot"><div class="month-group"><div class="month-bars"><div class="mbar y2024" style="--h:51.88%" data-tip="2024: £83k"></div><div class="mbar y2025" style="--h:55.00%" data-tip="2025: £88k"></div><div class="mbar y2026" style="--h:52.50%" data-tip="2026 actual: £84k"></div></div><div class="month-name">Jan</div></div>
+<div class="month-group"><div class="month-bars"><div class="mbar y2024" style="--h:53.75%" data-tip="2024: £86k"></div><div class="mbar y2025" style="--h:56.88%" data-tip="2025: £91k"></div><div class="mbar y2026" style="--h:53.75%" data-tip="2026 actual: £86k"></div></div><div class="month-name">Feb</div></div>
+<div class="month-group"><div class="month-bars"><div class="mbar y2024" style="--h:58.75%" data-tip="2024: £94k"></div><div class="mbar y2025" style="--h:61.88%" data-tip="2025: £99k"></div><div class="mbar y2026" style="--h:58.75%" data-tip="2026 actual: £94k"></div></div><div class="month-name">Mar</div></div>
+<div class="month-group"><div class="month-bars"><div class="mbar y2024" style="--h:63.12%" data-tip="2024: £101k"></div><div class="mbar y2025" style="--h:67.50%" data-tip="2025: £108k"></div><div class="mbar y2026" style="--h:64.38%" data-tip="2026 actual: £103k"></div></div><div class="month-name">Apr</div></div>
+<div class="month-group"><div class="month-bars"><div class="mbar y2024" style="--h:70.62%" data-tip="2024: £113k"></div><div class="mbar y2025" style="--h:75.62%" data-tip="2025: £121k"></div><div class="mbar y2026" style="--h:71.88%" data-tip="2026 actual: £115k"></div></div><div class="month-name">May</div></div>
+<div class="month-group"><div class="month-bars"><div class="mbar y2024" style="--h:78.75%" data-tip="2024: £126k"></div><div class="mbar y2025" style="--h:83.12%" data-tip="2025: £133k"></div><div class="mbar y2026" style="--h:78.75%" data-tip="2026 actual: £126k"></div></div><div class="month-name">Jun</div></div>
+<div class="month-group"><div class="month-bars"><div class="mbar y2024" style="--h:85.62%" data-tip="2024: £137k"></div><div class="mbar y2025" style="--h:90.62%" data-tip="2025: £145k"></div><div class="mbar y2026 forecast-bar" style="--h:86.25%" data-tip="2026 forecast: £138k" data-ly="145" data-month="Jul"></div></div><div class="month-name">Jul</div></div>
+<div class="month-group"><div class="month-bars"><div class="mbar y2024" style="--h:82.50%" data-tip="2024: £132k"></div><div class="mbar y2025" style="--h:87.50%" data-tip="2025: £140k"></div><div class="mbar y2026 forecast-bar" style="--h:83.12%" data-tip="2026 forecast: £133k" data-ly="140" data-month="Aug"></div></div><div class="month-name">Aug</div></div>
+<div class="month-group"><div class="month-bars"><div class="mbar y2024" style="--h:72.50%" data-tip="2024: £116k"></div><div class="mbar y2025" style="--h:76.88%" data-tip="2025: £123k"></div><div class="mbar y2026 forecast-bar" style="--h:73.12%" data-tip="2026 forecast: £117k" data-ly="123" data-month="Sep"></div></div><div class="month-name">Sep</div></div>
+<div class="month-group"><div class="month-bars"><div class="mbar y2024" style="--h:66.88%" data-tip="2024: £107k"></div><div class="mbar y2025" style="--h:70.62%" data-tip="2025: £113k"></div><div class="mbar y2026 forecast-bar" style="--h:66.88%" data-tip="2026 forecast: £107k" data-ly="113" data-month="Oct"></div></div><div class="month-name">Oct</div></div>
+<div class="month-group"><div class="month-bars"><div class="mbar y2024" style="--h:62.50%" data-tip="2024: £100k"></div><div class="mbar y2025" style="--h:66.25%" data-tip="2025: £106k"></div><div class="mbar y2026 forecast-bar" style="--h:63.12%" data-tip="2026 forecast: £101k" data-ly="106" data-month="Nov"></div></div><div class="month-name">Nov</div></div>
+<div class="month-group"><div class="month-bars"><div class="mbar y2024" style="--h:73.75%" data-tip="2024: £118k"></div><div class="mbar y2025" style="--h:78.75%" data-tip="2025: £126k"></div><div class="mbar y2026 forecast-bar" style="--h:75.00%" data-tip="2026 forecast: £120k" data-ly="126" data-month="Dec"></div></div><div class="month-name">Dec</div></div></div>
+        </div>
+        <div class="forecast-note"><strong>Design decision:</strong> clustered columns are better than stacked columns here. Stacking would make each year's monthly height harder to compare; the hatched 2026 columns clearly separate forecast from actual.</div>
+      </div>
+
+      <div class="card panel">
+        <div class="panel-head"><div><h3 class="panel-title">Forecast engine</h3><div class="panel-sub">Base rule plus a controlled management override</div></div></div>
+        <div class="forecast-controls">
+          <div class="forecast-rule"><div class="kpi-label">Automatic base rule</div><strong>2025 same month × <span id="ruleFactor">95.0%</span></strong><p>Through 19 July 2026, revenue is £681k versus £717k over the same trading period in 2025. The YTD index is therefore 95.0%, so each remaining 2025 month is initially reduced by 5.0%.</p></div>
+          <div class="slider-wrap"><div class="slider-head"><div><div class="kpi-label">Management scenario override</div><div class="panel-sub">Adjust only for known future changes</div></div><b id="sliderValue">−5.0%</b></div><input id="forecastSlider" type="range" min="-15" max="15" value="-5" step="0.5"><div class="mini-note">Default = observed YTD performance. Override examples: closure, price increase, tourism change, campaign or major event.</div></div>
+          <div class="forecast-months" id="forecastMonths">
+            <div class="forecast-month-row"><b>Jul</b><div class="track"><span class="seg" style="width:92%;background:#e44b36"></span></div><div class="num">£138k</div><div class="num down">−5.0%</div></div>
+            <div class="forecast-month-row"><b>Aug</b><div class="track"><span class="seg" style="width:89%;background:#e44b36"></span></div><div class="num">£133k</div><div class="num down">−5.0%</div></div>
+            <div class="forecast-month-row"><b>Sep</b><div class="track"><span class="seg" style="width:78%;background:#e44b36"></span></div><div class="num">£117k</div><div class="num down">−5.0%</div></div>
+            <div class="forecast-month-row"><b>Oct</b><div class="track"><span class="seg" style="width:71%;background:#e44b36"></span></div><div class="num">£107k</div><div class="num down">−5.0%</div></div>
+            <div class="forecast-month-row"><b>Nov</b><div class="track"><span class="seg" style="width:67%;background:#e44b36"></span></div><div class="num">£101k</div><div class="num down">−5.0%</div></div>
+            <div class="forecast-month-row"><b>Dec</b><div class="track"><span class="seg" style="width:80%;background:#e44b36"></span></div><div class="num">£120k</div><div class="num down">−5.0%</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card panel">
+      <div class="panel-head"><div><h3 class="panel-title">Monthly revenue planning table</h3><div class="panel-sub">This table becomes the revenue input to the future FOH and kitchen labour-budget section; no labour assumptions are included yet</div></div><span class="tag info">LABOUR FEED READY</span></div>
+      <div style="overflow:auto"><table id="monthlyForecastTable">
+        <thead><tr><th>Month</th><th class="num">2024 actual</th><th class="num">2025 actual</th><th class="num">2026 actual / forecast</th><th class="num">2026 vs 2025</th><th>Status</th></tr></thead>
+        <tbody>
+          <tr><td>January</td><td class="num">£83k</td><td class="num">£88k</td><td class="num">£84k</td><td class="num down">−4.5%</td><td><span class="tag good">Actual</span></td></tr>
+          <tr><td>February</td><td class="num">£86k</td><td class="num">£91k</td><td class="num">£86k</td><td class="num down">−5.5%</td><td><span class="tag good">Actual</span></td></tr>
+          <tr><td>March</td><td class="num">£94k</td><td class="num">£99k</td><td class="num">£94k</td><td class="num down">−5.1%</td><td><span class="tag good">Actual</span></td></tr>
+          <tr><td>April</td><td class="num">£101k</td><td class="num">£108k</td><td class="num">£103k</td><td class="num down">−4.6%</td><td><span class="tag good">Actual</span></td></tr>
+          <tr><td>May</td><td class="num">£113k</td><td class="num">£121k</td><td class="num">£115k</td><td class="num down">−5.0%</td><td><span class="tag good">Actual</span></td></tr>
+          <tr><td>June</td><td class="num">£126k</td><td class="num">£133k</td><td class="num">£126k</td><td class="num down">−5.3%</td><td><span class="tag good">Actual</span></td></tr>
+          <tr data-forecast-row data-ly="145"><td>July</td><td class="num">£137k</td><td class="num">£145k</td><td class="num forecast-value">£138k</td><td class="num forecast-delta down">−5.0%</td><td><span class="tag info">Actual + forecast</span></td></tr>
+          <tr data-forecast-row data-ly="140"><td>August</td><td class="num">£132k</td><td class="num">£140k</td><td class="num forecast-value">£133k</td><td class="num forecast-delta down">−5.0%</td><td><span class="tag warn">Forecast</span></td></tr>
+          <tr data-forecast-row data-ly="123"><td>September</td><td class="num">£116k</td><td class="num">£123k</td><td class="num forecast-value">£117k</td><td class="num forecast-delta down">−5.0%</td><td><span class="tag warn">Forecast</span></td></tr>
+          <tr data-forecast-row data-ly="113"><td>October</td><td class="num">£107k</td><td class="num">£113k</td><td class="num forecast-value">£107k</td><td class="num forecast-delta down">−5.0%</td><td><span class="tag warn">Forecast</span></td></tr>
+          <tr data-forecast-row data-ly="106"><td>November</td><td class="num">£100k</td><td class="num">£106k</td><td class="num forecast-value">£101k</td><td class="num forecast-delta down">−5.0%</td><td><span class="tag warn">Forecast</span></td></tr>
+          <tr data-forecast-row data-ly="126"><td>December</td><td class="num">£118k</td><td class="num">£126k</td><td class="num forecast-value">£120k</td><td class="num forecast-delta down">−5.0%</td><td><span class="tag warn">Forecast</span></td></tr>
+        </tbody>
+      </table></div>
+    </div>
+
+    <div class="card panel" style="margin-top:14px">
+      <div class="panel-head"><div><h3 class="panel-title">Forecast governance</h3><div class="panel-sub">Controls required before this feeds manager labour budgets</div></div></div>
+      <div class="source-map">
+        <div class="source"><h4>Comparable calendar</h4><p>Match equivalent weekdays, Easter timing, closures and trading days before calculating the YTD index.</p><div class="sync">AVOIDS FALSE YOY</div></div>
+        <div class="source"><h4>Revenue basis</h4><p>Use recognised net revenue ex VAT, excluding tips and processor payout timing.</p><div class="sync">FINANCE-CLEAN INPUT</div></div>
+        <div class="source"><h4>Known-event overrides</h4><p>Track explicit adjustments for menu price, opening hours, tourism, events, refurbishments and campaigns.</p><div class="sync">AUDITABLE SCENARIOS</div></div>
+        <div class="source"><h4>Future labour handoff</h4><p>Export monthly revenue into weekly and daypart demand before assigning separate FOH and kitchen labour budgets.</p><div class="sync">NOT BUILT IN THIS MOCK</div></div>
+      </div>
+    </div>
+  </section>
+
+  <div class="footer">Mock design · values are illustrative · weekly reporting cadence: Monday–Sunday · revenue displayed ex VAT unless stated</div>
+</div>
+<script>
+  document.querySelectorAll('.tab').forEach(btn=>{
+    btn.addEventListener('click',()=>{
+      document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
+      document.querySelectorAll('.page').forEach(x=>x.classList.remove('active'));
+      btn.classList.add('active');
+      document.getElementById(btn.dataset.tab).classList.add('active');
+      window.scrollTo({top:0,behavior:'smooth'});
+    });
+  });
+
+  const slider = document.getElementById('forecastSlider');
+  const lyFuture = [145,140,123,113,106,126];
+  const actualYtd = 681;
+  const actualCompletedMonths = 608;
+  const annual2025 = 1393;
+  const annual2024 = 1313;
+  const maxMonth = 160;
+  const fmtPct = n => `${n >= 0 ? '+' : '−'}${Math.abs(n).toFixed(1)}%`;
+  const fmtK = n => `£${Math.round(n)}k`;
+  const fmtM = n => `£${(n/1000).toFixed(3)}m`;
+
+  function updateForecast(){
+    const pct = Number(slider.value);
+    const factor = 1 + pct/100;
+    const future = lyFuture.map(v => v * factor);
+    const remaining = future.reduce((a,b)=>a+b,0);
+    const fullYear = actualCompletedMonths + remaining;
+    const futureAfterCutoff = fullYear - actualYtd;
+    const vs2025 = (fullYear/annual2025 - 1) * 100;
+    const vs2024 = (fullYear/annual2024 - 1) * 100;
+
+    document.getElementById('sliderValue').textContent = fmtPct(pct);
+    document.getElementById('ruleFactor').textContent = `${(factor*100).toFixed(1)}%`;
+    document.getElementById('carryFactor').textContent = `${(factor*100).toFixed(1)}%`;
+    document.getElementById('remainingForecast').textContent = fmtK(futureAfterCutoff);
+    document.getElementById('fyForecast').textContent = fmtM(fullYear);
+    const fyDelta = document.getElementById('fyDelta');
+    fyDelta.textContent = fmtPct(vs2025); fyDelta.className = vs2025 >= 0 ? 'up' : 'down';
+    const vs24 = document.getElementById('vs2024');
+    vs24.textContent = fmtPct(vs2024); vs24.className = vs2024 >= 0 ? 'kpi-value up' : 'kpi-value down';
+
+    document.querySelectorAll('.forecast-bar').forEach((bar,i)=>{
+      const value = future[i];
+      bar.style.setProperty('--h', `${value/maxMonth*100}%`);
+      bar.dataset.tip = `2026 forecast: £${Math.round(value)}k`;
+    });
+
+    const sideRows = document.querySelectorAll('#forecastMonths .forecast-month-row');
+    sideRows.forEach((row,i)=>{
+      const value = future[i];
+      row.querySelector('.seg').style.width = `${Math.min(100,value/150*100)}%`;
+      const nums = row.querySelectorAll('.num');
+      nums[0].textContent = fmtK(value);
+      nums[1].textContent = fmtPct(pct);
+      nums[1].className = `num ${pct >= 0 ? 'up' : 'down'}`;
+    });
+
+    document.querySelectorAll('[data-forecast-row]').forEach((row,i)=>{
+      const value = future[i];
+      row.querySelector('.forecast-value').textContent = fmtK(value);
+      const delta = row.querySelector('.forecast-delta');
+      delta.textContent = fmtPct(pct);
+      delta.className = `num forecast-delta ${pct >= 0 ? 'up' : 'down'}`;
+    });
+  }
+  if(slider){ slider.addEventListener('input',updateForecast); updateForecast(); }
+</script>
+</body>
+</html>

@@ -398,6 +398,141 @@ function kpiTile({ tone = '', lab, val, sub = '', points = null, color = '#22D3E
   return `<div class="tile ${tone}"><div class="lab">${lab}</div><div class="val">${val}</div>${sub ? `<div class="sub">${sub}</div>` : ''}${spark}</div>`;
 }
 
+// ============================================================================
+// RCC — the Revenue Command Centre design system (Stage 1A, operator mock
+// docs/revenue-command-centre/reference/Revenue mock tab.html, extracted
+// 2026-07-21 DIRECTLY from the mock's CSS — every token value is the mock's
+// own). SCOPE RULE: this canon applies to the REVENUE surface only (the
+// operator extends the ruling before any other page adopts it) — hence every
+// selector lives under the .rcc root class and the CSS is emitted only by
+// pages that call S.rcc.css(). ONE component set, no per-page forks.
+const RCC_TOKENS = {
+  bg: '#0b0d10', panel: '#14181d', panel2: '#191e24', line: '#2a3139',
+  text: '#f3f0e8', muted: '#9ea7b2',
+  accent: '#e44b36', accent2: '#ffb34d',
+  good: '#45c486', warn: '#f0b64f', bad: '#ef6b68',
+  blue: '#67a7ff', purple: '#ad8cff',
+  y2024: '#56616e', y2025: '#67a7ff', y2026: '#e44b36',
+  radius: '16px', shadow: '0 10px 30px rgba(0,0,0,.24)',
+  heat: ['#17242b', '#18333a', '#244c4f', '#6b4c2d', '#8a3d31', '#b44736'], // l1..l6
+};
+
+function rccCss() {
+  const T = RCC_TOKENS;
+  return `
+  .rcc{--rbg:${T.bg};--rpanel:${T.panel};--rpanel2:${T.panel2};--rline:${T.line};--rtext:${T.text};--rmuted:${T.muted};--raccent:${T.accent};--raccent2:${T.accent2};--rgood:${T.good};--rwarn:${T.warn};--rbad:${T.bad};--rblue:${T.blue};--rpurple:${T.purple};--rradius:${T.radius};--rshadow:${T.shadow};color:var(--rtext)}
+  .rcc .r-card{background:linear-gradient(180deg,var(--rpanel) 0%,#12161a 100%);border:1px solid var(--rline);border-radius:var(--rradius);box-shadow:var(--rshadow)}
+  .rcc .r-kpi{padding:16px;min-height:135px;position:relative;overflow:hidden}
+  .rcc .r-kpi-label{color:#a5aeb7;font-size:11px;text-transform:uppercase;letter-spacing:.085em;font-weight:800}
+  .rcc .r-kpi-value{font-size:26px;font-weight:850;letter-spacing:-.7px;margin-top:10px}
+  .rcc .r-kpi-sub{margin-top:7px;color:#abb3bc;font-size:12px}
+  .rcc .r-delta{font-weight:800;margin-right:5px}
+  .rcc .r-up{color:var(--rgood)} .rcc .r-down{color:var(--rbad)} .rcc .r-flat{color:var(--rwarn)}
+  .rcc .r-microbar{height:5px;background:#252c33;border-radius:999px;margin-top:13px;overflow:hidden}
+  .rcc .r-microbar span{display:block;height:100%;background:linear-gradient(90deg,var(--raccent),#ff8a5b);border-radius:999px}
+  .rcc .r-panel{padding:17px;min-width:0}
+  .rcc .r-panel-head{display:flex;justify-content:space-between;align-items:flex-start;gap:14px;margin-bottom:14px}
+  .rcc .r-panel-title{font-size:14px;font-weight:850;margin:0}
+  .rcc .r-panel-sub{color:var(--rmuted);font-size:11px;margin-top:4px}
+  .rcc .r-pill{border:1px solid var(--rline);background:#11151a;color:#c9d0d8;border-radius:999px;padding:8px 11px;font-size:12px;white-space:nowrap;display:inline-block}
+  .rcc .r-pill.good{border-color:#24583f;color:#9de3bc;background:#10251b}
+  .rcc .r-pill .r-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--rgood);margin-right:6px}
+  .rcc .r-controls{display:flex;align-items:center;gap:8px;flex-wrap:wrap;border:1px solid var(--rline);background:#11151a;border-radius:14px;padding:10px;margin-bottom:14px}
+  .rcc .r-control{padding:8px 11px;border:1px solid #303740;border-radius:10px;background:#171c22;color:#e5e9ee;font-size:12px;min-width:132px}
+  .rcc .r-control strong{display:block;color:#8d96a0;font-size:10px;text-transform:uppercase;letter-spacing:.08em;margin-bottom:2px}
+  .rcc .r-tag{display:inline-block;padding:5px 7px;border-radius:7px;font-size:10px;font-weight:800;background:#20272e;color:#c5ccd4;border:1px solid #303941}
+  .rcc .r-tag.good{color:#8ee1b4;background:#10251b;border-color:#24583f}
+  .rcc .r-tag.warn{color:#f3c76f;background:#2b2111;border-color:#5c4822}
+  .rcc .r-tag.bad{color:#f4a09f;background:#2a1718;border-color:#5d2e30}
+  .rcc .r-tag.info{color:#c4b7ff;background:#201a35;border-color:#4b3d78}
+  .rcc .r-alert{display:grid;grid-template-columns:9px 1fr auto;gap:10px;align-items:start;padding:11px;border:1px solid #2b3239;border-radius:12px;background:#12161a}
+  .rcc .r-alert .r-bar{width:5px;height:100%;min-height:40px;border-radius:99px;background:var(--rwarn)}
+  .rcc .r-alert.good .r-bar{background:var(--rgood)} .rcc .r-alert.bad .r-bar{background:var(--rbad)}
+  .rcc .r-alert h4{margin:0 0 3px;font-size:12px}
+  .rcc .r-alert p{margin:0;color:#98a2ac;font-size:11px;line-height:1.45}
+  .rcc .r-impact{font-size:11px;font-weight:800;white-space:nowrap;color:#f2c66f}
+  .rcc .r-barrow{display:grid;grid-template-columns:116px 1fr 70px;gap:10px;align-items:center}
+  .rcc .r-barrow .r-label{color:#c9d0d6;font-size:12px}
+  .rcc .r-track{height:12px;background:#252c33;border-radius:999px;overflow:hidden;display:flex}
+  .rcc .r-seg{height:100%}
+  .rcc .r-value{text-align:right;font-weight:750;font-size:12px}
+  .rcc table{width:100%;border-collapse:collapse}
+  .rcc th{text-align:left;color:#89939e;font-size:10px;text-transform:uppercase;letter-spacing:.07em;padding:10px;border-bottom:1px solid var(--rline);white-space:nowrap}
+  .rcc td{padding:11px 10px;border-bottom:1px solid #222930;color:#d5dbe1;font-size:12px;white-space:nowrap}
+  .rcc tr:last-child td{border-bottom:0}
+  .rcc .r-num{text-align:right}
+  .rcc .r-cell{height:28px;border-radius:6px;background:#1c2329;border:1px solid #273039;position:relative}
+  ${T.heat.map((c, i) => `.rcc .r-l${i + 1}{background:${c}}`).join(' ')}
+  .rcc .r-cell:hover:after{content:attr(data-tip);position:absolute;z-index:5;bottom:34px;left:50%;transform:translateX(-50%);background:#080a0c;border:1px solid #39434d;border-radius:8px;color:#fff;padding:6px 8px;font-size:10px;white-space:nowrap;box-shadow:0 10px 24px rgba(0,0,0,.4)}
+  .rcc .r-formula{background:#0d1115;border:1px solid #2d363f;border-radius:12px;padding:12px;color:#cbd2d9;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;line-height:1.7}
+  .rcc .r-callout{background:#191f25;border:1px solid #313943;border-radius:12px;padding:11px}
+  .rcc .r-callout strong{font-size:17px}
+  .rcc .r-note{border-left:3px solid var(--raccent2);padding:9px 11px;background:#191711;color:#b8b0a4;font-size:11px;line-height:1.5;border-radius:0 9px 9px 0}
+  .rcc .r-mbar{border-radius:4px 4px 1px 1px;position:relative;min-height:3px}
+  .rcc .r-mbar.y2024{background:${T.y2024}} .rcc .r-mbar.y2025{background:${T.y2025}} .rcc .r-mbar.y2026{background:${T.y2026}}
+  .rcc .r-mbar.forecast{background:repeating-linear-gradient(135deg,${T.y2026} 0,${T.y2026} 4px,#702c25 4px,#702c25 8px);border:1px dashed #ff9f8f}
+  .rcc .r-driver{border:1px solid #2c343c;border-radius:12px;background:#12161a;padding:12px}
+  .rcc .r-driver small{display:block;color:#8d97a2;text-transform:uppercase;letter-spacing:.07em;font-size:9px;font-weight:800}
+  .rcc .r-driver strong{display:block;margin-top:7px;font-size:18px}
+  .rcc .r-driver p{margin:4px 0 0;color:#8e98a2;font-size:10px}
+  .rcc .r-empty{border:1px dashed #3a434d;border-radius:12px;padding:16px;color:#9aa4ae;font-size:12px;line-height:1.55;background:#101419}
+  .rcc .r-empty b{color:#c9d0d8}
+  .rcc .r-empty .r-unlock{margin-top:8px;color:#f2c66f;font-size:11px;font-weight:700}`;
+}
+
+// The RCC component set — mirrors the mock's grammar 1:1. Callers pass PRE-ESCAPED or trusted
+// strings for labels (matching the existing tile idiom); free-text goes through escapeHtml here.
+const rcc = {
+  tokens: RCC_TOKENS,
+  css: rccCss,
+  /** KPI tile: label / big value / delta line / micro-bar. delta: {dir:'up'|'down'|'flat', text}. */
+  kpi({ label, value, delta, sub, barPct }) {
+    const d = delta ? `<span class="r-delta r-${delta.dir || 'flat'}">${escapeHtml(delta.text)}</span>` : '';
+    const bar = barPct != null ? `<div class="r-microbar"><span style="width:${Math.max(0, Math.min(100, barPct))}%"></span></div>` : '';
+    return `<div class="r-card r-kpi"><div class="r-kpi-label">${escapeHtml(label)}</div><div class="r-kpi-value">${escapeHtml(value)}</div><div class="r-kpi-sub">${d}${sub ? escapeHtml(sub) : ''}</div>${bar}</div>`;
+  },
+  /** Panel shell: title / sub / optional right-side head content / body html. */
+  panel({ title, sub, headRight, body }) {
+    return `<div class="r-card r-panel"><div class="r-panel-head"><div><h3 class="r-panel-title">${escapeHtml(title)}</h3>${sub ? `<div class="r-panel-sub">${escapeHtml(sub)}</div>` : ''}</div>${headRight || ''}</div>${body || ''}</div>`;
+  },
+  /** Status chip: tone ∈ good|warn|bad|info|(neutral). */
+  tag(text, tone) { return `<span class="r-tag${tone ? ' ' + tone : ''}">${escapeHtml(text)}</span>`; },
+  /** Header status pill (sources loaded / completeness / reconciled). */
+  pill(text, good) { return `<span class="r-pill${good ? ' good' : ''}">${good ? '<span class="r-dot"></span>' : ''}${escapeHtml(text)}</span>`; },
+  /** Filter-pill control (period / comparison / location / view). */
+  control(label, value) { return `<div class="r-control"><strong>${escapeHtml(label)}</strong>${escapeHtml(value)}</div>`; },
+  /** Decision-feed card: finding + £ value + one-line action. tone ∈ good|bad|(warn default). */
+  alert({ title, text, impact, tone }) {
+    return `<div class="r-alert${tone ? ' ' + tone : ''}"><div class="r-bar"></div><div><h4>${escapeHtml(title)}</h4><p>${escapeHtml(text)}</p></div><div class="r-impact">${impact ? escapeHtml(impact) : ''}</div></div>`;
+  },
+  /** Horizontal bar row: label / segments [{pct,color}] / right value. */
+  barrow({ label, segs, value }) {
+    const body = (segs || []).map((g) => `<div class="r-seg" style="width:${Math.max(0, Math.min(100, g.pct))}%;background:${g.color}"></div>`).join('');
+    return `<div class="r-barrow"><div class="r-label">${escapeHtml(label)}</div><div class="r-track">${body}</div><div class="r-value">${escapeHtml(value)}</div></div>`;
+  },
+  /** Heatmap cell: level 1..6 (the mock's l1..l6 ramp) + tooltip. level null = no-data cell. */
+  heatCell(level, tip) {
+    const l = level != null ? ` r-l${Math.max(1, Math.min(6, level))}` : '';
+    return `<div class="r-cell${l}"${tip ? ` data-tip="${escapeHtml(tip)}"` : ''}></div>`;
+  },
+  /** Clustered monthly bar (2024 grey / 2025 blue / 2026 orange / forecast hatched). hPct 0-100. */
+  mbar(year, hPct, tip, isForecast) {
+    const cls = isForecast ? 'forecast' : `y${year}`;
+    return `<div class="r-mbar ${cls}" style="height:${Math.max(1, Math.min(100, hPct))}%"${tip ? ` data-tip="${escapeHtml(tip)}"` : ''}></div>`;
+  },
+  /** Control-formulas card body (verbatim canonical rulings, monospace). */
+  formula(lines) { return `<div class="r-formula">${(lines || []).map((l) => escapeHtml(l)).join('<br>')}</div>`; },
+  /** Annotated design-decision / basis callout. */
+  callout(html) { return `<div class="r-callout">${html}</div>`; },
+  note(text) { return `<div class="r-note">${escapeHtml(text)}</div>`; },
+  driver({ label, value, sub }) { return `<div class="r-driver"><small>${escapeHtml(label)}</small><strong>${escapeHtml(value)}</strong><p>${sub ? escapeHtml(sub) : ''}</p></div>`; },
+  /** DESIGNED EMPTY-STATE (honest-gaps rule): the mock's own layout, honest content — names the
+   *  blocker + the unlock action. NEVER renders a mock number. */
+  emptyState({ title, blocker, unlock }) {
+    return `<div class="r-empty"><b>${escapeHtml(title)}</b> — not wired.<br>${escapeHtml(blocker)}${unlock ? `<div class="r-unlock">Unlock: ${escapeHtml(unlock)}</div>` : ''}</div>`;
+  },
+};
+
 module.exports = {
   escapeHtml,
   freshness,
@@ -407,6 +542,7 @@ module.exports = {
   fmtInt,
   kpiTile,
   sparkline,
+  rcc,
   renderShell,
   renderSidebar,
   css,
