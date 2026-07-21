@@ -70,6 +70,8 @@ module.exports = {
       .ch-form{display:flex;gap:8px;align-items:flex-end;position:sticky;bottom:0;background:var(--bg,#0b1420);padding:8px 0}
       .ch-form textarea{flex:1;min-height:44px;max-height:150px;resize:vertical;background:var(--panel-2);border:1px solid var(--border);border-radius:9px;color:var(--text);font-family:var(--font-body);font-size:13px;padding:9px 11px}
       .ch-details summary{cursor:pointer}
+      .ch-meta{font-family:var(--font-mono,monospace);font-size:10.5px;color:var(--muted,#8b98a5);margin-top:5px}
+      .ch-workings summary{cursor:pointer;font-family:var(--font-mono,monospace);font-size:10.5px;color:var(--muted,#8b98a5);margin-top:5px}
     </style>`);
 
     if (!m.wired) {
@@ -84,25 +86,56 @@ module.exports = {
     if (m.cpage > 0) pager.push(`<a class="btn" href="/claw/chat?cpage=${m.cpage - 1}">newer ↓</a>`);
     parts.push(`<div class="sec-label">Thread <span class="mono">(${esc(String(m.total))} messages · showing ${esc(String(Math.max(0, shownFrom) + 1))}–${esc(String(m.total - m.cpage * PAGE_SIZE))})</span><span class="rule"></span>${pager.join(' ')}</div>`);
 
-    // ---- the thread ----
+    // ---- the thread (verbosity ruling 2026-07-21: ANSWERS ONLY, workings collapsed) ----
+    // Router acks FOLD once answered: an ack row whose job has an agent answer IN THIS WINDOW is
+    // not rendered standalone — its ask-time folds into the answer card's meta line. (An ack whose
+    // answer hasn't landed — or sits outside the page window — still renders, with its live chip.)
+    const answerByJob = new Map();
+    const ackByJob = new Map();
+    for (const r of m.messages) {
+      if (r.direction !== 'out' || !r.job_id) continue;
+      if (r.source === 'router') ackByJob.set(r.job_id, r);
+      else answerByJob.set(r.job_id, r);
+    }
+    // LENGTH GUARD: >10 lines → first paragraph + "show more"; at or under → untouched, NO chrome.
+    const LENGTH_CAP = 10;
+    const guarded = (text) => {
+      const lines = String(text).split('\n');
+      if (lines.length <= LENGTH_CAP) return esc(text);
+      // first paragraph, but a single wall-of-lines paragraph (Rex's list style) caps at 4 lines —
+      // "beyond the first paragraph" must never mean "everything".
+      let firstPara = String(text).split(/\n\s*\n/)[0];
+      const pLines = firstPara.split('\n');
+      if (pLines.length > 4) firstPara = pLines.slice(0, 4).join('\n');
+      const rest = lines.length - firstPara.split('\n').length;
+      return `${esc(firstPara)}<details class="ch-workings"><summary>show more (${rest} more line${rest === 1 ? '' : 's'}) ▸</summary>${esc(text)}</details>`;
+    };
     const bubble = (r) => {
       if (r.direction === 'in') {
         return `<div class="ch-msg ch-in" data-mid="${esc(String(r.id))}">${esc(r.text)}</div>`;
       }
+      // folded ack: the answer card carries its timing
+      if (r.source === 'router' && r.job_id && answerByJob.has(r.job_id)) return '';
       const label = SOURCE_LABEL[r.source] || r.source || 'box';
       // async chip: a linked job still in flight → amber status chip the poller updates live
       const terminal = r.job_status == null || ['done', 'failed', 'escalated'].includes(String(r.job_status));
       const chip = r.job_id && !terminal
         ? ` <span class="ch-chip" data-jobchip="${esc(r.job_id)}">${esc(String(r.job_status))}…</span>`
         : '';
-      // boxquery answers carry fenced SQL — show it as a block (the acceptance: SQL shown)
+      const ack = r.job_id ? ackByJob.get(r.job_id) : null;
+      const asked = ack ? `asked <time data-ms="${esc(String(ack.created_at))}"></time> · ` : '';
       let body;
       const fence = /```\n?([\s\S]*?)```/.exec(String(r.text));
       if (r.source === 'boxquery' && fence) {
+        // ANSWER-FIRST: prose visible; meta muted; the SQL behind "show workings" — nothing deleted,
+        // the full text stays in the row and the expander (the Reports basis-caption pattern).
         const [before, after] = [String(r.text).slice(0, fence.index), String(r.text).slice(fence.index + fence[0].length)];
-        body = `${esc(before.trim())}<div class="ch-sql">${esc(fence[1].trim())}</div>${after.trim() ? esc(after.trim()) : ''}`;
+        const meta = after.trim();
+        body = `${guarded(before.trim())}`
+          + `<div class="ch-meta">${asked}answered <time data-ms="${esc(String(r.created_at))}"></time>${meta ? ` · ${esc(meta.replace(/\n/g, ' · '))}` : ''}</div>`
+          + `<details class="ch-workings"><summary>show workings ▸</summary><div class="ch-sql">${esc(fence[1].trim())}</div></details>`;
       } else {
-        body = esc(r.text);
+        body = `${guarded(r.text)}${ack ? `<div class="ch-meta">${asked}answered <time data-ms="${esc(String(r.created_at))}"></time></div>` : ''}`;
       }
       const inner = `<div class="ch-src">${esc(label)}${chip}<time data-ms="${esc(String(r.created_at))}"></time></div>${body}`;
       if (COLLAPSED_SOURCES.has(String(r.source))) {
@@ -115,7 +148,7 @@ module.exports = {
     if (m.messages.length === 0) {
       parts.push(`<div class="banner muted">No messages yet. Ask anything — <span class="mono">data:</span> for a SQL answer, <span class="mono">research:</span> for a cited briefing, plain text goes to the Lead as a build brief, or address Rex by name for org state.</div>`);
     } else {
-      parts.push(m.messages.map(bubble).join('\n'));
+      parts.push(m.messages.map(bubble).filter(Boolean).join('\n'));
     }
     parts.push(`</div>`);
 
