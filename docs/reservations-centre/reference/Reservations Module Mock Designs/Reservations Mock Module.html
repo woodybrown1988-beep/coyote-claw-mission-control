@@ -1,0 +1,735 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Coyote Burger — Reservations & Guest Command Centre</title>
+<style>
+:root{
+  --bg:#0b0d10;--panel:#14181d;--panel2:#191e24;--line:#2a3139;--text:#f4f1ea;
+  --muted:#99a3ad;--accent:#e44b36;--accent2:#ffb34d;--good:#45c486;--warn:#f0b64f;
+  --bad:#ef6b68;--blue:#67a7ff;--purple:#ad8cff;--cyan:#5bd1d7;--radius:16px;
+  --shadow:0 10px 30px rgba(0,0,0,.24)
+}
+*{box-sizing:border-box}
+body{margin:0;background:linear-gradient(180deg,#090b0d,#0d1014);color:var(--text);
+  font-family:Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;font-size:14px}
+button,input,select{font:inherit}
+.app{max-width:1580px;margin:auto;padding:22px}
+.topbar{display:flex;justify-content:space-between;align-items:center;gap:18px;margin-bottom:14px}
+.brand{display:flex;align-items:center;gap:14px}
+.mark{width:46px;height:46px;border:1px solid #4b2a25;border-radius:12px;
+  background:linear-gradient(145deg,#341813,#111418);display:grid;place-items:center;
+  color:#ffddd7;font-weight:900;box-shadow:var(--shadow)}
+.brand h1{margin:0;font-size:22px;letter-spacing:-.5px}
+.brand p{margin:3px 0 0;color:var(--muted);font-size:12px}
+.status{display:flex;align-items:center;gap:9px;flex-wrap:wrap;justify-content:flex-end}
+.pill{border:1px solid var(--line);background:#11151a;color:#c9d0d8;border-radius:999px;padding:8px 11px;font-size:12px;white-space:nowrap}
+.pill.good{border-color:#24583f;color:#9de3bc;background:#10251b}
+.dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--good);margin-right:6px}
+.controls{display:flex;align-items:center;gap:8px;flex-wrap:wrap;border:1px solid var(--line);
+  background:#11151a;border-radius:14px;padding:10px;margin-bottom:14px}
+.control{padding:8px 11px;border:1px solid #303740;border-radius:10px;background:#171c22;color:#e5e9ee;font-size:12px;min-width:150px}
+.control strong{display:block;color:#8d96a0;font-size:10px;text-transform:uppercase;letter-spacing:.08em;margin-bottom:2px}
+.spacer{flex:1}
+.badge{font-size:11px;padding:6px 9px;border-radius:999px;background:#251713;color:#ffb8aa;border:1px solid #5d2c24}
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin:0 0 14px;overflow:auto}
+.tab{background:transparent;border:0;color:#9ba4ae;padding:11px 14px;cursor:pointer;font-weight:800;border-bottom:2px solid transparent;white-space:nowrap}
+.tab.active{color:#fff;border-bottom-color:var(--accent)}
+.page{display:none}.page.active{display:block}
+.grid{display:grid;gap:14px}.kpi-grid{grid-template-columns:repeat(6,minmax(0,1fr));margin-bottom:14px}
+.card{background:linear-gradient(180deg,var(--panel),#12161a);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow)}
+.panel{padding:17px;min-width:0}.kpi{padding:16px;min-height:132px;position:relative;overflow:hidden}
+.kpi:after{content:"";position:absolute;right:-26px;bottom:-34px;width:88px;height:88px;border-radius:50%;background:radial-gradient(circle,rgba(228,75,54,.12),transparent 70%)}
+.kpi-label{color:#a5aeb7;font-size:10px;text-transform:uppercase;letter-spacing:.085em;font-weight:850}
+.kpi-value{font-size:26px;font-weight:900;letter-spacing:-.7px;margin-top:10px}
+.kpi-sub{margin-top:7px;color:#abb3bc;font-size:11px;line-height:1.4}
+.delta{font-weight:900;margin-right:5px}.up{color:var(--good)}.down{color:var(--bad)}.flat{color:var(--warn)}
+.microbar{height:5px;background:#252c33;border-radius:999px;margin-top:13px;overflow:hidden}
+.microbar span{display:block;height:100%;background:linear-gradient(90deg,var(--accent),#ff8a5b);border-radius:999px}
+.two-col{grid-template-columns:minmax(0,2fr) minmax(330px,1fr);margin-bottom:14px}
+.equal-two{grid-template-columns:1fr 1fr;margin-bottom:14px}
+.three-col{grid-template-columns:1.15fr 1fr .85fr;margin-bottom:14px}
+.panel-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:14px}
+.panel-title{font-size:14px;font-weight:900;margin:0}.panel-sub{color:var(--muted);font-size:11px;margin-top:4px;line-height:1.45}
+.legend{display:flex;gap:12px;flex-wrap:wrap;color:#aeb6bf;font-size:10px}.legend i{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px}
+.alert-list{display:grid;gap:9px}.alert{display:grid;grid-template-columns:8px 1fr auto;gap:10px;align-items:start;padding:11px;border:1px solid #2b3239;border-radius:12px;background:#12161a}
+.alert .bar{width:5px;height:100%;min-height:42px;border-radius:99px;background:var(--warn)}.alert.good .bar{background:var(--good)}.alert.bad .bar{background:var(--bad)}
+.alert h4{margin:0 0 3px;font-size:12px}.alert p{margin:0;color:#98a2ac;font-size:10px;line-height:1.45}.impact{font-size:10px;font-weight:900;white-space:nowrap;color:#f2c66f}
+.tag{display:inline-block;padding:5px 7px;border-radius:7px;font-size:9px;font-weight:900;background:#20272e;color:#c5ccd4;border:1px solid #303941}
+.tag.good{color:#8ee1b4;background:#10251b;border-color:#24583f}.tag.warn{color:#f3c76f;background:#2b2111;border-color:#5c4822}
+.tag.bad{color:#f4a09f;background:#2a1718;border-color:#5d2e30}.tag.info{color:#c4b7ff;background:#201a35;border-color:#4b3d78}
+table{width:100%;border-collapse:collapse}th{text-align:left;color:#89939e;font-size:9px;text-transform:uppercase;letter-spacing:.07em;padding:10px;border-bottom:1px solid var(--line);white-space:nowrap}
+td{padding:11px 10px;border-bottom:1px solid #222930;color:#d5dbe1;font-size:11px;white-space:nowrap}tr:last-child td{border-bottom:0}
+.num{text-align:right}.muted{color:var(--muted)}.scroll{overflow:auto}
+.chart-wrap{height:270px;position:relative}.chart-wrap svg{width:100%;height:100%;display:block;overflow:visible}
+.gridline{stroke:#2a3138;stroke-width:1}.axistext{fill:#7f8994;font-size:10px}.line-current{fill:none;stroke:var(--accent);stroke-width:3}.line-last{fill:none;stroke:#708090;stroke-width:2}
+.line-target{fill:none;stroke:var(--accent2);stroke-width:2;stroke-dasharray:6 6}.point{fill:var(--accent);stroke:#171b20;stroke-width:3}
+.bars{display:grid;gap:11px}.barrow{display:grid;grid-template-columns:125px 1fr 62px;gap:10px;align-items:center}
+.barrow .label{font-size:11px;color:#c9d0d6}.track{height:11px;background:#252c33;border-radius:999px;overflow:hidden;display:flex}.seg{height:100%}.value{text-align:right;font-weight:850;font-size:11px}
+.stackbar{height:13px;background:#242b32;border-radius:999px;overflow:hidden;display:flex}.stackbar span{height:100%}
+.donut-wrap{display:flex;align-items:center;gap:20px}.donut{width:150px;height:150px;border-radius:50%;position:relative;flex:0 0 auto}
+.donut:after{content:"";position:absolute;inset:27px;border-radius:50%;background:#14181d;border:1px solid #2a3139}
+.donut-center{position:absolute;inset:0;display:grid;place-items:center;text-align:center;z-index:2;font-weight:900;font-size:19px}
+.donut-center small{display:block;color:#8f99a4;font-size:9px;font-weight:600;margin-top:3px}
+.donut-legend{display:grid;gap:9px;flex:1}.drow{display:grid;grid-template-columns:10px 1fr auto;gap:8px;align-items:center;color:#c7ced5;font-size:11px}
+.drow span:first-child{width:8px;height:8px;border-radius:3px}.drow b{color:#fff}
+.heatmap{display:grid;grid-template-columns:68px repeat(10,1fr);gap:5px;align-items:center}.hlabel{color:#818b95;font-size:9px;text-align:center}.day{color:#b3bbc4;font-size:10px;font-weight:800}
+.cell{height:31px;border-radius:6px;background:#1c2329;border:1px solid #273039;position:relative}.l1{background:#17242b}.l2{background:#18333a}.l3{background:#244c4f}.l4{background:#6b4c2d}.l5{background:#8a3d31}.l6{background:#b44736}
+.cell:hover:after{content:attr(data-tip);position:absolute;z-index:8;bottom:37px;left:50%;transform:translateX(-50%);background:#080a0c;border:1px solid #39434d;border-radius:8px;color:#fff;padding:6px 8px;font-size:9px;white-space:nowrap;box-shadow:0 10px 24px rgba(0,0,0,.4)}
+.driver-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.driver{border:1px solid #2c343c;border-radius:12px;background:#12161a;padding:12px}
+.driver small{display:block;color:#8d97a2;text-transform:uppercase;letter-spacing:.07em;font-size:8px;font-weight:900}.driver strong{display:block;margin-top:7px;font-size:18px}.driver p{margin:4px 0 0;color:#8e98a2;font-size:9px;line-height:1.4}
+.formula{background:#0d1115;border:1px solid #2d363f;border-radius:12px;padding:12px;color:#cbd2d9;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:10px;line-height:1.7}
+.info-box{border-left:3px solid var(--blue);padding:11px 12px;background:#101821;color:#aab8c6;font-size:10px;line-height:1.55;border-radius:0 10px 10px 0}
+.warn-box{border-left-color:var(--warn);background:#1b1810}.bad-box{border-left-color:var(--bad);background:#1d1213}
+.source-map{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.source{border:1px solid #2d353d;background:#12161a;border-radius:12px;padding:12px}
+.source h4{margin:0 0 6px;font-size:11px}.source p{margin:0;color:#909aa4;font-size:9px;line-height:1.45}.source .sync{margin-top:9px;color:#7fe0ae;font-size:9px;font-weight:900}
+.forecast-grid{display:grid;grid-template-columns:1.4fr .6fr;gap:14px}.scenario{display:grid;gap:9px}.scenario-row{display:grid;grid-template-columns:1fr auto;gap:12px;align-items:center;border:1px solid #2c343c;border-radius:12px;padding:12px;background:#12161a}
+.scenario-row h4{margin:0;font-size:11px}.scenario-row p{margin:3px 0 0;color:#8d97a1;font-size:9px}.scenario-row strong{font-size:17px}
+.slider-wrap{border:1px solid #2e363f;background:#11161a;border-radius:12px;padding:13px}.slider-head{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:8px}
+.slider-head b{font-size:18px}.slider-wrap input{width:100%;accent-color:var(--accent)}
+.week-bars{display:grid;grid-template-columns:repeat(8,1fr);gap:10px;height:255px;align-items:end;padding:22px 4px 26px;border-bottom:1px solid #36404a;background:repeating-linear-gradient(to top,transparent 0,transparent calc(25% - 1px),#293039 calc(25% - 1px),#293039 25%)}
+.week-col{height:100%;display:flex;align-items:end;justify-content:center;position:relative;gap:4px}.wbar{width:22px;border-radius:6px 6px 2px 2px;position:relative}.wbar:hover:after{content:attr(data-tip);position:absolute;bottom:calc(100% + 7px);left:50%;transform:translateX(-50%);background:#080a0c;border:1px solid #39434d;border-radius:8px;padding:6px 8px;font-size:9px;white-space:nowrap;z-index:9}
+.week-label{position:absolute;top:calc(100% + 8px);font-size:9px;color:#87919b;white-space:nowrap}
+.pace{height:250px;position:relative;border-left:1px solid #38424c;border-bottom:1px solid #38424c;background:repeating-linear-gradient(to top,transparent 0,transparent calc(25% - 1px),#283039 calc(25% - 1px),#283039 25%)}
+.pace svg{width:100%;height:100%}
+.funnel{display:grid;gap:8px;align-content:start}.funnel-row{height:41px;margin:auto;border-radius:8px;display:flex;align-items:center;justify-content:space-between;padding:0 13px;font-size:10px;font-weight:850}
+.funnel-row span:last-child{font-size:12px}
+.capacity-leak{display:grid;gap:9px}.leak-row{display:grid;grid-template-columns:1fr auto;gap:12px;border:1px solid #2d353d;background:#12161a;border-radius:12px;padding:11px}.leak-row h4{margin:0 0 3px;font-size:11px}.leak-row p{margin:0;color:#8e98a2;font-size:9px;line-height:1.4}.leak-row strong{font-size:16px}
+.modebar{display:flex;gap:6px;flex-wrap:wrap}.modebtn{border:1px solid #303941;background:#171c22;color:#9ea8b2;border-radius:9px;padding:8px 10px;font-size:10px;font-weight:850;cursor:pointer}
+.modebtn.active{background:#2b1714;border-color:#6e3028;color:#ffcabf}
+.customer-tools{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.search{background:#101419;border:1px solid #303840;color:#e8edf1;border-radius:9px;padding:8px 10px;font-size:10px;min-width:220px}
+.customer-table{display:none}.customer-table.active{display:block}.risk-meter{width:70px;height:6px;border-radius:99px;background:#252c33;overflow:hidden;display:inline-block;vertical-align:middle;margin-right:6px}.risk-meter span{display:block;height:100%;border-radius:99px}
+.avatar{width:29px;height:29px;border-radius:50%;display:inline-grid;place-items:center;background:#20272e;border:1px solid #38414b;color:#dce2e8;font-size:9px;font-weight:900;margin-right:7px}
+.customer-name{display:flex;align-items:center}.customer-row.hidden{display:none}
+.quad-matrix{height:300px;border-left:1px solid #39424b;border-bottom:1px solid #39424b;position:relative;background:linear-gradient(90deg,transparent 49.8%,#303842 50%,transparent 50.2%),linear-gradient(transparent 49.8%,#303842 50%,transparent 50.2%)}
+.q-label{position:absolute;color:#7e8994;font-size:9px;font-weight:850}.q-tl{left:9px;top:8px}.q-tr{right:9px;top:8px}.q-bl{left:9px;bottom:8px}.q-br{right:9px;bottom:8px}
+.bubble{position:absolute;border-radius:50%;display:grid;place-items:center;text-align:center;border:2px solid rgba(255,255,255,.2);color:#fff;font-size:8px;font-weight:900;box-shadow:0 7px 18px rgba(0,0,0,.35)}
+.rating-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:10px}.rating{border:1px solid #2d353d;border-radius:12px;background:#12161a;padding:12px}.rating small{color:#8e98a2;text-transform:uppercase;font-size:8px;font-weight:900;letter-spacing:.07em}.rating strong{display:block;font-size:21px;margin-top:6px}.stars{color:#f5c15a;font-size:11px;letter-spacing:1px;margin-top:3px}
+.sentiment{display:grid;gap:10px}.sent-row{display:grid;grid-template-columns:115px 1fr 50px;gap:9px;align-items:center;font-size:10px}.sent-track{height:10px;background:#252c33;border-radius:999px;overflow:hidden}.sent-track span{display:block;height:100%;border-radius:999px}
+.recovery{display:grid;gap:9px}.recovery-row{display:grid;grid-template-columns:1.1fr .8fr .7fr .8fr;gap:9px;align-items:center;padding:10px;border:1px solid #2d353d;background:#12161a;border-radius:11px;font-size:10px}
+.review-line{height:240px;position:relative;border-left:1px solid #38424c;border-bottom:1px solid #38424c;background:repeating-linear-gradient(to top,transparent 0,transparent calc(25% - 1px),#283039 calc(25% - 1px),#283039 25%)}
+.review-line svg{width:100%;height:100%}.footer{margin-top:15px;color:#717b85;font-size:9px;text-align:right}.mobile-warning{display:none}
+@media(max-width:1200px){.kpi-grid{grid-template-columns:repeat(3,1fr)}.three-col{grid-template-columns:1fr}.source-map{grid-template-columns:repeat(2,1fr)}.driver-grid{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:860px){.app{padding:12px}.status{display:none}.kpi-grid{grid-template-columns:repeat(2,1fr)}.two-col,.equal-two,.forecast-grid{grid-template-columns:1fr}.controls{align-items:stretch}.control{flex:1}.spacer{display:none}.heatmap{grid-template-columns:55px repeat(10,34px);overflow:auto}.source-map{grid-template-columns:1fr}.rating-grid{grid-template-columns:repeat(2,1fr)}.donut-wrap{flex-direction:column}.mobile-warning{display:block;color:#d5aa63;font-size:10px;margin:0 0 10px}}
+@media(max-width:540px){.kpi-grid{grid-template-columns:1fr}.brand h1{font-size:18px}.driver-grid{grid-template-columns:1fr}.rating-grid{grid-template-columns:1fr}.recovery-row{grid-template-columns:1fr 1fr}.barrow{grid-template-columns:95px 1fr 45px}.customer-tools{align-items:stretch}.search{width:100%}}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="topbar">
+    <div class="brand">
+      <div class="mark">CB</div>
+      <div><h1>Reservations & Guest Command Centre</h1><p>Coyote Burger · Demand, capacity, loyalty and reputation dashboard</p></div>
+    </div>
+    <div class="status">
+      <span class="pill good"><span class="dot"></span>OpenTable synced</span>
+      <span class="pill good"><span class="dot"></span>Lightspeed K linked</span>
+      <span class="pill">Guest match 82%</span>
+    </div>
+  </div>
+
+  <div class="controls">
+    <div class="control"><strong>Performance period</strong>Last 28 days · 22 Jun–19 Jul 2026</div>
+    <div class="control"><strong>Forward horizon</strong>Next 8 weeks</div>
+    <div class="control"><strong>Comparison</strong>Same period last year</div>
+    <div class="control"><strong>Location</strong>Coyote Burger · Inverness</div>
+    <div class="spacer"></div>
+    <span class="badge">ILLUSTRATIVE MOCK DATA</span>
+  </div>
+
+  <div class="tabs">
+    <button class="tab active" data-tab="executive">Executive</button>
+    <button class="tab" data-tab="demand">Demand & Forecast</button>
+    <button class="tab" data-tab="behaviour">Booking Behaviour</button>
+    <button class="tab" data-tab="capacity">Capacity & Flow</button>
+    <button class="tab" data-tab="customers">Customer Intelligence</button>
+    <button class="tab" data-tab="reviews">Reviews & Recovery</button>
+  </div>
+  <div class="mobile-warning">For the full command-centre layout, use desktop or tablet landscape.</div>
+
+  <section class="page active" id="executive">
+    <div class="grid kpi-grid">
+      <div class="card kpi"><div class="kpi-label">Seated dine-in covers</div><div class="kpi-value">5,084</div><div class="kpi-sub"><span class="delta up">▲ 4.7%</span> vs LY · 181.6/day</div><div class="microbar"><span style="width:78%"></span></div></div>
+      <div class="card kpi"><div class="kpi-label">Reserved cover share</div><div class="kpi-value">61.8%</div><div class="kpi-sub"><span class="delta up">▲ 2.9 pts</span> vs LY · 38.2% walk-in</div><div class="microbar"><span style="width:62%"></span></div></div>
+      <div class="card kpi"><div class="kpi-label">Booking → seated</div><div class="kpi-value">91.5%</div><div class="kpi-sub"><span class="delta up">▲ 1.6 pts</span> cancellations and no-shows removed</div><div class="microbar"><span style="width:92%"></span></div></div>
+      <div class="card kpi"><div class="kpi-label">No-show cover rate</div><div class="kpi-value">2.3%</div><div class="kpi-sub"><span class="delta up">▼ 0.5 pts</span> · estimated £1,640 sales risk</div><div class="microbar"><span style="width:23%"></span></div></div>
+      <div class="card kpi"><div class="kpi-label">Repeat guest share</div><div class="kpi-value">36.4%</div><div class="kpi-sub"><span class="delta up">▲ 3.1 pts</span> · 612 returning bookers</div><div class="microbar"><span style="width:64%"></span></div></div>
+      <div class="card kpi"><div class="kpi-label">Reserved guest spend</div><div class="kpi-value">£22.46</div><div class="kpi-sub"><span class="delta up">▲ £1.72</span> vs walk-in cover · POS matched</div><div class="microbar"><span style="width:82%"></span></div></div>
+    </div>
+
+    <div class="grid two-col">
+      <div class="card panel">
+        <div class="panel-head">
+          <div><h3 class="panel-title">13-week dine-in cover performance</h3><div class="panel-sub">Reserved seated covers + walk-in covers, compared with total dine-in covers last year</div></div>
+          <div class="legend"><span><i style="background:#e44b36"></i>Reserved</span><span><i style="background:#67a7ff"></i>Walk-in</span><span><i style="background:#7a8490"></i>LY total</span></div>
+        </div>
+        <div class="chart-wrap">
+          <svg viewBox="0 0 900 270" role="img" aria-label="Thirteen week cover trend">
+            <line class="gridline" x1="55" y1="30" x2="880" y2="30"/><line class="gridline" x1="55" y1="88" x2="880" y2="88"/><line class="gridline" x1="55" y1="146" x2="880" y2="146"/><line class="gridline" x1="55" y1="204" x2="880" y2="204"/>
+            <text class="axistext" x="12" y="34">1,500</text><text class="axistext" x="18" y="92">1,300</text><text class="axistext" x="18" y="150">1,100</text><text class="axistext" x="26" y="208">900</text>
+            <polyline class="line-last" points="68,172 133,164 198,154 263,144 328,150 393,132 458,138 523,119 588,110 653,98 718,92 783,84 848,78"/>
+            <g fill="#67a7ff">
+              <rect x="56" y="168" width="24" height="56" rx="4"/><rect x="121" y="162" width="24" height="62" rx="4"/><rect x="186" y="158" width="24" height="66" rx="4"/><rect x="251" y="153" width="24" height="71" rx="4"/><rect x="316" y="160" width="24" height="64" rx="4"/><rect x="381" y="149" width="24" height="75" rx="4"/><rect x="446" y="146" width="24" height="78" rx="4"/><rect x="511" y="140" width="24" height="84" rx="4"/><rect x="576" y="137" width="24" height="87" rx="4"/><rect x="641" y="132" width="24" height="92" rx="4"/><rect x="706" y="128" width="24" height="96" rx="4"/><rect x="771" y="122" width="24" height="102" rx="4"/><rect x="836" y="119" width="24" height="105" rx="4"/>
+            </g>
+            <g fill="#e44b36">
+              <rect x="56" y="102" width="24" height="66" rx="4"/><rect x="121" y="93" width="24" height="69" rx="4"/><rect x="186" y="86" width="24" height="72" rx="4"/><rect x="251" y="78" width="24" height="75" rx="4"/><rect x="316" y="84" width="24" height="76" rx="4"/><rect x="381" y="68" width="24" height="81" rx="4"/><rect x="446" y="64" width="24" height="82" rx="4"/><rect x="511" y="54" width="24" height="86" rx="4"/><rect x="576" y="47" width="24" height="90" rx="4"/><rect x="641" y="37" width="24" height="95" rx="4"/><rect x="706" y="29" width="24" height="99" rx="4"/><rect x="771" y="19" width="24" height="103" rx="4"/><rect x="836" y="12" width="24" height="107" rx="4"/>
+            </g>
+            <g class="axistext"><text x="58" y="250">W1</text><text x="123" y="250">W2</text><text x="188" y="250">W3</text><text x="253" y="250">W4</text><text x="318" y="250">W5</text><text x="383" y="250">W6</text><text x="448" y="250">W7</text><text x="513" y="250">W8</text><text x="578" y="250">W9</text><text x="640" y="250">W10</text><text x="705" y="250">W11</text><text x="770" y="250">W12</text><text x="835" y="250">W13</text></g>
+          </svg>
+        </div>
+      </div>
+      <div class="card panel">
+        <div class="panel-head"><div><h3 class="panel-title">Owner attention queue</h3><div class="panel-sub">Ranked by estimated revenue or loyalty impact</div></div><span class="tag bad">5 actions</span></div>
+        <div class="alert-list">
+          <div class="alert bad"><div class="bar"></div><div><h4>Saturday 19:00–20:30 is effectively full</h4><p>94% forecast occupancy. Stop broad discounting and protect tables for direct and high-value guests.</p></div><div class="impact">Protect £2.8k</div></div>
+          <div class="alert"><div class="bar"></div><div><h4>Tuesday lunch demand remains weak</h4><p>41% occupancy with only 19% booked ahead. Use hotel/concierge traffic and a lunch-specific offer.</p></div><div class="impact">+£1.3k/mo</div></div>
+          <div class="alert bad"><div class="bar"></div><div><h4>26 high-value guests are overdue</h4><p>Each is beyond 1.75× their normal return interval. Prioritise personal re-engagement, not a mass discount.</p></div><div class="impact">£7.6k LTV</div></div>
+          <div class="alert"><div class="bar"></div><div><h4>OpenTable marketplace no-shows are elevated</h4><p>3.1% versus 1.4% for direct bookings. Tighten confirmation and deposits only on high-risk services.</p></div><div class="impact">£620/mo</div></div>
+          <div class="alert good"><div class="bar"></div><div><h4>Reserved guests spend 8.3% more</h4><p>Promote direct bookings for quieter periods; do not displace walk-ins during peak services.</p></div><div class="impact">+£1.72/cover</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid three-col">
+      <div class="card panel">
+        <div class="panel-head"><div><h3 class="panel-title">Next 6 weeks: on-books and expected pickup</h3><div class="panel-sub">Forecast separates what is already booked from what normally arrives later</div></div></div>
+        <div class="week-bars">
+          <div class="week-col"><div class="wbar" style="height:42%;background:#67a7ff" data-tip="On books 486"></div><div class="wbar" style="height:31%;background:#e44b36" data-tip="Pickup 352"></div><span class="week-label">20 Jul</span></div>
+          <div class="week-col"><div class="wbar" style="height:45%;background:#67a7ff" data-tip="On books 522"></div><div class="wbar" style="height:33%;background:#e44b36" data-tip="Pickup 378"></div><span class="week-label">27 Jul</span></div>
+          <div class="week-col"><div class="wbar" style="height:43%;background:#67a7ff" data-tip="On books 498"></div><div class="wbar" style="height:36%;background:#e44b36" data-tip="Pickup 410"></div><span class="week-label">3 Aug</span></div>
+          <div class="week-col"><div class="wbar" style="height:38%;background:#67a7ff" data-tip="On books 443"></div><div class="wbar" style="height:39%;background:#e44b36" data-tip="Pickup 447"></div><span class="week-label">10 Aug</span></div>
+          <div class="week-col"><div class="wbar" style="height:35%;background:#67a7ff" data-tip="On books 401"></div><div class="wbar" style="height:42%;background:#e44b36" data-tip="Pickup 486"></div><span class="week-label">17 Aug</span></div>
+          <div class="week-col"><div class="wbar" style="height:31%;background:#67a7ff" data-tip="On books 357"></div><div class="wbar" style="height:45%;background:#e44b36" data-tip="Pickup 519"></div><span class="week-label">24 Aug</span></div>
+          <div class="week-col"><div class="wbar" style="height:26%;background:#67a7ff" data-tip="On books 302"></div><div class="wbar" style="height:49%;background:#e44b36" data-tip="Pickup 561"></div><span class="week-label">31 Aug</span></div>
+          <div class="week-col"><div class="wbar" style="height:22%;background:#67a7ff" data-tip="On books 256"></div><div class="wbar" style="height:52%;background:#e44b36" data-tip="Pickup 594"></div><span class="week-label">7 Sep</span></div>
+        </div>
+        <div class="legend" style="margin-top:16px"><span><i style="background:#67a7ff"></i>Already booked</span><span><i style="background:#e44b36"></i>Expected pickup</span><span><i style="background:#ad8cff"></i>Walk-ins added in demand tab</span></div>
+      </div>
+      <div class="card panel">
+        <div class="panel-head"><div><h3 class="panel-title">Dine-in demand mix</h3><div class="panel-sub">How guests entered the restaurant</div></div></div>
+        <div class="donut-wrap">
+          <div class="donut" style="background:conic-gradient(#e44b36 0 35%,#67a7ff 35% 62%,#ffb34d 62% 78%,#45c486 78% 92%,#ad8cff 92% 100%)"><div class="donut-center">5,084<small>seated covers</small></div></div>
+          <div class="donut-legend">
+            <div class="drow"><span style="background:#e44b36"></span><span>OpenTable marketplace</span><b>35%</b></div>
+            <div class="drow"><span style="background:#67a7ff"></span><span>Direct website/widget</span><b>27%</b></div>
+            <div class="drow"><span style="background:#ffb34d"></span><span>Phone/manual</span><b>16%</b></div>
+            <div class="drow"><span style="background:#45c486"></span><span>Walk-in/waitlist</span><b>14%</b></div>
+            <div class="drow"><span style="background:#ad8cff"></span><span>Google/partner/referral</span><b>8%</b></div>
+          </div>
+        </div>
+      </div>
+      <div class="card panel">
+        <div class="panel-head"><div><h3 class="panel-title">Data readiness</h3><div class="panel-sub">What can be automated now</div></div></div>
+        <div class="scenario">
+          <div class="scenario-row"><div><h4>Reservations and guest history</h4><p>OpenTable GuestCenter / export / API access</p></div><strong class="up">Ready</strong></div>
+          <div class="scenario-row"><div><h4>Dine-in spend and check averages</h4><p>OpenTable + Lightspeed K POS integration</p></div><strong class="up">Ready</strong></div>
+          <div class="scenario-row"><div><h4>Takeaway customer frequency</h4><p>LivePepper / COMO / Lightspeed customer data</p></div><strong class="flat">Separate</strong></div>
+          <div class="scenario-row"><div><h4>Unified customer record</h4><p>Match consented email and phone identities</p></div><strong class="flat">82%</strong></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="page" id="demand">
+    <div class="grid kpi-grid">
+      <div class="card kpi"><div class="kpi-label">Next 28 days · on books</div><div class="kpi-value">1,850</div><div class="kpi-sub"><span class="delta up">▲ 3.8%</span> vs same booking point LY</div><div class="microbar"><span style="width:55%"></span></div></div>
+      <div class="card kpi"><div class="kpi-label">Expected booking pickup</div><div class="kpi-value" id="pickupValue">1,214</div><div class="kpi-sub">Based on historical lead-time curve</div><div class="microbar"><span id="pickupBar" style="width:66%"></span></div></div>
+      <div class="card kpi"><div class="kpi-label">Expected walk-in covers</div><div class="kpi-value">1,890</div><div class="kpi-sub">Daypart and weather/event adjusted</div><div class="microbar"><span style="width:72%"></span></div></div>
+      <div class="card kpi"><div class="kpi-label">Forecast cancellations</div><div class="kpi-value">−188</div><div class="kpi-sub">6.1% of expected booked covers</div><div class="microbar"><span style="width:28%"></span></div></div>
+      <div class="card kpi"><div class="kpi-label">Forecast no-show covers</div><div class="kpi-value" id="noshowValue">−69</div><div class="kpi-sub"><span id="noshowRateLabel">2.3%</span> of non-cancelled bookings</div><div class="microbar"><span style="width:23%"></span></div></div>
+      <div class="card kpi"><div class="kpi-label">Forecast dine-in covers</div><div class="kpi-value" id="forecastTotal">4,697</div><div class="kpi-sub"><span class="delta up" id="forecastVsLy">▲ 2.6%</span> vs LY baseline</div><div class="microbar"><span id="forecastBar" style="width:78%"></span></div></div>
+    </div>
+
+    <div class="grid forecast-grid" style="margin-bottom:14px">
+      <div class="card panel">
+        <div class="panel-head"><div><h3 class="panel-title">Eight-week demand forecast</h3><div class="panel-sub">Actual history, forecast covers and last-year baseline</div></div><div class="legend"><span><i style="background:#e44b36"></i>Actual/forecast</span><span><i style="background:#758190"></i>Last year</span></div></div>
+        <div class="chart-wrap">
+          <svg viewBox="0 0 900 270">
+            <line class="gridline" x1="55" y1="34" x2="875" y2="34"/><line class="gridline" x1="55" y1="92" x2="875" y2="92"/><line class="gridline" x1="55" y1="150" x2="875" y2="150"/><line class="gridline" x1="55" y1="208" x2="875" y2="208"/>
+            <text class="axistext" x="15" y="38">1,500</text><text class="axistext" x="20" y="96">1,300</text><text class="axistext" x="20" y="154">1,100</text><text class="axistext" x="27" y="212">900</text>
+            <polyline class="line-last" points="80,128 180,118 280,111 380,101 480,96 580,104 680,114 780,124"/>
+            <polyline class="line-current" points="80,117 180,108 280,97 380,92 480,89 580,98 680,107 780,119"/>
+            <g><circle class="point" cx="80" cy="117" r="5"/><circle class="point" cx="180" cy="108" r="5"/><circle class="point" cx="280" cy="97" r="5"/><circle class="point" cx="380" cy="92" r="5"/><circle class="point" cx="480" cy="89" r="5"/><circle class="point" cx="580" cy="98" r="5"/><circle class="point" cx="680" cy="107" r="5"/><circle class="point" cx="780" cy="119" r="5"/></g>
+            <g class="axistext"><text x="55" y="246">20 Jul</text><text x="155" y="246">27 Jul</text><text x="255" y="246">3 Aug</text><text x="355" y="246">10 Aug</text><text x="455" y="246">17 Aug</text><text x="555" y="246">24 Aug</text><text x="655" y="246">31 Aug</text><text x="755" y="246">7 Sep</text></g>
+          </svg>
+        </div>
+      </div>
+      <div class="card panel">
+        <div class="panel-head"><div><h3 class="panel-title">Forecast assumptions</h3><div class="panel-sub">Management can override the statistical baseline</div></div></div>
+        <div class="slider-wrap">
+          <div class="slider-head"><span>Booking pickup multiplier</span><b id="pickupLabel">100%</b></div>
+          <input id="pickupSlider" type="range" min="80" max="120" value="100" step="1">
+          <div class="panel-sub">Increase only when there is evidence: stronger pace, events, campaigns or additional availability.</div>
+        </div>
+        <div class="slider-wrap" style="margin-top:10px">
+          <div class="slider-head"><span>No-show assumption</span><b id="noshowLabel">2.3%</b></div>
+          <input id="noshowSlider" type="range" min="1" max="5" value="2.3" step=".1">
+          <div class="panel-sub">Use service-specific rates. Saturday evening risk should not be applied to Tuesday lunch.</div>
+        </div>
+        <div class="formula" style="margin-top:10px">Forecast covers =
+On-books
++ expected booking pickup
++ expected walk-ins
+− expected cancellations
+− expected no-shows</div>
+        <div class="info-box warn-box" style="margin-top:10px">This is the correct feed for later labour budgeting. Labour should follow forecast covers by daypart—not monthly revenue alone.</div>
+      </div>
+    </div>
+
+    <div class="grid equal-two">
+      <div class="card panel">
+        <div class="panel-head"><div><h3 class="panel-title">Booking pickup curve</h3><div class="panel-sub">Percentage of final reserved covers already booked by days before service</div></div><div class="legend"><span><i style="background:#e44b36"></i>2026</span><span><i style="background:#758190"></i>2025</span></div></div>
+        <div class="pace">
+          <svg viewBox="0 0 700 250">
+            <polyline class="line-last" points="20,222 100,205 180,182 260,153 340,121 420,88 500,60 580,39 670,22"/>
+            <polyline class="line-current" points="20,220 100,202 180,176 260,145 340,109 420,77 500,51 580,32 670,17"/>
+            <g class="axistext"><text x="4" y="244">30d</text><text x="88" y="244">21d</text><text x="171" y="244">14d</text><text x="253" y="244">10d</text><text x="336" y="244">7d</text><text x="417" y="244">4d</text><text x="497" y="244">2d</text><text x="578" y="244">1d</text><text x="657" y="244">Day</text></g>
+          </svg>
+        </div>
+      </div>
+      <div class="card panel">
+        <div class="panel-head"><div><h3 class="panel-title">Forward occupancy by daypart</h3><div class="panel-sub">Expected seated covers as a percentage of practical capacity</div></div><span class="tag warn">Next 4 weeks</span></div>
+        <div class="heatmap">
+          <div></div><div class="hlabel">12:00</div><div class="hlabel">13:00</div><div class="hlabel">14:00</div><div class="hlabel">15:00</div><div class="hlabel">16:00</div><div class="hlabel">17:00</div><div class="hlabel">18:00</div><div class="hlabel">19:00</div><div class="hlabel">20:00</div><div class="hlabel">21:00</div>
+          <div class="day">Mon</div><div class="cell l2" data-tip="38%"></div><div class="cell l2" data-tip="44%"></div><div class="cell l1" data-tip="31%"></div><div class="cell l1" data-tip="24%"></div><div class="cell l1" data-tip="29%"></div><div class="cell l2" data-tip="42%"></div><div class="cell l3" data-tip="61%"></div><div class="cell l4" data-tip="74%"></div><div class="cell l3" data-tip="66%"></div><div class="cell l2" data-tip="47%"></div>
+          <div class="day">Tue</div><div class="cell l1" data-tip="32%"></div><div class="cell l2" data-tip="41%"></div><div class="cell l1" data-tip="29%"></div><div class="cell l1" data-tip="23%"></div><div class="cell l1" data-tip="28%"></div><div class="cell l2" data-tip="46%"></div><div class="cell l3" data-tip="63%"></div><div class="cell l4" data-tip="76%"></div><div class="cell l3" data-tip="68%"></div><div class="cell l2" data-tip="45%"></div>
+          <div class="day">Wed</div><div class="cell l2" data-tip="43%"></div><div class="cell l3" data-tip="58%"></div><div class="cell l2" data-tip="46%"></div><div class="cell l1" data-tip="30%"></div><div class="cell l2" data-tip="39%"></div><div class="cell l3" data-tip="57%"></div><div class="cell l4" data-tip="73%"></div><div class="cell l5" data-tip="84%"></div><div class="cell l4" data-tip="78%"></div><div class="cell l3" data-tip="61%"></div>
+          <div class="day">Thu</div><div class="cell l2" data-tip="49%"></div><div class="cell l3" data-tip="64%"></div><div class="cell l2" data-tip="51%"></div><div class="cell l2" data-tip="39%"></div><div class="cell l2" data-tip="45%"></div><div class="cell l3" data-tip="66%"></div><div class="cell l4" data-tip="79%"></div><div class="cell l5" data-tip="88%"></div><div class="cell l5" data-tip="83%"></div><div class="cell l3" data-tip="65%"></div>
+          <div class="day">Fri</div><div class="cell l3" data-tip="62%"></div><div class="cell l4" data-tip="76%"></div><div class="cell l3" data-tip="64%"></div><div class="cell l2" data-tip="48%"></div><div class="cell l3" data-tip="61%"></div><div class="cell l4" data-tip="79%"></div><div class="cell l5" data-tip="91%"></div><div class="cell l6" data-tip="96%"></div><div class="cell l5" data-tip="92%"></div><div class="cell l4" data-tip="79%"></div>
+          <div class="day">Sat</div><div class="cell l4" data-tip="78%"></div><div class="cell l5" data-tip="90%"></div><div class="cell l5" data-tip="87%"></div><div class="cell l4" data-tip="75%"></div><div class="cell l4" data-tip="79%"></div><div class="cell l5" data-tip="90%"></div><div class="cell l6" data-tip="96%"></div><div class="cell l6" data-tip="98%"></div><div class="cell l6" data-tip="95%"></div><div class="cell l5" data-tip="86%"></div>
+          <div class="day">Sun</div><div class="cell l4" data-tip="73%"></div><div class="cell l5" data-tip="85%"></div><div class="cell l4" data-tip="81%"></div><div class="cell l3" data-tip="67%"></div><div class="cell l3" data-tip="62%"></div><div class="cell l4" data-tip="76%"></div><div class="cell l5" data-tip="87%"></div><div class="cell l5" data-tip="89%"></div><div class="cell l4" data-tip="81%"></div><div class="cell l3" data-tip="65%"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card panel">
+      <div class="panel-head"><div><h3 class="panel-title">Next 14 days — management booking view</h3><div class="panel-sub">Reservations report enriched with history, spend, tags and forecasted walk-ins</div></div><span class="tag info">Operational drill-down</span></div>
+      <div class="scroll"><table>
+        <thead><tr><th>Date</th><th>Service</th><th class="num">On books</th><th class="num">Forecast covers</th><th class="num">Forecast occupancy</th><th class="num">Large parties</th><th class="num">VIP/high spender</th><th>Risk / action</th></tr></thead>
+        <tbody>
+          <tr><td>Tue 21 Jul</td><td>Lunch</td><td class="num">38</td><td class="num">64</td><td class="num">41%</td><td class="num">0</td><td class="num">2</td><td><span class="tag warn">Demand gap</span> Concierge push</td></tr>
+          <tr><td>Thu 23 Jul</td><td>Dinner</td><td class="num">116</td><td class="num">202</td><td class="num">84%</td><td class="num">3</td><td class="num">9</td><td><span class="tag good">Healthy</span> Normal availability</td></tr>
+          <tr><td>Fri 24 Jul</td><td>Dinner</td><td class="num">171</td><td class="num">244</td><td class="num">94%</td><td class="num">6</td><td class="num">13</td><td><span class="tag bad">Near full</span> Protect peak slots</td></tr>
+          <tr><td>Sat 25 Jul</td><td>All day</td><td class="num">328</td><td class="num">462</td><td class="num">96%</td><td class="num">9</td><td class="num">21</td><td><span class="tag bad">Capacity constrained</span> Waitlist active</td></tr>
+          <tr><td>Sun 26 Jul</td><td>Lunch</td><td class="num">143</td><td class="num">208</td><td class="num">86%</td><td class="num">4</td><td class="num">12</td><td><span class="tag good">Strong</span> Confirm 8+ parties</td></tr>
+          <tr><td>Tue 28 Jul</td><td>Dinner</td><td class="num">73</td><td class="num">151</td><td class="num">64%</td><td class="num">1</td><td class="num">6</td><td><span class="tag warn">Pace −8%</span> Direct campaign</td></tr>
+          <tr><td>Sat 1 Aug</td><td>Dinner</td><td class="num">184</td><td class="num">251</td><td class="num">97%</td><td class="num">7</td><td class="num">18</td><td><span class="tag bad">Full</span> Close low-value promo</td></tr>
+        </tbody>
+      </table></div>
+    </div>
+  </section>
+
+  <section class="page" id="behaviour">
+    <div class="grid kpi-grid">
+      <div class="card kpi"><div class="kpi-label">Average booking lead time</div><div class="kpi-value">5.8 days</div><div class="kpi-sub"><span class="delta up">▲ 0.7</span> days vs LY</div><div class="microbar"><span style="width:58%"></span></div></div>
+      <div class="card kpi"><div class="kpi-label">Same-day booking share</div><div class="kpi-value">31.2%</div><div class="kpi-sub">Important for daily pickup forecasting</div><div class="microbar"><span style="width:31%"></span></div></div>
+      <div class="card kpi"><div class="kpi-label">Average booked party</div><div class="kpi-value">2.74</div><div class="kpi-sub"><span class="delta flat">−0.04</span> vs LY</div><div class="microbar"><span style="width:69%"></span></div></div>
+      <div class="card kpi"><div class="kpi-label">First-time guest covers</div><div class="kpi-value">43.7%</div><div class="kpi-sub"><span class="delta up">▲ 2.4 pts</span> acquisition healthy</div><div class="microbar"><span style="width:44%"></span></div></div>
+      <div class="card kpi"><div class="kpi-label">Cancellation cover rate</div><div class="kpi-value">6.1%</div><div class="kpi-sub"><span class="delta down">▲ 0.8 pts</span> vs LY</div><div class="microbar"><span style="width:31%"></span></div></div>
+      <div class="card kpi"><div class="kpi-label">Direct booking share</div><div class="kpi-value">27.3%</div><div class="kpi-sub"><span class="delta up">▲ 4.1 pts</span> lower acquisition cost</div><div class="microbar"><span style="width:55%"></span></div></div>
+    </div>
+
+    <div class="grid equal-two">
+      <div class="card panel">
+        <div class="panel-head"><div><h3 class="panel-title">Reservation source performance</h3><div class="panel-sub">Seated covers, conversion, no-shows, lead time and matched spend</div></div></div>
+        <div class="scroll"><table>
+          <thead><tr><th>Source</th><th class="num">Seated covers</th><th class="num">Booking→seated</th><th class="num">No-show</th><th class="num">Lead time</th><th class="num">Spend/cover</th><th>Decision</th></tr></thead>
+          <tbody>
+            <tr><td>OpenTable marketplace</td><td class="num">1,780</td><td class="num">89.4%</td><td class="num"><span class="down">3.1%</span></td><td class="num">7.2d</td><td class="num">£22.88</td><td><span class="tag good">Acquire</span> Protect off-peak</td></tr>
+            <tr><td>Direct website/widget</td><td class="num">1,388</td><td class="num">94.7%</td><td class="num"><span class="up">1.4%</span></td><td class="num">5.9d</td><td class="num">£23.24</td><td><span class="tag good">Grow</span> Best economics</td></tr>
+            <tr><td>Phone/manual</td><td class="num">812</td><td class="num">92.8%</td><td class="num">2.0%</td><td class="num">3.8d</td><td class="num">£21.91</td><td><span class="tag info">Maintain</span> Capture email</td></tr>
+            <tr><td>Walk-in/waitlist</td><td class="num">712</td><td class="num">—</td><td class="num">—</td><td class="num">0d</td><td class="num">£20.74</td><td><span class="tag warn">Capacity</span> Improve capture</td></tr>
+            <tr><td>Google/partner/referral</td><td class="num">392</td><td class="num">90.1%</td><td class="num">2.8%</td><td class="num">4.4d</td><td class="num">£22.16</td><td><span class="tag info">Track</span> Referral field</td></tr>
+          </tbody>
+        </table></div>
+      </div>
+      <div class="card panel">
+        <div class="panel-head"><div><h3 class="panel-title">Booking funnel</h3><div class="panel-sub">Cover outcomes for the selected period</div></div></div>
+        <div class="funnel">
+          <div class="funnel-row" style="width:100%;background:#25313d"><span>Reserved covers created</span><span>3,484</span></div>
+          <div class="funnel-row" style="width:92%;background:#273c45"><span>Still expected after cancellation</span><span>3,271</span></div>
+          <div class="funnel-row" style="width:87%;background:#2b4a4a"><span>Arrived / seated</span><span>3,141</span></div>
+          <div class="funnel-row" style="width:84%;background:#2e6858"><span>POS check matched</span><span>3,016</span></div>
+          <div class="funnel-row" style="width:76%;background:#8a3d31"><span>Guest identity reusable</span><span>2,676</span></div>
+        </div>
+        <div class="info-box" style="margin-top:13px">The last stage matters. A booking without a durable, consented customer identity is operational data but weak CRM data.</div>
+      </div>
+    </div>
+
+    <div class="grid three-col">
+      <div class="card panel">
+        <div class="panel-head"><div><h3 class="panel-title">Lead-time distribution</h3><div class="panel-sub">When guests book relative to arrival</div></div></div>
+        <div class="bars">
+          <div class="barrow"><div class="label">Same day</div><div class="track"><span class="seg" style="width:31%;background:#e44b36"></span></div><div class="value">31.2%</div></div>
+          <div class="barrow"><div class="label">1–3 days</div><div class="track"><span class="seg" style="width:28%;background:#ff7d59"></span></div><div class="value">27.8%</div></div>
+          <div class="barrow"><div class="label">4–7 days</div><div class="track"><span class="seg" style="width:19%;background:#ffb34d"></span></div><div class="value">19.4%</div></div>
+          <div class="barrow"><div class="label">8–14 days</div><div class="track"><span class="seg" style="width:13%;background:#67a7ff"></span></div><div class="value">12.7%</div></div>
+          <div class="barrow"><div class="label">15+ days</div><div class="track"><span class="seg" style="width:9%;background:#ad8cff"></span></div><div class="value">8.9%</div></div>
+        </div>
+      </div>
+      <div class="card panel">
+        <div class="panel-head"><div><h3 class="panel-title">Party-size mix</h3><div class="panel-sub">Reserved parties only</div></div></div>
+        <div class="donut-wrap">
+          <div class="donut" style="width:130px;height:130px;background:conic-gradient(#e44b36 0 47%,#67a7ff 47% 78%,#ffb34d 78% 91%,#ad8cff 91% 98%,#45c486 98% 100%)"><div class="donut-center" style="font-size:17px">2.74<small>avg party</small></div></div>
+          <div class="donut-legend">
+            <div class="drow"><span style="background:#e44b36"></span><span>2 guests</span><b>47%</b></div>
+            <div class="drow"><span style="background:#67a7ff"></span><span>3–4 guests</span><b>31%</b></div>
+            <div class="drow"><span style="background:#ffb34d"></span><span>5–6 guests</span><b>13%</b></div>
+            <div class="drow"><span style="background:#ad8cff"></span><span>7–10 guests</span><b>7%</b></div>
+            <div class="drow"><span style="background:#45c486"></span><span>11+ guests</span><b>2%</b></div>
+          </div>
+        </div>
+      </div>
+      <div class="card panel">
+        <div class="panel-head"><div><h3 class="panel-title">New versus returning</h3><div class="panel-sub">Guest profile history</div></div></div>
+        <div class="driver-grid" style="grid-template-columns:1fr 1fr">
+          <div class="driver"><small>First visit</small><strong>43.7%</strong><p>Acquisition pipeline</p></div>
+          <div class="driver"><small>Returning</small><strong>56.3%</strong><p>Known profiles</p></div>
+          <div class="driver"><small>3+ visits</small><strong>28.8%</strong><p>Regular base</p></div>
+          <div class="driver"><small>10+ visits</small><strong>7.4%</strong><p>VIP candidates</p></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card panel">
+      <div class="panel-head"><div><h3 class="panel-title">No-show and cancellation diagnosis</h3><div class="panel-sub">Do not treat all reservations as equal risk</div></div></div>
+      <div class="scroll"><table>
+        <thead><tr><th>Segment</th><th class="num">Reservations</th><th class="num">Cancellation</th><th class="num">No-show</th><th class="num">Estimated lost covers</th><th class="num">Estimated revenue risk</th><th>Recommended control</th></tr></thead>
+        <tbody>
+          <tr><td>Fri/Sat · 18:30–20:30</td><td class="num">622</td><td class="num">7.4%</td><td class="num"><span class="down">3.4%</span></td><td class="num">58</td><td class="num">£1,302</td><td>Card hold/deposit for 6+ and repeat offenders</td></tr>
+          <tr><td>Marketplace · first visit</td><td class="num">514</td><td class="num">8.1%</td><td class="num"><span class="down">4.0%</span></td><td class="num">63</td><td class="num">£1,413</td><td>Confirmation cadence and waitlist backfill</td></tr>
+          <tr><td>Direct · returning guest</td><td class="num">739</td><td class="num">3.8%</td><td class="num"><span class="up">0.8%</span></td><td class="num">34</td><td class="num">£798</td><td>No friction; protect loyalty</td></tr>
+          <tr><td>Large parties 8+</td><td class="num">82</td><td class="num">9.7%</td><td class="num">2.1%</td><td class="num">79</td><td class="num">£1,954</td><td>Deposit and reconfirm headcount</td></tr>
+          <tr><td>Lunch · all sources</td><td class="num">488</td><td class="num">5.0%</td><td class="num">1.6%</td><td class="num">31</td><td class="num">£602</td><td>Standard reminders only</td></tr>
+        </tbody>
+      </table></div>
+    </div>
+  </section>
+
+  <section class="page" id="capacity">
+    <div class="grid kpi-grid">
+      <div class="card kpi"><div class="kpi-label">Practical seat occupancy</div><div class="kpi-value">72.8%</div><div class="kpi-sub"><span class="delta up">▲ 4.6 pts</span> vs LY</div><div class="microbar"><span style="width:73%"></span></div></div>
+      <div class="card kpi"><div class="kpi-label">Peak occupancy</div><div class="kpi-value">96.4%</div><div class="kpi-sub">Fri/Sat 19:00–20:30</div><div class="microbar"><span style="width:96%"></span></div></div>
+      <div class="card kpi"><div class="kpi-label">Average table duration</div><div class="kpi-value">72 min</div><div class="kpi-sub"><span class="delta flat">+3 min</span> vs target</div><div class="microbar"><span style="width:72%"></span></div></div>
+      <div class="card kpi"><div class="kpi-label">On-time seating</div><div class="kpi-value">87.6%</div><div class="kpi-sub"><span class="delta down">▼ 2.1 pts</span> peak congestion</div><div class="microbar"><span style="width:88%"></span></div></div>
+      <div class="card kpi"><div class="kpi-label">Waitlist conversion</div><div class="kpi-value">63.1%</div><div class="kpi-sub"><span class="delta up">▲ 5.4 pts</span> vs LY</div><div class="microbar"><span style="width:63%"></span></div></div>
+      <div class="card kpi"><div class="kpi-label">Recoverable lost covers</div><div class="kpi-value">174</div><div class="kpi-sub">£3.7k estimated monthly revenue</div><div class="microbar"><span style="width:44%"></span></div></div>
+    </div>
+
+    <div class="grid two-col">
+      <div class="card panel">
+        <div class="panel-head"><div><h3 class="panel-title">Actual occupancy heatmap</h3><div class="panel-sub">Seated covers versus practical seat capacity · last 8 weeks</div></div><span class="tag bad">Red = constrained</span></div>
+        <div class="heatmap">
+          <div></div><div class="hlabel">12:00</div><div class="hlabel">13:00</div><div class="hlabel">14:00</div><div class="hlabel">15:00</div><div class="hlabel">16:00</div><div class="hlabel">17:00</div><div class="hlabel">18:00</div><div class="hlabel">19:00</div><div class="hlabel">20:00</div><div class="hlabel">21:00</div>
+          <div class="day">Mon</div><div class="cell l2" data-tip="43% · 31 covers"></div><div class="cell l3" data-tip="58% · 42 covers"></div><div class="cell l2" data-tip="47%"></div><div class="cell l1" data-tip="30%"></div><div class="cell l2" data-tip="38%"></div><div class="cell l3" data-tip="55%"></div><div class="cell l4" data-tip="72%"></div><div class="cell l5" data-tip="83%"></div><div class="cell l4" data-tip="77%"></div><div class="cell l3" data-tip="59%"></div>
+          <div class="day">Tue</div><div class="cell l2" data-tip="41%"></div><div class="cell l2" data-tip="49%"></div><div class="cell l2" data-tip="42%"></div><div class="cell l1" data-tip="28%"></div><div class="cell l2" data-tip="36%"></div><div class="cell l3" data-tip="58%"></div><div class="cell l4" data-tip="74%"></div><div class="cell l5" data-tip="85%"></div><div class="cell l4" data-tip="79%"></div><div class="cell l3" data-tip="61%"></div>
+          <div class="day">Wed</div><div class="cell l3" data-tip="55%"></div><div class="cell l4" data-tip="71%"></div><div class="cell l3" data-tip="62%"></div><div class="cell l2" data-tip="44%"></div><div class="cell l3" data-tip="54%"></div><div class="cell l4" data-tip="72%"></div><div class="cell l5" data-tip="84%"></div><div class="cell l5" data-tip="91%"></div><div class="cell l5" data-tip="88%"></div><div class="cell l4" data-tip="72%"></div>
+          <div class="day">Thu</div><div class="cell l3" data-tip="61%"></div><div class="cell l4" data-tip="77%"></div><div class="cell l4" data-tip="69%"></div><div class="cell l3" data-tip="52%"></div><div class="cell l3" data-tip="62%"></div><div class="cell l4" data-tip="78%"></div><div class="cell l5" data-tip="88%"></div><div class="cell l6" data-tip="94%"></div><div class="cell l5" data-tip="91%"></div><div class="cell l4" data-tip="77%"></div>
+          <div class="day">Fri</div><div class="cell l4" data-tip="74%"></div><div class="cell l5" data-tip="89%"></div><div class="cell l5" data-tip="84%"></div><div class="cell l3" data-tip="65%"></div><div class="cell l4" data-tip="73%"></div><div class="cell l5" data-tip="88%"></div><div class="cell l6" data-tip="95%"></div><div class="cell l6" data-tip="98%"></div><div class="cell l6" data-tip="96%"></div><div class="cell l5" data-tip="86%"></div>
+          <div class="day">Sat</div><div class="cell l5" data-tip="86%"></div><div class="cell l6" data-tip="96%"></div><div class="cell l6" data-tip="94%"></div><div class="cell l5" data-tip="85%"></div><div class="cell l5" data-tip="88%"></div><div class="cell l6" data-tip="96%"></div><div class="cell l6" data-tip="99%"></div><div class="cell l6" data-tip="100%"></div><div class="cell l6" data-tip="98%"></div><div class="cell l5" data-tip="90%"></div>
+          <div class="day">Sun</div><div class="cell l5" data-tip="81%"></div><div class="cell l5" data-tip="92%"></div><div class="cell l5" data-tip="89%"></div><div class="cell l4" data-tip="76%"></div><div class="cell l4" data-tip="74%"></div><div class="cell l5" data-tip="87%"></div><div class="cell l5" data-tip="93%"></div><div class="cell l6" data-tip="95%"></div><div class="cell l5" data-tip="91%"></div><div class="cell l4" data-tip="79%"></div>
+        </div>
+      </div>
+      <div class="card panel">
+        <div class="panel-head"><div><h3 class="panel-title">Capacity leakage</h3><div class="panel-sub">Estimated monthly covers that could be recovered without adding seats</div></div></div>
+        <div class="capacity-leak">
+          <div class="leak-row"><div><h4>Late table turns</h4><p>Checks remaining open and parties exceeding target duration during peak windows.</p></div><strong class="down">61</strong></div>
+          <div class="leak-row"><div><h4>Unfilled late cancellations</h4><p>Cancelled within four hours with no waitlist replacement.</p></div><strong class="down">43</strong></div>
+          <div class="leak-row"><div><h4>No-show gaps</h4><p>Reserved inventory unused after grace period.</p></div><strong class="down">38</strong></div>
+          <div class="leak-row"><div><h4>Over-blocked inventory</h4><p>Tables or combinations held longer than operationally required.</p></div><strong class="flat">21</strong></div>
+          <div class="leak-row"><div><h4>Waitlist non-response</h4><p>Guests offered a table but not contacted or expired before seating.</p></div><strong class="flat">11</strong></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid equal-two">
+      <div class="card panel">
+        <div class="panel-head"><div><h3 class="panel-title">Table-turn performance</h3><div class="panel-sub">Targets should vary by party size and daypart</div></div></div>
+        <div class="scroll"><table>
+          <thead><tr><th>Party size</th><th class="num">Target duration</th><th class="num">Actual duration</th><th class="num">On target</th><th class="num">Peak variance</th><th>Action</th></tr></thead>
+          <tbody>
+            <tr><td>1–2</td><td class="num">60 min</td><td class="num">63 min</td><td class="num">78%</td><td class="num">+7 min</td><td>Faster bill close at peak</td></tr>
+            <tr><td>3–4</td><td class="num">75 min</td><td class="num">76 min</td><td class="num">84%</td><td class="num">+4 min</td><td>Healthy</td></tr>
+            <tr><td>5–6</td><td class="num">90 min</td><td class="num">94 min</td><td class="num">73%</td><td class="num">+9 min</td><td>Pre-assign tables</td></tr>
+            <tr><td>7–10</td><td class="num">105 min</td><td class="num">112 min</td><td class="num">68%</td><td class="num">+14 min</td><td>Stagger booking times</td></tr>
+            <tr><td>11+</td><td class="num">120 min</td><td class="num">128 min</td><td class="num">61%</td><td class="num">+18 min</td><td>Set menu/pre-order</td></tr>
+          </tbody>
+        </table></div>
+      </div>
+      <div class="card panel">
+        <div class="panel-head"><div><h3 class="panel-title">Guest-flow signals</h3><div class="panel-sub">OpenTable status events combined with POS table status</div></div></div>
+        <div class="driver-grid">
+          <div class="driver"><small>Arrive on time</small><strong>84.2%</strong><p>Within ±10 minutes</p></div>
+          <div class="driver"><small>Late arrivals</small><strong>9.8%</strong><p>Average 17 minutes</p></div>
+          <div class="driver"><small>Early arrivals</small><strong>6.0%</strong><p>Average 14 minutes</p></div>
+          <div class="driver"><small>Wait >10 min</small><strong>12.4%</strong><p>Peak 21.1%</p></div>
+          <div class="driver"><small>Waitlist accepted</small><strong>63.1%</strong><p>Offered → seated</p></div>
+          <div class="driver"><small>Average quote error</small><strong>6 min</strong><p>Actual minus quoted</p></div>
+          <div class="driver"><small>Unclosed POS checks</small><strong>2.7%</strong><p>Table status delay</p></div>
+          <div class="driver"><small>Same table re-seat</small><strong>2.2×</strong><p>Peak service average</p></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="page" id="customers">
+    <div class="grid kpi-grid">
+      <div class="card kpi"><div class="kpi-label">Known dine-in guests</div><div class="kpi-value">8,642</div><div class="kpi-sub">OpenTable guestbook profiles</div><div class="microbar"><span style="width:86%"></span></div></div>
+      <div class="card kpi"><div class="kpi-label">Known takeaway customers</div><div class="kpi-value">5,118</div><div class="kpi-sub">LivePepper / COMO / Lightspeed</div><div class="microbar"><span style="width:66%"></span></div></div>
+      <div class="card kpi"><div class="kpi-label">Cross-channel matched</div><div class="kpi-value">2,086</div><div class="kpi-sub">Same consented phone/email identity</div><div class="microbar"><span style="width:41%"></span></div></div>
+      <div class="card kpi"><div class="kpi-label">Active VIPs</div><div class="kpi-value">184</div><div class="kpi-sub">High frequency and/or high value</div><div class="microbar"><span style="width:74%"></span></div></div>
+      <div class="card kpi"><div class="kpi-label">At-risk valuable guests</div><div class="kpi-value">63</div><div class="kpi-sub">Beyond 1.25× normal return gap</div><div class="microbar"><span style="width:48%"></span></div></div>
+      <div class="card kpi"><div class="kpi-label">Lapsed valuable guests</div><div class="kpi-value">26</div><div class="kpi-sub">Beyond 1.75× normal return gap</div><div class="microbar"><span style="width:29%"></span></div></div>
+    </div>
+
+    <div class="card panel" style="margin-bottom:14px">
+      <div class="panel-head">
+        <div><h3 class="panel-title">Best customers and lapse monitoring</h3><div class="panel-sub">Names are fictional and masked in this mock. Live access should be restricted by role.</div></div>
+        <div class="customer-tools">
+          <div class="modebar">
+            <button class="modebtn active" data-mode="dinein">Dine-in</button>
+            <button class="modebtn" data-mode="takeaway">Takeaway</button>
+            <button class="modebtn" data-mode="combined">Combined</button>
+          </div>
+          <input class="search" id="customerSearch" placeholder="Search customer or status…" />
+        </div>
+      </div>
+
+      <div class="customer-table active" data-table="dinein">
+        <div class="info-box" style="margin-bottom:10px">Dine-in source: OpenTable visit history plus Lightspeed K-Series spend matching. Visit counts, last visit, cancellations and no-shows can come from OpenTable; spend requires POS integration.</div>
+        <div class="scroll"><table>
+          <thead><tr><th>Guest</th><th class="num">Visits ever</th><th class="num">Last 3 months</th><th>Last visit</th><th class="num">Expected gap</th><th class="num">Lifetime spend</th><th class="num">Avg/visit</th><th>Segment</th><th>Lapse flag</th></tr></thead>
+          <tbody>
+            <tr class="customer-row"><td><div class="customer-name"><span class="avatar">SM</span>Sarah M.</div></td><td class="num">47</td><td class="num">8</td><td>12 Jul 2026</td><td class="num">14d</td><td class="num">£2,384</td><td class="num">£50.72</td><td><span class="tag good">VIP regular</span></td><td><span class="risk-meter"><span style="width:31%;background:#45c486"></span></span><span class="up">Current</span></td></tr>
+            <tr class="customer-row"><td><div class="customer-name"><span class="avatar">JR</span>Jamie R.</div></td><td class="num">39</td><td class="num">6</td><td>28 Jun 2026</td><td class="num">18d</td><td class="num">£2,046</td><td class="num">£52.46</td><td><span class="tag good">High value</span></td><td><span class="risk-meter"><span style="width:67%;background:#45c486"></span></span><span class="up">Current</span></td></tr>
+            <tr class="customer-row"><td><div class="customer-name"><span class="avatar">AM</span>Alison M.</div></td><td class="num">31</td><td class="num">3</td><td>19 May 2026</td><td class="num">27d</td><td class="num">£1,721</td><td class="num">£55.52</td><td><span class="tag good">High value</span></td><td><span class="risk-meter"><span style="width:132%;background:#f0b64f"></span></span><span class="flat">Watch · 34d overdue</span></td></tr>
+            <tr class="customer-row"><td><div class="customer-name"><span class="avatar">DC</span>David C.</div></td><td class="num">28</td><td class="num">0</td><td>4 Mar 2026</td><td class="num">35d</td><td class="num">£1,806</td><td class="num">£64.50</td><td><span class="tag info">Big spender</span></td><td><span class="risk-meter"><span style="width:100%;background:#ef6b68"></span></span><span class="down">Lapsed · 104d overdue</span></td></tr>
+            <tr class="customer-row"><td><div class="customer-name"><span class="avatar">KP</span>Kirsty P.</div></td><td class="num">26</td><td class="num">5</td><td>2 Jul 2026</td><td class="num">21d</td><td class="num">£1,194</td><td class="num">£45.92</td><td><span class="tag good">Regular</span></td><td><span class="risk-meter"><span style="width:54%;background:#45c486"></span></span><span class="up">Current</span></td></tr>
+            <tr class="customer-row"><td><div class="customer-name"><span class="avatar">RM</span>Ross M.</div></td><td class="num">22</td><td class="num">1</td><td>11 Apr 2026</td><td class="num">38d</td><td class="num">£1,482</td><td class="num">£67.36</td><td><span class="tag info">Big spender</span></td><td><span class="risk-meter"><span style="width:94%;background:#ef6b68"></span></span><span class="down">Lapsed · 63d overdue</span></td></tr>
+            <tr class="customer-row"><td><div class="customer-name"><span class="avatar">LH</span>Laura H.</div></td><td class="num">21</td><td class="num">4</td><td>9 Jul 2026</td><td class="num">24d</td><td class="num">£1,063</td><td class="num">£50.62</td><td><span class="tag good">Regular</span></td><td><span class="risk-meter"><span style="width:42%;background:#45c486"></span></span><span class="up">Current</span></td></tr>
+            <tr class="customer-row"><td><div class="customer-name"><span class="avatar">PB</span>Paul B.</div></td><td class="num">19</td><td class="num">0</td><td>26 Feb 2026</td><td class="num">45d</td><td class="num">£1,331</td><td class="num">£70.05</td><td><span class="tag info">Big spender</span></td><td><span class="risk-meter"><span style="width:100%;background:#ef6b68"></span></span><span class="down">Lapsed · 99d overdue</span></td></tr>
+          </tbody>
+        </table></div>
+      </div>
+
+      <div class="customer-table" data-table="takeaway">
+        <div class="info-box warn-box" style="margin-bottom:10px">Takeaway data does not come from OpenTable. It must be assembled from LivePepper, COMO and Lightspeed customer/order records. Guest identity depends on collecting a valid email or phone number.</div>
+        <div class="scroll"><table>
+          <thead><tr><th>Customer</th><th class="num">Orders ever</th><th class="num">Last 3 months</th><th>Last order</th><th class="num">Expected gap</th><th class="num">Lifetime spend</th><th class="num">Avg order</th><th>Segment</th><th>Lapse flag</th></tr></thead>
+          <tbody>
+            <tr class="customer-row"><td><div class="customer-name"><span class="avatar">CK</span>Chris K.</div></td><td class="num">83</td><td class="num">12</td><td>17 Jul 2026</td><td class="num">8d</td><td class="num">£2,906</td><td class="num">£35.01</td><td><span class="tag good">Takeaway VIP</span></td><td><span class="risk-meter"><span style="width:48%;background:#45c486"></span></span><span class="up">Current</span></td></tr>
+            <tr class="customer-row"><td><div class="customer-name"><span class="avatar">EV</span>Emma V.</div></td><td class="num">68</td><td class="num">10</td><td>13 Jul 2026</td><td class="num">10d</td><td class="num">£2,312</td><td class="num">£34.00</td><td><span class="tag good">Takeaway VIP</span></td><td><span class="risk-meter"><span style="width:71%;background:#45c486"></span></span><span class="up">Current</span></td></tr>
+            <tr class="customer-row"><td><div class="customer-name"><span class="avatar">MN</span>Martin N.</div></td><td class="num">52</td><td class="num">2</td><td>22 May 2026</td><td class="num">18d</td><td class="num">£1,944</td><td class="num">£37.38</td><td><span class="tag good">High value</span></td><td><span class="risk-meter"><span style="width:100%;background:#ef6b68"></span></span><span class="down">Lapsed · 42d overdue</span></td></tr>
+            <tr class="customer-row"><td><div class="customer-name"><span class="avatar">AS</span>Amy S.</div></td><td class="num">46</td><td class="num">7</td><td>8 Jul 2026</td><td class="num">13d</td><td class="num">£1,504</td><td class="num">£32.70</td><td><span class="tag good">Regular</span></td><td><span class="risk-meter"><span style="width:77%;background:#45c486"></span></span><span class="up">Current</span></td></tr>
+            <tr class="customer-row"><td><div class="customer-name"><span class="avatar">ID</span>Ian D.</div></td><td class="num">41</td><td class="num">0</td><td>1 Mar 2026</td><td class="num">21d</td><td class="num">£1,762</td><td class="num">£42.98</td><td><span class="tag info">Big spender</span></td><td><span class="risk-meter"><span style="width:100%;background:#ef6b68"></span></span><span class="down">Lapsed · 121d overdue</span></td></tr>
+            <tr class="customer-row"><td><div class="customer-name"><span class="avatar">GM</span>Gemma M.</div></td><td class="num">37</td><td class="num">4</td><td>26 Jun 2026</td><td class="num">17d</td><td class="num">£1,248</td><td class="num">£33.73</td><td><span class="tag good">Regular</span></td><td><span class="risk-meter"><span style="width:84%;background:#f0b64f"></span></span><span class="flat">Watch</span></td></tr>
+            <tr class="customer-row"><td><div class="customer-name"><span class="avatar">SW</span>Scott W.</div></td><td class="num">34</td><td class="num">1</td><td>9 Apr 2026</td><td class="num">29d</td><td class="num">£1,604</td><td class="num">£47.18</td><td><span class="tag info">Big spender</span></td><td><span class="risk-meter"><span style="width:100%;background:#ef6b68"></span></span><span class="down">Lapsed · 74d overdue</span></td></tr>
+          </tbody>
+        </table></div>
+      </div>
+
+      <div class="customer-table" data-table="combined">
+        <div class="info-box" style="margin-bottom:10px">Combined view matches dine-in and takeaway identities by normalized email/phone. It reveals true customer value and prevents sending a “we miss you” message to someone still ordering takeaway weekly.</div>
+        <div class="scroll"><table>
+          <thead><tr><th>Customer</th><th class="num">Dine-in visits</th><th class="num">Takeaway orders</th><th class="num">Total interactions</th><th class="num">Last 3 months</th><th>Last interaction</th><th class="num">Combined spend</th><th>Primary channel</th><th>Lapse flag</th></tr></thead>
+          <tbody>
+            <tr class="customer-row"><td><div class="customer-name"><span class="avatar">SM</span>Sarah M.</div></td><td class="num">47</td><td class="num">22</td><td class="num">69</td><td class="num">12</td><td>Takeaway · 18 Jul</td><td class="num">£3,202</td><td><span class="tag good">Dine-in</span></td><td><span class="up">Current</span></td></tr>
+            <tr class="customer-row"><td><div class="customer-name"><span class="avatar">JR</span>Jamie R.</div></td><td class="num">39</td><td class="num">31</td><td class="num">70</td><td class="num">11</td><td>Dine-in · 28 Jun</td><td class="num">£3,186</td><td><span class="tag info">Balanced</span></td><td><span class="up">Current</span></td></tr>
+            <tr class="customer-row"><td><div class="customer-name"><span class="avatar">DC</span>David C.</div></td><td class="num">28</td><td class="num">19</td><td class="num">47</td><td class="num">4</td><td>Takeaway · 14 Jul</td><td class="num">£2,514</td><td><span class="tag info">Dine-in</span></td><td><span class="up">Current cross-channel</span></td></tr>
+            <tr class="customer-row"><td><div class="customer-name"><span class="avatar">RM</span>Ross M.</div></td><td class="num">22</td><td class="num">0</td><td class="num">22</td><td class="num">1</td><td>Dine-in · 11 Apr</td><td class="num">£1,482</td><td><span class="tag good">Dine-in only</span></td><td><span class="down">Lapsed</span></td></tr>
+            <tr class="customer-row"><td><div class="customer-name"><span class="avatar">CK</span>Chris K.</div></td><td class="num">6</td><td class="num">83</td><td class="num">89</td><td class="num">14</td><td>Takeaway · 17 Jul</td><td class="num">£3,318</td><td><span class="tag warn">Takeaway</span></td><td><span class="up">Current</span></td></tr>
+            <tr class="customer-row"><td><div class="customer-name"><span class="avatar">ID</span>Ian D.</div></td><td class="num">14</td><td class="num">41</td><td class="num">55</td><td class="num">0</td><td>Takeaway · 1 Mar</td><td class="num">£2,744</td><td><span class="tag info">Balanced</span></td><td><span class="down">Lapsed high value</span></td></tr>
+          </tbody>
+        </table></div>
+      </div>
+    </div>
+
+    <div class="grid equal-two">
+      <div class="card panel">
+        <div class="panel-head"><div><h3 class="panel-title">Customer value × frequency matrix</h3><div class="panel-sub">Prioritise service, retention and marketing by economic value</div></div></div>
+        <div class="quad-matrix">
+          <span class="q-label q-tl">High value · low frequency — OPPORTUNITY</span><span class="q-label q-tr">High value · high frequency — VIP</span><span class="q-label q-bl">Low value · low frequency — OCCASIONAL</span><span class="q-label q-br">Low value · high frequency — HABITUAL</span>
+          <div class="bubble" style="width:76px;height:76px;left:69%;top:13%;background:#2e8a60">VIP<br>184</div>
+          <div class="bubble" style="width:64px;height:64px;left:28%;top:19%;background:#6654a3">Big spenders<br>126</div>
+          <div class="bubble" style="width:70px;height:70px;left:67%;top:65%;background:#8d682b">Regulars<br>612</div>
+          <div class="bubble" style="width:58px;height:58px;left:21%;top:67%;background:#4d5f8d">Occasional<br>2,014</div>
+          <div class="bubble" style="width:48px;height:48px;left:48%;top:42%;background:#8d3c3b">Lapsed<br>89</div>
+        </div>
+      </div>
+      <div class="card panel">
+        <div class="panel-head"><div><h3 class="panel-title">Lapse logic and action rules</h3><div class="panel-sub">A fixed 90-day rule is too crude</div></div></div>
+        <div class="formula">Expected return gap =
+median days between recent visits
+(or segment default when history is thin)
+
+Lapse ratio =
+days since last interaction ÷ expected return gap
+
+Current: under 1.25×
+Watch: 1.25× to 1.75×
+Lapsed: above 1.75×</div>
+        <div class="scenario" style="margin-top:10px">
+          <div class="scenario-row"><div><h4>VIP / high value becomes overdue</h4><p>Personal note or manager invitation; no generic voucher.</p></div><strong class="bad">Priority 1</strong></div>
+          <div class="scenario-row"><div><h4>Regular becomes overdue</h4><p>Relevant new product, event or favourite-item message.</p></div><strong class="flat">Priority 2</strong></div>
+          <div class="scenario-row"><div><h4>Occasional customer lapses</h4><p>Automated broad campaign only when marginal capacity exists.</p></div><strong>Priority 3</strong></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="page" id="reviews">
+    <div class="rating-grid" style="margin-bottom:14px">
+      <div class="rating"><small>Overall</small><strong>4.62</strong><div class="stars">★★★★★</div><div class="kpi-sub"><span class="up">▲ 0.08</span> vs prior 90d</div></div>
+      <div class="rating"><small>Food</small><strong>4.78</strong><div class="stars">★★★★★</div><div class="kpi-sub">Strongest dimension</div></div>
+      <div class="rating"><small>Service</small><strong>4.55</strong><div class="stars">★★★★★</div><div class="kpi-sub"><span class="up">▲ 0.11</span></div></div>
+      <div class="rating"><small>Ambience</small><strong>4.49</strong><div class="stars">★★★★☆</div><div class="kpi-sub">Noise polarises guests</div></div>
+      <div class="rating"><small>Value</small><strong>4.38</strong><div class="stars">★★★★☆</div><div class="kpi-sub"><span class="down">▼ 0.06</span></div></div>
+    </div>
+
+    <div class="grid kpi-grid">
+      <div class="card kpi"><div class="kpi-label">Reviews · last 90 days</div><div class="kpi-value">238</div><div class="kpi-sub"><span class="delta up">▲ 17%</span> review volume</div><div class="microbar"><span style="width:76%"></span></div></div>
+      <div class="card kpi"><div class="kpi-label">Response rate</div><div class="kpi-value">94.1%</div><div class="kpi-sub"><span class="delta up">▲ 8.4 pts</span></div><div class="microbar"><span style="width:94%"></span></div></div>
+      <div class="card kpi"><div class="kpi-label">Median response time</div><div class="kpi-value">18.6h</div><div class="kpi-sub">Target under 24 hours</div><div class="microbar"><span style="width:79%"></span></div></div>
+      <div class="card kpi"><div class="kpi-label">Negative review rate</div><div class="kpi-value">5.9%</div><div class="kpi-sub"><span class="delta up">▼ 1.7 pts</span></div><div class="microbar"><span style="width:30%"></span></div></div>
+      <div class="card kpi"><div class="kpi-label">Recovered guests</div><div class="kpi-value">11</div><div class="kpi-sub">Returned after 1–3★ review</div><div class="microbar"><span style="width:55%"></span></div></div>
+      <div class="card kpi"><div class="kpi-label">Local review index</div><div class="kpi-value">108</div><div class="kpi-sub">8% above comparable market set</div><div class="microbar"><span style="width:88%"></span></div></div>
+    </div>
+
+    <div class="grid equal-two">
+      <div class="card panel">
+        <div class="panel-head"><div><h3 class="panel-title">Monthly rating trend</h3><div class="panel-sub">Overall score and local comparable benchmark</div></div><div class="legend"><span><i style="background:#e44b36"></i>Coyote</span><span><i style="background:#758190"></i>Local benchmark</span></div></div>
+        <div class="review-line">
+          <svg viewBox="0 0 700 240">
+            <polyline class="line-last" points="20,126 120,123 220,121 320,119 420,118 520,116 620,115 680,114"/>
+            <polyline class="line-current" points="20,112 120,108 220,101 320,96 420,89 520,78 620,71 680,66"/>
+            <g class="axistext"><text x="10" y="232">Dec</text><text x="110" y="232">Jan</text><text x="210" y="232">Feb</text><text x="310" y="232">Mar</text><text x="410" y="232">Apr</text><text x="510" y="232">May</text><text x="610" y="232">Jun</text><text x="662" y="232">Jul</text></g>
+          </svg>
+        </div>
+      </div>
+      <div class="card panel">
+        <div class="panel-head"><div><h3 class="panel-title">Sentiment themes</h3><div class="panel-sub">Illustrative topic sentiment from review text</div></div></div>
+        <div class="sentiment">
+          <div class="sent-row"><span>Burger quality</span><div class="sent-track"><span style="width:94%;background:#45c486"></span></div><b class="up">+94</b></div>
+          <div class="sent-row"><span>Portion size</span><div class="sent-track"><span style="width:87%;background:#45c486"></span></div><b class="up">+87</b></div>
+          <div class="sent-row"><span>Staff friendliness</span><div class="sent-track"><span style="width:84%;background:#45c486"></span></div><b class="up">+84</b></div>
+          <div class="sent-row"><span>Cocktails</span><div class="sent-track"><span style="width:76%;background:#45c486"></span></div><b class="up">+76</b></div>
+          <div class="sent-row"><span>Wait time</span><div class="sent-track"><span style="width:43%;background:#f0b64f"></span></div><b class="flat">+43</b></div>
+          <div class="sent-row"><span>Value perception</span><div class="sent-track"><span style="width:38%;background:#f0b64f"></span></div><b class="flat">+38</b></div>
+          <div class="sent-row"><span>Noise/music</span><div class="sent-track"><span style="width:21%;background:#ef6b68"></span></div><b class="down">+21</b></div>
+          <div class="sent-row"><span>Booking wait</span><div class="sent-track"><span style="width:18%;background:#ef6b68"></span></div><b class="down">+18</b></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid equal-two">
+      <div class="card panel">
+        <div class="panel-head"><div><h3 class="panel-title">Service recovery queue</h3><div class="panel-sub">Low ratings connected back to guest and visit history</div></div><span class="tag bad">6 open</span></div>
+        <div class="recovery">
+          <div class="recovery-row"><div><b>Guest A. · 2★</b><div class="muted">Long wait despite booking</div></div><div>Visit 15 Jul</div><div>Lifetime 12 visits</div><div><span class="tag bad">Call today</span></div></div>
+          <div class="recovery-row"><div><b>Guest B. · 3★</b><div class="muted">Value / portion concern</div></div><div>Visit 13 Jul</div><div>First visit</div><div><span class="tag warn">Reply</span></div></div>
+          <div class="recovery-row"><div><b>Guest C. · 2★</b><div class="muted">Order accuracy</div></div><div>Visit 12 Jul</div><div>Lifetime 7 visits</div><div><span class="tag bad">Manager</span></div></div>
+          <div class="recovery-row"><div><b>Guest D. · 3★</b><div class="muted">Music too loud</div></div><div>Visit 10 Jul</div><div>Lifetime 3 visits</div><div><span class="tag info">Responded</span></div></div>
+          <div class="recovery-row"><div><b>Guest E. · 1★</b><div class="muted">Late seating and cold fries</div></div><div>Visit 6 Jul</div><div>Lifetime 18 visits</div><div><span class="tag bad">Escalate</span></div></div>
+        </div>
+      </div>
+      <div class="card panel">
+        <div class="panel-head"><div><h3 class="panel-title">Review-to-return measurement</h3><div class="panel-sub">Did the guest return after the feedback and recovery?</div></div></div>
+        <div class="driver-grid">
+          <div class="driver"><small>5★ return in 90d</small><strong>42%</strong><p>Baseline loyalty</p></div>
+          <div class="driver"><small>1–3★ no contact</small><strong>11%</strong><p>Return rate</p></div>
+          <div class="driver"><small>1–3★ responded</small><strong>24%</strong><p>Return rate</p></div>
+          <div class="driver"><small>Manager recovery</small><strong>39%</strong><p>Return rate</p></div>
+        </div>
+        <div class="info-box warn-box" style="margin-top:12px">Response rate is not the objective. The objective is corrected operations and recovered customer value. Track whether valuable dissatisfied guests return.</div>
+      </div>
+    </div>
+
+    <div class="card panel">
+      <div class="panel-head"><div><h3 class="panel-title">Reputation management actions</h3><div class="panel-sub">Convert review information into operational decisions</div></div></div>
+      <div class="scroll"><table>
+        <thead><tr><th>Issue</th><th class="num">Mentions</th><th class="num">Trend</th><th>Connected operational signal</th><th>Decision</th><th>Owner</th></tr></thead>
+        <tbody>
+          <tr><td>Peak wait despite reservation</td><td class="num">18</td><td class="num"><span class="down">▲ 38%</span></td><td>On-time seating 74% Fri/Sat peak</td><td>Reduce turn-time variance and stagger large parties</td><td>FOH Manager</td></tr>
+          <tr><td>Value perception</td><td class="num">14</td><td class="num"><span class="down">▲ 17%</span></td><td>Value rating down 0.06</td><td>Improve menu framing and bundle architecture; do not cut price blindly</td><td>Owner</td></tr>
+          <tr><td>Music/noise</td><td class="num">11</td><td class="num"><span class="flat">Flat</span></td><td>Mostly 17:00–19:00 families</td><td>Daypart volume profile, not brand dilution</td><td>FOH Manager</td></tr>
+          <tr><td>Excellent staff</td><td class="num">73</td><td class="num"><span class="up">▲ 21%</span></td><td>Service rating +0.11</td><td>Recognise named staff and codify behaviours</td><td>Managers</td></tr>
+          <tr><td>Burger quality</td><td class="num">126</td><td class="num"><span class="up">▲ 14%</span></td><td>Food score 4.78</td><td>Use in marketing creative and guest reactivation</td><td>Marketing</td></tr>
+        </tbody>
+      </table></div>
+    </div>
+  </section>
+
+  <div class="card panel" style="margin-top:14px">
+    <div class="panel-head"><div><h3 class="panel-title">Recommended data architecture</h3><div class="panel-sub">Source-of-truth separation prevents false customer and revenue conclusions</div></div></div>
+    <div class="source-map">
+      <div class="source"><h4>OpenTable GuestCenter</h4><p>Reservations, source, status, party size, visit history, notes, tags, cancellations, no-shows, waitlist, reviews and guest profiles.</p><div class="sync">PRIMARY RESERVATION SOURCE</div></div>
+      <div class="source"><h4>Lightspeed K-Series</h4><p>Checks, covers, revenue, spend per cover/party, order details and table-status signals when the POS integration is active.</p><div class="sync">DINE-IN VALUE LAYER</div></div>
+      <div class="source"><h4>LivePepper / COMO</h4><p>Takeaway orders, loyalty identity, order frequency, channel behaviour, offers and last takeaway interaction.</p><div class="sync">TAKEAWAY CUSTOMER LAYER</div></div>
+      <div class="source"><h4>Customer identity map</h4><p>Normalize consented phone/email, keep source IDs, preserve opt-ins, avoid duplicate profiles and maintain role-based access.</p><div class="sync">CUSTOMER 360 LAYER</div></div>
+    </div>
+  </div>
+
+  <div class="footer">Coyote Burger · Reservations & Guest Command Centre · illustrative design only</div>
+</div>
+
+<script>
+const tabs=document.querySelectorAll('.tab');
+tabs.forEach(btn=>btn.addEventListener('click',()=>{
+  tabs.forEach(t=>t.classList.remove('active'));
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  btn.classList.add('active');
+  document.getElementById(btn.dataset.tab).classList.add('active');
+  window.scrollTo({top:0,behavior:'smooth'});
+}));
+
+const modeButtons=document.querySelectorAll('.modebtn');
+modeButtons.forEach(btn=>btn.addEventListener('click',()=>{
+  modeButtons.forEach(b=>b.classList.remove('active'));
+  document.querySelectorAll('.customer-table').forEach(t=>t.classList.remove('active'));
+  btn.classList.add('active');
+  document.querySelector('[data-table="'+btn.dataset.mode+'"]').classList.add('active');
+  filterCustomers();
+}));
+
+const search=document.getElementById('customerSearch');
+search.addEventListener('input',filterCustomers);
+function filterCustomers(){
+  const q=search.value.trim().toLowerCase();
+  const active=document.querySelector('.customer-table.active');
+  if(!active)return;
+  active.querySelectorAll('.customer-row').forEach(row=>{
+    row.classList.toggle('hidden',q && !row.innerText.toLowerCase().includes(q));
+  });
+}
+
+const pickupSlider=document.getElementById('pickupSlider');
+const noshowSlider=document.getElementById('noshowSlider');
+function updateForecast(){
+  const mult=Number(pickupSlider.value)/100;
+  const noRate=Number(noshowSlider.value)/100;
+  const onBooks=1850, basePickup=1214, walkins=1890, cancels=188;
+  const pickup=Math.round(basePickup*mult);
+  const nonCancelled=onBooks+pickup-cancels;
+  const noShows=Math.round(nonCancelled*noRate);
+  const total=onBooks+pickup+walkins-cancels-noShows;
+  const ly=4578;
+  const delta=(total/ly-1)*100;
+  document.getElementById('pickupLabel').textContent=Math.round(mult*100)+'%';
+  document.getElementById('pickupValue').textContent=pickup.toLocaleString('en-GB');
+  document.getElementById('pickupBar').style.width=Math.min(100,55*mult)+'%';
+  document.getElementById('noshowLabel').textContent=(noRate*100).toFixed(1)+'%';
+  document.getElementById('noshowRateLabel').textContent=(noRate*100).toFixed(1)+'%';
+  document.getElementById('noshowValue').textContent='−'+noShows.toLocaleString('en-GB');
+  document.getElementById('forecastTotal').textContent=total.toLocaleString('en-GB');
+  const deltaEl=document.getElementById('forecastVsLy');
+  deltaEl.textContent=(delta>=0?'▲ ':'▼ ')+Math.abs(delta).toFixed(1)+'%';
+  deltaEl.className='delta '+(delta>=0?'up':'down');
+  document.getElementById('forecastBar').style.width=Math.max(20,Math.min(100,78+delta*1.5))+'%';
+}
+pickupSlider.addEventListener('input',updateForecast);
+noshowSlider.addEventListener('input',updateForecast);
+updateForecast();
+</script>
+</body>
+</html>

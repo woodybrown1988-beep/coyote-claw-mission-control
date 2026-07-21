@@ -124,18 +124,18 @@ test('shell: default tab executive, ?tab=forecast switches, 5 links, everything 
   const db = makeDb();
   seedExecutive(db);
   const body = render(db);
-  assert.match(body, /class="r-tab active" href="\/coyote\/reports\?tab=executive"/, 'executive is the default');
+  assert.match(body, /class="r-tab active" href="\/coyote\/revenue\?tab=executive"/, 'executive is the default');
   assert.equal((body.match(/class="r-tab[ "]/g) || []).length, 5, '5 subtab links');
-  for (const t of ['executive', 'drivers', 'menu', 'reconciliation', 'forecast']) assert.ok(body.includes(`href="/coyote/reports?tab=${t}"`), `link to ${t}`);
+  for (const t of ['executive', 'drivers', 'menu', 'reconciliation', 'forecast']) assert.ok(body.includes(`href="/coyote/revenue?tab=${t}"`), `link to ${t}`);
   const fc = render(db, { tab: 'forecast' });
-  assert.match(fc, /class="r-tab active" href="\/coyote\/reports\?tab=forecast"/, '?tab=forecast switches');
+  assert.match(fc, /class="r-tab active" href="\/coyote\/revenue\?tab=forecast"/, '?tab=forecast switches');
   // the .rcc wrapper opens before EVERYTHING (styles + nav) and the body closes it
   const open = body.indexOf('<div class="rcc">');
   assert.ok(open === 0, 'the rcc wrapper encloses the whole page body');
   assert.ok(open < body.indexOf('class="r-tabs"'), 'tab nav inside the wrapper');
   assert.ok(body.trimEnd().endsWith('</div>'), 'wrapper closed');
   // garbage tab falls back to the default, never an error page
-  assert.match(render(db, { tab: 'DROP TABLE' }), /class="r-tab active" href="\/coyote\/reports\?tab=executive"/);
+  assert.match(render(db, { tab: 'DROP TABLE' }), /class="r-tab active" href="\/coyote\/revenue\?tab=executive"/);
   db.close();
 });
 
