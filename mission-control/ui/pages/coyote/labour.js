@@ -76,8 +76,22 @@ module.exports = {
 
     const nav = NAV.resolveNav(ctx.query, maxDate, now, '/coyote/labour');
     const histRow = rowsOf(q('SELECT MIN(business_date) AS d FROM labour_dept'))[0];
+    // 8-week labour-% trend for the hero spark (audit design change #3 — every headline number
+    // carries its trend). Same CROSS-RULER INTERSECTION discipline as the period figures: a week
+    // contributes only its days holding BOTH a labour row and net>0 sales; day-net fetched once
+    // per day (never multiplied across dept rows). Pre-burden — the scorecard ruler, like the hero.
+    const weeklyPct = rowsOf(q(
+      `SELECT strftime('%Y-%W', d.business_date) AS wk, SUM(d.c) AS c, SUM(d.net) AS net
+         FROM (SELECT ld.business_date, SUM(ld.act_cost_rc_pence) AS c,
+                      (SELECT s.net_sales_pence FROM sales_day s
+                        WHERE s.business_date = ld.business_date AND s.net_sales_pence > 0) AS net
+                 FROM labour_dept ld
+                WHERE ld.business_date > date(?, '-56 days') AND ld.business_date <= ?
+                GROUP BY ld.business_date) d
+        WHERE d.net IS NOT NULL GROUP BY wk ORDER BY wk`, [maxDate, maxDate]))
+      .map((r) => ({ v: num(r.net) > 0 ? (num(r.c) / num(r.net)) * 100 : null }));
     return {
-      now, hasData: true, maxDate, nav,
+      now, hasData: true, maxDate, nav, weeklyPct,
       histStart: histRow && histRow.d ? String(histRow.d) : null,
       current: build(nav.from, nav.to),
       comparator: nav.comparator ? build(nav.comparator.from, nav.comparator.to) : null,
@@ -179,7 +193,7 @@ module.exports = {
       }
       return `<div class="lb-head">${heroCell}
         <div class="lb-mini"><div class="lab">Rota'd → worked</div><div class="big">${hrs(schedMin)} → ${hrs(actMin)}</div><div class="sub ${varMin > 0 ? 'A' : ''}">${varMin >= 0 ? '+' : '−'}${hrs(Math.abs(varMin))} vs rota</div></div>
-        <div class="lb-mini"><div class="lab">Labour % of net</div><div class="big${net != null ? '' : ''}">${net != null ? ((ac / net) * 100).toFixed(1) + '%' : '—'}</div><div class="sub">${net != null ? 'true cost in Reports' : 'needs sales'}</div></div>
+        <div class="lb-mini"><div class="lab">Labour % of net</div><div class="big${net != null ? '' : ''}">${net != null ? ((ac / net) * 100).toFixed(1) + '%' : '—'}</div><div class="sub">${net != null ? 'true cost in Reports' : 'needs sales'}</div>${S.sparkline(m.weeklyPct || [], { width: 120, height: 26 })}</div>
       </div>`;
     };
 
