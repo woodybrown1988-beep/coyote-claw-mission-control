@@ -1,7 +1,10 @@
 'use strict';
 
 // Labour Centre L1 — the six-tab shell on /coyote/labour (the operator ruled the centre takes
-// the route), EXECUTIVE + ROTA VS ACTUAL built to the mock. Honesty under test:
+// the route), EXECUTIVE + ROTA VS ACTUAL built to the mock. (L2 built forecast/kitchen/foh —
+// proofs in mission-control-labour-centre-l2.test.js; L3 built coverage — proofs in
+// mission-control-labour-centre-l3.test.js; this file keeps the shell, the L1 tabs, and the
+// cross-tab NO-NAMES / empty-DB boundary controls.) Honesty under test:
 //   • TRUE ruler (labour_day: locked rates × 1.159 burden + salaried/365) everywhere on the
 //     built tabs; RC-screen renders ONLY inside the cost-definition translation card;
 //   • formula budget = salaried + 22.4% × net (K 14.3% + F 8.1%), OVER only beyond the ruled
@@ -269,16 +272,15 @@ test('rota vs actual: cost-definition reconciliation — RC-screen vs TRUE side 
   assert.ok(body.includes('2.0h') && body.includes('uncosted in RC'), 'RC-uncosted minutes surfaced');
 });
 
-// ---------------- pending tabs + boundaries ----------------
+// ---------------- L2-built tabs + boundaries ----------------
 
-test('pending tabs: forecast/kitchen/foh are note-only; no mock number anywhere on them', () => {
+test('L3 complete: NO tab carries a pending banner — the centre is fully built (coverage proofs live in the L3 file)', () => {
   const db = makeDb();
   seedKpiWeek(db);
-  for (const tabKey of ['forecast', 'kitchen', 'foh']) {
+  for (const tabKey of ['executive', 'forecast', 'rota', 'kitchen', 'foh', 'coverage']) {
     const body = renderTab(db, { tab: tabKey });
-    assert.ok(body.includes('PENDING'), `${tabKey} carries the pending note`);
-    assert.ok(body.includes('nothing is mocked'), `${tabKey} pledges no mock numbers`);
-    assert.ok(!/£\d[\d,]*\.\d{2}/.test(body), `${tabKey} renders no £ data value`);
+    assert.ok(!body.includes('PENDING'), `${tabKey} carries no pending note (the centre is complete)`);
+    assert.ok(!body.includes('banner amber'), `${tabKey} carries no pending banner class`);
   }
 });
 
