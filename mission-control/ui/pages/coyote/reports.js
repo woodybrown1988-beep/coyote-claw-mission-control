@@ -1,19 +1,28 @@
 'use strict';
 // Reports — the REVENUE COMMAND CENTRE (RCC Stage 2, ruled 2026-07-21). ONE route (/coyote/reports),
 // five subtabs per the operator mock (docs/revenue-command-centre/ gap map + reference/mock-*.png):
-//   executive (P1 BUILT) · drivers (P2 BUILT) · menu (P5 pending) · reconciliation (P3 pending)
+//   executive (P1 BUILT) · drivers (P2 BUILT) · menu (P5 pending) · reconciliation (P3 BUILT)
 //   · forecast (P4 BUILT)
 // Contract unchanged: { key, route, title, sub, getSection, render }. SELECT-only via ctx.q.
 // ONE HOME PER FACT (the absorb rule): the old projection panel + long-range + YoY headline are
 // ABSORBED by the Forecast tab; the old channel-mix stack/QR hero by the Executive donut (the
-// migration table survives as its expand); the decomposition table lives on Executive. The two
-// pending tabs carry the surviving flash panels UNRESTYLED until their phase lands.
-// P2 ABSORPTION (this build): the old drivers-tab flash panels left the page entirely —
+// migration table survives as its expand); the decomposition table lives on Executive. The one
+// pending tab (menu) carries its surviving flash panels UNRESTYLED until P5 lands.
+// P2 ABSORPTION (that build): the old drivers-tab flash panels left the page entirely —
 //   • sales-by-hour bars → absorbed by the hourly heatmap + peak-hour KPI (their one home now);
 //   • labour section + daypart labour-vs-sales + margin (prime cost) → LABOUR canon; home =
 //     /coyote/labour (which already carries the scorecard/hero) — DELETED here, not copied there;
 //   • ATV small-multiples → DELETED (ATV lives on the Executive strip; the per-channel monthly
 //     detail was P2-mock-absent — ruled out of scope, not rehomed).
+// P3 ABSORPTION (this build): the parked reconciliation panels left the pending list —
+//   • the flash payments table (sales_by_payment, day grain) → REBUILT as the tender-to-bank
+//     table on the per-receipt grain (sales_payments_api + the payment_methods_api dict) — its
+//     one home now;
+//   • the exceptions tile grid (discounts/voids/comps/refunds) → REBUILT as the gross-to-net
+//     bridge + the refunds KPI (day grain — the wire never populates per-receipt discounts);
+//   • the bank side = qb_bank_txns POSTED deposits (QB Phase-0 rule: "For Review" is not
+//     exposed; match on POSTED). NO tender↔deposit matching algorithm exists yet — the bank
+//     column renders the POSTED aggregate UNMATCHED; the match build is future work.
 // NO-FABRICATION rules baked in:
 //   • Executive KPI window = the LAST FULL Mon–Sun week vs the weekday-aligned week LY (−364d),
 //     premises-guarded — a non-comparable LY drops the delta and says so, never a raw cross-site %.
@@ -343,6 +352,77 @@ function buildDrivers(q, maxDate, rv2) {
   return d;
 }
 
+// RECONCILIATION (P3) — 28d control window anchored at the per-receipt max (the established
+// anchor): tender KPIs + the per-method tender-to-bank table (dict-named), the QB POSTED-deposit
+// bank side (UNMATCHED — no matching algorithm yet), the recon-battery exception ledger and the
+// day-grain gross-to-net bridge. Every side degrades to its honest empty-state, never a number.
+function buildRecon(q, rv2) {
+  const rc = { apiMax: null, from: null, tenders: null, bank: null, refunds: null, exceptions: null, ledger: [], bridge: null };
+  const apiMax = rv2 && rv2.maxApiDate ? rv2.maxApiDate : null;
+  if (!apiMax) return rc;
+  const from = K.shiftDays(apiMax, -27);
+  rc.apiMax = apiMax; rc.from = from;
+
+  // ---- tenders per payment METHOD — the dict (payment_methods_api) names methods on code;
+  // an undictionaried code renders AS the code, a NULL code as '(no method)' — never dropped.
+  // GROUP BY repeats the full expression: a bare `name` would resolve to m.name (NULL for
+  // every undictionaried code) and silently MERGE distinct methods — the tested bug. ----
+  const methods = rowsOf(q(
+    `SELECT COALESCE(m.name, NULLIF(p.code, ''), '(no method)') AS name,
+            SUM(p.net_with_tax_pence) amt, COUNT(*) txn, SUM(p.tip_pence) tips, SUM(p.surcharge_pence) sur
+       FROM sales_payments_api p LEFT JOIN payment_methods_api m ON m.code = p.code
+      WHERE p.business_date BETWEEN ? AND ?
+      GROUP BY COALESCE(m.name, NULLIF(p.code, ''), '(no method)') ORDER BY amt DESC`, [from, apiMax]));
+  if (methods.length) {
+    const rows = methods.map((r) => ({ name: String(r.name), amt: num(r.amt) || 0, txn: num(r.txn) || 0, tips: num(r.tips) || 0, sur: num(r.sur) || 0 }));
+    rc.tenders = {
+      rows,
+      amt: rows.reduce((s, r) => s + r.amt, 0), txn: rows.reduce((s, r) => s + r.txn, 0),
+      tips: rows.reduce((s, r) => s + r.tips, 0), sur: rows.reduce((s, r) => s + r.sur, 0),
+    };
+  }
+
+  // ---- bank side: QB POSTED deposits in-window (Phase-0 rule — the API never exposes "For
+  // Review"; deposits only, purchases/transfers are not takings). UNMATCHED aggregate. ----
+  const bk = rowsOf(q(`SELECT COUNT(*) n, SUM(total_pence) p FROM qb_bank_txns WHERE txn_kind = 'deposit' AND txn_date BETWEEN ? AND ?`, [from, apiMax]))[0];
+  if (bk && num(bk.n) > 0) rc.bank = { n: num(bk.n), pence: num(bk.p) || 0 };
+
+  // ---- refunds: day grain (the wire's only refund £ home) + REFUND-typed receipt count ----
+  const rf = rowsOf(q(`SELECT SUM(refunds_pence) p, COUNT(*) days FROM sales_day WHERE business_date BETWEEN ? AND ?`, [from, apiMax]))[0];
+  if (rf && num(rf.days) > 0) {
+    const rcnt = rowsOf(q(`SELECT COUNT(*) n FROM sales_receipts_api WHERE type = 'REFUND' AND business_date BETWEEN ? AND ?`, [from, apiMax]))[0];
+    rc.refunds = { pence: num(rf.p) || 0, days: num(rf.days), receipts: rcnt ? num(rcnt.n) || 0 : 0 };
+  }
+
+  // ---- battery exceptions: last 28d, passed=0, day_gross EXCLUDED from the unresolved count
+  // (the documented VAT/gross-basis class, ruled 2026-07-20 — it renders classed, below) ----
+  const ex = rowsOf(q(
+    `SELECT COUNT(DISTINCT business_date) days, SUM(passed = 0 AND check_name <> 'day_gross') fails
+       FROM sales_reconciliation WHERE business_date BETWEEN ? AND ?`, [from, apiMax]))[0];
+  if (ex && num(ex.days) > 0) rc.exceptions = { days: num(ex.days), fails: num(ex.fails) || 0 };
+  rc.ledger = rowsOf(q(
+    `SELECT business_date d, check_name c, delta_pence delta, finding
+       FROM sales_reconciliation WHERE business_date BETWEEN ? AND ? AND passed = 0
+      ORDER BY business_date DESC, check_name`, [from, apiMax]))
+    .map((r) => ({ date: String(r.d), check: String(r.c), delta: num(r.delta), finding: r.finding == null ? null : String(r.finding) }));
+
+  // ---- gross-to-net bridge: day grain over the same window (per-receipt discount attribution
+  // is not populated by the wire — verified against known-discount days) ----
+  const br = rowsOf(q(
+    `SELECT SUM(gross_sales_pence) gross, SUM(discounts_pence) disc, SUM(comps_pence) comps,
+            SUM(refunds_pence) refunds, SUM(voids_pence) voids, SUM(service_charges_pence) svc,
+            SUM(net_sales_pence) net, SUM(taxes_pence) vat, COUNT(*) days
+       FROM sales_day WHERE business_date BETWEEN ? AND ?`, [from, apiMax]))[0];
+  if (br && num(br.days) > 0 && num(br.gross) > 0) {
+    rc.bridge = {
+      days: num(br.days), gross: num(br.gross), disc: num(br.disc) || 0, comps: num(br.comps) || 0,
+      refunds: num(br.refunds) || 0, voids: num(br.voids) || 0, svc: num(br.svc) || 0,
+      net: num(br.net) || 0, vat: num(br.vat) || 0,
+    };
+  }
+  return rc;
+}
+
 // FORECAST (P4) — YTD facts, 3-year month sums, the journaled management override.
 function buildP4(q, nowYm) {
   const year = Number(nowYm.slice(0, 4));
@@ -392,7 +472,7 @@ function channelMonthStats(rv2) {
 
 module.exports = {
   key: 'reports', route: '/coyote/reports', workspace: 'coyote', title: 'Revenue',
-  sub: 'Revenue Command Centre — Executive / Drivers / Forecast live · Menu / Reconciliation pending · covers via OpenTable (not wired)',
+  sub: 'Revenue Command Centre — Executive / Drivers / Reconciliation / Forecast live · Menu pending · covers via OpenTable (not wired)',
 
   getSection(db, ctx) {
     const q = ctx && ctx.q;
@@ -469,20 +549,17 @@ module.exports = {
       m.p4 = buildP4(q, nowYm);
     } else if (tab === 'drivers') {
       m.drivers = buildDrivers(q, maxDate, rv2);
+    } else if (tab === 'reconciliation') {
+      m.recon = buildRecon(q, rv2);
     } else if (maxDate) {
-      // ---- pending tabs (menu / reconciliation): surviving flash panels on the period-nav window ----
+      // ---- pending tab (menu): surviving flash panels on the period-nav window ----
       m.nav = NAV.resolveNav(query, maxDate, now, '/coyote/reports');
       const histRow = rowsOf(q('SELECT MIN(business_date) AS d FROM sales_day'))[0];
       m.histStart = histRow && histRow.d ? String(histRow.d) : null;
       const build = (from, to) => {
         const tot = rowsOf(q(
-          `SELECT COUNT(*) AS days, SUM(net_sales_pence) AS net, SUM(gross_sales_pence) AS gross,
-                  SUM(transactions) AS txn, SUM(tips_pence) AS tips,
-                  SUM(discounts_pence) AS disc, SUM(voids_pence) AS voids, SUM(comps_pence) AS comps,
-                  SUM(refunds_pence) AS refunds
+          `SELECT COUNT(*) AS days, SUM(net_sales_pence) AS net
              FROM sales_day WHERE business_date BETWEEN ? AND ?`, [from, to]))[0] || {};
-        const payments = rowsOf(q(`SELECT method_name AS name, SUM(total_pence) AS total, SUM(tips_pence) AS tips
-             FROM sales_by_payment WHERE business_date BETWEEN ? AND ? GROUP BY method_id, method_name ORDER BY total DESC`, [from, to]));
         const cats = rowsOf(q(`SELECT category_name AS name, SUM(net_sales_pence) AS net
              FROM sales_by_category WHERE grain='statistic_group' AND business_date BETWEEN ? AND ?
              GROUP BY category_id, category_name HAVING SUM(net_sales_pence) > 0 ORDER BY net DESC LIMIT 12`, [from, to]));
@@ -492,7 +569,7 @@ module.exports = {
              FROM sales_by_product WHERE business_date BETWEEN ? AND ? GROUP BY sku, product_name HAVING SUM(total_amount_pence) > 0 ORDER BY amt ASC LIMIT 5`, [from, to]));
         // CLOSED vs MISSING (edge honesty): captured zero-net day = CLOSED; no row = NO RECORD.
         const closed = rowsOf(q(`SELECT COUNT(*) AS n FROM sales_day WHERE business_date BETWEEN ? AND ? AND net_sales_pence = 0`, [from, to]))[0] || { n: 0 };
-        return { from, to, tot, payments, cats, prodsTop, prodsBottom, closedDays: num(closed.n) || 0 };
+        return { from, to, tot, cats, prodsTop, prodsBottom, closedDays: num(closed.n) || 0 };
       };
       m.current = build(m.nav.from, m.nav.to);
       m.comparator = m.nav.comparator ? build(m.nav.comparator.from, m.nav.comparator.to) : null;
@@ -556,6 +633,17 @@ module.exports = {
       .rcc .r-hlabel{color:#818b95;font-size:10px;text-align:center}
       .rcc .r-hday{color:#b3bbc4;font-size:11px;font-weight:700}
       @media(max-width:820px){.rcc .r-heatmap{grid-template-columns:42px repeat(11,32px);overflow:auto}}
+      /* reconciliation: recon grid + total row + gross-to-net waterfall (mock grammar, ported verbatim) */
+      .rcc .recon-grid{grid-template-columns:1.25fr .75fr;margin-bottom:14px}
+      @media(max-width:820px){.rcc .recon-grid{grid-template-columns:1fr}}
+      .rcc .recon-total{display:flex;justify-content:space-between;padding:13px 10px;border-top:1px solid #3a434c;font-weight:900}
+      .rcc .waterfall{display:flex;align-items:flex-end;gap:8px;height:210px;padding:18px 8px 30px;border-bottom:1px solid #303842;position:relative;margin-bottom:26px}
+      .rcc .wf-col{flex:1;text-align:center;position:relative;min-width:48px}
+      .rcc .wf-bar{margin:0 auto;width:68%;border-radius:8px 8px 3px 3px;background:linear-gradient(180deg,#e6654f,#b83e2e);min-height:8px;position:relative}
+      .rcc .wf-col.neg .wf-bar{background:linear-gradient(180deg,#5c6876,#39434e)}
+      .rcc .wf-col.total .wf-bar{background:linear-gradient(180deg,#4dc58a,#2d895c)}
+      .rcc .wf-val{position:absolute;top:-20px;width:100%;font-size:10px;font-weight:800}
+      .rcc .wf-lab{position:absolute;top:calc(100% + 8px);left:50%;transform:translateX(-50%);width:96px;color:#8e98a2;font-size:9px;line-height:1.2}
       /* forecast: monthly clustered columns (mock's .monthly-plot grammar, ported) */
       .rcc .monthly-layout{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(320px,.45fr);gap:14px;margin-bottom:14px}
       @media(max-width:820px){.rcc .monthly-layout{grid-template-columns:1fr}}
@@ -587,8 +675,7 @@ module.exports = {
       .rcc .source h4{margin:0 0 6px;font-size:12px}
       .rcc .source p{margin:0;color:#909aa4;font-size:10px;line-height:1.45}
       .rcc .source .sync{margin-top:9px;color:#7fe0ae;font-size:10px;font-weight:800}
-      /* surviving legacy grammar (pending tabs + expands keep their pre-restyle form) */
-      .rp-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:8px}
+      /* surviving legacy grammar (the pending menu tab + expands keep their pre-restyle form) */
       .rp-two{display:grid;grid-template-columns:1fr 1fr;gap:16px}
       @media(max-width:840px){.rp-two{grid-template-columns:1fr}}
       .rp-hint{font-size:11px;color:var(--muted,#7a8);margin:-4px 0 14px}
@@ -1178,14 +1265,137 @@ module.exports = {
         ${scorePanel}`;
     };
 
-    // ============================ PENDING TABS (P3 / P5) ============================
-    const PENDING_BANNERS = {
-      reconciliation: 'Phase 3 pending — the tender-to-bank match is the build; interim panels below keep their pre-restyle form.',
-      menu: 'Phase 5 pending — costing the top-20 unlocks the full tab (59.5% of net sales in one afternoon).',
+    // ============================ RECONCILIATION (P3) ============================
+    const renderReconciliation = () => {
+      const rc = m.recon || {};
+      const t = rc.tenders;
+
+      // ---- KPI strip: 6 tiles on the 28d per-receipt window. Fees + the not-computable
+      // variance are ZERO-DIGIT states — no number exists, so none renders. ----
+      const kpis = [
+        S.rcc.kpi({
+          label: 'Expected tenders', value: t ? gbp(t.amt) : '—',
+          sub: t ? `gross basis (inc VAT) · ${int(t.txn)} payment(s) · sales_payments_api` : 'no per-receipt payment record in the window',
+        }),
+        rc.bank
+          ? S.rcc.kpi({
+            label: 'Processed / banked', value: gbp(rc.bank.pence),
+            sub: `QB POSTED deposits — unmatched to tenders (match build pending) · ${int(rc.bank.n)} deposit(s)`,
+          })
+          : S.rcc.kpi({ label: 'Processed / banked', value: 'not wired', sub: 'unlock: the QuickBooks statement wire — POSTED deposits (qb_bank_txns)' }),
+        (t && rc.bank)
+          ? S.rcc.kpi({
+            label: 'Gross variance', value: signedGbp(t.amt - rc.bank.pence),
+            sub: 'tenders − POSTED deposits · sides UNMATCHED — payout timing + non-sales deposits included until the match build',
+          })
+          : S.rcc.kpi({ label: 'Gross variance', value: 'not computable', sub: 'needs both sides real — tenders and banked deposits' }),
+        S.rcc.kpi({ label: 'Processor fees', value: 'no source', sub: 'no fee field in the POS record — statement/QB fact' }),
+        S.rcc.kpi({
+          label: 'Refunds · 28d', value: rc.refunds ? gbp(rc.refunds.pence) : '—',
+          sub: rc.refunds
+            ? `sales_day day grain · ${int(rc.refunds.days)} recorded day(s)${rc.refunds.receipts > 0 ? ` · ${int(rc.refunds.receipts)} REFUND receipt(s)` : ''}`
+            : 'no day-grain record in the window',
+        }),
+        S.rcc.kpi({
+          label: 'Unresolved exceptions', value: rc.exceptions ? String(rc.exceptions.fails) : '—',
+          sub: rc.exceptions
+            ? `battery fails · ${int(rc.exceptions.days)} recorded day(s) · day_gross documented class excluded`
+            : 'the recon batteries have not recorded this window',
+        }),
+      ].join('');
+      const kpiCaption = rc.apiMax
+        ? `<div class="rv2-caption">28d to ${esc(rc.apiMax)} (per-receipt max) · tenders: sales_payments_api, gross basis (net_with_tax_pence, inc VAT) · methods named by the payment_methods_api dict · bank: qb_bank_txns POSTED deposits (QB Phase-0 — "For Review" is never exposed) · exceptions: sales_reconciliation batteries</div>`
+        : `<div class="rv2-caption">No per-receipt payment record yet — the K-Series daily ingest fills sales_payments_api; the tender KPIs, ledger and bridge light up with it.</div>`;
+
+      // ---- tender-to-bank table: one row per METHOD; the bank side is the POSTED-deposit
+      // aggregate, UNMATCHED (no tender↔deposit matching algorithm exists — future build) ----
+      let tenderBody;
+      if (t) {
+        const rowsHtml = t.rows.map((r) =>
+          `<tr><td>${esc(r.name)}</td><td class="r-num mono">${gbp(r.amt)}</td><td class="r-num mono">${int(r.txn)}</td><td class="r-num mono">${gbp(r.tips)}</td><td class="r-num mono">${gbp(r.sur)}</td><td class="r-num mono ash">—</td><td>${S.rcc.tag('Recorded')}</td></tr>`).join('');
+        const bankRow = rc.bank
+          ? `<tr><td>QB POSTED deposits <span class="ash">(bank side)</span></td><td class="r-num mono ash">—</td><td class="r-num mono">${int(rc.bank.n)}</td><td class="r-num mono ash">—</td><td class="r-num mono ash">—</td><td class="r-num mono">${gbp(rc.bank.pence)}</td><td><span title="POSTED deposits in the window — no tender↔deposit match yet (the match build is future work)">${S.rcc.tag('Unmatched', 'info')}</span></td></tr>`
+          : '';
+        tenderBody = `<div style="overflow:auto"><table><thead><tr><th>Method</th><th class="r-num">Tendered · 28d</th><th class="r-num">Txns</th><th class="r-num">Tips</th><th class="r-num">Surcharge</th><th class="r-num">Bank</th><th>Status</th></tr></thead><tbody>${rowsHtml}${bankRow}</tbody></table></div>
+          <div class="recon-total"><span>Total</span><span class="mono">${gbp(t.amt)} tendered${rc.bank ? ` · ${gbp(rc.bank.pence)} banked · variance ${signedGbp(t.amt - rc.bank.pence)} (unmatched)` : ''}</span></div>`
+          + (rc.bank ? '' : S.rcc.emptyState({ title: 'Bank side', blocker: 'No POSTED deposits recorded in the window — the bank column stays empty rather than guessing.', unlock: 'the QuickBooks statement wire (qb_bank_txns POSTED deposits)' }))
+          + `<div class="r-mini-note">gross basis (net_with_tax_pence, inc VAT) · method names: payment_methods_api dict · ${rc.bank ? 'bank = QB POSTED deposits by date, UNMATCHED to tenders — the tender↔deposit matching algorithm is the future build' : 'tips/surcharge are the POS record’s own fields'}.</div>`;
+      } else {
+        tenderBody = S.rcc.emptyState({ title: 'Tender-to-bank reconciliation', blocker: 'No per-receipt payment record in the window.', unlock: 'the K-Series daily API ingest (sales_payments_api)' });
+      }
+      const tenderPanel = S.rcc.panel({
+        title: 'Tender-to-bank reconciliation', sub: 'POS tenders by method · bank = QB POSTED deposits · match build pending',
+        body: tenderBody,
+      });
+
+      // ---- control formulas: the canonical rulings VERBATIM — text, no computation ----
+      const formulaPanel = S.rcc.panel({
+        title: 'Control formulas', sub: 'the rulings the batteries enforce',
+        body: S.rcc.formula([
+          'day net (ex-VAT) = SUM(net_without_tax_pence) over non-cancelled SALE receipts',
+          'ATV = net ÷ transactions · ex-VAT · sales_by_channel basis',
+          'QR = STOREKIT ORDER & PAY',
+          'gross = net + VAT; day_gross deltas vs the scraper eras = DOCUMENTED VAT-basis class (ruled 2026-07-20)',
+          'covers ≠ POS guest count (OpenTable only)',
+          'single-writer: values live in the DB; docs carry pointers',
+        ]),
+      });
+
+      // ---- gross-to-net bridge: the mock's waterfall grammar; bars scaled to gross ----
+      let bridgeBody;
+      if (rc.bridge) {
+        const b = rc.bridge;
+        const H = 175; // the mock's tallest bar
+        const barH = (v) => Math.max(1, Math.round((Math.abs(v) / b.gross) * H));
+        const col = (label, v, cls, val) =>
+          `<div class="wf-col${cls ? ' ' + cls : ''}"><div class="wf-bar" style="height:${barH(v)}px"><div class="wf-val">${esc(val)}</div></div><div class="wf-lab">${esc(label)}</div></div>`;
+        bridgeBody = `<div class="waterfall">
+            ${col('Gross sales inc VAT', b.gross, '', gbp(b.gross))}
+            ${col('Discounts', b.disc, 'neg', `−${gbp(b.disc)}`)}
+            ${col('Comps', b.comps, 'neg', `−${gbp(b.comps)}`)}
+            ${col('Refunds', b.refunds, 'neg', `−${gbp(b.refunds)}`)}
+            ${col('Voids', b.voids, 'neg', `−${gbp(b.voids)}`)}
+            ${col('Service charges', b.svc, '', `+${gbp(b.svc)}`)}
+            ${col('Net revenue ex VAT', b.net, 'total', gbp(b.net))}
+          </div>
+          <div class="r-mini-note">28d to ${esc(rc.apiMax)} · ${int(b.days)} recorded day(s) · sales_day · VAT in window ${gbp(b.vat)} (net + VAT = the gross basis — the documented day_gross class) · per-receipt discount attribution not populated by the wire; day grain (verified against known-discount days).</div>`;
+      } else {
+        bridgeBody = S.rcc.emptyState({ title: 'Gross-to-net bridge', blocker: 'No day-grain sales record in the window.', unlock: 'the daily Lightspeed ingest (sales_day)' });
+      }
+      const bridgePanel = S.rcc.panel({ title: 'Gross-to-net revenue bridge', sub: 'day grain · gross → leakage → net ex-VAT · last 28 days', body: bridgeBody });
+
+      // ---- exception ledger: every battery failure in-window, one row per (date, check);
+      // day_gross renders CLASSED (Documented), never as an open exception ----
+      let ledgerBody;
+      if (!rc.exceptions) {
+        ledgerBody = S.rcc.emptyState({ title: 'Exception ledger', blocker: 'The recon batteries have not recorded this window yet.', unlock: 'the daily reconcile run (sales_reconciliation)' });
+      } else if (!rc.ledger.length) {
+        ledgerBody = `${S.rcc.pill('no exceptions in the window — batteries green', true)}
+          <div class="r-mini-note">${int(rc.exceptions.days)} recorded day(s) of battery checks, all passed.</div>`;
+      } else {
+        const rowsHtml = rc.ledger.map((r) => {
+          const chip = r.check === 'day_gross'
+            ? `<span title="VAT/gross-basis class, ruled 2026-07-20">${S.rcc.tag('Documented', 'info')}</span>`
+            : S.rcc.tag('Open', 'warn');
+          return `<tr><td class="mono">${esc(r.date)}</td><td class="mono"${r.finding ? ` title="${esc(r.finding)}"` : ''}>${esc(r.check)}</td><td class="r-num mono">${r.delta != null ? signedGbp(r.delta) : '—'}</td><td>box</td><td>${chip}</td></tr>`;
+        }).join('');
+        ledgerBody = `<div style="overflow:auto"><table><thead><tr><th>Date</th><th>Check</th><th class="r-num">Delta</th><th>Owner</th><th>Status</th></tr></thead><tbody>${rowsHtml}</tbody></table></div>
+          <div class="r-mini-note">one row per (date, check) · sales_reconciliation batteries, last 28d · day_gross = the documented VAT/gross-basis class (ruled 2026-07-20), never an open exception · owner ‘box’ = the battery raised it — owner/assignment lands with the workflow build.</div>`;
+      }
+      const ledgerPanel = S.rcc.panel({
+        title: 'Exception ledger', sub: 'every battery failure in the window, classed',
+        headRight: rc.exceptions && rc.exceptions.fails > 0 ? S.rcc.tag(`${rc.exceptions.fails} open`, 'warn') : '',
+        body: ledgerBody,
+      });
+
+      return `<div class="r-grid r-kpi-grid">${kpis}</div>${kpiCaption}
+        <div class="r-grid recon-grid">${tenderPanel}${formulaPanel}</div>
+        <div class="r-grid r-two-col">${bridgePanel}${ledgerPanel}</div>`;
     };
 
+    // ============================ PENDING TAB (P5) ============================
     const renderPending = (which) => {
-      const banner = S.rcc.note(PENDING_BANNERS[which] || 'pending');
+      const banner = S.rcc.note('Phase 5 pending — costing the top-20 unlocks the full tab (59.5% of net sales in one afternoon).');
       if (!m.hasData) {
         return `${banner}<div class="banner muted">No Lightspeed sales yet. The daily ingest (05:30) pulls yesterday's exports into the box; this tab lights up after the first run.</div>`;
       }
@@ -1220,18 +1430,6 @@ module.exports = {
         parts.push(`<div class="rp-hint">${bits.join(' · ')}</div>`);
       }
 
-      if (which === 'reconciliation') {
-        const payTotal = p.payments.reduce((s, x) => s + (num(x.total) || 0), 0);
-        const payRows = p.payments.map((x) => `<tr><td>${esc(x.name || '')}</td><td class="mono">${gbp(x.total)}</td><td class="mono ash">${gbp(x.tips)}</td></tr>`).join('');
-        parts.push(`<div class="sec-label">Payments <span class="mono">(reconciliation)</span><span class="rule"></span></div><div class="panel"><div class="panel-body">${payRows ? `<table class="tbl"><thead><tr><th>method</th><th>taken</th><th>tips</th></tr></thead><tbody>${payRows}<tr><td><b>Total</b></td><td class="mono"><b>${gbp(payTotal)}</b></td><td></td></tr></tbody></table>` : '<div class="empty-row">—</div>'}</div></div>`);
-        parts.push(`<div class="sec-label">Exceptions<span class="rule"></span></div><div class="rp-grid">
-          <div class="tile"><div class="lab">Discounts</div><div class="val">${gbp(t.disc)}</div><div class="sub">given away</div></div>
-          <div class="tile"><div class="lab">Voids</div><div class="val">${gbp(t.voids)}</div><div class="sub">cancelled items</div></div>
-          <div class="tile"><div class="lab">Comps</div><div class="val">${gbp(t.comps)}</div><div class="sub">comped</div></div>
-          <div class="tile"><div class="lab">Refunds</div><div class="val">${gbp(t.refunds)}</div><div class="sub">returned</div></div>
-        </div>`);
-      }
-
       if (which === 'menu') {
         const catRows = p.cats.map((c) => `<tr><td>${esc((c.name || '').replace(/::/g, ' · '))}</td><td class="mono">${gbp(c.net)}</td></tr>`).join('');
         const topRows = p.prodsTop.map((x) => `<tr><td>${esc(x.name || '')}</td><td class="mono">${gbp(x.amt)}</td><td class="mono ash">${int(Math.round(num(x.qty) || 0))}</td></tr>`).join('');
@@ -1250,6 +1448,7 @@ module.exports = {
     if (tab === 'forecast') tabBody = renderForecast();
     else if (tab === 'executive') tabBody = renderExecutive();
     else if (tab === 'drivers') tabBody = renderDrivers();
+    else if (tab === 'reconciliation') tabBody = renderReconciliation();
     else tabBody = renderPending(tab);
 
     const body = `<div class="rcc">`
