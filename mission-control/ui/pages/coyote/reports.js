@@ -17,6 +17,7 @@
 const S = require('../../shared.js');
 const NAV = require('../../period-nav.js');
 const REP = require('../../reporting.js');
+const K = require('../../kpi.js');
 
 function rowsOf(res) { return res && res.ok && Array.isArray(res.rows) ? res.rows : []; }
 function num(v) { if (v === null || v === undefined) return null; const n = Number(v); return Number.isFinite(n) ? n : null; }
@@ -154,8 +155,40 @@ module.exports = {
       seasonality: rowsOf(q(`SELECT month_of_year, days, open_days, net_pence, avg_net_per_open_day_pence FROM v_seasonality_current ORDER BY month_of_year`)),
       byYear: rowsOf(q(`SELECT substr(business_date,1,4) AS yr, premises, COUNT(*) AS days, SUM(net_sales_pence>0) AS open_days, SUM(net_sales_pence) AS net FROM v_sales_day_all GROUP BY yr, premises ORDER BY yr`)),
     };
+    // DECOMPOSITION (moved from Overview, audit 2026-07-21 — one home): per month of the current
+    // year, ΔR = (C1−C0)·A0 + (A1−A0)·C1 (exact identity); current month MTD-aligned; premises/
+    // incomplete months carry a reason, never a fabricated split.
+    const decomp = [];
+    {
+      const kmr = rowsOf(q(`SELECT MAX(business_date) d FROM v_sales_day_all WHERE premises='current'`))[0];
+      const kpiMax = kmr && kmr.d ? String(kmr.d) : null;
+      if (kpiMax) {
+        const yr = kpiMax.slice(0, 4);
+        const curMonth = kpiMax.slice(0, 7);
+        const maxDay = kpiMax.slice(8, 10);
+        const monthAgg = (ym, cap) => rowsOf(q(
+          `SELECT SUM(net_sales_pence) net, SUM(transactions) txn, COUNT(*) days, SUM(premises = 'current') curdays
+             FROM v_sales_day_all WHERE substr(business_date, 1, 7) = ? AND substr(business_date, 9, 2) <= ?`, [ym, cap]))[0] || {};
+        const calDays = (ym) => new Date(Date.UTC(Number(ym.slice(0, 4)), Number(ym.slice(5, 7)), 0)).getUTCDate();
+        for (let mo = 1; mo <= 12; mo++) {
+          const ym = `${yr}-${String(mo).padStart(2, '0')}`;
+          if (ym > curMonth) break;
+          const partial = ym === curMonth;
+          const cap = partial ? maxDay : '31';
+          const lyYm = `${Number(yr) - 1}-${String(mo).padStart(2, '0')}`;
+          const a = monthAgg(ym, cap), b = monthAgg(lyYm, cap);
+          let reason = null;
+          if (!num(b.days)) reason = 'no prior-year record';
+          else if (num(a.curdays) !== num(a.days) || num(b.curdays) !== num(b.days)) reason = 'premises break — no raw YoY';
+          else if (!partial && (num(a.days) < calDays(ym) || num(b.days) < calDays(lyYm))) reason = 'incomplete record';
+          const dd = reason === null ? K.decompose(num(b.txn) || 0, num(b.net) || 0, num(a.txn) || 0, num(a.net) || 0) : null;
+          decomp.push({ month: ym, partial, mtdDay: partial ? maxDay : null, net: num(a.net) || 0, lyNet: num(b.net) || 0, d: dd, reason: reason !== null ? reason : (dd === null ? 'zero transactions — no split' : null) });
+        }
+      }
+    }
+
     return {
-      now, hasData: true, maxDate, nav, rv2, longRange,
+      now, hasData: true, maxDate, nav, rv2, longRange, decomp,
       histStart: histRow && histRow.d ? String(histRow.d) : null,
       yoyAnchor, yoyLatestOk,
       current: build(nav.from, nav.to),
@@ -729,11 +762,29 @@ module.exports = {
           <div class="panel" style="margin-top:8px"><div class="panel-body"><table class="tbl"><thead><tr><th>month</th><th>net</th><th>prior year</th><th>YoY Δ</th></tr></thead><tbody>${yoyRows || ''}</tbody></table></div></div></details>`;
     }
 
+    // ---- DECOMPOSITION (the lever table — moved here from Overview) ----
+    let decompHtml = '';
+    if (m.decomp && m.decomp.length) {
+      const rows2 = m.decomp.map((r) => {
+        if (r.reason) return `<tr><td>${esc(monthLabel(r.month))}${r.partial ? ` <span class="ash">MTD d${esc(String(Number(r.mtdDay)))}</span>` : ''}</td><td class="mono">${gbp(r.net)}</td><td colspan="3" class="rp-yoy-na">${esc(r.reason)}</td></tr>`;
+        const dd = r.d;
+        const bar = (v) => { const w = Math.min(60, Math.round(Math.abs(v) / 100000 * 6)); return `<span style="display:inline-block;height:8px;width:${w}px;background:${v >= 0 ? 'var(--green,#34D399)' : 'var(--amber,#FBBF24)'};border-radius:2px;vertical-align:middle"></span>`; };
+        return `<tr><td>${esc(monthLabel(r.month))}${r.partial ? ` <span class="ash">MTD d${esc(String(Number(r.mtdDay)))}</span>` : ''}</td>
+          <td class="mono">${gbp(r.net)}</td>
+          <td class="mono"><span class="${dd.delta >= 0 ? 'rp-yoy-up' : 'rp-yoy-down'}">${dd.delta >= 0 ? '+' : '−'}${gbp(Math.abs(dd.delta))}</span></td>
+          <td class="mono">${bar(dd.volume)} ${dd.volume >= 0 ? '+' : '−'}${gbp(Math.abs(dd.volume))}</td>
+          <td class="mono">${bar(dd.spend)} ${dd.spend >= 0 ? '+' : '−'}${gbp(Math.abs(dd.spend))}${dd.checkOk ? '' : ' <span class="rp-yoy-down">Σ✗</span>'}</td></tr>`;
+      }).join('');
+      decompHtml = `<details class="rv2-details"><summary>decomposition — which lever moved each month (ΔR = volume + spend, exact identity) ▸</summary>
+        <div class="panel" style="margin-top:8px"><div class="panel-body"><table class="tbl"><thead><tr><th>month</th><th>net</th><th>Δ vs LY</th><th>volume effect</th><th>spend effect</th></tr></thead><tbody>${rows2}</tbody></table></div></div></details>`;
+    }
+
     const body = styles
       + `<style>${NAV.NAV_CSS}</style>`
       + '<div class="rp-lib"><a href="/coyote/report-library">Report Library — specialist reports, verdict-first →</a></div>'
       + v2Html
       + longRangeHtml
+      + decompHtml
       + `<div class="sec-label" style="margin-top:22px">Day / period flash <span class="mono">(POS-truthful · period nav)</span><span class="rule"></span></div>`
       + NAV.renderNavStrip(m.nav, '/coyote/reports', esc)
       + yoyHtml
