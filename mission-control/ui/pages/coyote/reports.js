@@ -1,19 +1,37 @@
 'use strict';
 // Reports — the REVENUE COMMAND CENTRE (RCC Stage 2, ruled 2026-07-21). ONE route (/coyote/reports),
 // five subtabs per the operator mock (docs/revenue-command-centre/ gap map + reference/mock-*.png):
-//   executive (P1 BUILT) · drivers (P2 BUILT) · menu (P5 pending) · reconciliation (P3 pending)
-//   · forecast (P4 BUILT)
+//   executive (P1 BUILT) · drivers (P2 BUILT) · menu (P5 BUILT) · reconciliation (P3 BUILT)
+//   · forecast (P4 BUILT) — ALL FIVE LIVE.
 // Contract unchanged: { key, route, title, sub, getSection, render }. SELECT-only via ctx.q.
 // ONE HOME PER FACT (the absorb rule): the old projection panel + long-range + YoY headline are
 // ABSORBED by the Forecast tab; the old channel-mix stack/QR hero by the Executive donut (the
-// migration table survives as its expand); the decomposition table lives on Executive. The two
-// pending tabs carry the surviving flash panels UNRESTYLED until their phase lands.
-// P2 ABSORPTION (this build): the old drivers-tab flash panels left the page entirely —
+// migration table survives as its expand); the decomposition table lives on Executive.
+// P2 ABSORPTION (that build): the old drivers-tab flash panels left the page entirely —
 //   • sales-by-hour bars → absorbed by the hourly heatmap + peak-hour KPI (their one home now);
 //   • labour section + daypart labour-vs-sales + margin (prime cost) → LABOUR canon; home =
 //     /coyote/labour (which already carries the scorecard/hero) — DELETED here, not copied there;
 //   • ATV small-multiples → DELETED (ATV lives on the Executive strip; the per-channel monthly
 //     detail was P2-mock-absent — ruled out of scope, not rehomed).
+// P3 ABSORPTION (this build): the parked reconciliation panels left the pending list —
+//   • the flash payments table (sales_by_payment, day grain) → REBUILT as the tender-to-bank
+//     table on the per-receipt grain (sales_payments_api + the payment_methods_api dict) — its
+//     one home now;
+//   • the exceptions tile grid (discounts/voids/comps/refunds) → REBUILT as the gross-to-net
+//     bridge + the refunds KPI (day grain — the wire never populates per-receipt discounts);
+//   • the bank side = qb_bank_txns POSTED deposits (QB Phase-0 rule: "For Review" is not
+//     exposed; match on POSTED). NO tender↔deposit matching algorithm exists yet — the bank
+//     column renders the POSTED aggregate UNMATCHED; the match build is future work.
+// P5 ABSORPTION (this build): the LAST pending tab (menu) is BUILT to its honest GATE-STATE —
+//   • the flash category-performance + best/slowest-sellers panels and the phase banner left
+//     the page entirely; their ONE home is now the canonical product performance table + the
+//     same-period decline watch (line grain, SKU-consolidated — sales_receipt_lines_api,
+//     product truth from 2023-07, NOT the scraper sales_by_product aggregate);
+//   • the period-nav machinery left reports WITH them (menu was its last user on this page;
+//     /coyote/labour keeps its own strip — the module lives on there);
+//   • contribution is GATED: recipe_lines = 0 (the Calum gate) — £-at-risk, dogs, portfolio
+//     placement and the contribution/class columns are designed empty-states carrying the ONE
+//     unlock line (the live recipes-worklist carrot → /coyote/recipes); no number is invented.
 // NO-FABRICATION rules baked in:
 //   • Executive KPI window = the LAST FULL Mon–Sun week vs the weekday-aligned week LY (−364d),
 //     premises-guarded — a non-comparable LY drops the delta and says so, never a raw cross-site %.
@@ -24,7 +42,6 @@
 //     Re-forecast at every read; the ONLY stored input is the journaled management override.
 //   • Every blocked panel is the designed empty-state naming blocker + unlock; no mock numbers.
 const S = require('../../shared.js');
-const NAV = require('../../period-nav.js');
 const REP = require('../../reporting.js');
 const K = require('../../kpi.js');
 
@@ -62,6 +79,14 @@ const LABOUR_MATERIALITY_PENCE = 4500;
 // DRINK = the four ruled class names; SIDE = the pure FRYER-station family (FRYER but neither
 // GRIDDLE nor BUN — the griddle/bun hybrids are mains, not sides).
 const DRINK_CLASS_NAMES = ['HOT DRINKS', 'SOFT DRINKS', 'ALCOHOL', 'SHAKES'];
+
+// Menu (P5) — the ONE unlock line every contribution-gated panel carries (the live
+// recipes-worklist carrot; the worklist itself is the value's home — /coyote/recipes).
+const UNLOCK_LINE = 'recipe costing: top-20 = 59.5% coverage, one session';
+// Menu movers / decline-watch thresholds — PRESENTATION CUTS (captioned as such), not rulings.
+const MOVER_PCT = 0.25; // |Δ 28d net| ≥ 25% of the prior window …
+const MOVER_FLOOR_PENCE = 10000; // … AND ≥ £100
+const DECLINE_FLOOR_PENCE = 5000; // decline watch: net decline ≥ £50
 
 // RCC donut palette in the mock's order: accent → blue → accent2 → purple → greys.
 const DONUT_COLORS = ['#e44b36', '#67a7ff', '#ffb34d', '#ad8cff', '#56616e', '#7d8da5'];
@@ -343,6 +368,136 @@ function buildDrivers(q, maxDate, rv2) {
   return d;
 }
 
+// RECONCILIATION (P3) — 28d control window anchored at the per-receipt max (the established
+// anchor): tender KPIs + the per-method tender-to-bank table (dict-named), the QB POSTED-deposit
+// bank side (UNMATCHED — no matching algorithm yet), the recon-battery exception ledger and the
+// day-grain gross-to-net bridge. Every side degrades to its honest empty-state, never a number.
+function buildRecon(q, rv2) {
+  const rc = { apiMax: null, from: null, tenders: null, bank: null, refunds: null, exceptions: null, ledger: [], bridge: null };
+  const apiMax = rv2 && rv2.maxApiDate ? rv2.maxApiDate : null;
+  if (!apiMax) return rc;
+  const from = K.shiftDays(apiMax, -27);
+  rc.apiMax = apiMax; rc.from = from;
+
+  // ---- tenders per payment METHOD — the dict (payment_methods_api) names methods on code;
+  // an undictionaried code renders AS the code, a NULL code as '(no method)' — never dropped.
+  // GROUP BY repeats the full expression: a bare `name` would resolve to m.name (NULL for
+  // every undictionaried code) and silently MERGE distinct methods — the tested bug. ----
+  const methods = rowsOf(q(
+    `SELECT COALESCE(m.name, NULLIF(p.code, ''), '(no method)') AS name,
+            SUM(p.net_with_tax_pence) amt, COUNT(*) txn, SUM(p.tip_pence) tips, SUM(p.surcharge_pence) sur
+       FROM sales_payments_api p LEFT JOIN payment_methods_api m ON m.code = p.code
+      WHERE p.business_date BETWEEN ? AND ?
+      GROUP BY COALESCE(m.name, NULLIF(p.code, ''), '(no method)') ORDER BY amt DESC`, [from, apiMax]));
+  if (methods.length) {
+    const rows = methods.map((r) => ({ name: String(r.name), amt: num(r.amt) || 0, txn: num(r.txn) || 0, tips: num(r.tips) || 0, sur: num(r.sur) || 0 }));
+    rc.tenders = {
+      rows,
+      amt: rows.reduce((s, r) => s + r.amt, 0), txn: rows.reduce((s, r) => s + r.txn, 0),
+      tips: rows.reduce((s, r) => s + r.tips, 0), sur: rows.reduce((s, r) => s + r.sur, 0),
+    };
+  }
+
+  // ---- bank side: QB POSTED deposits in-window (Phase-0 rule — the API never exposes "For
+  // Review"; deposits only, purchases/transfers are not takings). UNMATCHED aggregate. ----
+  const bk = rowsOf(q(`SELECT COUNT(*) n, SUM(total_pence) p FROM qb_bank_txns WHERE txn_kind = 'deposit' AND txn_date BETWEEN ? AND ?`, [from, apiMax]))[0];
+  if (bk && num(bk.n) > 0) rc.bank = { n: num(bk.n), pence: num(bk.p) || 0 };
+
+  // ---- refunds: day grain (the wire's only refund £ home) + REFUND-typed receipt count ----
+  const rf = rowsOf(q(`SELECT SUM(refunds_pence) p, COUNT(*) days FROM sales_day WHERE business_date BETWEEN ? AND ?`, [from, apiMax]))[0];
+  if (rf && num(rf.days) > 0) {
+    const rcnt = rowsOf(q(`SELECT COUNT(*) n FROM sales_receipts_api WHERE type = 'REFUND' AND business_date BETWEEN ? AND ?`, [from, apiMax]))[0];
+    rc.refunds = { pence: num(rf.p) || 0, days: num(rf.days), receipts: rcnt ? num(rcnt.n) || 0 : 0 };
+  }
+
+  // ---- battery exceptions: last 28d, passed=0, day_gross EXCLUDED from the unresolved count
+  // (the documented VAT/gross-basis class, ruled 2026-07-20 — it renders classed, below) ----
+  const ex = rowsOf(q(
+    `SELECT COUNT(DISTINCT business_date) days, SUM(passed = 0 AND check_name <> 'day_gross') fails
+       FROM sales_reconciliation WHERE business_date BETWEEN ? AND ?`, [from, apiMax]))[0];
+  if (ex && num(ex.days) > 0) rc.exceptions = { days: num(ex.days), fails: num(ex.fails) || 0 };
+  rc.ledger = rowsOf(q(
+    `SELECT business_date d, check_name c, delta_pence delta, finding
+       FROM sales_reconciliation WHERE business_date BETWEEN ? AND ? AND passed = 0
+      ORDER BY business_date DESC, check_name`, [from, apiMax]))
+    .map((r) => ({ date: String(r.d), check: String(r.c), delta: num(r.delta), finding: r.finding == null ? null : String(r.finding) }));
+
+  // ---- gross-to-net bridge: day grain over the same window (per-receipt discount attribution
+  // is not populated by the wire — verified against known-discount days) ----
+  const br = rowsOf(q(
+    `SELECT SUM(gross_sales_pence) gross, SUM(discounts_pence) disc, SUM(comps_pence) comps,
+            SUM(refunds_pence) refunds, SUM(voids_pence) voids, SUM(service_charges_pence) svc,
+            SUM(net_sales_pence) net, SUM(taxes_pence) vat, COUNT(*) days
+       FROM sales_day WHERE business_date BETWEEN ? AND ?`, [from, apiMax]))[0];
+  if (br && num(br.days) > 0 && num(br.gross) > 0) {
+    rc.bridge = {
+      days: num(br.days), gross: num(br.gross), disc: num(br.disc) || 0, comps: num(br.comps) || 0,
+      refunds: num(br.refunds) || 0, voids: num(br.voids) || 0, svc: num(br.svc) || 0,
+      net: num(br.net) || 0, vat: num(br.vat) || 0,
+    };
+  }
+  return rc;
+}
+
+// MENU GROWTH (P5) — the product ledger at line grain (sales_receipt_lines_api — product truth
+// from 2023-07): 28d product aggregates vs the prior 28d and the same 28d window LY (−364d).
+// Products group by SKU (renamed variants share SKUs — MAX(name) labels the row); SKUs without
+// positive window net (zero-value modifier lines) are excluded, stated on the tab.
+// CONTRIBUTION IS GATED: recipe_lines = 0 (the Calum gate) — £-at-risk, dogs, portfolio
+// placement and the contribution/class columns render as designed empty-states; nothing is
+// estimated. A line-absence IS a zero here (lines are ledger facts: no line = nothing sold),
+// unlike the day-grain no-record rule.
+function buildMenu(q, rv2) {
+  const mg = { apiMax: null, from: null, products: null, movers: null, decline: null };
+  const apiMax = rv2 && rv2.maxApiDate ? rv2.maxApiDate : null;
+  if (!apiMax) return mg;
+  const from = K.shiftDays(apiMax, -27);
+  mg.apiMax = apiMax; mg.from = from;
+  const agg = (f, t) => rowsOf(q(
+    `SELECT l.sku AS sku, MAX(l.name) AS name, SUM(l.quantity) AS qty, SUM(l.net_without_tax_pence) AS net
+       FROM sales_receipt_lines_api l JOIN sales_receipts_api r ON r.receipt_id = l.receipt_id
+      WHERE ${SALE_WHERE} AND r.business_date BETWEEN ? AND ? AND l.sku IS NOT NULL AND l.sku <> ''
+      GROUP BY l.sku HAVING SUM(l.net_without_tax_pence) > 0`, [f, t]));
+  const cur = agg(from, apiMax);
+  if (!cur.length) return mg;
+  const toMap = (rows) => new Map(rows.map((r) => [String(r.sku), { name: String(r.name || r.sku), qty: num(r.qty) || 0, net: num(r.net) || 0 }]));
+  const curM = toMap(cur);
+  const priM = toMap(agg(K.shiftDays(from, -28), K.shiftDays(apiMax, -28)));
+  const lyM = toMap(agg(K.shiftDays(from, -364), K.shiftDays(apiMax, -364)));
+  mg.products = [...curM.entries()]
+    .map(([sku, p]) => ({
+      sku, name: p.name, qty: p.qty, net: p.net,
+      priorNet: priM.has(sku) ? priM.get(sku).net : null,
+      lyNet: lyM.has(sku) ? lyM.get(sku).net : null,
+    }))
+    .sort((a, b) => b.net - a.net);
+  // movers: |Δ 28d net| ≥ 25% AND ≥ £100 vs the prior 28d (presentation cut, captioned);
+  // a product absent from one window counts when its swing clears the £100 floor.
+  const skus = new Set([...curM.keys(), ...priM.keys()]);
+  let movers = 0;
+  for (const sku of skus) {
+    const c = curM.has(sku) ? curM.get(sku).net : 0;
+    const p = priM.has(sku) ? priM.get(sku).net : 0;
+    const d = Math.abs(c - p);
+    if (d >= MOVER_FLOOR_PENCE && (p > 0 ? d >= MOVER_PCT * p : c > 0)) movers++;
+  }
+  mg.movers = movers;
+  // decline watch: top 6 by net DECLINE vs the prior 28d, ≥ £50 floor (presentation cut);
+  // a stopped seller is a REAL decline row (its window net truly IS zero), never dropped.
+  mg.decline = [...skus]
+    .map((sku) => {
+      const p = priM.has(sku) ? priM.get(sku) : null;
+      if (!p || !(p.net > 0)) return null;
+      const c = curM.has(sku) ? curM.get(sku) : null;
+      const now = c ? c.net : 0;
+      return { sku, name: c ? c.name : p.name, prior: p.net, now, pct: (now / p.net - 1) * 100 };
+    })
+    .filter((r) => r && r.prior - r.now >= DECLINE_FLOOR_PENCE)
+    .sort((a, b) => (b.prior - b.now) - (a.prior - a.now))
+    .slice(0, 6);
+  return mg;
+}
+
 // FORECAST (P4) — YTD facts, 3-year month sums, the journaled management override.
 function buildP4(q, nowYm) {
   const year = Number(nowYm.slice(0, 4));
@@ -392,14 +547,14 @@ function channelMonthStats(rv2) {
 
 module.exports = {
   key: 'reports', route: '/coyote/reports', workspace: 'coyote', title: 'Revenue',
-  sub: 'Revenue Command Centre — Executive / Drivers / Forecast live · Menu / Reconciliation pending · covers via OpenTable (not wired)',
+  sub: 'Revenue Command Centre — all five tabs live · contribution gated on recipe costing · covers via OpenTable (not wired)',
 
   getSection(db, ctx) {
     const q = ctx && ctx.q;
     const now = (ctx && ctx.now) || Date.now();
     const query = (ctx && ctx.query) || {};
     const tab = TAB_KEYS.includes(String(query.tab || '')) ? String(query.tab) : 'executive';
-    if (typeof q !== 'function') return { now, tab, hasData: false, rv2: null };
+    if (typeof q !== 'function') return { now, tab, rv2: null };
 
     // ---- shared: the per-receipt monthly record + projection (P1/P4 canon source) ----
     const nowYm = new Date(now).toISOString().slice(0, 7);
@@ -432,7 +587,7 @@ module.exports = {
 
     const maxRow = rowsOf(q('SELECT MAX(business_date) AS d FROM sales_day'))[0];
     const maxDate = maxRow && maxRow.d ? String(maxRow.d) : null;
-    const m = { now, tab, hasData: !!maxDate, maxDate, rv2 };
+    const m = { now, tab, maxDate, rv2 };
 
     if (tab === 'executive') {
       m.exec = buildExec(q, maxDate, rv2);
@@ -469,33 +624,11 @@ module.exports = {
       m.p4 = buildP4(q, nowYm);
     } else if (tab === 'drivers') {
       m.drivers = buildDrivers(q, maxDate, rv2);
-    } else if (maxDate) {
-      // ---- pending tabs (menu / reconciliation): surviving flash panels on the period-nav window ----
-      m.nav = NAV.resolveNav(query, maxDate, now, '/coyote/reports');
-      const histRow = rowsOf(q('SELECT MIN(business_date) AS d FROM sales_day'))[0];
-      m.histStart = histRow && histRow.d ? String(histRow.d) : null;
-      const build = (from, to) => {
-        const tot = rowsOf(q(
-          `SELECT COUNT(*) AS days, SUM(net_sales_pence) AS net, SUM(gross_sales_pence) AS gross,
-                  SUM(transactions) AS txn, SUM(tips_pence) AS tips,
-                  SUM(discounts_pence) AS disc, SUM(voids_pence) AS voids, SUM(comps_pence) AS comps,
-                  SUM(refunds_pence) AS refunds
-             FROM sales_day WHERE business_date BETWEEN ? AND ?`, [from, to]))[0] || {};
-        const payments = rowsOf(q(`SELECT method_name AS name, SUM(total_pence) AS total, SUM(tips_pence) AS tips
-             FROM sales_by_payment WHERE business_date BETWEEN ? AND ? GROUP BY method_id, method_name ORDER BY total DESC`, [from, to]));
-        const cats = rowsOf(q(`SELECT category_name AS name, SUM(net_sales_pence) AS net
-             FROM sales_by_category WHERE grain='statistic_group' AND business_date BETWEEN ? AND ?
-             GROUP BY category_id, category_name HAVING SUM(net_sales_pence) > 0 ORDER BY net DESC LIMIT 12`, [from, to]));
-        const prodsTop = rowsOf(q(`SELECT product_name AS name, SUM(total_amount_pence) AS amt, SUM(quantity) AS qty
-             FROM sales_by_product WHERE business_date BETWEEN ? AND ? GROUP BY sku, product_name HAVING SUM(total_amount_pence) > 0 ORDER BY amt DESC LIMIT 8`, [from, to]));
-        const prodsBottom = rowsOf(q(`SELECT product_name AS name, SUM(total_amount_pence) AS amt, SUM(quantity) AS qty
-             FROM sales_by_product WHERE business_date BETWEEN ? AND ? GROUP BY sku, product_name HAVING SUM(total_amount_pence) > 0 ORDER BY amt ASC LIMIT 5`, [from, to]));
-        // CLOSED vs MISSING (edge honesty): captured zero-net day = CLOSED; no row = NO RECORD.
-        const closed = rowsOf(q(`SELECT COUNT(*) AS n FROM sales_day WHERE business_date BETWEEN ? AND ? AND net_sales_pence = 0`, [from, to]))[0] || { n: 0 };
-        return { from, to, tot, payments, cats, prodsTop, prodsBottom, closedDays: num(closed.n) || 0 };
-      };
-      m.current = build(m.nav.from, m.nav.to);
-      m.comparator = m.nav.comparator ? build(m.nav.comparator.from, m.nav.comparator.to) : null;
+    } else if (tab === 'reconciliation') {
+      m.recon = buildRecon(q, rv2);
+    } else {
+      // menu (P5) — the line-grain product ledger; contribution-gated panels carry no data call
+      m.menu = buildMenu(q, rv2);
     }
     return m;
   },
@@ -556,6 +689,17 @@ module.exports = {
       .rcc .r-hlabel{color:#818b95;font-size:10px;text-align:center}
       .rcc .r-hday{color:#b3bbc4;font-size:11px;font-weight:700}
       @media(max-width:820px){.rcc .r-heatmap{grid-template-columns:42px repeat(11,32px);overflow:auto}}
+      /* reconciliation: recon grid + total row + gross-to-net waterfall (mock grammar, ported verbatim) */
+      .rcc .recon-grid{grid-template-columns:1.25fr .75fr;margin-bottom:14px}
+      @media(max-width:820px){.rcc .recon-grid{grid-template-columns:1fr}}
+      .rcc .recon-total{display:flex;justify-content:space-between;padding:13px 10px;border-top:1px solid #3a434c;font-weight:900}
+      .rcc .waterfall{display:flex;align-items:flex-end;gap:8px;height:210px;padding:18px 8px 30px;border-bottom:1px solid #303842;position:relative;margin-bottom:26px}
+      .rcc .wf-col{flex:1;text-align:center;position:relative;min-width:48px}
+      .rcc .wf-bar{margin:0 auto;width:68%;border-radius:8px 8px 3px 3px;background:linear-gradient(180deg,#e6654f,#b83e2e);min-height:8px;position:relative}
+      .rcc .wf-col.neg .wf-bar{background:linear-gradient(180deg,#5c6876,#39434e)}
+      .rcc .wf-col.total .wf-bar{background:linear-gradient(180deg,#4dc58a,#2d895c)}
+      .rcc .wf-val{position:absolute;top:-20px;width:100%;font-size:10px;font-weight:800}
+      .rcc .wf-lab{position:absolute;top:calc(100% + 8px);left:50%;transform:translateX(-50%);width:96px;color:#8e98a2;font-size:9px;line-height:1.2}
       /* forecast: monthly clustered columns (mock's .monthly-plot grammar, ported) */
       .rcc .monthly-layout{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(320px,.45fr);gap:14px;margin-bottom:14px}
       @media(max-width:820px){.rcc .monthly-layout{grid-template-columns:1fr}}
@@ -587,11 +731,41 @@ module.exports = {
       .rcc .source h4{margin:0 0 6px;font-size:12px}
       .rcc .source p{margin:0;color:#909aa4;font-size:10px;line-height:1.45}
       .rcc .source .sync{margin-top:9px;color:#7fe0ae;font-size:10px;font-weight:800}
-      /* surviving legacy grammar (pending tabs + expands keep their pre-restyle form) */
-      .rp-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:8px}
-      .rp-two{display:grid;grid-template-columns:1fr 1fr;gap:16px}
-      @media(max-width:840px){.rp-two{grid-template-columns:1fr}}
-      .rp-hint{font-size:11px;color:var(--muted,#7a8);margin:-4px 0 14px}
+      /* menu: portfolio matrix + classification key + decline rows (the mock's .matrix/.quad/
+         .decline-row grammar, ported verbatim into the .rcc scope; the .bubble class arrives
+         WITH contribution — no dead classes shipped ahead of the data) */
+      .rcc .menu-kpis{grid-template-columns:repeat(4,minmax(0,1fr))}
+      @media(max-width:820px){.rcc .menu-kpis{grid-template-columns:repeat(2,1fr)}}
+      .rcc .matrix{display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;height:300px;border-left:1px solid #39424b;border-bottom:1px solid #39424b;position:relative;margin:0 6px 30px 40px}
+      .rcc .quad{border-right:1px dashed #303943;border-top:1px dashed #303943;padding:10px;color:#717c87;font-size:10px}
+      .rcc .quad.opportunity{background:linear-gradient(135deg,rgba(173,140,255,.09),transparent)}
+      .rcc .quad.winner{background:linear-gradient(135deg,rgba(69,196,134,.1),transparent)}
+      .rcc .quad.dog{background:linear-gradient(135deg,rgba(239,107,104,.09),transparent)}
+      .rcc .quad.workhorse{background:linear-gradient(135deg,rgba(240,182,79,.08),transparent)}
+      .rcc .axis-y{position:absolute;left:-36px;top:46%;transform:rotate(-90deg);color:#7f8994;font-size:10px}
+      .rcc .axis-x{position:absolute;bottom:-24px;left:46%;color:#7f8994;font-size:10px}
+      .rcc .matrix-empty{position:absolute;inset:0;display:grid;place-items:center;padding:14px;text-align:left}
+      .rcc .matrix-empty .r-empty{background:rgba(13,17,21,.93);max-width:430px;box-shadow:0 10px 30px rgba(0,0,0,.35)}
+      .rcc .r-worklist-link{color:var(--raccent2);font-size:11px;font-weight:700;margin-top:8px}
+      .rcc .r-worklist-link:hover{text-decoration:underline}
+      .rcc .classification-key{display:grid;grid-template-columns:repeat(4,1fr);gap:9px;margin-top:12px}
+      @media(max-width:1200px){.rcc .classification-key{grid-template-columns:repeat(2,1fr)}}
+      @media(max-width:520px){.rcc .classification-key{grid-template-columns:1fr}}
+      .rcc .class-card{border:1px solid #2d353d;border-radius:11px;background:#11161a;padding:10px}
+      .rcc .class-card h4{margin:0 0 4px;font-size:11px}
+      .rcc .class-card p{margin:0;color:#8f99a3;font-size:9px;line-height:1.4}
+      .rcc .class-card h4.k-up{color:var(--rgood)} .rcc .class-card h4.k-flat{color:var(--rwarn)}
+      .rcc .class-card h4.k-opp{color:#b9a5ff} .rcc .class-card h4.k-down{color:var(--rbad)}
+      .rcc .decline-row{display:grid;grid-template-columns:1.3fr 76px 76px 58px 1fr;gap:8px;align-items:center;padding:10px 0;border-bottom:1px solid #252d34;font-size:11px}
+      .rcc .decline-row:last-child{border-bottom:0}
+      .rcc .decline-row.head{color:#808a94;font-size:9px;text-transform:uppercase;letter-spacing:.06em;font-weight:800}
+      .rcc .decline-row strong{font-size:12px}
+      .rcc .decline-row .action{color:#aab2ba;line-height:1.3}
+      @media(max-width:520px){.rcc .decline-row{grid-template-columns:1fr 60px 60px 48px}.rcc .decline-row .action{display:none}}
+      .rcc .not-costed{color:#7f8994;font-style:italic}
+      .rcc .rv2-caption a,.rcc .r-mini-note a{color:var(--raccent2);text-decoration:none}
+      .rcc .rv2-caption a:hover,.rcc .r-mini-note a:hover{text-decoration:underline}
+      /* surviving legacy grammar (the expands + decomp/scorecard tables keep their pre-restyle form) */
       .rp-yoy-up{color:var(--green,#34d399)} .rp-yoy-down{color:var(--red,#f87171)}
       .rp-yoy-na{color:var(--muted,#7a8);font-style:italic}
       .rp-lib{text-align:right;margin:0 0 10px;font-size:13px}
@@ -1178,83 +1352,257 @@ module.exports = {
         ${scorePanel}`;
     };
 
-    // ============================ PENDING TABS (P3 / P5) ============================
-    const PENDING_BANNERS = {
-      reconciliation: 'Phase 3 pending — the tender-to-bank match is the build; interim panels below keep their pre-restyle form.',
-      menu: 'Phase 5 pending — costing the top-20 unlocks the full tab (59.5% of net sales in one afternoon).',
+    // ============================ RECONCILIATION (P3) ============================
+    const renderReconciliation = () => {
+      const rc = m.recon || {};
+      const t = rc.tenders;
+
+      // ---- KPI strip: 6 tiles on the 28d per-receipt window. Fees + the not-computable
+      // variance are ZERO-DIGIT states — no number exists, so none renders. ----
+      const kpis = [
+        S.rcc.kpi({
+          label: 'Expected tenders', value: t ? gbp(t.amt) : '—',
+          sub: t ? `gross basis (inc VAT) · ${int(t.txn)} payment(s) · sales_payments_api` : 'no per-receipt payment record in the window',
+        }),
+        rc.bank
+          ? S.rcc.kpi({
+            label: 'Processed / banked', value: gbp(rc.bank.pence),
+            sub: `QB POSTED deposits — unmatched to tenders (match build pending) · ${int(rc.bank.n)} deposit(s)`,
+          })
+          : S.rcc.kpi({ label: 'Processed / banked', value: 'not wired', sub: 'unlock: the QuickBooks statement wire — POSTED deposits (qb_bank_txns)' }),
+        (t && rc.bank)
+          ? S.rcc.kpi({
+            label: 'Gross variance', value: signedGbp(t.amt - rc.bank.pence),
+            sub: 'tenders − POSTED deposits · sides UNMATCHED — payout timing + non-sales deposits included until the match build',
+          })
+          : S.rcc.kpi({ label: 'Gross variance', value: 'not computable', sub: 'needs both sides real — tenders and banked deposits' }),
+        S.rcc.kpi({ label: 'Processor fees', value: 'no source', sub: 'no fee field in the POS record — statement/QB fact' }),
+        S.rcc.kpi({
+          label: 'Refunds · 28d', value: rc.refunds ? gbp(rc.refunds.pence) : '—',
+          sub: rc.refunds
+            ? `sales_day day grain · ${int(rc.refunds.days)} recorded day(s)${rc.refunds.receipts > 0 ? ` · ${int(rc.refunds.receipts)} REFUND receipt(s)` : ''}`
+            : 'no day-grain record in the window',
+        }),
+        S.rcc.kpi({
+          label: 'Unresolved exceptions', value: rc.exceptions ? String(rc.exceptions.fails) : '—',
+          sub: rc.exceptions
+            ? `battery fails · ${int(rc.exceptions.days)} recorded day(s) · day_gross documented class excluded`
+            : 'the recon batteries have not recorded this window',
+        }),
+      ].join('');
+      const kpiCaption = rc.apiMax
+        ? `<div class="rv2-caption">28d to ${esc(rc.apiMax)} (per-receipt max) · tenders: sales_payments_api, gross basis (net_with_tax_pence, inc VAT) · methods named by the payment_methods_api dict · bank: qb_bank_txns POSTED deposits (QB Phase-0 — "For Review" is never exposed) · exceptions: sales_reconciliation batteries</div>`
+        : `<div class="rv2-caption">No per-receipt payment record yet — the K-Series daily ingest fills sales_payments_api; the tender KPIs, ledger and bridge light up with it.</div>`;
+
+      // ---- tender-to-bank table: one row per METHOD; the bank side is the POSTED-deposit
+      // aggregate, UNMATCHED (no tender↔deposit matching algorithm exists — future build) ----
+      let tenderBody;
+      if (t) {
+        const rowsHtml = t.rows.map((r) =>
+          `<tr><td>${esc(r.name)}</td><td class="r-num mono">${gbp(r.amt)}</td><td class="r-num mono">${int(r.txn)}</td><td class="r-num mono">${gbp(r.tips)}</td><td class="r-num mono">${gbp(r.sur)}</td><td class="r-num mono ash">—</td><td>${S.rcc.tag('Recorded')}</td></tr>`).join('');
+        const bankRow = rc.bank
+          ? `<tr><td>QB POSTED deposits <span class="ash">(bank side)</span></td><td class="r-num mono ash">—</td><td class="r-num mono">${int(rc.bank.n)}</td><td class="r-num mono ash">—</td><td class="r-num mono ash">—</td><td class="r-num mono">${gbp(rc.bank.pence)}</td><td><span title="POSTED deposits in the window — no tender↔deposit match yet (the match build is future work)">${S.rcc.tag('Unmatched', 'info')}</span></td></tr>`
+          : '';
+        tenderBody = `<div style="overflow:auto"><table><thead><tr><th>Method</th><th class="r-num">Tendered · 28d</th><th class="r-num">Txns</th><th class="r-num">Tips</th><th class="r-num">Surcharge</th><th class="r-num">Bank</th><th>Status</th></tr></thead><tbody>${rowsHtml}${bankRow}</tbody></table></div>
+          <div class="recon-total"><span>Total</span><span class="mono">${gbp(t.amt)} tendered${rc.bank ? ` · ${gbp(rc.bank.pence)} banked · variance ${signedGbp(t.amt - rc.bank.pence)} (unmatched)` : ''}</span></div>`
+          + (rc.bank ? '' : S.rcc.emptyState({ title: 'Bank side', blocker: 'No POSTED deposits recorded in the window — the bank column stays empty rather than guessing.', unlock: 'the QuickBooks statement wire (qb_bank_txns POSTED deposits)' }))
+          + `<div class="r-mini-note">gross basis (net_with_tax_pence, inc VAT) · method names: payment_methods_api dict · ${rc.bank ? 'bank = QB POSTED deposits by date, UNMATCHED to tenders — the tender↔deposit matching algorithm is the future build' : 'tips/surcharge are the POS record’s own fields'}.</div>`;
+      } else {
+        tenderBody = S.rcc.emptyState({ title: 'Tender-to-bank reconciliation', blocker: 'No per-receipt payment record in the window.', unlock: 'the K-Series daily API ingest (sales_payments_api)' });
+      }
+      const tenderPanel = S.rcc.panel({
+        title: 'Tender-to-bank reconciliation', sub: 'POS tenders by method · bank = QB POSTED deposits · match build pending',
+        body: tenderBody,
+      });
+
+      // ---- control formulas: the canonical rulings VERBATIM — text, no computation ----
+      const formulaPanel = S.rcc.panel({
+        title: 'Control formulas', sub: 'the rulings the batteries enforce',
+        body: S.rcc.formula([
+          'day net (ex-VAT) = SUM(net_without_tax_pence) over non-cancelled SALE receipts',
+          'ATV = net ÷ transactions · ex-VAT · sales_by_channel basis',
+          'QR = STOREKIT ORDER & PAY',
+          'gross = net + VAT; day_gross deltas vs the scraper eras = DOCUMENTED VAT-basis class (ruled 2026-07-20)',
+          'covers ≠ POS guest count (OpenTable only)',
+          'single-writer: values live in the DB; docs carry pointers',
+        ]),
+      });
+
+      // ---- gross-to-net bridge: the mock's waterfall grammar; bars scaled to gross ----
+      let bridgeBody;
+      if (rc.bridge) {
+        const b = rc.bridge;
+        const H = 175; // the mock's tallest bar
+        const barH = (v) => Math.max(1, Math.round((Math.abs(v) / b.gross) * H));
+        const col = (label, v, cls, val) =>
+          `<div class="wf-col${cls ? ' ' + cls : ''}"><div class="wf-bar" style="height:${barH(v)}px"><div class="wf-val">${esc(val)}</div></div><div class="wf-lab">${esc(label)}</div></div>`;
+        bridgeBody = `<div class="waterfall">
+            ${col('Gross sales inc VAT', b.gross, '', gbp(b.gross))}
+            ${col('Discounts', b.disc, 'neg', `−${gbp(b.disc)}`)}
+            ${col('Comps', b.comps, 'neg', `−${gbp(b.comps)}`)}
+            ${col('Refunds', b.refunds, 'neg', `−${gbp(b.refunds)}`)}
+            ${col('Voids', b.voids, 'neg', `−${gbp(b.voids)}`)}
+            ${col('Service charges', b.svc, '', `+${gbp(b.svc)}`)}
+            ${col('Net revenue ex VAT', b.net, 'total', gbp(b.net))}
+          </div>
+          <div class="r-mini-note">28d to ${esc(rc.apiMax)} · ${int(b.days)} recorded day(s) · sales_day · VAT in window ${gbp(b.vat)} (net + VAT = the gross basis — the documented day_gross class) · per-receipt discount attribution not populated by the wire; day grain (verified against known-discount days).</div>`;
+      } else {
+        bridgeBody = S.rcc.emptyState({ title: 'Gross-to-net bridge', blocker: 'No day-grain sales record in the window.', unlock: 'the daily Lightspeed ingest (sales_day)' });
+      }
+      const bridgePanel = S.rcc.panel({ title: 'Gross-to-net revenue bridge', sub: 'day grain · gross → leakage → net ex-VAT · last 28 days', body: bridgeBody });
+
+      // ---- exception ledger: every battery failure in-window, one row per (date, check);
+      // day_gross renders CLASSED (Documented), never as an open exception ----
+      let ledgerBody;
+      if (!rc.exceptions) {
+        ledgerBody = S.rcc.emptyState({ title: 'Exception ledger', blocker: 'The recon batteries have not recorded this window yet.', unlock: 'the daily reconcile run (sales_reconciliation)' });
+      } else if (!rc.ledger.length) {
+        ledgerBody = `${S.rcc.pill('no exceptions in the window — batteries green', true)}
+          <div class="r-mini-note">${int(rc.exceptions.days)} recorded day(s) of battery checks, all passed.</div>`;
+      } else {
+        const rowsHtml = rc.ledger.map((r) => {
+          const chip = r.check === 'day_gross'
+            ? `<span title="VAT/gross-basis class, ruled 2026-07-20">${S.rcc.tag('Documented', 'info')}</span>`
+            : S.rcc.tag('Open', 'warn');
+          return `<tr><td class="mono">${esc(r.date)}</td><td class="mono"${r.finding ? ` title="${esc(r.finding)}"` : ''}>${esc(r.check)}</td><td class="r-num mono">${r.delta != null ? signedGbp(r.delta) : '—'}</td><td>box</td><td>${chip}</td></tr>`;
+        }).join('');
+        ledgerBody = `<div style="overflow:auto"><table><thead><tr><th>Date</th><th>Check</th><th class="r-num">Delta</th><th>Owner</th><th>Status</th></tr></thead><tbody>${rowsHtml}</tbody></table></div>
+          <div class="r-mini-note">one row per (date, check) · sales_reconciliation batteries, last 28d · day_gross = the documented VAT/gross-basis class (ruled 2026-07-20), never an open exception · owner ‘box’ = the battery raised it — owner/assignment lands with the workflow build.</div>`;
+      }
+      const ledgerPanel = S.rcc.panel({
+        title: 'Exception ledger', sub: 'every battery failure in the window, classed',
+        headRight: rc.exceptions && rc.exceptions.fails > 0 ? S.rcc.tag(`${rc.exceptions.fails} open`, 'warn') : '',
+        body: ledgerBody,
+      });
+
+      return `<div class="r-grid r-kpi-grid">${kpis}</div>${kpiCaption}
+        <div class="r-grid recon-grid">${tenderPanel}${formulaPanel}</div>
+        <div class="r-grid r-two-col">${bridgePanel}${ledgerPanel}</div>`;
     };
 
-    const renderPending = (which) => {
-      const banner = S.rcc.note(PENDING_BANNERS[which] || 'pending');
-      if (!m.hasData) {
-        return `${banner}<div class="banner muted">No Lightspeed sales yet. The daily ingest (05:30) pulls yesterday's exports into the box; this tab lights up after the first run.</div>`;
-      }
-      // period-nav (build windows) survives ONLY here; tab preserved on every nav link + the form
-      const strip = NAV.renderNavStrip(m.nav, '/coyote/reports', esc)
-        .replace(/href="\/coyote\/reports\?period=/g, `href="/coyote/reports?tab=${which}&amp;period=`)
-        .replace('<input type="hidden" name="period" value="custom"/>', `<input type="hidden" name="tab" value="${which}"/><input type="hidden" name="period" value="custom"/>`);
-      // Custom-range comparator: net vs the same-length PRECEDING window (a lookup, labelled).
-      let comparatorHtml = '';
-      if (m.nav.comparator && m.comparator) {
-        const curNet = num((m.current.tot || {}).net);
-        const prevNet = num((m.comparator.tot || {}).net);
-        const prevDays = num((m.comparator.tot || {}).days) || 0;
-        comparatorHtml = !prevDays
-          ? `<div class="rp-hint">Comparator (${esc(m.nav.comparator.label)}): no record — history starts ${esc(m.histStart || '?')}.</div>`
-          : `<div class="rp-hint">vs ${esc(m.nav.comparator.label)}: net ${gbp(prevNet)} → ${gbp(curNet)}${curNet != null && prevNet != null ? ` (${curNet - prevNet >= 0 ? '+' : '−'}${gbp(Math.abs(curNet - prevNet))})` : ''}${prevDays < (num((m.current.tot || {}).days) || 0) ? ` · comparator covers only ${prevDays} day(s)` : ''}.</div>`;
-      }
-      const p = m.current;
-      const t = p.tot || {};
-      if (!num(t.days)) {
-        return `${banner}${strip}<div class="banner muted">No record for this period — history starts ${esc(m.histStart || '(no sales history yet)')}. Nothing is interpolated; days without a record are never shown as zeros.</div>`;
-      }
-      const parts = [banner, strip, comparatorHtml];
-      // settled span of this window (never expects the future): from → min(to, maxDate)
-      const settledEnd = m.maxDate < p.to ? m.maxDate : p.to;
-      const expected = Math.max(0, Math.round((Date.parse(settledEnd + 'T12:00:00Z') - Date.parse(p.from + 'T12:00:00Z')) / 86400000) + 1);
-      const missing = Math.max(0, expected - (num(t.days) || 0));
-      if (p.closedDays > 0 || missing > 0) {
-        const bits = [];
-        if (p.closedDays > 0) bits.push(`<b>${p.closedDays} closed day${p.closedDays === 1 ? '' : 's'}</b> (captured with zero trade — closed, not missing)`);
-        if (missing > 0) bits.push(`<b>${missing} day${missing === 1 ? '' : 's'} with no record</b> (not captured — never counted as zeros)`);
-        parts.push(`<div class="rp-hint">${bits.join(' · ')}</div>`);
-      }
+    // ============================ MENU GROWTH (P5) ============================
+    const renderMenu = () => {
+      const mg = m.menu || {};
+      const hasLines = !!(mg.products && mg.products.length);
 
-      if (which === 'reconciliation') {
-        const payTotal = p.payments.reduce((s, x) => s + (num(x.total) || 0), 0);
-        const payRows = p.payments.map((x) => `<tr><td>${esc(x.name || '')}</td><td class="mono">${gbp(x.total)}</td><td class="mono ash">${gbp(x.tips)}</td></tr>`).join('');
-        parts.push(`<div class="sec-label">Payments <span class="mono">(reconciliation)</span><span class="rule"></span></div><div class="panel"><div class="panel-body">${payRows ? `<table class="tbl"><thead><tr><th>method</th><th>taken</th><th>tips</th></tr></thead><tbody>${payRows}<tr><td><b>Total</b></td><td class="mono"><b>${gbp(payTotal)}</b></td><td></td></tr></tbody></table>` : '<div class="empty-row">—</div>'}</div></div>`);
-        parts.push(`<div class="sec-label">Exceptions<span class="rule"></span></div><div class="rp-grid">
-          <div class="tile"><div class="lab">Discounts</div><div class="val">${gbp(t.disc)}</div><div class="sub">given away</div></div>
-          <div class="tile"><div class="lab">Voids</div><div class="val">${gbp(t.voids)}</div><div class="sub">cancelled items</div></div>
-          <div class="tile"><div class="lab">Comps</div><div class="val">${gbp(t.comps)}</div><div class="sub">comped</div></div>
-          <div class="tile"><div class="lab">Refunds</div><div class="val">${gbp(t.refunds)}</div><div class="sub">returned</div></div>
-        </div>`);
-      }
+      // ---- KPI strip (4): two REAL line-grain tiles, two contribution-GATED tiles whose
+      // VALUE carries zero digits — no £-at-risk or dogs count exists without contribution ----
+      const kpis = [
+        S.rcc.kpi({
+          label: 'Products selling', value: hasLines ? String(mg.products.length) : '—',
+          sub: hasLines ? 'distinct SKUs with positive 28d net · line grain' : 'no per-receipt line record yet',
+        }),
+        S.rcc.kpi({
+          label: 'Weekly revenue at risk', value: 'needs costing',
+          sub: `needs contribution — the Calum gate (recipe_lines is empty) · unlock: ${UNLOCK_LINE}`,
+        }),
+        S.rcc.kpi({
+          label: 'Menu movers', value: hasLines ? String(mg.movers) : '—',
+          sub: hasLines ? '|Δ net| ≥ 25% and ≥ £100 vs prior 28d — presentation cut, not a ruling' : 'no per-receipt line record yet',
+        }),
+        S.rcc.kpi({
+          label: 'Dogs', value: 'needs costing',
+          sub: `classification needs contribution — the Calum gate · unlock: ${UNLOCK_LINE}`,
+        }),
+      ].join('');
+      const kpiCaption = mg.apiMax
+        ? `<div class="rv2-caption">28d to ${esc(mg.apiMax)} (per-receipt max) vs prior 28d · line grain (sales_receipt_lines_api — product truth from 2023-07) · products grouped by SKU (renamed variants consolidated; MAX(name) labels the row) · SKUs without positive window net excluded (zero-value modifier lines) · contribution: recipe_lines is EMPTY (the Calum gate) — <a href="/coyote/recipes">recipes worklist</a></div>`
+        : `<div class="rv2-caption">No per-receipt API record yet — the K-Series daily ingest fills the line grain; products, movers, the decline watch and the performance table light up with it. The contribution family stays gated on recipe costing either way.</div>`;
 
-      if (which === 'menu') {
-        const catRows = p.cats.map((c) => `<tr><td>${esc((c.name || '').replace(/::/g, ' · '))}</td><td class="mono">${gbp(c.net)}</td></tr>`).join('');
-        const topRows = p.prodsTop.map((x) => `<tr><td>${esc(x.name || '')}</td><td class="mono">${gbp(x.amt)}</td><td class="mono ash">${int(Math.round(num(x.qty) || 0))}</td></tr>`).join('');
-        const botRows = p.prodsBottom.map((x) => `<tr><td>${esc(x.name || '')}</td><td class="mono">${gbp(x.amt)}</td><td class="mono ash">${int(Math.round(num(x.qty) || 0))}</td></tr>`).join('');
-        parts.push(`<div class="rp-two">
-          <div><div class="sec-label">Category performance <span class="mono">(top 12)</span><span class="rule"></span></div><div class="panel"><div class="panel-body">${catRows ? `<table class="tbl"><thead><tr><th>category</th><th>net</th></tr></thead><tbody>${catRows}</tbody></table>` : '<div class="empty-row">—</div>'}</div></div></div>
-          <div><div class="sec-label">Best sellers <span class="mono">(by sales)</span><span class="rule"></span></div><div class="panel"><div class="panel-body">${topRows ? `<table class="tbl"><thead><tr><th>product</th><th>sales</th><th>qty</th></tr></thead><tbody>${topRows}</tbody></table>` : '<div class="empty-row">—</div>'}
-            ${botRows ? `<div class="sec-label" style="margin-top:14px">Slowest sellers<span class="rule"></span></div><table class="tbl"><thead><tr><th>product</th><th>sales</th><th>qty</th></tr></thead><tbody>${botRows}</tbody></table>` : ''}</div></div></div>
-        </div>`);
-      }
+      // ---- menu engineering portfolio: the mock's quadrant matrix as the DESIGNED EMPTY-STATE
+      // — four labelled tinted quadrants, NO bubbles (bubbles land with contribution), the
+      // blocker + unlock centred inside; the classification key below is definitional TEXT ----
+      const quads = `<div class="matrix">
+          <div class="quad opportunity"><strong>OPPORTUNITIES / PUZZLES</strong><br>High contribution · low popularity</div>
+          <div class="quad winner"><strong>WINNERS / STARS</strong><br>High contribution · high popularity</div>
+          <div class="quad dog"><strong>DOGS</strong><br>Low contribution · low popularity</div>
+          <div class="quad workhorse"><strong>WORKHORSES / PLOWHORSES</strong><br>Low contribution · high popularity</div>
+          <div class="axis-y">Contribution profit / item</div><div class="axis-x">Sales popularity →</div>
+          <div class="matrix-empty">${S.rcc.emptyState({
+            title: 'Portfolio placement',
+            blocker: 'portfolio placement needs per-item contribution — recipe_lines is empty (the Calum gate). The quadrants are ready; bubbles land with the first costed recipes.',
+            unlock: UNLOCK_LINE,
+          })}<a class="r-worklist-link" href="/coyote/recipes">open the recipes worklist →</a></div>
+        </div>`;
+      const classKey = `<div class="classification-key">
+          <div class="class-card"><h4 class="k-up">Winners</h4><p>Protect availability, feature prominently and use in paid creative. Avoid unnecessary discounting.</p></div>
+          <div class="class-card"><h4 class="k-flat">Workhorses</h4><p>Keep because guests want them, but improve recipe cost, price architecture or add-on conversion.</p></div>
+          <div class="class-card"><h4 class="k-opp">Opportunities</h4><p>Profitable but under-ordered. Improve naming, menu position, photography and staff prompts.</p></div>
+          <div class="class-card"><h4 class="k-down">Dogs</h4><p>Low popularity and weak economics. Rework once, then remove unless strategically necessary.</p></div>
+        </div>`;
+      const portfolioPanel = S.rcc.panel({
+        title: 'Menu engineering portfolio', sub: 'popularity vs contribution profit per item · bubble size = current-period revenue',
+        headRight: S.rcc.tag('Gated', 'warn'),
+        body: quads + classKey
+          + `<div class="r-mini-note">quadrant placement needs BOTH axes real — popularity (line grain, ready) × contribution/item (recipe_lines, empty); nothing is estimated.</div>`,
+      });
 
-      return parts.join('\n');
+      // ---- same-period decline watch (REAL, line grain): top net declines vs the prior 28d;
+      // the action column is the honest generic — per-product actions need contribution ----
+      let declineBody;
+      if (!hasLines) {
+        declineBody = S.rcc.emptyState({ title: 'Same-period decline watch', blocker: 'No per-receipt line record in the window.', unlock: 'the K-Series daily API ingest (line grain)' });
+      } else if (!mg.decline.length) {
+        declineBody = `${S.rcc.pill('no product declined ≥ £50 net vs the prior 28 days', true)}
+          <div class="r-mini-note">decline floor £50 (presentation cut, not a ruling) · 28d to ${esc(mg.apiMax)} vs prior 28d · line grain (sales_receipt_lines_api)</div>`;
+      } else {
+        const rowsHtml = mg.decline.map((r) => `<div class="decline-row"><div><strong>${esc(r.name)}</strong></div>
+            <div class="r-num mono">${gbp(r.prior)}</div><div class="r-num mono">${gbp(r.now)}</div>
+            <div class="r-num mono r-down">${esc(pctStr(r.pct))}</div>
+            <div class="action">check price/portion/menu placement — contribution unknown until costing</div></div>`).join('');
+        declineBody = `<div class="decline-row head"><div>Item</div><div class="r-num">Prior 28d</div><div class="r-num">Now 28d</div><div class="r-num">Δ%</div><div class="action">Response</div></div>${rowsHtml}
+          <div class="r-mini-note">top ${mg.decline.length} net decline(s) ≥ £50 (presentation floor, not a ruling) · 28d to ${esc(mg.apiMax)} vs prior 28d · line grain (sales_receipt_lines_api) · a stopped seller shows its true £0.00 window net · per-product actions land with contribution — the generic check is the honest ceiling</div>`;
+      }
+      const declinePanel = S.rcc.panel({
+        title: 'Same-period decline watch', sub: 'largest net declines · 28d vs the prior 28d · ex-VAT',
+        headRight: hasLines && mg.decline.length ? S.rcc.tag(`${mg.decline.length} declining`, 'bad') : '',
+        body: declineBody,
+      });
+
+      // ---- canonical product performance: FILLS NOW at line grain; the contribution column
+      // is the SAME muted zero-digit cell everywhere and every class chip is Pending ----
+      let perfBody;
+      if (!hasLines) {
+        perfBody = S.rcc.emptyState({ title: 'Canonical product performance', blocker: 'No per-receipt line record in the window.', unlock: 'the K-Series daily API ingest (line grain)' });
+      } else {
+        const totalNet = mg.products.reduce((s, p) => s + p.net, 0) || 1;
+        const na = (why) => `<span class="rp-yoy-na" title="${esc(why)}">—</span>`;
+        const pcell = (v) => `<span class="${v >= 0 ? 'r-up' : 'r-down'}">${esc(pctStr(v))}</span>`;
+        const rowsHtml = mg.products.slice(0, 15).map((p) => {
+          const trend = p.priorNet != null && p.priorNet > 0 ? (p.net / p.priorNet - 1) * 100 : null;
+          const yoy = p.lyNet != null && p.lyNet > 0 ? (p.net / p.lyNet - 1) * 100 : null;
+          return `<tr><td>${esc(p.name)}</td>
+            <td class="r-num mono">${int(Math.round(p.qty))}</td>
+            <td class="r-num mono">${gbp(p.net)}</td>
+            <td class="r-num mono">${((p.net / totalNet) * 100).toFixed(1)}%</td>
+            <td class="r-num mono">${trend != null ? pcell(trend) : na('no prior-28d record')}</td>
+            <td class="r-num mono">${yoy != null ? pcell(yoy) : na('no LY record (same 28d window −364d)')}</td>
+            <td class="r-num not-costed">not costed</td>
+            <td>${S.rcc.tag('Pending', 'info')}</td></tr>`;
+        }).join('');
+        perfBody = `<div style="overflow:auto"><table><thead><tr><th>Product</th><th class="r-num">Units</th><th class="r-num">Net · 28d</th><th class="r-num">Mix</th><th class="r-num">Trend vs prior 28d</th><th class="r-num">YoY</th><th class="r-num">Contribution / item</th><th>Class</th></tr></thead><tbody>${rowsHtml}</tbody></table></div>
+          <div class="r-mini-note">top 15 of ${int(mg.products.length)} products by 28d net · line grain (sales_receipt_lines_api — product truth from 2023-07) · grouped by SKU, MAX(name) label · mix = share of the 28d product net · YoY = same 28d window −364d · contribution + classification unlock with ${esc(UNLOCK_LINE)} — <a href="/coyote/recipes">recipes worklist</a></div>`;
+      }
+      const perfPanel = S.rcc.panel({
+        title: 'Canonical product performance', sub: 'units · net · mix · momentum per SKU-consolidated product',
+        headRight: S.rcc.tag('zero-value modifier lines excluded', 'good'),
+        body: perfBody,
+      });
+
+      return `<div class="r-grid r-kpi-grid menu-kpis">${kpis}</div>${kpiCaption}
+        <div class="r-grid r-two-col">${portfolioPanel}${declinePanel}</div>
+        ${perfPanel}`;
     };
 
     let tabBody;
     if (tab === 'forecast') tabBody = renderForecast();
     else if (tab === 'executive') tabBody = renderExecutive();
     else if (tab === 'drivers') tabBody = renderDrivers();
-    else tabBody = renderPending(tab);
+    else if (tab === 'reconciliation') tabBody = renderReconciliation();
+    else tabBody = renderMenu();
 
     const body = `<div class="rcc">`
       + styles
-      + `<style>${NAV.NAV_CSS}</style>`
       + '<div class="rp-lib"><a href="/coyote/report-library">Report Library — specialist reports, verdict-first →</a></div>'
       + tabsNav
       + tabBody
