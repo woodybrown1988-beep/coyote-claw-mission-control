@@ -1,11 +1,14 @@
 'use strict';
 
-// Labour centre — the COVERAGE & PEOPLE holding pen + page-wide honesty. The old labour page's
-// un-absorbed panels (staffing shape · today-live intraday · U18 WTR guard · rate parity) HOLD
-// on ?tab=coverage until their L2 home is built; this file pins them there. The absorbed panels
-// (hero, 8-week spark, dept scorecard, cross-ruler block, clock drift, blended rate, period nav)
-// left the page — their pins live in mission-control-labour-centre-l1.test.js against their new
-// homes (Executive + Rota vs Actual).
+// Labour centre — the COVERAGE & PEOPLE inherited-panel pins + page-wide honesty. L3 built the
+// tab: the old labour page's panels are all ABSORBED into their final homes on ?tab=coverage —
+// today-live intraday (the Today strip), U18 WTR guard + rate parity (the compliance panel),
+// staffing shape (the coverage heatmap's staffing side). This file pins that those inherited
+// behaviours SURVIVED the absorption (names/citations/stale/uncosted honesty intact) and that
+// the pending banner is gone. The absorbed L1 panels (hero, 8-week spark, dept scorecard,
+// cross-ruler block, clock drift, blended rate, period nav) have their pins in
+// mission-control-labour-centre-l1.test.js; the L3 build proofs (KPI strip, derived-requirement
+// heatmap arithmetic, class-based boundary, ratios) live in mission-control-labour-centre-l3.
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
@@ -110,22 +113,26 @@ test('coverage: WTR aggregate — per-person breach counts, hard-limit total, sy
   assert.ok(body.includes('rota-policy action items'), 'points at the fix');
 });
 
-test('coverage: staffing shape holds (hourly worked bars, ruler-free); thin record = honest note', () => {
+test('coverage: staffing shape is ABSORBED by the coverage heatmap — hourly record renders as staffing density (ruler-free) until the required side derives; honest empty state', () => {
   const db = makeDb();
   for (const h of [11, 12, 13, 18, 19, 20]) db.prepare(`INSERT INTO labour_hourly (business_date, hour, actual_minutes) VALUES ('2026-07-01', ?, ?)`).run(h, 300 + h * 5);
   const body = renderTab(db, { tab: 'coverage' });
-  assert.ok(body.includes('Staffing shape'), 'held section present');
-  assert.ok(body.includes('lb-bar'), 'staffing bars rendered');
+  assert.ok(body.includes('Combined coverage vs required staffing'), 'the heatmap panel is the new home');
+  assert.ok(body.includes('ABSORBED the old staffing-shape panel'), 'the one-home absorption is recorded on-panel');
+  assert.ok(body.includes('STAFFING ONLY'), 'no demand wire here → the honest staffing-only fallback, reason named');
+  assert.equal((body.match(/r-cell r-l/g) || []).length, 6, 'the six staffed hour cells render as density');
   assert.ok(body.includes('ruler-free'), 'minute grain declared');
 
   db.prepare(`DELETE FROM labour_hourly`).run();
-  assert.ok(renderTab(db, { tab: 'coverage' }).includes('No hourly staffing record yet'), 'honest empty state');
+  assert.ok(renderTab(db, { tab: 'coverage' }).includes('labour_hourly is empty'), 'honest empty state names the wire');
 });
 
-test('coverage: the pending banner names the holding-pen deal + the EXCLUDED-BY-RULING People queue', () => {
+test('coverage: NO pending banner remains (L3 built the tab); the People exception queue never renders — the exclusion line stands in its place', () => {
   const db = makeDb();
   const body = renderTab(db, { tab: 'coverage' });
-  assert.ok(body.includes('PENDING'), 'pending note present');
-  assert.ok(body.includes('EXCLUDED BY RULING'), 'the People exception queue is named excluded, not empty-stated');
+  assert.ok(!body.includes('PENDING'), 'the pending note is gone — the centre is complete');
+  assert.ok(!body.includes('banner amber'), 'no pending banner class');
+  assert.ok(body.includes('per-person behavioural queues are excluded by the surveillance-boundary ruling'), 'the exclusion is a standing line, not an empty state');
   assert.ok(!body.includes('People exception queue</h'), 'and no such panel renders');
+  assert.ok(body.includes('Compliance &amp; structural exceptions'), 'the compliant substitute panel holds the position');
 });

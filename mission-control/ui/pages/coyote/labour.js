@@ -4,13 +4,19 @@
 // (/coyote/labour — the operator ruled the centre TAKES the existing route), six subtabs:
 //   executive (default) · forecast · rota (Rota vs Actual) · kitchen · foh · coverage
 // L1 SCOPE: the shell + EXECUTIVE + ROTA VS ACTUAL fully built.
-// L2 SCOPE (this build): LABOUR FORECAST + KITCHEN + FRONT OF HOUSE built to the mock —
+// L2 SCOPE: LABOUR FORECAST + KITCHEN + FRONT OF HOUSE built to the mock —
 //   forecast = interactive weekly forecast (what-if slider, CLIENT-side only, nothing stored)
 //   + five-band DERIVED curve + eight-week outlook + forward management view + calibration/
 //   guardrails canon; kitchen/foh = ONE shared dept renderer (day performance · role mix ·
-//   demand vs staffing · decision ratios). Coverage still renders a pending note HOLDING the
-//   old labour page's un-absorbed panels (staffing shape · today-live intraday · U18 WTR
-//   guard · rate parity) until its L2/L3 home is built.
+//   demand vs staffing · decision ratios).
+// L3 SCOPE (this build): COVERAGE & PEOPLE — the FINAL tab; the centre is COMPLETE and no
+//   pending banner remains anywhere: today-live intraday strip (operational coverage — its
+//   home) · aggregate people KPI strip (last full week, ZERO person keys) · combined
+//   coverage-vs-required heatmap (staffing = labour_hourly TRUE £, site-level; required =
+//   line-grain demand share × the formula budget — a DERIVATION, captioned, never a rota
+//   standard) · compliance & structural exceptions (the ruled-in person CLASSES only — the
+//   mock's People exception queue is EXCLUDED-BY-RULING) · aggregate ratios · canon +
+//   data-architecture cards.
 // ONE HOME PER FACT (the absorb rule) — what the old /coyote/labour page's panels became:
 //   • hero headline + 8-week labour-% spark → ABSORBED by the Executive KPI strip + 13-week
 //     control trend (deleted here, one home);
@@ -23,7 +29,9 @@
 //   • clock-drift panel → ABSORBED by Rota vs Actual (aggregate decomposition + reconciliation
 //     — per-shift NAMES deliberately left behind, see the surveillance boundary below);
 //   • blended-rate sparklines → ABSORBED by the variance bridge's dept rate-mix effect;
-//   • staffing shape / today-live / WTR / rate parity → HELD on the coverage tab (L2 home).
+//   • staffing shape → ABSORBED by the Coverage & People coverage-vs-required heatmap (L3);
+//   • today-live intraday → the Coverage & People "Today — live" strip (its home, L3);
+//   • WTR guard + rate parity → ABSORBED by the Coverage & People compliance panel (L3).
 // THE RULERS (never mixed, every figure captioned):
 //   • TRUE (the operating truth): labour_day costs — locked rates × 1.159 employer burden +
 //     salaried/365 day-grain apportionment. THIS CENTRE'S BASIS.
@@ -39,7 +47,10 @@
 // RotaCloud fix) — trends STATE the hole, never bridge it.
 // SURVEILLANCE BOUNDARY (ruling, gap map): people appear as rota-STRUCTURAL facts only — no
 // per-employee scoring/monitoring queues; labour_shifts user_name never renders on any tab.
-// The People exception queue is EXCLUDED-BY-RULING; the gap map records it.
+// The People exception queue is EXCLUDED-BY-RULING; the gap map records it. The boundary is
+// CLASS-based, not name-based: the ruled-IN person-keyed classes (WTR regulatory flags,
+// rate-parity payroll rows, unmapped-shift names) DO render names — structural/regulatory
+// facts, not behavioural framing. Attendance renders as AGGREGATES only.
 // Contract: { key, route, workspace, title, sub, getSection, render }. SELECT-only via ctx.q.
 const S = require('../../shared.js');
 const REP = require('../../reporting.js');
@@ -49,7 +60,8 @@ function rowsOf(res) { return res && res.ok && Array.isArray(res.rows) ? res.row
 function num(v) { if (v === null || v === undefined) return null; const n = Number(v); return Number.isFinite(n) ? n : null; }
 const MONTHS_ABBR = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const DOWS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-const dowLabel = (iso) => DOWS[(new Date(`${iso}T12:00:00Z`).getUTCDay() + 6) % 7];
+const dowIdx = (iso) => (new Date(`${iso}T12:00:00Z`).getUTCDay() + 6) % 7; // Mon = 0
+const dowLabel = (iso) => DOWS[dowIdx(iso)];
 const dayLabel = (iso) => `${Number(iso.slice(8, 10))} ${MONTHS_ABBR[Number(iso.slice(5, 7))] || ''}`;
 
 const TABS = [
@@ -68,6 +80,23 @@ const VAR_RATE = 0.224;           // kitchen 14.3% + FOH 8.1% combined
 const VAR_RATE_DEPT = { kitchen: 0.143, foh: 0.081 };
 const MATERIALITY_PENCE = 4500;   // the ruled £45 — OVER only beyond it
 const BURDEN = 1.159;             // employer burden multiplier on hourly TRUE
+
+// The per-receipt SALE filter + LOCAL London hour conversion (the reports-page idiom,
+// verbatim — the coverage heatmap's demand side runs on the same line-grain rules).
+const SALE_WHERE = `r.cancelled = 0 AND (r.type IS NULL OR r.type NOT IN ('VOID','CANCEL','RECALL'))`;
+const LONDON_HOUR_FMT = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/London', hour: 'numeric', hourCycle: 'h23' });
+const londonHourOf = (ms) => Number(LONDON_HOUR_FMT.format(new Date(ms)));
+// The coverage grid draws the trading hours 11:00–21:00 (the RCC drivers-heatmap frame).
+const HEAT_HOURS = [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21];
+
+// Coverage-vs-required level ramp: SIX levels CENTERED on balanced (Δ = 0 sits on the 3|4
+// seam); thirds of the window's largest |Δ| each side. 1–3 = staffed UNDER the derived
+// requirement, 4–6 = staffed OVER it.
+function coverageLevel(delta, maxAbs) {
+  if (!(maxAbs > 0)) return 4;
+  const t = maxAbs / 3;
+  return delta <= -2 * t ? 1 : delta <= -t ? 2 : delta < 0 ? 3 : delta <= t ? 4 : delta <= 2 * t ? 5 : 6;
+}
 
 // The June-2026 hole statement (stated once per affected panel, never bridged).
 const JUNE_HOLE = 'the June 2026 hole — the labour backfill is blocked on the Leon Mackay RotaCloud fix';
@@ -504,22 +533,130 @@ function buildDept(q, maxDate, dept, now) {
   return d;
 }
 
-// COVERAGE & PEOPLE (pending) — the holding pen for the old page's un-absorbed panels:
-// staffing shape (labour_hourly), today-live (labour_intraday), U18 WTR guard, rate parity.
-function buildCoverage(q) {
-  const c = {};
+// COVERAGE & PEOPLE (L3, the FINAL tab) — today-live intraday strip, the aggregate people
+// KPI strip (last full week, ZERO person keys), the combined coverage-vs-required heatmap
+// (staffing = labour_hourly TRUE £, site-level; required = line-grain demand share × the
+// formula budget — a DERIVATION), the compliance panel (the ruled-in person CLASSES only —
+// the mock's People exception queue is EXCLUDED-BY-RULING), aggregate ratios, and the canon +
+// architecture cards. The old page's held panels are ALL absorbed here: staffing shape → the
+// heatmap; today-live → the strip; WTR guard + rate parity → the compliance panel.
+function buildCoverage(q, maxDate) {
+  const c = { maxDate };
+  c.intraday = rowsOf(q(`SELECT business_date, department, as_of_ms, sched_minutes_full, sched_cost_rc_full, worked_minutes_so_far, cost_rc_so_far, uncosted_minutes, clocked_in_now, no_shows, ref_date, ref_worked_minutes, ref_net_pence, ref_to_hour FROM labour_intraday ORDER BY department`));
+
+  // ---- last-full-week aggregates: the KPI strip, the adherence ratio, the heat budget ----
+  c.week = null; c.unmapped = []; c.missing = [];
+  if (maxDate) {
+    const wk = K.lastFullWeek(maxDate);
+    c.week = wk;
+    const one = (sql) => rowsOf(q(sql, [wk.from, wk.to]))[0] || null;
+    c.ot = one(`SELECT SUM(variance_minutes) mins FROM labour_shifts WHERE business_date BETWEEN ? AND ? AND variance_minutes > 0`);
+    c.lateShort = one(`SELECT COUNT(*) n FROM labour_shifts WHERE business_date BETWEEN ? AND ?
+        AND sched_minutes > 0 AND act_minutes > 0 AND variance_minutes IS NOT NULL AND ABS(variance_minutes) > 15`);
+    c.unrota = one(`SELECT COUNT(*) n FROM labour_shifts WHERE business_date BETWEEN ? AND ?
+        AND (sched_minutes IS NULL OR sched_minutes = 0) AND act_minutes > 0`);
+    c.agg = one(`SELECT COUNT(*) days, SUM(scheduled_cost_pence) sc, SUM(actual_cost_pence) ac,
+            SUM(salaried_cost_pence) sal, SUM(actual_minutes) am, SUM(unmapped_actual_minutes) um
+       FROM labour_day WHERE business_date BETWEEN ? AND ?`);
+    c.adherence = one(`SELECT COUNT(*) n, SUM(CASE WHEN ABS(variance_minutes) <= 15 THEN 1 ELSE 0 END) w
+       FROM labour_shifts WHERE business_date BETWEEN ? AND ?
+        AND sched_minutes > 0 AND act_minutes > 0 AND variance_minutes IS NOT NULL`);
+    c.inter = one(`SELECT SUM(l.salaried_cost_pence) sal, SUM(s.net_sales_pence) net, COUNT(*) days
+       FROM labour_day l JOIN sales_day s ON s.business_date = l.business_date AND s.net_sales_pence > 0
+      WHERE l.business_date BETWEEN ? AND ?`);
+    const have = new Set(rowsOf(q(`SELECT business_date d FROM labour_day WHERE business_date BETWEEN ? AND ?`, [wk.from, wk.to])).map((r) => String(r.d)));
+    for (let i = 0; i < 7; i++) { const d = K.shiftDays(wk.from, i); if (!have.has(d)) c.missing.push(d); }
+    for (const r of rowsOf(q(`SELECT unmapped_names n FROM labour_day WHERE business_date BETWEEN ? AND ? AND unmapped_names IS NOT NULL AND unmapped_names != '[]'`, [wk.from, wk.to]))) {
+      try { for (const nm of JSON.parse(r.n)) if (c.unmapped.indexOf(nm) < 0) c.unmapped.push(nm); } catch (err) { /* never take the tab down */ }
+    }
+    c.unmapped.sort();
+  }
+
+  // ---- the heatmap STAFFING side: labour_hourly 28d to its own max — SITE-level (no dept
+  // key — checked), TRUE ruler at the hour grain (the ingest writes hourly raw × 1.159 + the
+  // salaried day-share per bucket), averaged per weekday over the days that HOLD a record
+  // (an absent day is absent, never a zero occurrence). ----
+  c.heat = null;
   const hm = rowsOf(q(`SELECT MAX(business_date) d FROM labour_hourly`))[0];
   c.hourMax = hm && hm.d ? String(hm.d) : null;
-  c.byHour = c.hourMax
-    ? rowsOf(q(`SELECT hour, SUM(actual_minutes) am FROM labour_hourly WHERE business_date BETWEEN ? AND ? GROUP BY hour ORDER BY hour`,
-        [K.shiftDays(c.hourMax, -13), c.hourMax]))
-    : [];
-  c.intraday = rowsOf(q(`SELECT business_date, department, as_of_ms, sched_minutes_full, sched_cost_rc_full, worked_minutes_so_far, cost_rc_so_far, uncosted_minutes, clocked_in_now, no_shows, ref_date, ref_worked_minutes, ref_net_pence, ref_to_hour FROM labour_intraday ORDER BY department`));
+  if (c.hourMax) {
+    const from28 = K.shiftDays(c.hourMax, -27);
+    const rows = rowsOf(q(`SELECT business_date d, hour h, actual_minutes am, actual_cost_pence ac FROM labour_hourly WHERE business_date BETWEEN ? AND ?`, [from28, c.hourMax]));
+    if (rows.length) {
+      const dates = new Set(rows.map((r) => String(r.d)));
+      const occ = [0, 0, 0, 0, 0, 0, 0];
+      const missing = [];
+      for (let i = 0; i < 28; i++) {
+        const d = K.shiftDays(from28, i);
+        if (dates.has(d)) occ[dowIdx(d)] += 1; else missing.push(d);
+      }
+      const staffM = {}, staffP = {};
+      let uncostedMins = 0, staffedMinutes = 0, openSlots = 0;
+      for (const r of rows) {
+        const mins = num(r.am) || 0;
+        const ac = num(r.ac);
+        const h = num(r.h);
+        if (h == null) continue;
+        if (mins > 0) { staffedMinutes += mins; openSlots += 1; if (ac == null) uncostedMins += mins; }
+        if (h >= 11 && h <= 21) {
+          const key = `${dowIdx(String(r.d))}-${h}`;
+          staffM[key] = (staffM[key] || 0) + mins;
+          staffP[key] = (staffP[key] || 0) + (ac || 0);
+        }
+      }
+      c.heat = { from: from28, to: c.hourMax, occ, missing, staffM, staffP, uncostedMins, staffedMinutes, openSlots, demand: null, budget: null };
+    }
+  }
+  // ---- the REQUIRED side inputs: the line-grain demand curve (LOCAL London hour, ONLINE
+  // excluded — no true hour) + the last settled week's formula budget ----
+  if (c.heat) {
+    const amx = rowsOf(q(`SELECT MAX(business_date) d FROM sales_receipts_api`))[0];
+    const apiMax = amx && amx.d ? String(amx.d) : null;
+    if (apiMax) {
+      const dFrom = K.shiftDays(apiMax, -27);
+      const buckets = rowsOf(q(
+        `SELECT r.business_date d, l.time_of_sale_ms/3600000 hb, SUM(l.net_without_tax_pence) net
+           FROM sales_receipt_lines_api l
+           JOIN sales_receipts_api r ON r.receipt_id = l.receipt_id
+           LEFT JOIN sales_channel_map_api m ON m.account_profile_code = COALESCE(r.account_profile_code,'')
+          WHERE ${SALE_WHERE} AND r.business_date BETWEEN ? AND ? AND l.time_of_sale_ms > 0
+            AND COALESCE(m.channel_label,'') <> 'ONLINE ORDER'
+          GROUP BY d, hb`, [dFrom, apiMax]));
+      if (buckets.length) {
+        const online = rowsOf(q(
+          `SELECT SUM(l.net_without_tax_pence) net
+             FROM sales_receipt_lines_api l
+             JOIN sales_receipts_api r ON r.receipt_id = l.receipt_id
+             JOIN sales_channel_map_api m ON m.account_profile_code = COALESCE(r.account_profile_code,'')
+            WHERE ${SALE_WHERE} AND r.business_date BETWEEN ? AND ? AND m.channel_label = 'ONLINE ORDER'`, [dFrom, apiMax]))[0];
+        const cells = {}; let total = 0;
+        for (const b of buckets) {
+          const bkt = num(b.hb);
+          if (bkt == null) continue;
+          const net = num(b.net) || 0;
+          const h = londonHourOf(bkt * 3600000 + 1800000); // bucket midpoint — offset-constant
+          total += net; // ALL timed non-online net funds the share denominator (outside-grid too)
+          cells[`${dowIdx(String(b.d))}-${h}`] = (cells[`${dowIdx(String(b.d))}-${h}`] || 0) + net;
+        }
+        if (total > 0) c.heat.demand = { cells, total, apiMax, from: dFrom, onlineExcluded: online ? num(online.net) || 0 : 0 };
+      }
+    }
+    if (c.week && c.inter && num(c.inter.net) > 0 && num(c.inter.sal) != null) {
+      c.heat.budget = {
+        pence: Math.round(num(c.inter.sal) + VAR_RATE * num(c.inter.net)),
+        days: num(c.inter.days) || 0, from: c.week.from, to: c.week.to,
+      };
+    }
+  }
+
+  // ---- the ruled-in person classes (the compliance panel) + the ratio inputs ----
   // U18 working-time flags — AGGREGATED per person/kind across ALL history (the systemic
   // pattern; a 20-row tail hid it). Rules cited at ingest (WTR 1998 young workers).
   c.wtr = rowsOf(q(`SELECT user_name, kind, COUNT(*) n, MAX(business_date) last FROM labour_wtr_flags GROUP BY user_name, kind`));
   c.wtrTotal = rowsOf(q(`SELECT COUNT(*) n, COUNT(DISTINCT user_name) people, MIN(business_date) lo, MAX(business_date) hi FROM labour_wtr_flags`))[0] || null;
   c.parity = rowsOf(q(`SELECT user_name, role_name, kind, rc_value, locked_value FROM labour_rate_parity ORDER BY user_name, role_id`));
+  c.roster = rowsOf(q(`SELECT COUNT(DISTINCT user_name) n FROM labour_shifts WHERE user_name IS NOT NULL`))[0] || null;
+  c.parityPeople = rowsOf(q(`SELECT COUNT(DISTINCT user_name) n FROM labour_rate_parity`))[0] || null;
   return c;
 }
 
@@ -540,7 +677,7 @@ module.exports = {
     if (tab === 'rota') m.rota = buildRota(q, m.maxDate);
     if (tab === 'forecast') m.fc = buildForecast(q, m.maxDate, now);
     if (tab === 'kitchen' || tab === 'foh') m.dept = buildDept(q, m.maxDate, tab, now);
-    if (tab === 'coverage') m.cov = buildCoverage(q);
+    if (tab === 'coverage') m.cov = buildCoverage(q, m.maxDate);
     return m;
   },
 
@@ -594,7 +731,14 @@ module.exports = {
       .rcc .lbc-drivers{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
       @media(max-width:900px){.rcc .lbc-drivers{grid-template-columns:1fr}}
       .rcc .lbc-mix{font-family:var(--font-mono,monospace);font-size:11px;color:#9aa8b5;margin-top:10px}
-      /* held coverage panels — the old labour page's grammar, carried with them */
+      /* coverage heatmap — the RCC drivers-heatmap frame (weekday × 11:00–21:00) */
+      .rcc .r-heatmap{display:grid;grid-template-columns:58px repeat(11,1fr);gap:5px;align-items:center}
+      .rcc .r-hlabel{color:#818b95;font-size:10px;text-align:center}
+      .rcc .r-hday{color:#b3bbc4;font-size:11px;font-weight:700}
+      @media(max-width:820px){.rcc .r-heatmap{grid-template-columns:42px repeat(11,32px);overflow:auto}}
+      .rcc .lbc-arch{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+      @media(max-width:1100px){.rcc .lbc-arch{grid-template-columns:repeat(2,1fr)}}
+      /* absorbed coverage panels — the old labour page's grammar, carried with them */
       .lb-two{display:grid;grid-template-columns:1fr 1fr;gap:18px}
       @media(max-width:900px){.lb-two{grid-template-columns:1fr}}
       .lb-hint{font-size:12px;line-height:1.5;color:var(--muted,#8b98a5);margin:2px 0 12px}
@@ -607,9 +751,6 @@ module.exports = {
       .lb-tbl td.n{text-align:right;font-variant-numeric:tabular-nums;font-family:var(--mono,ui-monospace,monospace)}
       .lb-card{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:4px 6px 10px}
       .lb-cardhead{font-size:13px;font-weight:700;padding:12px 12px 8px;display:flex;justify-content:space-between;align-items:baseline}
-      .lb-bars{display:flex;align-items:flex-end;gap:3px;height:90px;padding:6px 10px 0}
-      .lb-bar{flex:1;background:linear-gradient(180deg,var(--cyan,#22D3EE),#0e6f7d);border-radius:3px 3px 0 0;min-height:2px;position:relative}
-      .lb-bar span{position:absolute;bottom:-16px;left:0;right:0;text-align:center;font-size:9px;color:var(--muted,#7a8695)}
       .lb-live{border:1px solid var(--cyan-dim,rgba(34,211,238,.28));border-radius:14px;padding:2px 16px 14px;margin-bottom:6px;background:rgba(34,211,238,.03)}
       .G{color:var(--green,#34d399)} .A{color:var(--amber,#e0b050)} .R{color:var(--red,#f87171)}
     </style>`;
@@ -1261,26 +1402,13 @@ module.exports = {
     const renderKitchenTab = () => renderDeptTab('kitchen');
     const renderFohTab = () => renderDeptTab('foh');
 
-    // ============================ COVERAGE (pending, holds the old panels) ============================
-    const pendingNote = (what) => `<div class="banner amber">PENDING — the next stage builds this tab to the mock (${esc(what)}). No number renders here until it is computed honestly; nothing is mocked.</div>`;
-
+    // ============================ COVERAGE & PEOPLE (L3, final) ============================
     const renderCoverageTab = () => {
       const c = m.cov || {};
-      const parts = [pendingNote('combined coverage-vs-required heatmap, aggregate people KPIs, compliance ratios — below, the panels this centre inherited from the old labour page HOLD here until their L2 home is built. The People exception queue is EXCLUDED BY RULING (surveillance boundary) and does not render')];
+      const parts = [];
 
-      // ---- staffing shape (held) — worked minutes by hour, ruler-free ----
-      const hoursArr = (c.byHour || []).filter((h) => num(h.am) != null && num(h.am) > 0);
-      if (hoursArr.length >= 2) {
-        const mx = Math.max(...hoursArr.map((h) => num(h.am) || 0)) || 1;
-        const bars = hoursArr.map((h) => { const hh = num(h.hour) >= 24 ? num(h.hour) - 24 : num(h.hour); return `<div class="lb-bar" style="height:${Math.max(2, Math.round((num(h.am) || 0) / mx * 80))}px" title="${esc(String(hh))}:00 — ${hrs(h.am)}"><span>${esc(String(hh))}</span></div>`; }).join('');
-        parts.push(`<div class="lb-sec">Staffing shape <span class="lb-sub">worked hours by hour of day · 14 days to ${esc(c.hourMax || '')} · minute grain, ruler-free</span></div>
-          <div class="lb-card"><div class="lb-bars">${bars}</div><div style="height:14px"></div>
-          <div class="lb-hint" style="margin:0 12px">Where worked hours land across the day — the shape you flex against trade. Becomes the coverage-vs-required heatmap in L2.</div></div>`);
-      } else {
-        parts.push(`<div class="lb-sec">Staffing shape</div><div class="banner muted">No hourly staffing record yet (labour_hourly) — the RotaCloud ingest fills it; nothing is estimated.</div>`);
-      }
-
-      // ---- today-live (held) — the intraday snapshot with its own honesty ----
+      // ---- (0) Today — live: the intraday snapshot strip (operational coverage — its home,
+      // ABOVE the KPI strip; absorbed from the old page with its honesty intact) ----
       const DEPT_LABEL = { kitchen: 'Kitchen — Calum', foh: 'Front of House — Jordan', unassigned: 'Unassigned location' };
       const rows = (c.intraday || []).filter((r) => r.department !== 'unassigned');
       const un = (c.intraday || []).find((r) => r.department === 'unassigned');
@@ -1317,11 +1445,125 @@ module.exports = {
           + `<div class="lb-live">${refLine}<div class="lb-two">${blocks}</div>${un ? `<div class="banner">⚠️ ${hrs(un.worked_minutes_so_far)} today on an UNKNOWN RotaCloud location — fix the location in RotaCloud.</div>` : ''}</div>`);
       }
 
-      // ---- U18 working-time guard (held) ----
-      parts.push(`<div class="lb-sec">U18 working-time guard <span class="lb-sub">WTR 1998 young workers — all history · regulatory, ruled compliant to render</span></div>`);
+      // ---- (1) aggregate people KPI strip: last full week, ZERO person keys ----
+      if (!c.week) {
+        parts.push(`<div class="banner muted">No settled labour-day record yet — the aggregate people KPIs anchor on the last full Mon–Sun week of <span class="mono">labour_day</span> (TRUE ruler); the daily RotaCloud ingest fills it. Nothing here is ever estimated.</div>`);
+      } else {
+        const wk = c.week;
+        const otMins = c.ot && num(c.ot.mins) != null ? num(c.ot.mins) : null;
+        const agg = c.agg && num(c.agg.days) > 0 ? c.agg : null;
+        const payVar = agg && num(agg.sc) != null && num(agg.ac) != null ? num(agg.ac) - num(agg.sc) : null;
+        const salShare = agg && num(agg.ac) > 0 && num(agg.sal) != null ? (num(agg.sal) / num(agg.ac)) * 100 : null;
+        const noRec = 7 - (agg ? num(agg.days) || 0 : 0);
+        const kpis = [
+          S.rcc.kpi({
+            label: 'Overtime hours', value: otMins != null ? hrs(otMins) : '—',
+            sub: otMins != null ? 'Σ positive shift variance · labour_shifts · aggregate, no names' : 'no positive shift variance recorded this week',
+          }),
+          S.rcc.kpi({
+            label: 'Late / short shifts', value: c.lateShort ? int(num(c.lateShort.n) || 0) : '—',
+            sub: 'worked rota’d shifts beyond ±15 min of plan — COUNT only, no names (±15 exactly is within)',
+          }),
+          S.rcc.kpi({
+            label: "Unrota'd worked shifts", value: c.unrota ? int(num(c.unrota.n) || 0) : '—',
+            sub: 'worked with no rota line · labour_shifts · count only',
+          }),
+          S.rcc.kpi({
+            label: 'No-record days', value: int(noRec),
+            sub: `labour_day rows missing vs the 7-day calendar week${juneNote(c.missing)} — absent, never zero`,
+          }),
+          S.rcc.kpi({
+            label: 'Pay-cost variance', value: payVar != null ? signGbp(payVar) : '—',
+            sub: 'scheduled → actual £, TRUE ruler (labour_day, burdened + salaried/365)',
+          }),
+          S.rcc.kpi({
+            label: 'Salaried cover share', value: pct1(salShare),
+            sub: 'salaried/365 ÷ TRUE actual — the fixed-cover slice of the week',
+          }),
+        ].join('');
+        parts.push(`<div class="r-grid r-kpi-grid">${kpis}</div>
+          <div class="lbc-caption">window = the last full Mon–Sun week ${esc(wk.from)} → ${esc(wk.to)} · AGGREGATES ONLY — zero person keys on this strip (the surveillance-boundary ruling; the ruled-in person classes render in Compliance &amp; structural exceptions below) · £ = TRUE ruler (labour_day) · shift counts = labour_shifts, SITE-level (no department key — checked).</div>`);
+      }
+
+      // ---- (2) combined coverage vs required staffing (the centrepiece heatmap) ----
+      const H = c.heat;
+      let heatBody, heatSub = 'weekday × hour · staffed TRUE £ vs the demand-derived requirement', heatLegend = '';
+      if (!H) {
+        heatBody = S.rcc.emptyState({
+          title: 'Combined coverage vs required staffing',
+          blocker: 'no hourly labour record yet (labour_hourly is empty) — the staffing side of the grid.',
+          unlock: 'the daily RotaCloud ingest (hour grain)',
+        });
+      } else {
+        const D = H.demand, B = H.budget;
+        const missNote = H.missing.length ? ` · <b>${int(H.missing.length)} of 28 day(s) carry no hourly labour record</b> — absent${esc(juneNote(H.missing))}, never zero` : '';
+        const uncNote = H.uncostedMins > 0 ? ` · ${hrs(H.uncostedMins)} staffed at £0 in the hour grain (slices the ingest could not cost) — stated, never estimated` : '';
+        const head = '<div></div>' + HEAT_HOURS.map((h) => `<div class="r-hlabel">${h}</div>`).join('');
+        if (D && B) {
+          const cells = new Map();
+          let maxAbs = 0;
+          for (let dw = 0; dw < 7; dw++) {
+            for (const h of HEAT_HOURS) {
+              const key = `${dw}-${h}`;
+              if (!(H.occ[dw] > 0)) { cells.set(key, null); continue; } // no weekday record — unknown, never zero
+              const req = Math.round(((D.cells[key] || 0) / D.total) * B.pence);
+              const sAvg = Math.round((H.staffP[key] || 0) / H.occ[dw]);
+              if (req === 0 && sAvg === 0 && !(H.staffM[key] > 0)) { cells.set(key, null); continue; } // nothing on either side
+              const delta = sAvg - req;
+              maxAbs = Math.max(maxAbs, Math.abs(delta));
+              cells.set(key, { sAvg, req, delta });
+            }
+          }
+          const grid = DOWS.map((nm, dw) => `<div class="r-hday">${nm}</div>` + HEAT_HOURS.map((h) => {
+            const cell = cells.get(`${dw}-${h}`);
+            if (!cell) return S.rcc.heatCell(null);
+            return S.rcc.heatCell(coverageLevel(cell.delta, maxAbs), `${nm} ${h}:00 — staffed ${gbp(cell.sAvg)} vs required ${gbp(cell.req)} (Δ ${signGbp(cell.delta)})`);
+          }).join('')).join('');
+          const onlineNote = D.onlineExcluded > 0
+            ? `${gbp(D.onlineExcluded)} ONLINE excluded — no true hour (the online-order ruling)`
+            : 'ONLINE ORDER lines excluded — no true hour (the online-order ruling)';
+          heatLegend = `<div class="r-legend"><span><i style="background:${S.rcc.tokens.heat[0]}"></i>Staffed under required</span><span><i style="background:${S.rcc.tokens.heat[5]}"></i>Staffed over required</span></div>`;
+          heatBody = `<div class="r-heatmap">${head}${grid}</div>
+            <div class="r-mini-note"><b>required = formula budget spread by demand share — a derivation, not a rota standard.</b> budget = Σ salaried + 22.4% × net over the last settled week ${esc(B.from)} → ${esc(B.to)} (${gbp(B.pence)}, ${int(B.days)} intersection day(s)) · demand share = line-grain net by weekday × LOCAL London hour, 28d to ${esc(D.apiMax)} · ${esc(onlineNote)}.</div>
+            <div class="r-mini-note">staffed = labour_hourly TRUE £ (hourly × 1.159 burden + the ingest's salaried hour share) averaged per weekday occurrence, 28d to ${esc(H.to)} · SITE-level — labour_hourly carries no department key (checked) · levels centre on balanced: 1–3 staffed under the derived requirement, 4–6 over · a weekday with no hourly record renders blank, never zero${missNote}${uncNote}. This grid ABSORBED the old staffing-shape panel — one home.</div>`;
+        } else {
+          // staffing-only fallback — the honest half while the required side is underivable
+          const reasons = [];
+          if (!D) reasons.push('no timed per-receipt line record in the demand window');
+          if (!B) reasons.push('no settled sales∩labour week to source the formula budget');
+          const avg = new Map();
+          const vals = [];
+          for (let dw = 0; dw < 7; dw++) {
+            for (const h of HEAT_HOURS) {
+              if (!(H.occ[dw] > 0)) continue;
+              const mins = (H.staffM[`${dw}-${h}`] || 0) / H.occ[dw];
+              if (mins > 0) { avg.set(`${dw}-${h}`, mins); vals.push(mins); }
+            }
+          }
+          vals.sort((a, b) => a - b);
+          const level = (v) => Math.max(1, Math.ceil((vals.filter((x) => x <= v).length / vals.length) * 6));
+          const grid = DOWS.map((nm, dw) => `<div class="r-hday">${nm}</div>` + HEAT_HOURS.map((h) => {
+            const v = avg.get(`${dw}-${h}`);
+            return v ? S.rcc.heatCell(level(v), `${nm} ${h}:00 — ${hrs(v)} staffed (avg per ${nm})`) : S.rcc.heatCell(null);
+          }).join('')).join('');
+          heatSub = 'weekday × hour · staffing density (the required side is not derivable yet)';
+          heatBody = `<div class="r-heatmap">${head}${grid}</div>
+            <div class="r-mini-note">STAFFING ONLY — the required side is not derivable: ${esc(reasons.join(' and '))}; shade = worked-hours density by quantile (minute grain, ruler-free) · SITE-level (no department key — checked) · 28d to ${esc(H.to)}${missNote}${uncNote}. This grid ABSORBED the old staffing-shape panel — one home; the derived requirement lights up with the demand + budget wires.</div>`;
+        }
+      }
+      const heatPanel = S.rcc.panel({
+        title: 'Combined coverage vs required staffing', sub: heatSub,
+        headRight: heatLegend, body: heatBody,
+      });
+
+      // ---- (3) compliance & structural exceptions — the mock's People-queue POSITION;
+      // the queue itself is EXCLUDED BY RULING. Only the ruled-in person CLASSES render:
+      // WTR flags (regulatory), rate parity (payroll), unmapped names (data hygiene). ----
+      const compParts = [];
+      compParts.push(`<div class="lb-sec" style="margin-top:2px">U18 working-time guard ${S.rcc.tag('regulatory — WTR 1998', 'bad')} <span class="lb-sub">all history · re-checked every ingest</span></div>`);
       const flags = c.wtr || [];
       if (!flags.length) {
-        parts.push(`<div class="banner muted">U18 working-time ✓ — no flags (8h/day · 40h/wk fixed · 22:00+ surfaced · 00:00–04:00 absolute; re-checked every ingest).</div>`);
+        compParts.push(`<div class="banner muted">U18 working-time ✓ — no flags (8h/day · 40h/wk fixed · 22:00+ surfaced · 00:00–04:00 absolute; re-checked every ingest).</div>`);
       } else {
         const t = c.wtrTotal || {};
         const byUser = new Map();
@@ -1337,23 +1579,106 @@ module.exports = {
         const wtrRows = people.map((u) => `<tr><td>${esc(u.name || '')}</td><td class="n">${cellR(u.day_over_8h)}</td><td class="n">${cellR(u.week_over_40h)}</td><td class="n">${cellR(u.night_00_04)}</td><td class="n">${cellA(u.night_22_24)}</td><td class="n"><span class="ash">${esc(u.last)}</span></td></tr>`).join('');
         const hardTotal = people.reduce((x, u) => x + u.day_over_8h + u.week_over_40h + u.night_00_04, 0);
         const span = t.lo && t.hi ? ` ${esc(String(t.lo))} → ${esc(String(t.hi))}` : '';
-        parts.push(`<div class="banner">🔴 <b>${num(t.n) || flags.reduce((x, f) => x + (num(f.n) || 0), 0)} U18 working-time flag${(num(t.n) || 0) === 1 ? '' : 's'}</b> across ${esc(String(num(t.people) || byUser.size))} young worker${(num(t.people) || 0) === 1 ? '' : 's'}${span}. <b class="R">${hardTotal}</b> are HARD legal limits (over-8h day / over-40h week / worked-past-midnight — no catering exception); the amber column is the permitted-with-conditions 22:00–24:00 window.</div>
+        compParts.push(`<div class="banner">🔴 <b>${num(t.n) || flags.reduce((x, f) => x + (num(f.n) || 0), 0)} U18 working-time flag${(num(t.n) || 0) === 1 ? '' : 's'}</b> across ${esc(String(num(t.people) || byUser.size))} young worker${(num(t.people) || 0) === 1 ? '' : 's'}${span}. <b class="R">${hardTotal}</b> are HARD legal limits (over-8h day / over-40h week / worked-past-midnight — no catering exception); the amber column is the permitted-with-conditions 22:00–24:00 window.</div>
           <div class="lb-card"><table class="lb-tbl"><thead><tr><th>young worker</th><th style="text-align:right" class="R">over 8h day</th><th style="text-align:right" class="R">over 40h wk</th><th style="text-align:right" class="R">past midnight</th><th style="text-align:right" class="A">past 22:00</th><th style="text-align:right">last</th></tr></thead><tbody>${wtrRows}</tbody></table>
           <div class="lb-hint" style="margin:8px 12px 0">Limits: 8h/day &amp; 40h/week are fixed with no averaging (gov.uk/maximum-weekly-working-hours); 22:00–06:00 is restricted but catering is an excepted sector, while 00:00–04:00 is an absolute ban (gov.uk/night-working-hours). The red columns are rota-policy action items — raise with Calum &amp; Jordan.</div></div>`);
       }
-
-      // ---- rate parity (held) ----
-      parts.push(`<div class="lb-sec">Rate parity <span class="lb-sub">locked table vs RotaCloud · payroll correctness, ruled compliant to render</span></div>`);
+      compParts.push(`<div class="lb-sec">Rate parity ${S.rcc.tag('payroll correctness')} <span class="lb-sub">locked table vs RotaCloud</span></div>`);
       if (!c.parity || c.parity.length === 0) {
-        parts.push(`<div class="banner muted">Rate parity ✓ — locked 2026/27 table and RotaCloud's stored rates agree (re-checked every ingest).</div>`);
+        compParts.push(`<div class="banner muted">Rate parity ✓ — locked 2026/27 table and RotaCloud's stored rates agree (re-checked every ingest).</div>`);
       } else {
         const KIND = { role_rate_mismatch: 'rate differs', rc_missing_rate: 'no rate in RotaCloud (costs £0 in-app)', locked_missing_rate: 'not in locked table', salary_mismatch: 'salary differs', rc_missing_salary: 'salary missing in RotaCloud' };
         const pRows = c.parity.map((x) => `<tr><td>${esc(x.user_name || '')}</td><td>${esc(x.role_name || '—')}</td><td>${esc(KIND[x.kind] || x.kind)}</td><td class="n">${esc(x.rc_value || '—')}</td><td class="n">${esc(x.locked_value || '—')}</td></tr>`).join('');
-        parts.push(`<div class="banner">🔴 <b>${c.parity.length} rate discrepanc${c.parity.length === 1 ? 'y' : 'ies'}</b> between RotaCloud and the locked 2026/27 table — the managers' in-app % uses <i>their</i> rates, so the RC screens are unfair until fixed <b>in RotaCloud</b>.</div>
+        compParts.push(`<div class="banner">🔴 <b>${c.parity.length} rate discrepanc${c.parity.length === 1 ? 'y' : 'ies'}</b> between RotaCloud and the locked 2026/27 table — the managers' in-app % uses <i>their</i> rates, so the RC screens are unfair until fixed <b>in RotaCloud</b>.</div>
           <div class="lb-card"><table class="lb-tbl"><thead><tr><th>who</th><th>role</th><th>finding</th><th style="text-align:right">RotaCloud</th><th style="text-align:right">locked table</th></tr></thead><tbody>${pRows}</tbody></table></div>`);
       }
+      compParts.push(`<div class="lb-sec">Unmapped shift names ${S.rcc.tag('data hygiene')} <span class="lb-sub">${c.week ? `last settled week ${esc(c.week.from)} → ${esc(c.week.to)}` : 'awaiting a settled week'}</span></div>`);
+      if (!c.week) {
+        compParts.push(`<div class="banner muted">No settled labour week yet — mapping hygiene lights up with the daily ingest.</div>`);
+      } else if (!c.unmapped.length) {
+        compParts.push(`<div class="banner muted">Mapping ✓ — every shift name in the week maps to the locked table.</div>`);
+      } else {
+        compParts.push(`<div class="banner">🔴 <b>${int(c.unmapped.length)} unmapped name(s)</b>: ${c.unmapped.map((n) => esc(n)).join(', ')} — no stored mapping, their hours carry £0 in TRUE cost until fixed <b>in RotaCloud</b>. Data hygiene, not behaviour.</div>`);
+      }
+      compParts.push(S.rcc.note('per-person behavioural queues are excluded by the surveillance-boundary ruling; attendance renders as aggregates above.'));
+      const compPanel = S.rcc.panel({
+        title: 'Compliance & structural exceptions',
+        sub: 'the ruled-in person classes ONLY — regulatory · payroll · data hygiene (the mock’s People-queue position)',
+        body: compParts.join('\n'),
+      });
 
-      return parts.join('\n');
+      // ---- (4) people & compliance ratios — aggregate cards, no person keys ----
+      const ad = c.adherence;
+      const adPct = ad && num(ad.n) > 0 ? (num(ad.w) / num(ad.n)) * 100 : null;
+      const wtrN = c.wtrTotal ? num(c.wtrTotal.n) || 0 : 0;
+      const wtrLast = c.wtrTotal && c.wtrTotal.hi ? String(c.wtrTotal.hi) : null;
+      let streakVal = '—', streakSub = 'needs a settled labour week to anchor the streak';
+      if (c.week) {
+        if (wtrN === 0) { streakVal = 'clean'; streakSub = 'no WTR flag on record (all history)'; }
+        else if (wtrLast) {
+          const days = Math.round((new Date(`${c.week.from}T12:00:00Z`) - new Date(`${K.weekMonday(wtrLast)}T12:00:00Z`)) / 86400000);
+          streakVal = `${Math.max(0, Math.floor(days / 7))} wk(s)`;
+          streakSub = `full weeks since the last flag week (last flag ${wtrLast})`;
+        }
+      }
+      const rosterN = c.roster ? num(c.roster.n) || 0 : 0;
+      const parityPeople = c.parityPeople ? num(c.parityPeople.n) || 0 : 0;
+      const parityPct = rosterN > 0 ? ((rosterN - Math.min(parityPeople, rosterN)) / rosterN) * 100 : null;
+      const unmShare = c.agg && num(c.agg.am) > 0 && num(c.agg.um) != null ? (num(c.agg.um) / num(c.agg.am)) * 100 : null;
+      const spoh = H && H.openSlots > 0 ? (H.staffedMinutes / 60) / H.openSlots : null;
+      const ratios = [
+        S.rcc.driver({
+          label: 'Schedule adherence', value: adPct != null ? `${adPct.toFixed(1)}%` : '—',
+          sub: adPct != null ? `worked rota'd shifts within ±15 min ÷ ${int(num(ad.n))} with a recorded variance · last full week` : `no rota'd shift variance in the last full week`,
+        }),
+        S.rcc.driver({ label: 'WTR-clean weeks streak', value: streakVal, sub: streakSub }),
+        S.rcc.driver({
+          label: 'Parity-clean staff', value: parityPct != null ? `${parityPct.toFixed(1)}%` : '—',
+          sub: rosterN > 0 ? `1 − flagged people ÷ ${int(rosterN)} distinct settled-shift names (a PROXY roster, stated) · all history` : 'no settled shift roster yet to divide by',
+        }),
+        S.rcc.driver({
+          label: 'Unmapped-minutes share', value: unmShare != null ? `${unmShare.toFixed(1)}%` : '—',
+          sub: unmShare != null ? 'unmapped worked minutes ÷ all worked minutes · labour_day, last full week' : 'needs labour_day worked minutes',
+        }),
+        S.rcc.driver({
+          label: 'Staffing per open hour', value: spoh != null ? spoh.toFixed(1) : '—',
+          sub: spoh != null ? 'avg staff on the clock per staffed hour · labour_hourly 28d, site-level' : 'needs the hourly labour record',
+        }),
+      ].join('');
+      const ratiosPanel = S.rcc.panel({
+        title: 'People & compliance ratios', sub: 'aggregate ratios only — no person keys',
+        body: `<div class="lbc-drivers">${ratios}</div>
+          <div class="r-mini-note">every ratio is SITE-level — labour_shifts and labour_hourly carry no department key (checked); the dept split lands when the shift wire carries one · adherence counts SHIFTS, never people · the parity denominator is a stated proxy (the parity check stores findings, not roster size).</div>`,
+      });
+
+      // ---- (5) labour accounting rules — canon verbatim (rulings, not data) ----
+      const rulesPanel = S.rcc.panel({
+        title: 'Labour accounting rules', sub: 'canon — rulings, not data',
+        body: S.rcc.formula([
+          'TRUE cost = locked rate × minutes × 1.159 employer burden (hourly) + salaried annual/365 per calendar day',
+          `RC-screen = RotaCloud's own per-user rates, pre-burden, salaried £0 — recomputed from LIVE rates, never cached`,
+          'TRUE and RC-screen never mix — the translation card on Rota vs Actual is the only meeting point',
+          'dept TRUE budget = dept salaried (burdened) + var% × net — kitchen 14.3% · FOH 8.1% · combined 22.4% (~30% of net at the High-band anchor)',
+          'OVER only beyond the ruled £45 materiality',
+        ]),
+      });
+
+      // ---- (6) data architecture — definitional cards, no figures ----
+      const arch = [
+        ['RotaCloud', 'Rota & attendance — LIVE', 'shifts, clock data and rates → labour_day / labour_shifts / labour_hourly + the rota_ahead_* forward snapshots; daily settle + hourly intraday pull. The staffing side of every grid on this centre.'],
+        ['Lightspeed K-Series', 'Demand — LIVE', 'per-receipt lines carry the hour truth (ONLINE has no true hour and is excluded from hour grids); sales_day net funds labour %, SPLH and the formula budget.'],
+        ['Reservations / covers', 'OpenTable — not wired', 'real covers come from OpenTable emailed reports (not wired); the POS guest-count is NOT covers (no-fabrication ruling) — covers-based productivity stays gated at zero digits.'],
+        ['Payroll', 'QuickBooks — gated', 'the settlement truth for paid £. Phase 0 is GET-only structural discovery; paid-vs-TRUE reconciliation lands when the wire graduates — until then labour_day TRUE is the operating truth.'],
+      ].map(([src, name, txt]) => `<div class="r-driver"><small>${esc(src)}</small><strong>${esc(name)}</strong><p>${esc(txt)}</p></div>`).join('');
+      const archPanel = S.rcc.panel({
+        title: 'Data architecture', sub: 'where every number on this centre comes from — definitional, no figures',
+        body: `<div class="lbc-arch">${arch}</div>`,
+      });
+
+      return parts.join('\n')
+        + `<div class="r-grid r-two-col">${heatPanel}${compPanel}</div>`
+        + `<div class="r-grid r-two-col">${ratiosPanel}${rulesPanel}</div>`
+        + archPanel;
     };
 
     const tabBody = tab === 'rota' ? renderRotaTab()
