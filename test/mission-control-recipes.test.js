@@ -23,12 +23,12 @@ function makeDb(seed) {
       CHECK (unit_of_measure IN ('each','g','ml','portion')), CHECK (cost_source IN ('manual','portal','pdf')), CHECK (pack_cost_pence IS NULL OR pack_cost_pence >= 0), CHECK (pack_qty IS NULL OR pack_qty > 0));
     CREATE TABLE products (id TEXT PRIMARY KEY, lightspeed_sku TEXT NOT NULL UNIQUE, name TEXT, category TEXT, updated_at INTEGER NOT NULL);
     CREATE TABLE recipe_lines (product_id TEXT NOT NULL, sub_item_id TEXT NOT NULL, quantity REAL NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (product_id, sub_item_id), CHECK (quantity > 0));
-    CREATE TABLE sales_line_items (identifier TEXT PRIMARY KEY, sku TEXT, pretax_pence INTEGER, quantity REAL, line_type TEXT);
+    CREATE TABLE sales_by_product (business_date TEXT, sku TEXT, product_name TEXT, category_name TEXT, total_amount_pence INTEGER, quantity REAL, transaction_count INTEGER, ls_margin_pence INTEGER, ls_costs_pence INTEGER, updated_at INTEGER, PRIMARY KEY (business_date, sku));
   `);
   if (seed) seed(db);
   return db;
 }
-function ctxFor(db) { return { q: (sql, p) => DATA.safeSelect(db, sql, p), now: NOW, halt: { halted: false } }; }
+function ctxFor(db, query) { return { q: (sql, p) => DATA.safeSelect(db, sql, p), now: NOW, halt: { halted: false }, query: query || {} }; }
 
 // ===================================================================================================
 // applyRecipeAction — the closed allowlist + validation (mutation-relevant)
@@ -180,7 +180,7 @@ test('page: coverage weights by SALES + a partial-cost product is a GAP, never a
     d.prepare(`INSERT INTO sub_items (id, name, unit_of_measure, pack_cost_pence, pack_qty, updated_at) VALUES ('bun','bun','each',500,48,1),('spud','potato','g',NULL,NULL,1)`).run();
     d.prepare(`INSERT INTO recipe_lines (product_id, sub_item_id, quantity, updated_at) VALUES ('CHZ','bun',1,1),('FRIES','spud',200,1)`).run();
     // sales: CHZ sells more
-    d.prepare(`INSERT INTO sales_line_items (identifier, sku, pretax_pence, quantity, line_type) VALUES ('l1','CHZ',80000,100,'SALE'),('l2','FRIES',20000,50,'SALE')`).run();
+    d.prepare(`INSERT INTO sales_by_product (business_date, sku, total_amount_pence, quantity, updated_at) VALUES ('2026-07-20','CHZ',80000,100,1),('2026-07-20','FRIES',20000,50,1)`).run();
   });
   const ctx = ctxFor(db);
   const section = recipesPage.getSection(db, ctx);
@@ -200,7 +200,7 @@ test('page: coverage weights by SALES + a partial-cost product is a GAP, never a
 });
 
 test('page: renders gracefully with NO sales table (products not seeded yet) — never throws, never fabricates', () => {
-  // a DB WITHOUT sales_line_items (pre-Slice-1)
+  // a DB WITHOUT the sales aggregate table (pre-ingest)
   const db = new sqlite.DatabaseSync(':memory:');
   db.exec(`CREATE TABLE sub_items (id TEXT PRIMARY KEY, name TEXT, pack_cost_pence INTEGER, pack_qty REAL, unit_of_measure TEXT, cost_source TEXT, updated_at INTEGER);
            CREATE TABLE products (id TEXT PRIMARY KEY, lightspeed_sku TEXT, name TEXT, category TEXT, updated_at INTEGER);
@@ -215,4 +215,67 @@ test('page: renders gracefully with NO sales table (products not seeded yet) —
   assert.match(out.stamp, /products seed when sales flow/i, 'stamp is honest about the pending seed');
   assert.doesNotMatch(out.body, /NaN|undefined|£0\.00/, 'no fabricated numbers before data');
   db.close();
+});
+
+// ===================================================================================================
+// The WORKLIST redesign (audit 2026-07-21) — capped list, search-opens-the-editor, honest caps
+// ===================================================================================================
+function seedMany(d, n) {
+  const prods = [], sales = [];
+  for (let i = 0; i < n; i++) {
+    const sku = `P${String(i).padStart(3, '0')}`;
+    prods.push(`('${sku}','${sku}','Product ${i}',1)`);
+    // descending £ so the worklist order is deterministic: P000 sells most
+    sales.push(`('2026-07-20','${sku}',${(n - i) * 1000},${n - i},1)`);
+  }
+  d.prepare(`INSERT INTO products (id, lightspeed_sku, name, updated_at) VALUES ${prods.join(',')}`).run();
+  d.prepare(`INSERT INTO sales_by_product (business_date, sku, total_amount_pence, quantity, updated_at) VALUES ${sales.join(',')}`).run();
+}
+
+test('worklist: capped at 20 uncosted by £ net — the cap is STATED, the tail reachable via search', () => {
+  const db = makeDb((d) => seedMany(d, 25));
+  const section = recipesPage.getSection(db, ctxFor(db));
+  assert.equal(section.worklist.length, 20, 'capped at 20');
+  assert.equal(section.uncostedTotal, 25, 'total uncosted still reported');
+  assert.equal(section.worklist[0].id, 'P000', 'biggest seller first');
+  const out = recipesPage.render(section, ctxFor(db));
+  assert.match(out.body, /Top 20 uncosted by £ net sold · 25 uncosted in total/, 'cap + total stated honestly');
+  assert.doesNotMatch(out.body, /Product 24<\/b>/, 'the tail is NOT rendered (no 474-row sheet)');
+  assert.match(out.body, /name="find"/, 'search reaches the tail');
+});
+
+test('search (?find=) opens the on-demand editor: matches by name/SKU, cap stated, lines shown', () => {
+  const db = makeDb((d) => {
+    seedMany(d, 25);
+    d.prepare(`INSERT INTO sub_items (id, name, unit_of_measure, pack_cost_pence, pack_qty, updated_at) VALUES ('bun','bun','each',500,48,1)`).run();
+    d.prepare(`INSERT INTO recipe_lines (product_id, sub_item_id, quantity, updated_at) VALUES ('P024','bun',2,1)`).run();
+  });
+  const ctx = ctxFor(db, { find: 'Product 24' });
+  const section = recipesPage.getSection(db, ctx);
+  assert.equal(section.find, 'Product 24');
+  assert.equal(section.matches.total, 1);
+  assert.equal(section.matches.shown[0].id, 'P024', 'tail product reachable by search');
+  const out = recipesPage.render(section, ctx);
+  assert.match(out.body, /1 match for/, 'match count stated');
+  assert.match(out.body, /details class="rc-prod" open/, 'single match opens its editor');
+  assert.match(out.body, /bun/, 'existing recipe lines rendered inside the editor');
+  assert.doesNotMatch(out.body, /Top 20 uncosted/, 'search replaces the worklist view');
+  // SKU search too
+  const bySku = recipesPage.getSection(db, ctxFor(db, { find: 'p003' }));
+  assert.equal(bySku.matches.shown[0].id, 'P003', 'case-insensitive SKU match');
+});
+
+test('carrot tile: coverage-if-worklist-finished is pure arithmetic on the same weights', () => {
+  const db = makeDb((d) => {
+    seedMany(d, 5); // net weights 5000,4000,3000,2000,1000 → total 15000
+    d.prepare(`INSERT INTO sub_items (id, name, unit_of_measure, pack_cost_pence, pack_qty, updated_at) VALUES ('bun','bun','each',500,48,1)`).run();
+    d.prepare(`INSERT INTO recipe_lines (product_id, sub_item_id, quantity, updated_at) VALUES ('P000','bun',1,1)`).run(); // biggest seller costed
+  });
+  const section = recipesPage.getSection(db, ctxFor(db));
+  assert.ok(Math.abs(section.coverage.pct - 5000 / 15000) < 1e-9);
+  assert.ok(Math.abs(section.nextGainPct - 1) < 1e-9, 'all 4 uncosted fit the cap → finishing the list = 100%');
+  const out = recipesPage.render(section, ctxFor(db));
+  assert.match(out.body, /Cost the 4 below/);
+  assert.match(out.body, /100\.0%/);
+  assert.doesNotMatch(out.body, /NaN|undefined/);
 });
