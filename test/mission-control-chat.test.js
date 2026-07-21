@@ -138,3 +138,19 @@ test('LENGTH GUARD wall-of-lines edge: a >10-line single paragraph (Rex list sty
   assert.match(out.body, /item 4<details class="ch-workings"><summary>show more \(11 more lines\) ▸/, '4 lines visible, 11 collapsed');
   assert.match(out.body, /item 15/, 'everything in the expander');
 });
+
+test('stale-tab self-heal (incident 2026-07-21): the rev rides the page + the poll; the poll renderer mirrors answer-first', () => {
+  const db = makeDb();
+  db.prepare(`INSERT INTO chat_messages (direction, text, created_at) VALUES ('in', 'q', 1)`).run();
+  const ctx = { ...ctxFor(db), serverRev: 'REV123' };
+  const out = chatPage.render(chatPage.getSection(db, ctx), ctx);
+  assert.match(out.body, /data-rev="REV123"/, 'the page embeds its build rev');
+  assert.match(out.body, /r\.rev && myRev && r\.rev !== myRev/, 'the poll compares revs');
+  assert.match(out.body, /location\.reload\(\); return;/, 'mismatch reloads (guarded by empty input)');
+  // the poll renderer constructs the SAME answer-first shape: workings summary + ch-meta + ack folding
+  assert.match(out.body, /sum\.textContent = 'show workings ▸'/, 'poll arrivals get collapsed workings');
+  assert.match(out.body, /data-ackjob/, 'ack bubbles are foldable client-side');
+  const { chatUpdates } = require('../mission-control/server.js');
+  const upd = chatUpdates(db, 0, []);
+  assert.ok(upd.rev && typeof upd.rev === 'string', 'the poll carries the server rev');
+});

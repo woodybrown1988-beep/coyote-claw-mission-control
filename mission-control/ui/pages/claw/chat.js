@@ -124,6 +124,7 @@ module.exports = {
         : '';
       const ack = r.job_id ? ackByJob.get(r.job_id) : null;
       const asked = ack ? `asked <time data-ms="${esc(String(ack.created_at))}"></time> · ` : '';
+      const ackMark = (r.source === 'router' && r.job_id) ? ` data-ackjob="${esc(r.job_id)}"` : '';
       let body;
       const fence = /```\n?([\s\S]*?)```/.exec(String(r.text));
       if (r.source === 'boxquery' && fence) {
@@ -142,9 +143,9 @@ module.exports = {
         const first = String(r.text).split('\n')[0].slice(0, 80);
         return `<div class="ch-msg ch-out" data-mid="${esc(String(r.id))}"><details class="ch-details"><summary><span class="ch-src" style="display:inline-flex">${esc(label)}</span> ${esc(first)} ▸</summary>${inner}</details></div>`;
       }
-      return `<div class="ch-msg ch-out" data-mid="${esc(String(r.id))}">${inner}</div>`;
+      return `<div class="ch-msg ch-out" data-mid="${esc(String(r.id))}"${ackMark}>${inner}</div>`;
     };
-    parts.push(`<div class="ch-thread" id="ch-thread" data-chat-page data-last="${esc(String(m.lastId))}">`);
+    parts.push(`<div class="ch-thread" id="ch-thread" data-chat-page data-last="${esc(String(m.lastId))}" data-rev="${esc(String((ctx && ctx.serverRev) || ''))}">`);
     if (m.messages.length === 0) {
       parts.push(`<div class="banner muted">No messages yet. Ask anything — <span class="mono">data:</span> for a SQL answer, <span class="mono">research:</span> for a cited briefing, plain text goes to the Lead as a build brief, or address Rex by name for org state.</div>`);
     } else {
@@ -177,6 +178,17 @@ module.exports = {
           .then(function(r){ if (r && r.ok) { ta.value=''; poll(); } })
           .finally(function(){ busy = false; document.getElementById('ch-send').disabled = false; });
       });
+      function collapsedText(target, text){
+        var lines = String(text).split('\n');
+        if (lines.length <= 10) { target.appendChild(document.createTextNode(text)); return; }
+        var head = lines.slice(0, 4).join('\n');
+        target.appendChild(document.createTextNode(head));
+        var det = document.createElement('details'); det.className = 'ch-workings';
+        var sum = document.createElement('summary'); sum.textContent = 'show more (' + (lines.length - 4) + ' more lines) ▸';
+        det.appendChild(sum);
+        var full = document.createElement('div'); full.textContent = text; det.appendChild(full);
+        target.appendChild(det);
+      }
       function addMsg(m){
         var th = document.getElementById('ch-thread'); if (!th) return;
         var d = document.createElement('div');
@@ -188,10 +200,32 @@ module.exports = {
           if (m.job_id && m.job_status && ['done','failed','escalated'].indexOf(m.job_status) === -1) {
             var c = document.createElement('span'); c.className = 'ch-chip'; c.setAttribute('data-jobchip', m.job_id);
             c.textContent = m.job_status + '…'; src.appendChild(document.createTextNode(' ')); src.appendChild(c);
+            if (m.source === 'router' && m.job_id) d.setAttribute('data-ackjob', m.job_id);
           }
           d.appendChild(src);
+          // an arriving ANSWER folds its standalone ack bubble (same rule as the server render)
+          if (m.source !== 'router' && m.job_id) {
+            var ackEl = th.querySelector('[data-ackjob="' + m.job_id + '"]'); if (ackEl) ackEl.remove();
+          }
         }
-        var body = document.createElement('div'); body.textContent = m.text; d.appendChild(body);
+        // ANSWER-FIRST (verbosity ruling): fenced SQL → prose + muted meta + collapsed workings
+        var fence = /\x60\x60\x60\n?([\s\S]*?)\x60\x60\x60/.exec(String(m.text));
+        if (m.direction === 'out' && fence) {
+          var prose = String(m.text).slice(0, fence.index).trim();
+          var after = String(m.text).slice(fence.index + fence[0].length).trim();
+          var p = document.createElement('div'); collapsedText(p, prose); d.appendChild(p);
+          var meta = document.createElement('div'); meta.className = 'ch-meta';
+          meta.textContent = after ? after.split('\n').join(' · ') : 'answered just now';
+          d.appendChild(meta);
+          var det = document.createElement('details'); det.className = 'ch-workings';
+          var sum = document.createElement('summary'); sum.textContent = 'show workings ▸';
+          det.appendChild(sum);
+          var sql = document.createElement('div'); sql.className = 'ch-sql'; sql.textContent = fence[1].trim();
+          det.appendChild(sql);
+          d.appendChild(det);
+        } else {
+          var body = document.createElement('div'); collapsedText(body, m.text); d.appendChild(body);
+        }
         th.appendChild(d); d.scrollIntoView({ block: 'end' });
       }
       function poll(){
@@ -200,6 +234,11 @@ module.exports = {
           .then(function(r){ return r.json(); })
           .then(function(r){
             if (!r || !r.ok) return;
+            // stale-tab self-heal: the server rev changed (a deploy) → reload for the new page code,
+            // but NEVER over a half-typed message.
+            var myRev = document.getElementById('ch-thread') ? document.getElementById('ch-thread').dataset.rev : '';
+            var ta2 = document.getElementById('ch-text');
+            if (r.rev && myRev && r.rev !== myRev && (!ta2 || !ta2.value.trim())) { location.reload(); return; }
             (r.messages || []).forEach(function(m){ if (m.id > last) { addMsg(m); last = m.id; } });
             Object.keys(r.jobs || {}).forEach(function(id){
               var chip = document.querySelector('[data-jobchip="' + id + '"]'); if (!chip) return;
