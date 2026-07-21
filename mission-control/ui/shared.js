@@ -75,9 +75,12 @@ const WORKSPACES = [
       { key: 'issues', label: 'Issues', route: '/coyote/issues', ico: '<path d="M10.3 3.8 2.5 18a2 2 0 0 0 1.7 3h15.6a2 2 0 0 0 1.7-3L13.7 3.8a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/>' },
     ] },
   ] },
+  // readOnly stays TRUE: every board except Chat is read-only; Chat is the ONE sanctioned write
+  // (a transport row — ruling mc-chat-approved). The sidebar note now names that carve-out.
   { key: 'claw', label: 'Claw', tag: 'Engine room', home: '/claw/engine', readOnly: true, groups: [
     { group: 'Console', items: [
       { key: 'engine', label: 'Engine', route: '/claw/engine', ico: '<circle cx="12" cy="7" r="3"/><circle cx="5" cy="17" r="2.5"/><circle cx="19" cy="17" r="2.5"/><path d="M12 10v3M9 15l-2 1M15 15l2 1"/>' },
+      { key: 'chat', label: 'Chat', route: '/claw/chat', ico: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>' },
     ] },
   ] },
 ];
@@ -97,7 +100,7 @@ function renderSwitch(activeWs) {
       + (on ? 'background:rgba(34,211,238,.16);color:#CFF6FB' : 'color:var(--muted,#8aa)');
     return `<a href="${w.home}" style="${st}" title="${escapeHtml(w.tag || '')}">${escapeHtml(w.label)}</a>`;
   }).join('');
-  const ro = activeWs.readOnly ? '<div style="margin:2px 15px 4px;font-size:10px;color:var(--muted,#7a8)">read-only · actions via Telegram</div>' : '';
+  const ro = activeWs.readOnly ? '<div style="margin:2px 15px 4px;font-size:10px;color:var(--muted,#7a8)">read-only · actions via Telegram · chat = the front door</div>' : '';
   return `<div style="${wrap}">${chips}</div>${ro}`;
 }
 
@@ -164,7 +167,7 @@ function clientScript() {
   });
   // BOM (Recipes & Costs) — gated edits: submit an rc-form to POST /api/recipe-action (the closed allowlist).
   document.addEventListener('submit',(e)=>{const f=e.target; if(!f||!f.classList||!f.classList.contains('rc-form'))return; e.preventDefault(); if(aqBusy)return; const kind=f.getAttribute('data-rc'); const d={}; new FormData(f).forEach((v,k)=>{d[k]=v;}); let body; if(kind==='sub_item'){body={op:'upsert_sub_item',id:d.id,name:d.name,supplier:d.supplier,pack_description:d.pack_description,pack_cost_pence:(d.pack_cost===''||d.pack_cost==null)?null:Math.round(parseFloat(d.pack_cost)*100),pack_qty:(d.pack_qty===''?null:d.pack_qty),unit_of_measure:d.unit_of_measure};}else{body={op:'set_recipe_line',product_id:d.product_id,sub_item_id:d.sub_item_id,quantity:d.quantity};} aqBusy=true; fetch('/api/recipe-action',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}).then(r=>r.json()).then(r=>{aqBusy=false; if(r&&r.ok){location.reload();}else{alert('Rejected: '+((r&&r.error)||'unknown'));}}).catch(()=>{aqBusy=false;}); });
-  setTimeout(()=>location.reload(),30000);`;
+  if(!document.querySelector('[data-chat-page]')) setTimeout(()=>location.reload(),30000);`;
 }
 
 function css() {

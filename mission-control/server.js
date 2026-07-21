@@ -74,6 +74,14 @@ function handleRequest(req, res) {
   }
 
   // BOM safe-write (Tier 2, same discipline): the operator's recipe/cost edits + the CSV bulk import.
+  // MC CHAT (ruling: mc-chat-approved) — the THIRD narrow write-path: typing in /claw/chat writes
+  // ONE chat_messages 'in' row; the box-side web adapter routes it through the SAME frontdoor core
+  // Telegram uses. The board never routes, never enqueues — pure transport. Tailnet-only surface.
+  if (req.method === 'POST' && url.pathname === '/api/chat-message') {
+    handleChatMessage(req, res);
+    return;
+  }
+
   if (req.method === 'POST' && url.pathname === '/api/recipe-action') {
     handleRecipeAction(req, res);
     return;
@@ -91,6 +99,13 @@ function handleRequest(req, res) {
 
   if (req.method !== 'GET') {
     sendText(res, 405, 'Method not allowed');
+    return;
+  }
+
+  // Chat short-poll cursor: new messages after ?after=<id> + statuses for the in-flight job chips.
+  // SELECT-only on the read handle; absent table degrades to ok:false (pre-engine-deploy honesty).
+  if (url.pathname === '/api/chat-updates') {
+    handleChatUpdates(res, url);
     return;
   }
 
@@ -146,6 +161,7 @@ const DATA = require('./ui/data.js');
 const PAGES = [
   require('./ui/pages/coyote/overview.js'),
   require('./ui/pages/claw/engine.js'),
+  require('./ui/pages/claw/chat.js'),
   require('./ui/pages/coyote/reviews.js'),
   require('./ui/pages/coyote/issues.js'),
   require('./ui/pages/coyote/reports.js'),
@@ -463,6 +479,82 @@ function handleReviewAction(req, res) {
       }
     }
   });
+}
+
+// ===================================================================================================
+// MC CHAT (ruling: mc-chat-approved) — the transport write + the short-poll read.
+// applyChatMessage is PURE (db, body, now) like applyReviewAction: one INSERT, hard caps, no routing
+// (the box-side adapter owns routing — the ARCHITECTURE RULE). Exported for tests.
+function applyChatMessage(db, body, now) {
+  const text = typeof body.text === 'string' ? body.text.trim() : '';
+  if (!text) return { ok: false, status: 400, error: 'empty message' };
+  if (text.length > 4000) return { ok: false, status: 400, error: 'message too long (4000 char cap)' };
+  let replyTo = null;
+  if (body.reply_to_id != null) {
+    const n = Number(body.reply_to_id);
+    if (!Number.isInteger(n) || n <= 0) return { ok: false, status: 400, error: 'bad reply_to_id' };
+    replyTo = n;
+  }
+  try {
+    const r = db.prepare(
+      `INSERT INTO chat_messages (transport, direction, text, reply_to_id, created_at) VALUES ('web', 'in', ?, ?, ?)`
+    ).run(text, replyTo, now);
+    return { ok: true, status: 200, id: Number(r.lastInsertRowid) };
+  } catch (e) {
+    // table absent = the engine side has not deployed yet — honest 503, never a silent drop
+    return { ok: false, status: 503, error: 'chat store unavailable (engine side not deployed?)' };
+  }
+}
+
+function handleChatMessage(req, res) {
+  let raw = '';
+  let tooBig = false;
+  req.on('data', (chunk) => {
+    raw += chunk;
+    if (raw.length > 8192) { tooBig = true; req.destroy(); }
+  });
+  req.on('end', () => {
+    if (tooBig) { sendJson(res, 413, { ok: false, error: 'payload too large' }); return; }
+    let parsed;
+    try { parsed = JSON.parse(raw || '{}'); } catch (_) { sendJson(res, 400, { ok: false, error: 'invalid json' }); return; }
+    const opened = openWritableDatabase();
+    if (!opened.ok) { sendJson(res, 503, { ok: false, error: 'database unavailable for write' }); return; }
+    try {
+      const result = applyChatMessage(opened.db, parsed, Date.now());
+      sendJson(res, result.status || 400, result);
+    } finally {
+      try { opened.db.close(); } catch (_) { /* close failure is not user-actionable */ }
+    }
+  });
+}
+
+// Short-poll: messages after the cursor + job statuses for the chips. Pure-read; exported for tests.
+const CHAT_SOURCE_LABEL = { router: 'Router', boxquery: 'Box Query', rex: 'Rex', lead: 'Lead', research: 'Researcher', brief: 'Rex · morning brief', soto: 'Rex · state of the org' };
+function chatUpdates(db, afterId, jobIds) {
+  try {
+    const messages = db.prepare(
+      `SELECT m.id, m.direction, m.source, m.text, m.job_id, m.created_at, j.status AS job_status
+         FROM chat_messages m LEFT JOIN jobs j ON j.id = m.job_id
+        WHERE m.id > ? ORDER BY m.id LIMIT 50`
+    ).all(afterId).map((r) => ({ ...r, label: CHAT_SOURCE_LABEL[r.source] || r.source }));
+    const jobs = {};
+    for (const id of jobIds.slice(0, 20)) {
+      if (!/^[0-9a-f-]{8,36}$/i.test(id)) continue; // ids are uuids — anything else is ignored, never queried
+      const row = db.prepare(`SELECT status FROM jobs WHERE id = ?`).get(id);
+      if (row) jobs[id] = String(row.status);
+    }
+    return { ok: true, messages, jobs };
+  } catch (e) {
+    return { ok: false, error: 'chat store unavailable' };
+  }
+}
+
+function handleChatUpdates(res, url) {
+  const afterId = Math.max(0, parseInt(url.searchParams.get('after') || '0', 10) || 0);
+  const jobIds = (url.searchParams.get('jobs') || '').split(',').filter(Boolean);
+  const opened = openDatabase();
+  if (!opened.ok) { sendJson(res, 503, { ok: false, error: 'database unavailable' }); return; }
+  sendJson(res, 200, chatUpdates(opened.db, afterId, jobIds));
 }
 
 // ===================================================================================================
@@ -3359,5 +3451,7 @@ module.exports = {
   RECIPE_ACTION_OPS,
   buildRecipeTemplate,
   parseCsv,
-  spendLevel
+  spendLevel,
+  applyChatMessage,
+  chatUpdates,
 };
