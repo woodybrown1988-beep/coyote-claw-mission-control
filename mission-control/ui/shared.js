@@ -418,6 +418,10 @@ const RCC_TOKENS = {
   y2024: '#56616e', y2025: '#67a7ff', y2026: '#e44b36',
   radius: '16px', shadow: '0 10px 30px rgba(0,0,0,.24)',
   heat: ['#17242b', '#18333a', '#244c4f', '#6b4c2d', '#8a3d31', '#b44736'], // l1..l6
+  // Reservations mock extension (Stage 1, 2026-07-21): ONE new token — everything else in its
+  // :root is the RCC canon verbatim (its text/muted hexes differ by a hair; generation noise,
+  // NOT adopted — one canon). cyan = the walk-in series / secondary-metric colour.
+  cyan: '#5bd1d7',
 };
 
 function rccCss() {
@@ -480,7 +484,11 @@ function rccCss() {
   .rcc .r-driver p{margin:4px 0 0;color:#8e98a2;font-size:10px}
   .rcc .r-empty{border:1px dashed #3a434d;border-radius:12px;padding:16px;color:#9aa4ae;font-size:12px;line-height:1.55;background:#101419}
   .rcc .r-empty b{color:#c9d0d8}
-  .rcc .r-empty .r-unlock{margin-top:8px;color:#f2c66f;font-size:11px;font-weight:700}`;
+  .rcc .r-empty .r-unlock{margin-top:8px;color:#f2c66f;font-size:11px;font-weight:700}
+  .rcc .r-stackcol{display:flex;flex-direction:column-reverse;width:100%;max-width:26px;margin:0 auto;border-radius:4px 4px 1px 1px;overflow:hidden;min-height:3px}
+  .rcc .r-meter-row{display:grid;grid-template-columns:130px 1fr 64px;gap:10px;align-items:center;font-size:12px}
+  .rcc .r-meter-row .r-track{height:10px}
+  .rcc .r-stars{color:${T.accent2};letter-spacing:1px}`;
 }
 
 // The RCC component set — mirrors the mock's grammar 1:1. Callers pass PRE-ESCAPED or trusted
@@ -529,6 +537,22 @@ const rcc = {
   callout(html) { return `<div class="r-callout">${html}</div>`; },
   note(text) { return `<div class="r-note">${escapeHtml(text)}</div>`; },
   driver({ label, value, sub }) { return `<div class="r-driver"><small>${escapeHtml(label)}</small><strong>${escapeHtml(value)}</strong><p>${sub ? escapeHtml(sub) : ''}</p></div>`; },
+  /** Stacked column (the Reservations 13-week walk-in vs reserved grammar): segs bottom-up
+   *  [{pct,color}], height % of the tallest column. */
+  stackCol(hPct, segs, tip) {
+    const body = (segs || []).map((g) => `<div style="height:${Math.max(0, Math.min(100, g.pct))}%;background:${g.color}"></div>`).join('');
+    return `<div class="r-stackcol" style="height:${Math.max(1, Math.min(100, hPct))}%"${tip ? ` data-tip="${escapeHtml(tip)}"` : ''}>${body}</div>`;
+  },
+  /** Horizontal labelled meter row (the sentiment-theme / funnel grammar): label · track · value. */
+  meterRow({ label, pct, color, value }) {
+    return `<div class="r-meter-row"><div class="r-label">${escapeHtml(label)}</div><div class="r-track"><div class="r-seg" style="width:${Math.max(0, Math.min(100, pct))}%;background:${color || RCC_TOKENS.accent}"></div></div><div class="r-value">${escapeHtml(value)}</div></div>`;
+  },
+  /** Star rating (Reviews & Recovery): filled/empty out of 5, value beside. */
+  stars(rating) {
+    const r = Math.max(0, Math.min(5, Number(rating) || 0));
+    const full = Math.round(r);
+    return `<span class="r-stars" title="${escapeHtml(r.toFixed(2))} / 5">${'★'.repeat(full)}${'☆'.repeat(5 - full)}</span>`;
+  },
   /** DESIGNED EMPTY-STATE (honest-gaps rule): the mock's own layout, honest content — names the
    *  blocker + the unlock action. NEVER renders a mock number. */
   emptyState({ title, blocker, unlock }) {

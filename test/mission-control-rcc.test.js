@@ -49,3 +49,15 @@ test('emptyState (honest-gaps rule): names the blocker + unlock, and there is no
   assert.match(es, /Unlock: wire the OpenTable email export/);
   assert.doesNotMatch(es, /\d+%|£\d/, 'no numeric content in the designed empty state');
 });
+
+test('Reservations Stage-1 extension: ONE new token (cyan) + stackCol/meterRow/stars extend the canon, never fork it', () => {
+  assert.equal(S.rcc.tokens.cyan, '#5bd1d7', 'the mock\'s one addition');
+  assert.equal(S.rcc.tokens.bg, '#0b0d10', 'the canon values unchanged');
+  const col = S.rcc.stackCol(80, [{ pct: 60, color: S.rcc.tokens.accent }, { pct: 40, color: S.rcc.tokens.cyan }], 'W29');
+  assert.match(col, /r-stackcol/); assert.match(col, /#5bd1d7/);
+  assert.match(S.rcc.stackCol(0.2, []), /height:1%/, 'floor — a real week is never invisible');
+  const row = S.rcc.meterRow({ label: 'Burger quality', pct: 140, value: '38' });
+  assert.match(row, /width:100%/, 'meter clamped');
+  assert.match(S.rcc.stars(4.62), /★★★★★|★★★★☆/);
+  assert.match(S.rcc.stars(99), /★★★★★/, 'clamped to 5');
+});
