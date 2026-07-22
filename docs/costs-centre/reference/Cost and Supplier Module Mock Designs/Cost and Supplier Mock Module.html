@@ -1,0 +1,517 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Coyote Burger — Cost & Supplier Command Centre</title>
+<style>
+:root{--bg:#0a0c0f;--panel:#14181d;--panel2:#181e24;--line:#2b323a;--text:#f4f1ea;--muted:#99a3ad;--red:#e44b36;--orange:#ff8b55;--amber:#f0b64f;--green:#45c486;--bad:#ef6b68;--blue:#67a7ff;--purple:#ad8cff;--cyan:#5bd1d7;--shadow:0 12px 32px rgba(0,0,0,.25);--r:16px}
+*{box-sizing:border-box}body{margin:0;background:linear-gradient(180deg,#080a0c,#0d1014);color:var(--text);font:14px Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif}button,input,select{font:inherit}.app{max-width:1600px;margin:auto;padding:22px}.top{display:flex;justify-content:space-between;align-items:center;gap:18px;margin-bottom:14px}.brand{display:flex;gap:14px;align-items:center}.mark{width:47px;height:47px;display:grid;place-items:center;border-radius:12px;border:1px solid #4b2a25;background:linear-gradient(145deg,#351914,#111418);font-weight:950;color:#ffddd7;box-shadow:var(--shadow)}h1{font-size:22px;margin:0;letter-spacing:-.5px}.brand p{margin:3px 0 0;color:var(--muted);font-size:12px}.status{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}.pill{padding:8px 11px;border:1px solid var(--line);border-radius:999px;background:#11151a;color:#c9d0d8;font-size:11px;white-space:nowrap}.pill.good{border-color:#24583f;background:#10251b;color:#9de3bc}.pill.warn{border-color:#5c4822;background:#2b2111;color:#f3c76f}.dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--green);margin-right:6px}.dot.warn{background:var(--amber)}.controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:10px;border:1px solid var(--line);border-radius:14px;background:#11151a;margin-bottom:14px}.control{min-width:155px;padding:8px 11px;border:1px solid #303740;border-radius:10px;background:#171c22;color:#e7ebef;font-size:12px}.control strong{display:block;font-size:9px;text-transform:uppercase;letter-spacing:.08em;color:#8d96a0;margin-bottom:2px}.spacer{flex:1}.badge{font-size:10px;padding:6px 9px;border-radius:999px;background:#251713;color:#ffb8aa;border:1px solid #5d2c24}.tabs{display:flex;gap:4px;overflow:auto;border-bottom:1px solid var(--line);margin-bottom:14px}.tab{border:0;border-bottom:2px solid transparent;background:transparent;color:#9ba4ae;padding:11px 14px;font-weight:850;cursor:pointer;white-space:nowrap}.tab.active{color:#fff;border-bottom-color:var(--red)}.page{display:none}.page.active{display:block}.grid{display:grid;gap:14px}.kpis{grid-template-columns:repeat(6,minmax(0,1fr));margin-bottom:14px}.card{background:linear-gradient(180deg,var(--panel),#12161a);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow)}.panel{padding:17px;min-width:0}.kpi{padding:16px;min-height:132px;position:relative;overflow:hidden}.kpi:after{content:"";position:absolute;right:-26px;bottom:-34px;width:90px;height:90px;border-radius:50%;background:radial-gradient(circle,rgba(228,75,54,.13),transparent 70%)}.kl{font-size:9px;text-transform:uppercase;letter-spacing:.085em;color:#a5aeb7;font-weight:900}.kv{font-size:25px;font-weight:950;letter-spacing:-.7px;margin-top:10px}.ks{font-size:10px;color:#aab3bc;line-height:1.45;margin-top:7px}.micro{height:5px;background:#252c33;border-radius:99px;overflow:hidden;margin-top:13px}.micro span{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,var(--red),var(--orange))}.up{color:var(--green);font-weight:900}.down{color:var(--bad);font-weight:900}.flat{color:var(--amber);font-weight:900}.two{grid-template-columns:minmax(0,2fr) minmax(330px,1fr);margin-bottom:14px}.equal{grid-template-columns:1fr 1fr;margin-bottom:14px}.three{grid-template-columns:1.15fr 1fr .85fr;margin-bottom:14px}.four{grid-template-columns:repeat(4,1fr);margin-bottom:14px}.head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:14px}.pt{margin:0;font-size:14px;font-weight:950}.ps{font-size:10px;color:var(--muted);line-height:1.5;margin-top:4px}.legend{display:flex;gap:12px;flex-wrap:wrap;font-size:9px;color:#aeb6bf}.legend i{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px}.tag{display:inline-block;padding:5px 7px;border-radius:7px;font-size:8px;font-weight:950;border:1px solid #303941;background:#20272e;color:#c5ccd4;white-space:nowrap}.tag.good{color:#8ee1b4;background:#10251b;border-color:#24583f}.tag.bad{color:#f4a09f;background:#2a1718;border-color:#5d2e30}.tag.warn{color:#f3c76f;background:#2b2111;border-color:#5c4822}.tag.info{color:#c4b7ff;background:#201a35;border-color:#4b3d78}.tag.blue{color:#b8d3ff;background:#172238;border-color:#344d73}.alerts{display:grid;gap:9px}.alert{display:grid;grid-template-columns:7px 1fr auto;gap:10px;align-items:start;padding:11px;border:1px solid #2b3239;border-radius:12px;background:#12161a}.alert .bar{width:5px;height:100%;min-height:42px;border-radius:99px;background:var(--amber)}.alert.bad .bar{background:var(--bad)}.alert.good .bar{background:var(--green)}.alert h4{font-size:11px;margin:0 0 3px}.alert p{font-size:9px;line-height:1.45;color:#98a2ac;margin:0}.impact{font-size:9px;font-weight:950;color:#f2c66f;white-space:nowrap}table{border-collapse:collapse;width:100%}th{text-align:left;padding:10px;border-bottom:1px solid var(--line);font-size:8px;text-transform:uppercase;letter-spacing:.07em;color:#89939e;white-space:nowrap}td{padding:11px 10px;border-bottom:1px solid #222930;font-size:10px;color:#d5dbe1;white-space:nowrap}tr:last-child td{border-bottom:0}tr.hl{background:rgba(228,75,54,.06)}.num{text-align:right}.muted{color:var(--muted)}.scroll{overflow:auto}.chart{height:280px;position:relative}.chart svg{width:100%;height:100%;display:block;overflow:visible}.gridline{stroke:#2a3138;stroke-width:1}.axis{fill:#7f8994;font-size:9px}.line-a{fill:none;stroke:var(--red);stroke-width:3}.line-b{fill:none;stroke:var(--blue);stroke-width:2}.line-c{fill:none;stroke:var(--amber);stroke-width:2;stroke-dasharray:6 6}.point{fill:var(--red);stroke:#171b20;stroke-width:3}.driver-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.driver{padding:12px;border:1px solid #2c343c;border-radius:12px;background:#12161a}.driver small{display:block;font-size:7px;text-transform:uppercase;letter-spacing:.07em;font-weight:950;color:#8d97a2}.driver strong{display:block;font-size:18px;margin-top:7px}.driver p{font-size:8px;line-height:1.4;color:#8e98a2;margin:4px 0 0}.info{padding:11px 12px;border-left:3px solid var(--blue);border-radius:0 10px 10px 0;background:#101821;color:#aab8c6;font-size:9px;line-height:1.55}.info.warn{border-left-color:var(--amber);background:#1b1810}.info.bad{border-left-color:var(--bad);background:#1d1213}.info.good{border-left-color:var(--green);background:#0f1d17}.formula{padding:12px;border:1px solid #2d363f;border-radius:12px;background:#0d1115;color:#cbd2d9;font:9px/1.7 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.bars{display:grid;gap:11px}.barrow{display:grid;grid-template-columns:135px 1fr 70px;gap:10px;align-items:center}.barrow .lbl{font-size:10px;color:#c9d0d6}.track{height:11px;background:#252c33;border-radius:99px;overflow:hidden;display:flex}.seg{height:100%}.val{text-align:right;font-weight:900;font-size:10px}.donut-wrap{display:flex;align-items:center;gap:20px}.donut{width:150px;height:150px;border-radius:50%;position:relative;flex:0 0 auto}.donut:after{content:"";position:absolute;inset:27px;border:1px solid #2a3139;border-radius:50%;background:#14181d}.dc{position:absolute;inset:0;z-index:2;display:grid;place-items:center;text-align:center;font-size:18px;font-weight:950}.dc small{display:block;font-size:8px;color:#8f99a4;font-weight:600;margin-top:3px}.dlegend{display:grid;gap:9px;flex:1}.drow{display:grid;grid-template-columns:10px 1fr auto;gap:8px;align-items:center;font-size:10px;color:#c7ced5}.drow span:first-child{width:8px;height:8px;border-radius:3px}.drow b{color:#fff}.waterfall{height:250px;display:flex;align-items:flex-end;gap:14px;padding:20px 10px 35px;border-bottom:1px solid #36404a;background:repeating-linear-gradient(to top,transparent 0,transparent calc(25% - 1px),#293039 calc(25% - 1px),#293039 25%)}.wf{flex:1;height:100%;position:relative;display:flex;justify-content:center;align-items:flex-end}.wfbar{position:absolute;bottom:var(--bottom,0);height:var(--h);width:56%;min-width:34px;border-radius:7px 7px 2px 2px;background:var(--c)}.wfval{position:absolute;bottom:calc(var(--bottom,0px) + var(--h) + 7px);font-size:9px;font-weight:950;white-space:nowrap}.wflabel{position:absolute;top:calc(100% + 9px);font-size:8px;color:#87919b;text-align:center;line-height:1.25}.weekbars{display:grid;grid-template-columns:repeat(13,1fr);gap:8px;height:270px;align-items:end;padding:22px 4px 28px;border-bottom:1px solid #36404a;background:repeating-linear-gradient(to top,transparent 0,transparent calc(25% - 1px),#293039 calc(25% - 1px),#293039 25%)}.wcol{height:100%;display:flex;align-items:end;justify-content:center;gap:2px;position:relative}.wbar{width:13px;border-radius:4px 4px 2px 2px;position:relative}.wbar:hover:after{content:attr(data-tip);position:absolute;bottom:calc(100% + 7px);left:50%;transform:translateX(-50%);padding:6px 8px;border:1px solid #39434d;border-radius:8px;background:#080a0c;color:#fff;font-size:8px;white-space:nowrap;z-index:8}.wlabel{position:absolute;top:calc(100% + 8px);font-size:8px;color:#87919b;white-space:nowrap}.forecast{display:grid;grid-template-columns:1.25fr .75fr;gap:14px}.slider{padding:13px;border:1px solid #2e363f;border-radius:12px;background:#11161a}.sliderhead{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:8px}.sliderhead b{font-size:20px}.slider input[type=range]{width:100%;accent-color:var(--red)}.inputs{display:grid;grid-template-columns:repeat(3,1fr);gap:9px;margin-top:10px}.field{padding:9px 10px;border:1px solid #303840;border-radius:10px;background:#101419}.field label{display:block;font-size:7px;text-transform:uppercase;letter-spacing:.07em;font-weight:950;color:#89939d;margin-bottom:4px}.field input,.field select{width:100%;border:0;outline:0;background:transparent;color:#fff;font-weight:850}.scenario-cards{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:12px}.scenario{padding:12px;border:1px solid #2d353d;border-radius:12px;background:#12161a}.scenario small{display:block;font-size:7px;text-transform:uppercase;letter-spacing:.07em;font-weight:950;color:#8d97a2}.scenario strong{display:block;font-size:20px;margin-top:6px}.scenario p{font-size:8px;color:#8f99a3;margin:4px 0 0}.heat{display:grid;grid-template-columns:115px repeat(12,1fr);gap:5px;align-items:center}.hlabel{font-size:8px;color:#818b95;text-align:center}.rlabel{font-size:9px;color:#b3bbc4;font-weight:800}.cell{height:31px;border:1px solid #273039;border-radius:6px;background:#1c2329;position:relative}.n1{background:#18333a}.n2{background:#244c4f}.w1{background:#6b4c2d}.b1{background:#8a3d31}.b2{background:#b44736}.cell:hover:after{content:attr(data-tip);position:absolute;bottom:37px;left:50%;transform:translateX(-50%);z-index:8;padding:6px 8px;border:1px solid #39434d;border-radius:8px;background:#080a0c;color:#fff;font-size:8px;white-space:nowrap}.score{display:flex;align-items:center;gap:7px}.scorebar{width:62px;height:6px;background:#252c33;border-radius:99px;overflow:hidden}.scorebar span{display:block;height:100%;border-radius:99px}.matrix{height:300px;border-left:1px solid #39424b;border-bottom:1px solid #39424b;position:relative;background:linear-gradient(90deg,transparent 49.8%,#303842 50%,transparent 50.2%),linear-gradient(transparent 49.8%,#303842 50%,transparent 50.2%)}.ql{position:absolute;font-size:8px;font-weight:850;color:#7e8994}.qtl{top:8px;left:9px}.qtr{top:8px;right:9px}.qbl{bottom:8px;left:9px}.qbr{bottom:8px;right:9px}.bubble{position:absolute;display:grid;place-items:center;text-align:center;border-radius:50%;border:2px solid rgba(255,255,255,.2);box-shadow:0 7px 18px rgba(0,0,0,.35);font-size:7px;font-weight:950}.renewals{display:grid;gap:9px}.renewal{display:grid;grid-template-columns:1.2fr .7fr .7fr .7fr auto;gap:9px;align-items:center;padding:10px;border:1px solid #2d353d;border-radius:11px;background:#12161a;font-size:9px}.source-map{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.source{padding:12px;border:1px solid #2d353d;border-radius:12px;background:#12161a}.source h4{font-size:10px;margin:0 0 6px}.source p{font-size:8px;line-height:1.45;color:#909aa4;margin:0}.source .sync{font-size:8px;color:#7fe0ae;font-weight:950;margin-top:9px}.cashgrid{display:grid;grid-template-columns:repeat(13,1fr);gap:8px}.cashweek{padding:9px 5px;border:1px solid #2d353d;border-radius:9px;background:#12161a;text-align:center}.cashweek small{font-size:7px;color:#87919b}.cashweek strong{display:block;font-size:11px;margin-top:6px}.cashweek p{font-size:7px;color:#8d97a1;margin:3px 0 0}.mobile{display:none}.footer{text-align:right;color:#717b85;font-size:8px;margin-top:15px}
+@media(max-width:1200px){.kpis{grid-template-columns:repeat(3,1fr)}.three,.four{grid-template-columns:1fr 1fr}.source-map{grid-template-columns:repeat(2,1fr)}.driver-grid{grid-template-columns:repeat(2,1fr)}.scenario-cards{grid-template-columns:repeat(2,1fr)}.cashgrid{grid-template-columns:repeat(7,1fr)}}
+@media(max-width:860px){.app{padding:12px}.status{display:none}.kpis{grid-template-columns:repeat(2,1fr)}.two,.equal,.three,.four,.forecast{grid-template-columns:1fr}.controls{align-items:stretch}.control{flex:1}.spacer{display:none}.source-map{grid-template-columns:1fr}.donut-wrap{flex-direction:column}.heat{grid-template-columns:95px repeat(12,34px);overflow:auto}.renewal{grid-template-columns:1fr 1fr}.mobile{display:block;color:#d5aa63;font-size:9px;margin-bottom:10px}}
+@media(max-width:540px){.kpis{grid-template-columns:1fr}h1{font-size:18px}.driver-grid,.inputs,.scenario-cards{grid-template-columns:1fr}.barrow{grid-template-columns:95px 1fr 48px}.cashgrid{grid-template-columns:repeat(2,1fr)}}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="top">
+    <div class="brand"><div class="mark">CB</div><div><h1>Cost & Supplier Command Centre</h1><p>Coyote Burger · Cost visibility, purchasing control, recipe economics and cash commitments</p></div></div>
+    <div class="status"><span class="pill good"><span class="dot"></span>QuickBooks synced</span><span class="pill good"><span class="dot"></span>Lightspeed Inventory linked</span><span class="pill warn"><span class="dot warn"></span>7 invoice exceptions</span></div>
+  </div>
+  <div class="controls">
+    <div class="control"><strong>Trading week</strong>Mon 13–Sun 19 Jul 2026</div>
+    <div class="control"><strong>Revenue basis</strong>Net sales · ex VAT</div>
+    <div class="control"><strong>Cost basis</strong>Accrued operating cost</div>
+    <div class="control"><strong>Comparison</strong>Budget + same week LY</div>
+    <div class="spacer"></div><span class="badge">ILLUSTRATIVE MOCK DATA</span>
+  </div>
+  <div class="tabs">
+    <button class="tab active" data-tab="executive">Executive</button>
+    <button class="tab" data-tab="forecast">Cost Forecast</button>
+    <button class="tab" data-tab="cogs">COGS & Inventory</button>
+    <button class="tab" data-tab="recipes">Recipe Margins</button>
+    <button class="tab" data-tab="suppliers">Suppliers & Purchasing</button>
+    <button class="tab" data-tab="fixed">Fixed & Semi-Fixed</button>
+    <button class="tab" data-tab="cash">Cash Commitments</button>
+  </div>
+  <div class="mobile">For the full command-centre layout, use desktop or tablet landscape.</div>
+
+  <section class="page active" id="executive">
+    <div class="grid kpis">
+      <div class="card kpi"><div class="kl">Actual net revenue</div><div class="kv">£30,920</div><div class="ks"><span class="down">▼ 2.8%</span> versus £31,800 forecast</div><div class="micro"><span style="width:77%"></span></div></div>
+      <div class="card kpi"><div class="kl">Actual COGS</div><div class="kv">30.8%</div><div class="ks">£9,523 · target 28.9%</div><div class="micro"><span style="width:88%"></span></div></div>
+      <div class="card kpi"><div class="kl">Actual vs theoretical gap</div><div class="kv">1.9 pts</div><div class="ks"><span class="down">£588 adverse</span> usage, waste and count gap</div><div class="micro"><span style="width:63%"></span></div></div>
+      <div class="card kpi"><div class="kl">Supplier price inflation</div><div class="kv">+4.6%</div><div class="ks">Weighted unit cost versus LY</div><div class="micro"><span style="width:55%"></span></div></div>
+      <div class="card kpi"><div class="kl">Prime cost</div><div class="kv">61.0%</div><div class="ks">COGS 30.8% + labour 30.2%</div><div class="micro"><span style="width:82%"></span></div></div>
+      <div class="card kpi"><div class="kl">Site contribution</div><div class="kv">£7,127</div><div class="ks"><span class="down">23.1%</span> · target 26.8%</div><div class="micro"><span style="width:66%"></span></div></div>
+    </div>
+
+    <div class="grid two">
+      <div class="card panel">
+        <div class="head"><div><h3 class="pt">13-week cost and contribution trend</h3><div class="ps">Cost categories as a percentage of net revenue; contribution is after site operating costs</div></div><div class="legend"><span><i style="background:#e44b36"></i>COGS</span><span><i style="background:#67a7ff"></i>Labour</span><span><i style="background:#ad8cff"></i>Other variable</span><span><i style="background:#f0b64f"></i>Fixed/semi</span></div></div>
+        <div class="chart"><svg viewBox="0 0 900 280">
+          <line class="gridline" x1="55" y1="32" x2="875" y2="32"/><line class="gridline" x1="55" y1="88" x2="875" y2="88"/><line class="gridline" x1="55" y1="144" x2="875" y2="144"/><line class="gridline" x1="55" y1="200" x2="875" y2="200"/>
+          <text class="axis" x="13" y="36">75%</text><text class="axis" x="13" y="92">65%</text><text class="axis" x="13" y="148">55%</text><text class="axis" x="13" y="204">45%</text>
+          <polyline class="line-c" points="70,102 133,102 196,102 259,102 322,102 385,102 448,102 511,102 574,102 637,102 700,102 763,102 826,102"/>
+          <polyline class="line-b" points="70,116 133,109 196,121 259,104 322,111 385,108 448,102 511,115 574,98 637,101 700,110 763,106 826,92"/>
+          <polyline class="line-a" points="70,131 133,124 196,136 259,116 322,119 385,112 448,109 511,121 574,104 637,108 700,113 763,111 826,82"/>
+          <g><circle class="point" cx="70" cy="131" r="4"/><circle class="point" cx="133" cy="124" r="4"/><circle class="point" cx="196" cy="136" r="4"/><circle class="point" cx="259" cy="116" r="4"/><circle class="point" cx="322" cy="119" r="4"/><circle class="point" cx="385" cy="112" r="4"/><circle class="point" cx="448" cy="109" r="4"/><circle class="point" cx="511" cy="121" r="4"/><circle class="point" cx="574" cy="104" r="4"/><circle class="point" cx="637" cy="108" r="4"/><circle class="point" cx="700" cy="113" r="4"/><circle class="point" cx="763" cy="111" r="4"/><circle class="point" cx="826" cy="82" r="5"/></g>
+          <g class="axis"><text x="59" y="247">W1</text><text x="122" y="247">W2</text><text x="185" y="247">W3</text><text x="248" y="247">W4</text><text x="311" y="247">W5</text><text x="374" y="247">W6</text><text x="437" y="247">W7</text><text x="500" y="247">W8</text><text x="563" y="247">W9</text><text x="623" y="247">W10</text><text x="686" y="247">W11</text><text x="749" y="247">W12</text><text x="812" y="247">W13</text></g>
+        </svg></div>
+      </div>
+      <div class="card panel">
+        <div class="head"><div><h3 class="pt">Owner attention queue</h3><div class="ps">Ranked by recurring annual profit exposure</div></div><span class="tag bad">6 actions</span></div>
+        <div class="alerts">
+          <div class="alert bad"><div class="bar"></div><div><h4>Food usage gap reached 1.9 percentage points</h4><p>Beef, fries and chicken account for 72% of the adverse theoretical-versus-actual variance.</p></div><div class="impact">£30.6k annualised</div></div>
+          <div class="alert bad"><div class="bar"></div><div><h4>Beef case price is 8.7% above contracted baseline</h4><p>Pack-size-normalised price changed twice without an approved supplier review.</p></div><div class="impact">£13.8k exposure</div></div>
+          <div class="alert"><div class="bar"></div><div><h4>Software subscriptions contain three overlapping tools</h4><p>Reservation messaging, review monitoring and rota messaging functions partially duplicate.</p></div><div class="impact">£4.2k opportunity</div></div>
+          <div class="alert"><div class="bar"></div><div><h4>£1,846 of supplier credits remain outstanding</h4><p>Short deliveries and quality claims have not yet appeared on supplier statements.</p></div><div class="impact">Cash recovery</div></div>
+          <div class="alert"><div class="bar"></div><div><h4>Packaging cost per takeaway order rose 11.4%</h4><p>Most of the increase comes from new bowl and sauce-pot pack sizes.</p></div><div class="impact">£5.6k annualised</div></div>
+          <div class="alert good"><div class="bar"></div><div><h4>Energy consumption per trading hour improved</h4><p>Electricity usage fell 6.2% while opening hours and sales mix were broadly stable.</p></div><div class="impact">Protect saving</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid three">
+      <div class="card panel">
+        <div class="head"><div><h3 class="pt">Profitability bridge</h3><div class="ps">Where £30,920 of weekly net revenue went</div></div></div>
+        <div class="waterfall">
+          <div class="wf"><div class="wfbar" style="--h:190px;--c:#58636f"></div><span class="wfval" style="--h:190px">£30,920</span><span class="wflabel">Net<br>revenue</span></div>
+          <div class="wf"><div class="wfbar" style="--bottom:131px;--h:59px;--c:#e44b36"></div><span class="wfval" style="--bottom:131px;--h:59px">−£9,523</span><span class="wflabel">COGS</span></div>
+          <div class="wf"><div class="wfbar" style="--bottom:73px;--h:58px;--c:#67a7ff"></div><span class="wfval" style="--bottom:73px;--h:58px">−£9,350</span><span class="wflabel">Labour</span></div>
+          <div class="wf"><div class="wfbar" style="--bottom:66px;--h:7px;--c:#ad8cff"></div><span class="wfval" style="--bottom:66px;--h:7px">−£1,180</span><span class="wflabel">Other<br>variable</span></div>
+          <div class="wf"><div class="wfbar" style="--bottom:43px;--h:23px;--c:#f0b64f"></div><span class="wfval" style="--bottom:43px;--h:23px">−£3,740</span><span class="wflabel">Fixed &<br>semi-fixed</span></div>
+          <div class="wf"><div class="wfbar" style="--h:43px;--c:#45c486"></div><span class="wfval" style="--h:43px">£7,127</span><span class="wflabel">Site<br>contribution</span></div>
+        </div>
+      </div>
+      <div class="card panel">
+        <div class="head"><div><h3 class="pt">Cost mix</h3><div class="ps">Weekly operating cost excluding VAT</div></div></div>
+        <div class="donut-wrap"><div class="donut" style="background:conic-gradient(#e44b36 0 40%,#67a7ff 40% 79%,#ad8cff 79% 84%,#f0b64f 84% 100%)"><div class="dc">£23,793<small>site operating cost</small></div></div><div class="dlegend">
+          <div class="drow"><span style="background:#e44b36"></span><span>COGS</span><b>40.0%</b></div><div class="drow"><span style="background:#67a7ff"></span><span>Labour</span><b>39.3%</b></div><div class="drow"><span style="background:#ad8cff"></span><span>Other variable</span><b>5.0%</b></div><div class="drow"><span style="background:#f0b64f"></span><span>Fixed/semi-fixed</span><b>15.7%</b></div>
+        </div></div>
+      </div>
+      <div class="card panel">
+        <div class="head"><div><h3 class="pt">Core control ratios</h3><div class="ps">The minimum owner scorecard</div></div></div>
+        <div class="driver-grid" style="grid-template-columns:1fr 1fr">
+          <div class="driver"><small>Gross margin</small><strong>69.2%</strong><p>After COGS only</p></div><div class="driver"><small>Prime cost</small><strong>61.0%</strong><p>COGS + labour</p></div><div class="driver"><small>Controllable cost</small><strong>66.1%</strong><p>COGS + labour + direct variable</p></div><div class="driver"><small>Break-even sales</small><strong>£21.7k</strong><p>Current cost structure</p></div><div class="driver"><small>Fixed cost / open hour</small><strong>£40.21</strong><p>93 trading hours</p></div><div class="driver"><small>Cost / transaction</small><strong>£14.87</strong><p>1,600 transactions</p></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="page" id="forecast">
+    <div class="grid kpis">
+      <div class="card kpi"><div class="kl">Scenario revenue</div><div class="kv" id="scRevenue">£31,800</div><div class="ks">Linked from Revenue module</div><div class="micro"><span id="scRevBar" style="width:64%"></span></div></div>
+      <div class="card kpi"><div class="kl">Forecast COGS</div><div class="kv" id="scCogsPct">29.8%</div><div class="ks" id="scCogsCost">£9,476</div><div class="micro"><span id="scCogsBar" style="width:80%"></span></div></div>
+      <div class="card kpi"><div class="kl">Imported labour</div><div class="kv" id="scLabourPct">28.6%</div><div class="ks" id="scLabourCost">£9,095 · Shoulder band</div><div class="micro"><span style="width:73%"></span></div></div>
+      <div class="card kpi"><div class="kl">Other variable cost</div><div class="kv" id="scOtherPct">3.7%</div><div class="ks" id="scOtherCost">£1,177</div><div class="micro"><span style="width:38%"></span></div></div>
+      <div class="card kpi"><div class="kl">Fixed/semi-fixed</div><div class="kv" id="scFixed">£3,740</div><div class="ks">Known weekly run rate</div><div class="micro"><span style="width:58%"></span></div></div>
+      <div class="card kpi"><div class="kl">Forecast site contribution</div><div class="kv" id="scContribution">£8,312</div><div class="ks" id="scContributionPct"><span class="up">26.1%</span> of revenue</div><div class="micro"><span id="scContribBar" style="width:72%"></span></div></div>
+    </div>
+
+    <div class="grid forecast" style="margin-bottom:14px">
+      <div class="card panel">
+        <div class="head"><div><h3 class="pt">Interactive cost scenario</h3><div class="ps">Stress-test revenue, supplier inflation, usage leakage and fixed-cost changes</div></div><span class="tag blue">Forward planning</span></div>
+        <div class="slider"><div class="sliderhead"><span>Weekly forecast net revenue</span><b id="revLabel">£31,800</b></div><input id="revSlider" type="range" min="18000" max="45000" value="31800" step="100"></div>
+        <div class="inputs">
+          <div class="field"><label>Supplier price inflation</label><input id="inflation" type="number" value="3.0" step="0.1" min="-5" max="20"></div>
+          <div class="field"><label>Usage / waste gap</label><input id="usageGap" type="number" value="0.9" step="0.1" min="0" max="8"></div>
+          <div class="field"><label>Fixed cost change</label><input id="fixedChange" type="number" value="0" step="0.5" min="-20" max="30"></div>
+        </div>
+        <div class="scenario-cards">
+          <div class="scenario"><small>Theoretical COGS</small><strong id="theoreticalCard">28.9%</strong><p>Recipe and expected mix</p></div>
+          <div class="scenario"><small>Cost inflation impact</small><strong id="inflationCard">+0.9 pts</strong><p>Weighted purchasing impact</p></div>
+          <div class="scenario"><small>Usage gap impact</small><strong id="gapCard">+0.9 pts</strong><p>Waste, portioning, loss</p></div>
+          <div class="scenario"><small>Break-even revenue</small><strong id="breakevenCard">£21,734</strong><p>At scenario margins</p></div>
+        </div>
+        <div class="info warn" style="margin-top:12px">The live forecast should use the revenue module’s weekly forecast, current supplier item prices, recipe mix, known fixed commitments and the labour module’s selected band. A flat “last month plus inflation” forecast is not sufficient.</div>
+      </div>
+      <div class="card panel">
+        <div class="head"><div><h3 class="pt">Scenario decision rule</h3><div class="ps">Translate model changes into management action</div></div></div>
+        <div class="formula">Forecast COGS =
+forecast product mix × current recipe cost
++ expected usage variance
+
+Other variable cost =
+channel mix × payment/packaging/commission rates
+
+Site contribution =
+net revenue − COGS − labour − other variable − fixed/semi-fixed</div>
+        <div class="alerts" style="margin-top:12px">
+          <div class="alert good"><div class="bar"></div><div><h4>Contribution above 25%</h4><p>Protect service and invest selectively in growth.</p></div><div class="impact">Green</div></div>
+          <div class="alert"><div class="bar"></div><div><h4>Contribution 20–25%</h4><p>Correct cost leakage before adding discretionary spend.</p></div><div class="impact">Watch</div></div>
+          <div class="alert bad"><div class="bar"></div><div><h4>Contribution below 20%</h4><p>Immediate reforecast, supplier action and rota review.</p></div><div class="impact">Escalate</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid two">
+      <div class="card panel">
+        <div class="head"><div><h3 class="pt">13-week cost outlook</h3><div class="ps">Forecast variable and fixed cash-accrual cost against forecast revenue</div></div><div class="legend"><span><i style="background:#e44b36"></i>COGS</span><span><i style="background:#67a7ff"></i>Labour</span><span><i style="background:#ad8cff"></i>Other variable</span><span><i style="background:#f0b64f"></i>Fixed/semi</span></div></div>
+        <div class="weekbars">
+          <div class="wcol"><div class="wbar" style="height:54%;background:#e44b36" data-tip="COGS £9.5k"></div><div class="wbar" style="height:52%;background:#67a7ff" data-tip="Labour £9.1k"></div><div class="wbar" style="height:22%;background:#f0b64f" data-tip="Other £4.9k"></div><span class="wlabel">W1</span></div>
+          <div class="wcol"><div class="wbar" style="height:56%;background:#e44b36" data-tip="COGS £9.8k"></div><div class="wbar" style="height:53%;background:#67a7ff" data-tip="Labour £9.2k"></div><div class="wbar" style="height:22%;background:#f0b64f" data-tip="Other £4.9k"></div><span class="wlabel">W2</span></div>
+          <div class="wcol"><div class="wbar" style="height:58%;background:#e44b36" data-tip="COGS £10.1k"></div><div class="wbar" style="height:54%;background:#67a7ff" data-tip="Labour £9.4k"></div><div class="wbar" style="height:22%;background:#f0b64f" data-tip="Other £5.0k"></div><span class="wlabel">W3</span></div>
+          <div class="wcol"><div class="wbar" style="height:61%;background:#e44b36" data-tip="COGS £10.6k"></div><div class="wbar" style="height:55%;background:#67a7ff" data-tip="Labour £9.6k"></div><div class="wbar" style="height:23%;background:#f0b64f" data-tip="Other £5.1k"></div><span class="wlabel">W4</span></div>
+          <div class="wcol"><div class="wbar" style="height:64%;background:#e44b36" data-tip="COGS £11.0k"></div><div class="wbar" style="height:56%;background:#67a7ff" data-tip="Labour £9.7k"></div><div class="wbar" style="height:23%;background:#f0b64f" data-tip="Other £5.2k"></div><span class="wlabel">W5</span></div>
+          <div class="wcol"><div class="wbar" style="height:63%;background:#e44b36" data-tip="COGS £10.8k"></div><div class="wbar" style="height:55%;background:#67a7ff" data-tip="Labour £9.6k"></div><div class="wbar" style="height:23%;background:#f0b64f" data-tip="Other £5.1k"></div><span class="wlabel">W6</span></div>
+          <div class="wcol"><div class="wbar" style="height:60%;background:#e44b36" data-tip="COGS £10.3k"></div><div class="wbar" style="height:54%;background:#67a7ff" data-tip="Labour £9.4k"></div><div class="wbar" style="height:22%;background:#f0b64f" data-tip="Other £5.0k"></div><span class="wlabel">W7</span></div>
+          <div class="wcol"><div class="wbar" style="height:58%;background:#e44b36" data-tip="COGS £10.0k"></div><div class="wbar" style="height:52%;background:#67a7ff" data-tip="Labour £9.1k"></div><div class="wbar" style="height:22%;background:#f0b64f" data-tip="Other £4.9k"></div><span class="wlabel">W8</span></div>
+          <div class="wcol"><div class="wbar" style="height:55%;background:#e44b36" data-tip="COGS £9.6k"></div><div class="wbar" style="height:51%;background:#67a7ff" data-tip="Labour £8.9k"></div><div class="wbar" style="height:22%;background:#f0b64f" data-tip="Other £4.9k"></div><span class="wlabel">W9</span></div>
+          <div class="wcol"><div class="wbar" style="height:52%;background:#e44b36" data-tip="COGS £9.1k"></div><div class="wbar" style="height:50%;background:#67a7ff" data-tip="Labour £8.7k"></div><div class="wbar" style="height:21%;background:#f0b64f" data-tip="Other £4.8k"></div><span class="wlabel">W10</span></div>
+          <div class="wcol"><div class="wbar" style="height:49%;background:#e44b36" data-tip="COGS £8.6k"></div><div class="wbar" style="height:49%;background:#67a7ff" data-tip="Labour £8.5k"></div><div class="wbar" style="height:21%;background:#f0b64f" data-tip="Other £4.8k"></div><span class="wlabel">W11</span></div>
+          <div class="wcol"><div class="wbar" style="height:47%;background:#e44b36" data-tip="COGS £8.2k"></div><div class="wbar" style="height:48%;background:#67a7ff" data-tip="Labour £8.4k"></div><div class="wbar" style="height:21%;background:#f0b64f" data-tip="Other £4.7k"></div><span class="wlabel">W12</span></div>
+          <div class="wcol"><div class="wbar" style="height:45%;background:#e44b36" data-tip="COGS £7.9k"></div><div class="wbar" style="height:47%;background:#67a7ff" data-tip="Labour £8.2k"></div><div class="wbar" style="height:21%;background:#f0b64f" data-tip="Other £4.7k"></div><span class="wlabel">W13</span></div>
+        </div>
+      </div>
+      <div class="card panel">
+        <div class="head"><div><h3 class="pt">Forward cost risks</h3><div class="ps">Known changes not captured by historic percentages</div></div></div>
+        <div class="scroll"><table><thead><tr><th>Effective date</th><th>Cost item</th><th>Change</th><th class="num">Weekly impact</th><th>Confidence</th><th>Action</th></tr></thead><tbody>
+          <tr><td>1 Aug</td><td>Beef supplier list</td><td>+3.5%</td><td class="num">+£78</td><td><span class="tag bad">Confirmed</span></td><td>Requote / menu cost</td></tr>
+          <tr><td>15 Aug</td><td>Packaging contract</td><td>−6.0%</td><td class="num"><span class="up">−£34</span></td><td><span class="tag good">Agreed</span></td><td>Validate first invoice</td></tr>
+          <tr><td>28 Oct</td><td>Annual rent step</td><td>£60k → £65k</td><td class="num">+£96</td><td><span class="tag bad">Contractual</span></td><td>Include in run rate</td></tr>
+          <tr><td>1 Nov</td><td>Energy renewal</td><td>Estimate +8%</td><td class="num">+£43</td><td><span class="tag warn">Medium</span></td><td>Secure quotes</td></tr>
+          <tr><td>1 Jan</td><td>Software renewals</td><td>+5.2%</td><td class="num">+£16</td><td><span class="tag warn">Likely</span></td><td>Consolidate tools</td></tr>
+        </tbody></table></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="page" id="cogs">
+    <div class="grid kpis">
+      <div class="card kpi"><div class="kl">Theoretical food & drink</div><div class="kv">28.9%</div><div class="ks">Recipes × actual product mix</div><div class="micro"><span style="width:73%"></span></div></div>
+      <div class="card kpi"><div class="kl">Actual food & drink</div><div class="kv">30.8%</div><div class="ks"><span class="down">+1.9 pts</span> adverse</div><div class="micro"><span style="width:87%"></span></div></div>
+      <div class="card kpi"><div class="kl">Waste recorded</div><div class="kv">£312</div><div class="ks">1.01% of net sales</div><div class="micro"><span style="width:43%"></span></div></div>
+      <div class="card kpi"><div class="kl">Unexplained inventory loss</div><div class="kv">£276</div><div class="ks">Count/portion/shrinkage residual</div><div class="micro"><span style="width:38%"></span></div></div>
+      <div class="card kpi"><div class="kl">Stock holding</div><div class="kv">8.7 days</div><div class="ks">Target 7.0–8.0 days</div><div class="micro"><span style="width:63%"></span></div></div>
+      <div class="card kpi"><div class="kl">Count completion</div><div class="kv">97.4%</div><div class="ks">4 items estimated, not counted</div><div class="micro"><span style="width:94%"></span></div></div>
+    </div>
+
+    <div class="grid two">
+      <div class="card panel">
+        <div class="head"><div><h3 class="pt">Actual versus theoretical by category</h3><div class="ps">Price and usage variances shown separately</div></div><span class="tag bad">£588 adverse</span></div>
+        <div class="scroll"><table><thead><tr><th>Category</th><th class="num">Theoretical</th><th class="num">Actual</th><th class="num">Gap £</th><th class="num">Gap pts</th><th class="num">Price variance</th><th class="num">Usage variance</th><th>Action</th></tr></thead><tbody>
+          <tr class="hl"><td>Beef & brisket</td><td class="num">£2,184</td><td class="num">£2,391</td><td class="num"><span class="down">+£207</span></td><td class="num">+0.67</td><td class="num">+£114</td><td class="num">+£93</td><td>Weigh patties + requote</td></tr>
+          <tr><td>Chicken</td><td class="num">£1,214</td><td class="num">£1,341</td><td class="num"><span class="down">+£127</span></td><td class="num">+0.41</td><td class="num">+£39</td><td class="num">+£88</td><td>Yield and trim review</td></tr>
+          <tr><td>Potatoes & sides</td><td class="num">£924</td><td class="num">£1,040</td><td class="num"><span class="down">+£116</span></td><td class="num">+0.38</td><td class="num">+£22</td><td class="num">+£94</td><td>Portion scoop + waste</td></tr>
+          <tr><td>Buns & bakery</td><td class="num">£638</td><td class="num">£687</td><td class="num">+£49</td><td class="num">+0.16</td><td class="num">+£35</td><td class="num">+£14</td><td>Price review</td></tr>
+          <tr><td>Cheese & dairy</td><td class="num">£716</td><td class="num">£752</td><td class="num">+£36</td><td class="num">+0.12</td><td class="num">+£29</td><td class="num">+£7</td><td>Pack conversion check</td></tr>
+          <tr><td>Sauces, produce & garnish</td><td class="num">£904</td><td class="num">£935</td><td class="num">+£31</td><td class="num">+0.10</td><td class="num">+£18</td><td class="num">+£13</td><td>Recipe accuracy</td></tr>
+          <tr><td>Beverage ingredients</td><td class="num">£1,785</td><td class="num">£1,802</td><td class="num">+£17</td><td class="num">+0.06</td><td class="num">+£25</td><td class="num"><span class="up">−£8</span></td><td>Healthy usage</td></tr>
+          <tr><td>Packaging in COGS</td><td class="num">£569</td><td class="num">£574</td><td class="num">+£5</td><td class="num">+0.02</td><td class="num">+£21</td><td class="num"><span class="up">−£16</span></td><td>Watch unit price</td></tr>
+        </tbody></table></div>
+      </div>
+      <div class="card panel">
+        <div class="head"><div><h3 class="pt">COGS variance bridge</h3><div class="ps">Why actual COGS exceeded theoretical</div></div></div>
+        <div class="waterfall">
+          <div class="wf"><div class="wfbar" style="--h:145px;--c:#58636f"></div><span class="wfval" style="--h:145px">£8,935</span><span class="wflabel">Theoretical<br>COGS</span></div>
+          <div class="wf"><div class="wfbar" style="--bottom:145px;--h:31px;--c:#ef6b68"></div><span class="wfval" style="--bottom:145px;--h:31px">+£303</span><span class="wflabel">Purchase<br>price</span></div>
+          <div class="wf"><div class="wfbar" style="--bottom:176px;--h:18px;--c:#ef6b68"></div><span class="wfval" style="--bottom:176px;--h:18px">+£174</span><span class="wflabel">Portion &<br>yield</span></div>
+          <div class="wf"><div class="wfbar" style="--bottom:194px;--h:16px;--c:#ef6b68"></div><span class="wfval" style="--bottom:194px;--h:16px">+£155</span><span class="wflabel">Waste &<br>spoilage</span></div>
+          <div class="wf"><div class="wfbar" style="--bottom:210px;--h:7px;--c:#45c486"></div><span class="wfval" style="--bottom:210px;--h:7px">−£44</span><span class="wflabel">Mix & count<br>favourable</span></div>
+          <div class="wf"><div class="wfbar" style="--h:217px;--c:#e44b36"></div><span class="wfval" style="--h:217px">£9,523</span><span class="wflabel">Actual<br>COGS</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid equal">
+      <div class="card panel">
+        <div class="head"><div><h3 class="pt">Ingredient price watch</h3><div class="ps">Prices normalised to usable kg, litre or each—never invoice pack alone</div></div></div>
+        <div class="scroll"><table><thead><tr><th>Ingredient</th><th>Supplier</th><th class="num">Current unit cost</th><th class="num">4 weeks</th><th class="num">LY</th><th class="num">Weekly usage</th><th class="num">Annual exposure</th><th>Status</th></tr></thead><tbody>
+          <tr><td>Beef mince 80/20</td><td>Highland Foods</td><td class="num">£7.84/kg</td><td class="num"><span class="down">+3.6%</span></td><td class="num"><span class="down">+8.7%</span></td><td class="num">286kg</td><td class="num">£9,024</td><td><span class="tag bad">Requote</span></td></tr>
+          <tr><td>Chicken breast</td><td>North Protein</td><td class="num">£6.42/kg</td><td class="num">+1.1%</td><td class="num">+5.4%</td><td class="num">152kg</td><td class="num">£4,067</td><td><span class="tag warn">Watch</span></td></tr>
+          <tr><td>Brioche bun</td><td>Caledonian Bakery</td><td class="num">£0.48/ea</td><td class="num">0.0%</td><td class="num">+6.7%</td><td class="num">1,490</td><td class="num">£2,392</td><td><span class="tag warn">Contract</span></td></tr>
+          <tr><td>Frozen fries</td><td>Broadline Supply</td><td class="num">£1.31/kg</td><td class="num"><span class="up">−2.2%</span></td><td class="num">+2.4%</td><td class="num">394kg</td><td class="num">£626</td><td><span class="tag good">Stable</span></td></tr>
+          <tr><td>American cheese</td><td>Broadline Supply</td><td class="num">£0.142/slice</td><td class="num">+2.9%</td><td class="num">+4.8%</td><td class="num">2,180</td><td class="num">£745</td><td><span class="tag warn">Watch</span></td></tr>
+          <tr><td>Frying oil</td><td>OilCo</td><td class="num">£1.46/litre</td><td class="num"><span class="up">−4.1%</span></td><td class="num"><span class="up">−7.2%</span></td><td class="num">126L</td><td class="num"><span class="up">−£742</span></td><td><span class="tag good">Favourable</span></td></tr>
+        </tbody></table></div>
+      </div>
+      <div class="card panel">
+        <div class="head"><div><h3 class="pt">Stock and waste control</h3><div class="ps">Inventory health indicators</div></div></div>
+        <div class="driver-grid">
+          <div class="driver"><small>Inventory value</small><strong>£17.6k</strong><p>Food, drink, packaging</p></div><div class="driver"><small>Stock turns</small><strong>41.9×</strong><p>Annualised COGS / average stock</p></div><div class="driver"><small>Dead stock</small><strong>£628</strong><p>No movement 45+ days</p></div><div class="driver"><small>Out-of-stock events</small><strong>6</strong><p>Lost sales risk</p></div><div class="driver"><small>Recorded waste</small><strong>£312</strong><p>Reason-coded 87%</p></div><div class="driver"><small>Unrecorded residual</small><strong>£276</strong><p>Investigate top items</p></div><div class="driver"><small>Count variance</small><strong>1.6%</strong><p>Absolute value / stock</p></div><div class="driver"><small>Par compliance</small><strong>91%</strong><p>Items within min/max</p></div>
+        </div>
+        <div class="formula" style="margin-top:12px">Actual COGS = opening inventory + purchases − closing inventory
+
+Usage variance = actual usage − recipe-theoretical usage</div>
+      </div>
+    </div>
+
+    <div class="card panel">
+      <div class="head"><div><h3 class="pt">Other variable cost control</h3><div class="ps">Costs that move with sales, orders, transactions or operating volume</div></div></div>
+      <div class="scroll"><table><thead><tr><th>Cost</th><th>Driver</th><th class="num">Actual</th><th class="num">Rate</th><th class="num">Budget rate</th><th class="num">Variance</th><th>Decision</th></tr></thead><tbody>
+        <tr><td>Card processing</td><td>Card sales</td><td class="num">£397</td><td class="num">1.44%</td><td class="num">1.38%</td><td class="num"><span class="down">+£17</span></td><td>Audit card mix/fees</td></tr>
+        <tr><td>Online ordering fees</td><td>Takeaway sales</td><td class="num">£212</td><td class="num">3.7%</td><td class="num">3.5%</td><td class="num">+£11</td><td>Reconcile Stripe/LivePepper</td></tr>
+        <tr><td>Takeaway packaging</td><td>Takeaway orders</td><td class="num">£364</td><td class="num">£0.78/order</td><td class="num">£0.70</td><td class="num"><span class="down">+£37</span></td><td>Pack redesign</td></tr>
+        <tr><td>Cleaning consumables</td><td>Trading hours/covers</td><td class="num">£118</td><td class="num">£1.27/open hr</td><td class="num">£1.20</td><td class="num">+£7</td><td>Usage review</td></tr>
+        <tr><td>Waste disposal variable</td><td>Collections/weight</td><td class="num">£89</td><td class="num">£0.06/cover</td><td class="num">£0.06</td><td class="num">£0</td><td>Healthy</td></tr>
+      </tbody></table></div>
+    </div>
+  </section>
+
+  <section class="page" id="recipes">
+    <div class="grid kpis">
+      <div class="card kpi"><div class="kl">Recipe coverage</div><div class="kv">96.2%</div><div class="ks">Sales linked to complete recipes</div><div class="micro"><span style="width:92%"></span></div></div>
+      <div class="card kpi"><div class="kl">Recipes priced within 14 days</div><div class="kv">88.4%</div><div class="ks">19 recipes have stale input costs</div><div class="micro"><span style="width:84%"></span></div></div>
+      <div class="card kpi"><div class="kl">Weighted menu food cost</div><div class="kv">28.9%</div><div class="ks">Based on actual product mix</div><div class="micro"><span style="width:73%"></span></div></div>
+      <div class="card kpi"><div class="kl">Margin erosion · 90 days</div><div class="kv">−1.3 pts</div><div class="ks"><span class="down">£18.7k annual exposure</span></div><div class="micro"><span style="width:61%"></span></div></div>
+      <div class="card kpi"><div class="kl">Items below margin floor</div><div class="kv">7</div><div class="ks">3 high-volume products</div><div class="micro"><span style="width:41%"></span></div></div>
+      <div class="card kpi"><div class="kl">Uncosted modifiers</div><div class="kv">11</div><div class="ks">Mostly sauces and substitutions</div><div class="micro"><span style="width:34%"></span></div></div>
+    </div>
+
+    <div class="grid two">
+      <div class="card panel">
+        <div class="head"><div><h3 class="pt">Menu margin erosion watch</h3><div class="ps">Selling price and recipe cost shown net of VAT</div></div><span class="tag bad">7 below floor</span></div>
+        <div class="scroll"><table><thead><tr><th>Product</th><th class="num">Net selling price</th><th class="num">Recipe cost</th><th class="num">Food cost %</th><th class="num">90d change</th><th class="num">Weekly units</th><th class="num">Annual exposure</th><th>Action</th></tr></thead><tbody>
+          <tr class="hl"><td>Smokehouse BBQ</td><td class="num">£13.29</td><td class="num">£4.58</td><td class="num"><span class="down">34.5%</span></td><td class="num">+3.1 pts</td><td class="num">188</td><td class="num">£6,590</td><td>Re-engineer / +£0.50</td></tr>
+          <tr><td>Haggis Smash</td><td class="num">£13.29</td><td class="num">£4.35</td><td class="num"><span class="down">32.7%</span></td><td class="num">+2.4 pts</td><td class="num">146</td><td class="num">£4,198</td><td>Supplier/portion review</td></tr>
+          <tr><td>Chicken Poutine</td><td class="num">£11.63</td><td class="num">£3.69</td><td class="num">31.7%</td><td class="num">+1.8 pts</td><td class="num">122</td><td class="num">£2,618</td><td>Price architecture</td></tr>
+          <tr><td>Bacon Cheeseburger</td><td class="num">£12.46</td><td class="num">£3.79</td><td class="num">30.4%</td><td class="num">+1.5 pts</td><td class="num">274</td><td class="num">£4,271</td><td>Protect volume; bacon quote</td></tr>
+          <tr><td>OG Dirty Fries</td><td class="num">£6.63</td><td class="num">£1.72</td><td class="num"><span class="up">25.9%</span></td><td class="num">+0.4 pts</td><td class="num">236</td><td class="num">£492</td><td>Maintain / attach</td></tr>
+          <tr><td>McGINN & Tonic</td><td class="num">£8.29</td><td class="num">£1.69</td><td class="num"><span class="up">20.4%</span></td><td class="num">−0.7 pts</td><td class="num">87</td><td class="num"><span class="up">Favourable</span></td><td>Promote</td></tr>
+        </tbody></table></div>
+      </div>
+      <div class="card panel">
+        <div class="head"><div><h3 class="pt">Product economics matrix</h3><div class="ps">Contribution pounds per sale versus weekly unit volume</div></div></div>
+        <div class="matrix"><span class="ql qtl">High contribution · low volume — PROMOTE</span><span class="ql qtr">High contribution · high volume — PROTECT</span><span class="ql qbl">Low contribution · low volume — REPLACE</span><span class="ql qbr">Low contribution · high volume — FIX</span>
+          <div class="bubble" style="width:74px;height:74px;left:69%;top:14%;background:#2e8a60">Bacon<br>Cheeseburger</div>
+          <div class="bubble" style="width:60px;height:60px;left:27%;top:17%;background:#6554a1">Cocktails</div>
+          <div class="bubble" style="width:70px;height:70px;left:68%;top:65%;background:#8d682b">Smokehouse<br>BBQ</div>
+          <div class="bubble" style="width:55px;height:55px;left:19%;top:69%;background:#8d3c3b">Low-selling<br>sides</div>
+          <div class="bubble" style="width:47px;height:47px;left:48%;top:43%;background:#4d5f8d">Poutine</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid equal">
+      <div class="card panel">
+        <div class="head"><div><h3 class="pt">Smokehouse BBQ cost build</h3><div class="ps">Illustrative usable-unit recipe cost</div></div></div>
+        <div class="bars">
+          <div class="barrow"><div class="lbl">Beef patties</div><div class="track"><span class="seg" style="width:49%;background:#e44b36"></span></div><div class="val">£2.24</div></div>
+          <div class="barrow"><div class="lbl">Bun</div><div class="track"><span class="seg" style="width:11%;background:#f0b64f"></span></div><div class="val">£0.48</div></div>
+          <div class="barrow"><div class="lbl">Cheese</div><div class="track"><span class="seg" style="width:6%;background:#ff8b55"></span></div><div class="val">£0.28</div></div>
+          <div class="barrow"><div class="lbl">Bacon</div><div class="track"><span class="seg" style="width:12%;background:#ad8cff"></span></div><div class="val">£0.56</div></div>
+          <div class="barrow"><div class="lbl">BBQ/onion/sauce</div><div class="track"><span class="seg" style="width:14%;background:#67a7ff"></span></div><div class="val">£0.66</div></div>
+          <div class="barrow"><div class="lbl">Garnish & allowance</div><div class="track"><span class="seg" style="width:8%;background:#45c486"></span></div><div class="val">£0.36</div></div>
+        </div>
+        <div class="formula" style="margin-top:12px">Contribution per item = net selling price − recipe cost − item-specific packaging/channel cost
+
+Required selling price = recipe cost ÷ target food-cost percentage</div>
+      </div>
+      <div class="card panel">
+        <div class="head"><div><h3 class="pt">Recipe data quality</h3><div class="ps">Bad recipe data creates false margins</div></div></div>
+        <div class="driver-grid">
+          <div class="driver"><small>Complete recipes</small><strong>142/148</strong><p>Six require setup</p></div><div class="driver"><small>Current supplier links</small><strong>94.8%</strong><p>Items mapped correctly</p></div><div class="driver"><small>Yield factors complete</small><strong>86.1%</strong><p>Raw-to-usable conversion</p></div><div class="driver"><small>Modifier costs complete</small><strong>89.7%</strong><p>11 missing</p></div><div class="driver"><small>Batch recipes</small><strong>17</strong><p>Sauces, chilli, gravy</p></div><div class="driver"><small>Stale recipe costs</small><strong>19</strong><p>14+ days behind invoice</p></div><div class="driver"><small>Negative margins</small><strong>0</strong><p>No configuration errors</p></div><div class="driver"><small>Price review candidates</small><strong>12</strong><p>Cost/mix deterioration</p></div>
+        </div>
+        <div class="info warn" style="margin-top:12px">Price changes should not be the automatic response. First determine whether the problem is supplier price, portion size, waste, product architecture or weak attachment.</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="page" id="suppliers">
+    <div class="grid kpis">
+      <div class="card kpi"><div class="kl">Supplier spend · rolling 12m</div><div class="kv">£486k</div><div class="ks">Food, beverage, packaging and consumables</div><div class="micro"><span style="width:81%"></span></div></div>
+      <div class="card kpi"><div class="kl">Top-3 concentration</div><div class="kv">64.7%</div><div class="ks"><span class="flat">Dependency risk</span></div><div class="micro"><span style="width:65%"></span></div></div>
+      <div class="card kpi"><div class="kl">Weighted price inflation</div><div class="kv">4.6%</div><div class="ks">Comparable usable units</div><div class="micro"><span style="width:54%"></span></div></div>
+      <div class="card kpi"><div class="kl">Delivery-in-full rate</div><div class="kv">96.8%</div><div class="ks">Target 98.5%</div><div class="micro"><span style="width:89%"></span></div></div>
+      <div class="card kpi"><div class="kl">Open supplier credits</div><div class="kv">£1,846</div><div class="ks">14 claims · oldest 37 days</div><div class="micro"><span style="width:48%"></span></div></div>
+      <div class="card kpi"><div class="kl">PO → invoice match</div><div class="kv">92.4%</div><div class="ks">7 exceptions this week</div><div class="micro"><span style="width:86%"></span></div></div>
+    </div>
+
+    <div class="grid two">
+      <div class="card panel">
+        <div class="head"><div><h3 class="pt">Supplier scorecard</h3><div class="ps">Spend, inflation, reliability, quality and commercial terms</div></div><span class="tag blue">Rolling 12 months</span></div>
+        <div class="scroll"><table><thead><tr><th>Supplier</th><th>Category</th><th class="num">Spend</th><th class="num">Share</th><th class="num">Unit inflation</th><th class="num">In-full/on-time</th><th class="num">Credits</th><th>Terms</th><th>Score</th><th>Decision</th></tr></thead><tbody>
+          <tr class="hl"><td>Highland Foods</td><td>Beef/protein</td><td class="num">£132,800</td><td class="num">27.3%</td><td class="num"><span class="down">+8.1%</span></td><td class="num">95.4%</td><td class="num">£712</td><td>14d</td><td><span class="score"><span class="scorebar"><span style="width:62%;background:#f0b64f"></span></span>62</span></td><td><span class="tag bad">Re-tender</span></td></tr>
+          <tr><td>Broadline Supply</td><td>Dry/frozen/dairy</td><td class="num">£109,600</td><td class="num">22.6%</td><td class="num">+3.7%</td><td class="num">97.8%</td><td class="num">£438</td><td>30d</td><td><span class="score"><span class="scorebar"><span style="width:81%;background:#45c486"></span></span>81</span></td><td><span class="tag good">Maintain</span></td></tr>
+          <tr><td>North Drinks</td><td>Beer/softs/spirits</td><td class="num">£71,800</td><td class="num">14.8%</td><td class="num">+4.2%</td><td class="num">98.9%</td><td class="num">£96</td><td>30d</td><td><span class="score"><span class="scorebar"><span style="width:88%;background:#45c486"></span></span>88</span></td><td><span class="tag good">Strategic</span></td></tr>
+          <tr><td>Caledonian Bakery</td><td>Buns/bakery</td><td class="num">£42,900</td><td class="num">8.8%</td><td class="num">+6.7%</td><td class="num">99.1%</td><td class="num">£74</td><td>14d</td><td><span class="score"><span class="scorebar"><span style="width:79%;background:#45c486"></span></span>79</span></td><td><span class="tag warn">Negotiate</span></td></tr>
+          <tr><td>PackCo</td><td>Packaging</td><td class="num">£34,600</td><td class="num">7.1%</td><td class="num"><span class="down">+9.8%</span></td><td class="num">94.8%</td><td class="num">£311</td><td>30d</td><td><span class="score"><span class="scorebar"><span style="width:57%;background:#ef6b68"></span></span>57</span></td><td><span class="tag bad">Replace/quote</span></td></tr>
+          <tr><td>OilCo</td><td>Oil/recycling</td><td class="num">£21,400</td><td class="num">4.4%</td><td class="num"><span class="up">−7.2%</span></td><td class="num">99.5%</td><td class="num">£0</td><td>30d</td><td><span class="score"><span class="scorebar"><span style="width:93%;background:#45c486"></span></span>93</span></td><td><span class="tag good">Protect</span></td></tr>
+        </tbody></table></div>
+      </div>
+      <div class="card panel">
+        <div class="head"><div><h3 class="pt">Supplier spend concentration</h3><div class="ps">Dependency and negotiation leverage</div></div></div>
+        <div class="donut-wrap"><div class="donut" style="background:conic-gradient(#e44b36 0 27.3%,#67a7ff 27.3% 49.9%,#ad8cff 49.9% 64.7%,#f0b64f 64.7% 73.5%,#45c486 73.5% 84.9%,#5bd1d7 84.9% 100%)"><div class="dc">£486k<small>rolling 12m</small></div></div><div class="dlegend">
+          <div class="drow"><span style="background:#e44b36"></span><span>Highland Foods</span><b>27.3%</b></div><div class="drow"><span style="background:#67a7ff"></span><span>Broadline Supply</span><b>22.6%</b></div><div class="drow"><span style="background:#ad8cff"></span><span>North Drinks</span><b>14.8%</b></div><div class="drow"><span style="background:#f0b64f"></span><span>Caledonian Bakery</span><b>8.8%</b></div><div class="drow"><span style="background:#45c486"></span><span>PackCo + OilCo</span><b>11.4%</b></div><div class="drow"><span style="background:#5bd1d7"></span><span>Other suppliers</span><b>15.1%</b></div>
+        </div></div>
+        <div class="info warn" style="margin-top:13px">Concentration is not automatically bad. It becomes risky where there is no validated alternative, weak terms, repeated price changes or operationally critical single-source products.</div>
+      </div>
+    </div>
+
+    <div class="grid equal">
+      <div class="card panel">
+        <div class="head"><div><h3 class="pt">Purchase price variance</h3><div class="ps">Current invoice cost versus approved baseline at actual purchased quantity</div></div></div>
+        <div class="bars">
+          <div class="barrow"><div class="lbl">Beef mince</div><div class="track"><span class="seg" style="width:91%;background:#ef6b68"></span></div><div class="val">+£173</div></div>
+          <div class="barrow"><div class="lbl">Packaging</div><div class="track"><span class="seg" style="width:55%;background:#ef6b68"></span></div><div class="val">+£104</div></div>
+          <div class="barrow"><div class="lbl">Buns</div><div class="track"><span class="seg" style="width:34%;background:#f0b64f"></span></div><div class="val">+£65</div></div>
+          <div class="barrow"><div class="lbl">Chicken</div><div class="track"><span class="seg" style="width:29%;background:#f0b64f"></span></div><div class="val">+£55</div></div>
+          <div class="barrow"><div class="lbl">Cheese</div><div class="track"><span class="seg" style="width:22%;background:#f0b64f"></span></div><div class="val">+£41</div></div>
+          <div class="barrow"><div class="lbl">Frying oil</div><div class="track"><span class="seg" style="width:24%;background:#45c486"></span></div><div class="val">−£46</div></div>
+        </div>
+        <div class="formula" style="margin-top:12px">Purchase price variance = (actual usable-unit price − approved baseline price) × actual quantity purchased</div>
+      </div>
+      <div class="card panel">
+        <div class="head"><div><h3 class="pt">Invoice control queue</h3><div class="ps">Three-way match: purchase order, goods received and invoice</div></div><span class="tag bad">7 exceptions</span></div>
+        <div class="scroll"><table><thead><tr><th>Supplier</th><th>Invoice</th><th>Exception</th><th class="num">Value</th><th>Age</th><th>Owner</th><th>Status</th></tr></thead><tbody>
+          <tr><td>Highland Foods</td><td>HF-88431</td><td>Price exceeds PO 4.2%</td><td class="num">£96</td><td>3d</td><td>Kitchen Manager</td><td><span class="tag bad">Block payment</span></td></tr>
+          <tr><td>PackCo</td><td>PC-17290</td><td>Short delivery, 8 cases</td><td class="num">£184</td><td>8d</td><td>FOH Manager</td><td><span class="tag warn">Credit due</span></td></tr>
+          <tr><td>Broadline</td><td>BS-54118</td><td>Substituted pack size</td><td class="num">£42</td><td>2d</td><td>Kitchen Manager</td><td><span class="tag warn">Verify</span></td></tr>
+          <tr><td>North Drinks</td><td>ND-99145</td><td>Missing promotional credit</td><td class="num">£75</td><td>14d</td><td>Owner</td><td><span class="tag bad">Chase</span></td></tr>
+          <tr><td>Repairs Ltd</td><td>RL-1032</td><td>No approved PO</td><td class="num">£428</td><td>1d</td><td>Owner</td><td><span class="tag info">Approve/deny</span></td></tr>
+        </tbody></table></div>
+      </div>
+    </div>
+
+    <div class="grid equal">
+      <div class="card panel">
+        <div class="head"><div><h3 class="pt">Supplier dependency × performance</h3><div class="ps">Annual spend/dependency versus supplier score</div></div></div>
+        <div class="matrix"><span class="ql qtl">Low score · low dependency — REPLACE</span><span class="ql qtr">High score · low dependency — DEVELOP</span><span class="ql qbl">Low score · high dependency — URGENT RISK</span><span class="ql qbr">High score · high dependency — STRATEGIC</span>
+          <div class="bubble" style="width:73px;height:73px;left:69%;top:62%;background:#2e8a60">North<br>Drinks</div><div class="bubble" style="width:78px;height:78px;left:18%;top:62%;background:#8d3c3b">Highland<br>Foods</div><div class="bubble" style="width:65px;height:65px;left:66%;top:17%;background:#6554a1">OilCo</div><div class="bubble" style="width:61px;height:61px;left:21%;top:18%;background:#8d682b">PackCo</div><div class="bubble" style="width:58px;height:58px;left:50%;top:42%;background:#4d5f8d">Broadline</div>
+        </div>
+      </div>
+      <div class="card panel">
+        <div class="head"><div><h3 class="pt">Commercial opportunity register</h3><div class="ps">Savings require validation of quality and service—not lowest price alone</div></div></div>
+        <div class="scroll"><table><thead><tr><th>Opportunity</th><th class="num">Gross saving</th><th class="num">Implementation cost/risk</th><th class="num">Net annual value</th><th>Next action</th></tr></thead><tbody>
+          <tr><td>Dual-source beef contract</td><td class="num">£16,800</td><td class="num">£3,000 quality/yield reserve</td><td class="num"><b>£13,800</b></td><td>Blind cook/yield test</td></tr>
+          <tr><td>Packaging consolidation</td><td class="num">£7,400</td><td class="num">£1,800 transition</td><td class="num"><b>£5,600</b></td><td>Sample and storage test</td></tr>
+          <tr><td>Subscription rationalisation</td><td class="num">£4,600</td><td class="num">£400 migration</td><td class="num"><b>£4,200</b></td><td>Owner review</td></tr>
+          <tr><td>Bakery volume commitment</td><td class="num">£3,100</td><td class="num">£600 dependency reserve</td><td class="num"><b>£2,500</b></td><td>Negotiate rebate</td></tr>
+          <tr><td>Recover aged credits</td><td class="num">£1,846</td><td class="num">£0</td><td class="num"><b>£1,846</b></td><td>Statement reconciliation</td></tr>
+        </tbody></table></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="page" id="fixed">
+    <div class="grid kpis">
+      <div class="card kpi"><div class="kl">Fixed/semi-fixed run rate</div><div class="kv">£16,207/mo</div><div class="ks">£194.5k annualised</div><div class="micro"><span style="width:74%"></span></div></div>
+      <div class="card kpi"><div class="kl">Versus budget</div><div class="kv">+£618</div><div class="ks"><span class="down">+4.0%</span> monthly adverse</div><div class="micro"><span style="width:47%"></span></div></div>
+      <div class="card kpi"><div class="kl">Versus prior year</div><div class="kv">+7.2%</div><div class="ks">Energy, repairs and software</div><div class="micro"><span style="width:59%"></span></div></div>
+      <div class="card kpi"><div class="kl">Committed share</div><div class="kv">82.6%</div><div class="ks">Contractual or operationally essential</div><div class="micro"><span style="width:83%"></span></div></div>
+      <div class="card kpi"><div class="kl">Discretionary share</div><div class="kv">9.4%</div><div class="ks">Marketing, services, subscriptions</div><div class="micro"><span style="width:34%"></span></div></div>
+      <div class="card kpi"><div class="kl">Fixed cost coverage</div><div class="kv">4.62×</div><div class="ks">Contribution before fixed ÷ fixed</div><div class="micro"><span style="width:80%"></span></div></div>
+    </div>
+
+    <div class="grid two">
+      <div class="card panel">
+        <div class="head"><div><h3 class="pt">Monthly fixed and semi-fixed overheads</h3><div class="ps">Actual versus budget and prior-year comparable month</div></div><span class="tag blue">July 2026</span></div>
+        <div class="scroll"><table><thead><tr><th>Cost category</th><th>Behaviour</th><th class="num">Budget</th><th class="num">Actual/run rate</th><th class="num">Variance</th><th class="num">LY</th><th class="num">YoY</th><th>Control</th></tr></thead><tbody>
+          <tr><td>Rent</td><td><span class="tag info">Fixed</span></td><td class="num">£5,000</td><td class="num">£5,000</td><td class="num">£0</td><td class="num">£5,000</td><td class="num">0.0%</td><td>Lease schedule</td></tr>
+          <tr><td>Service charge</td><td><span class="tag info">Fixed/indexed</span></td><td class="num">£915</td><td class="num">£938</td><td class="num">+£23</td><td class="num">£892</td><td class="num">+5.2%</td><td>Cap/RPI validation</td></tr>
+          <tr><td>Business rates</td><td><span class="tag info">Fixed</span></td><td class="num">£1,180</td><td class="num">£1,180</td><td class="num">£0</td><td class="num">£1,143</td><td class="num">+3.2%</td><td>Assessment review</td></tr>
+          <tr><td>Utilities base + demand</td><td><span class="tag warn">Semi-variable</span></td><td class="num">£2,100</td><td class="num">£2,344</td><td class="num"><span class="down">+£244</span></td><td class="num">£2,110</td><td class="num">+11.1%</td><td>Usage/tariff split</td></tr>
+          <tr><td>Insurance</td><td><span class="tag info">Fixed</span></td><td class="num">£510</td><td class="num">£527</td><td class="num">+£17</td><td class="num">£488</td><td class="num">+8.0%</td><td>Renewal tender</td></tr>
+          <tr><td>Software & telecoms</td><td><span class="tag warn">Step-fixed</span></td><td class="num">£1,420</td><td class="num">£1,612</td><td class="num"><span class="down">+£192</span></td><td class="num">£1,361</td><td class="num">+18.4%</td><td>Remove overlap</td></tr>
+          <tr><td>Repairs & maintenance</td><td><span class="tag warn">Semi-variable</span></td><td class="num">£1,250</td><td class="num">£1,438</td><td class="num"><span class="down">+£188</span></td><td class="num">£1,015</td><td class="num">+41.7%</td><td>Asset/root-cause view</td></tr>
+          <tr><td>Marketing retainers/media</td><td><span class="tag good">Discretionary</span></td><td class="num">£1,350</td><td class="num">£1,304</td><td class="num"><span class="up">−£46</span></td><td class="num">£1,244</td><td class="num">+4.8%</td><td>Revenue attribution</td></tr>
+          <tr><td>Professional/admin</td><td><span class="tag warn">Step-fixed</span></td><td class="num">£930</td><td class="num">£1,006</td><td class="num">+£76</td><td class="num">£902</td><td class="num">+11.5%</td><td>Scope control</td></tr>
+          <tr><td>Licences, cleaning, security</td><td><span class="tag info">Mixed</span></td><td class="num">£934</td><td class="num">£858</td><td class="num"><span class="up">−£76</span></td><td class="num">£965</td><td class="num">−11.1%</td><td>Maintain</td></tr>
+        </tbody></table></div>
+      </div>
+      <div class="card panel">
+        <div class="head"><div><h3 class="pt">Cost behaviour map</h3><div class="ps">Every expense needs two classifications: behaviour and controllability</div></div></div>
+        <div class="driver-grid" style="grid-template-columns:1fr 1fr">
+          <div class="driver"><small>Fixed</small><strong>£9.1k</strong><p>Rent, rates, insurance, core licences</p></div><div class="driver"><small>Semi-variable</small><strong>£4.6k</strong><p>Utilities, maintenance, waste, laundry</p></div><div class="driver"><small>Step-fixed</small><strong>£1.5k</strong><p>Software tiers, retainers, leased capacity</p></div><div class="driver"><small>Discretionary</small><strong>£1.0k</strong><p>Adjustable marketing and services</p></div><div class="driver"><small>Controllable ≤30d</small><strong>£2.8k</strong><p>Can change within one month</p></div><div class="driver"><small>Contractual</small><strong>£11.9k</strong><p>Notice/renewal required</p></div>
+        </div>
+        <div class="info warn" style="margin-top:12px">Calling all overheads “fixed” hides decision options. Utilities and repairs are not truly fixed; software and retainers may be step-fixed or discretionary; rent is committed but still requires lease and service-charge audit.</div>
+      </div>
+    </div>
+
+    <div class="grid equal">
+      <div class="card panel">
+        <div class="head"><div><h3 class="pt">Overhead trend and budget control</h3><div class="ps">Monthly actual versus budget</div></div><div class="legend"><span><i style="background:#e44b36"></i>Actual</span><span><i style="background:#f0b64f"></i>Budget</span></div></div>
+        <div class="chart"><svg viewBox="0 0 700 280"><line class="gridline" x1="45" y1="35" x2="680" y2="35"/><line class="gridline" x1="45" y1="95" x2="680" y2="95"/><line class="gridline" x1="45" y1="155" x2="680" y2="155"/><line class="gridline" x1="45" y1="215" x2="680" y2="215"/><polyline class="line-c" points="65,143 155,143 245,139 335,139 425,136 515,136 605,132 675,132"/><polyline class="line-a" points="65,151 155,145 245,134 335,126 425,132 515,119 605,106 675,96"/><g class="axis"><text x="54" y="248">Dec</text><text x="144" y="248">Jan</text><text x="234" y="248">Feb</text><text x="324" y="248">Mar</text><text x="414" y="248">Apr</text><text x="504" y="248">May</text><text x="594" y="248">Jun</text><text x="664" y="248">Jul</text></g></svg></div>
+      </div>
+      <div class="card panel">
+        <div class="head"><div><h3 class="pt">Renewal and commitment calendar</h3><div class="ps">Act before notice deadlines, not after price increases</div></div><span class="tag warn">Next 180 days</span></div>
+        <div class="renewals">
+          <div class="renewal"><div><b>Rent step</b><div class="muted">Lease contractual increase</div></div><div>28 Oct 2026</div><div>+£5,000/yr</div><div>Contractual</div><div><span class="tag bad">Budget now</span></div></div>
+          <div class="renewal"><div><b>Electricity supply</b><div class="muted">Quote window open</div></div><div>1 Nov 2026</div><div>£24k/yr</div><div>90d notice</div><div><span class="tag warn">Tender</span></div></div>
+          <div class="renewal"><div><b>Buildings/business insurance</b><div class="muted">Claims and cover review</div></div><div>15 Dec 2026</div><div>£6.3k/yr</div><div>60d notice</div><div><span class="tag warn">Quote</span></div></div>
+          <div class="renewal"><div><b>Software bundle</b><div class="muted">11 tools renew around year-end</div></div><div>1 Jan 2027</div><div>£19.3k/yr</div><div>30–90d</div><div><span class="tag bad">Rationalise</span></div></div>
+          <div class="renewal"><div><b>Concierge screens</b><div class="muted">Marketing contract review</div></div><div>1 Feb 2027</div><div>£1.5k/yr</div><div>Value review</div><div><span class="tag info">Measure ROI</span></div></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="page" id="cash">
+    <div class="grid kpis">
+      <div class="card kpi"><div class="kl">13-week operating outflows</div><div class="kv">£311k</div><div class="ks">Suppliers, payroll, overheads and tax</div><div class="micro"><span style="width:83%"></span></div></div>
+      <div class="card kpi"><div class="kl">Supplier bills payable</div><div class="kv">£46.8k</div><div class="ks">£11.2k due within 7 days</div><div class="micro"><span style="width:68%"></span></div></div>
+      <div class="card kpi"><div class="kl">Overdue payable value</div><div class="kv">£2.4k</div><div class="ks">Mostly disputed/credit-linked</div><div class="micro"><span style="width:31%"></span></div></div>
+      <div class="card kpi"><div class="kl">Weighted payment days</div><div class="kv">24.6d</div><div class="ks">Terms-weighted DPO proxy</div><div class="micro"><span style="width:57%"></span></div></div>
+      <div class="card kpi"><div class="kl">Committed next 30 days</div><div class="kv">£96.4k</div><div class="ks">Includes payroll and VAT accrual</div><div class="micro"><span style="width:76%"></span></div></div>
+      <div class="card kpi"><div class="kl">Minimum forecast cash buffer</div><div class="kv">£88k</div><div class="ks">2.8 weeks operating outflows</div><div class="micro"><span style="width:72%"></span></div></div>
+    </div>
+
+    <div class="card panel" style="margin-bottom:14px">
+      <div class="head"><div><h3 class="pt">13-week cash commitment calendar</h3><div class="ps">P&L cost and cash timing are deliberately separated</div></div><span class="tag blue">Cash-out view</span></div>
+      <div class="cashgrid">
+        <div class="cashweek"><small>W1</small><strong>£31.2k</strong><p>Payroll + suppliers</p></div><div class="cashweek"><small>W2</small><strong>£18.6k</strong><p>Suppliers + rent</p></div><div class="cashweek"><small>W3</small><strong>£24.8k</strong><p>VAT reserve</p></div><div class="cashweek"><small>W4</small><strong>£27.1k</strong><p>Payroll</p></div><div class="cashweek"><small>W5</small><strong>£18.9k</strong><p>Suppliers</p></div><div class="cashweek"><small>W6</small><strong>£22.4k</strong><p>Rent + insurance</p></div><div class="cashweek"><small>W7</small><strong>£27.8k</strong><p>Payroll</p></div><div class="cashweek"><small>W8</small><strong>£19.6k</strong><p>Suppliers</p></div><div class="cashweek"><small>W9</small><strong>£26.2k</strong><p>VAT + utilities</p></div><div class="cashweek"><small>W10</small><strong>£27.0k</strong><p>Payroll</p></div><div class="cashweek"><small>W11</small><strong>£18.3k</strong><p>Suppliers</p></div><div class="cashweek"><small>W12</small><strong>£22.1k</strong><p>Rent + software</p></div><div class="cashweek"><small>W13</small><strong>£27.0k</strong><p>Payroll</p></div>
+      </div>
+    </div>
+
+    <div class="grid two">
+      <div class="card panel">
+        <div class="head"><div><h3 class="pt">Accounts payable ageing</h3><div class="ps">Open supplier and overhead bills</div></div></div>
+        <div class="donut-wrap"><div class="donut" style="background:conic-gradient(#45c486 0 62%,#67a7ff 62% 86%,#f0b64f 86% 95%,#ef6b68 95% 100%)"><div class="dc">£46.8k<small>open payables</small></div></div><div class="dlegend">
+          <div class="drow"><span style="background:#45c486"></span><span>Not yet due</span><b>£29.0k</b></div><div class="drow"><span style="background:#67a7ff"></span><span>Due within 7 days</span><b>£11.2k</b></div><div class="drow"><span style="background:#f0b64f"></span><span>1–30 days overdue</span><b>£4.2k</b></div><div class="drow"><span style="background:#ef6b68"></span><span>31+ days overdue</span><b>£2.4k</b></div>
+        </div></div>
+        <div class="info warn" style="margin-top:12px">Overdue balances linked to valid disputes should not be paid blindly, but they need explicit dispute status so they are not mistaken for cash distress or missed administration.</div>
+      </div>
+      <div class="card panel">
+        <div class="head"><div><h3 class="pt">P&L cost versus cash paid</h3><div class="ps">Reconciliation prevents false weekly conclusions</div></div></div>
+        <div class="scroll"><table><thead><tr><th>Category</th><th class="num">P&L accrued cost</th><th class="num">Cash paid</th><th class="num">Timing difference</th><th>Explanation</th></tr></thead><tbody>
+          <tr><td>Food & beverage</td><td class="num">£9,523</td><td class="num">£7,886</td><td class="num">+£1,637 payable</td><td>Invoices not yet due</td></tr>
+          <tr><td>Labour</td><td class="num">£9,350</td><td class="num">£8,912</td><td class="num">+£438 accrual</td><td>Payroll cutoff/on-costs</td></tr>
+          <tr><td>Rent/service</td><td class="num">£1,371</td><td class="num">£0</td><td class="num">+£1,371 accrual</td><td>Quarterly payment</td></tr>
+          <tr><td>Insurance</td><td class="num">£122</td><td class="num">£527</td><td class="num"><span class="up">−£405 prepaid</span></td><td>Annual/monthly timing</td></tr>
+          <tr><td>Repairs</td><td class="num">£332</td><td class="num">£760</td><td class="num"><span class="up">−£428 payable release</span></td><td>Prior-week invoice paid</td></tr>
+        </tbody></table></div>
+      </div>
+    </div>
+
+    <div class="grid equal">
+      <div class="card panel">
+        <div class="head"><div><h3 class="pt">Upcoming large commitments</h3><div class="ps">Amounts requiring deliberate cash planning</div></div><span class="tag warn">Next 60 days</span></div>
+        <div class="renewals">
+          <div class="renewal"><div><b>VAT payment reserve</b><div class="muted">Quarterly liability estimate</div></div><div>7 Aug</div><div>£21.8k</div><div>High confidence</div><div><span class="tag bad">Ring-fence</span></div></div>
+          <div class="renewal"><div><b>Quarterly rent</b><div class="muted">Lease payment</div></div><div>28 Aug</div><div>£15.0k</div><div>Contractual</div><div><span class="tag info">Scheduled</span></div></div>
+          <div class="renewal"><div><b>Equipment repair programme</b><div class="muted">Fryer, hot hold, refrigeration</div></div><div>Aug–Sep</div><div>£8.5k</div><div>Medium</div><div><span class="tag warn">Prioritise</span></div></div>
+          <div class="renewal"><div><b>Insurance renewal</b><div class="muted">Premium estimate</div></div><div>15 Sep</div><div>£6.3k</div><div>Medium</div><div><span class="tag warn">Quote</span></div></div>
+        </div>
+      </div>
+      <div class="card panel">
+        <div class="head"><div><h3 class="pt">Working-capital controls</h3><div class="ps">Protect cash without damaging supply reliability</div></div></div>
+        <div class="driver-grid">
+          <div class="driver"><small>Inventory days</small><strong>8.7</strong><p>Cash tied in stock</p></div><div class="driver"><small>Payable days</small><strong>24.6</strong><p>Weighted terms proxy</p></div><div class="driver"><small>Credits outstanding</small><strong>£1.85k</strong><p>Recoverable cash</p></div><div class="driver"><small>Early payment discounts</small><strong>£640</strong><p>Annual available value</p></div><div class="driver"><small>Duplicate payments</small><strong>£0</strong><p>12-month scan</p></div><div class="driver"><small>Unapproved bills</small><strong>£1.2k</strong><p>Five invoices</p></div><div class="driver"><small>Cash buffer</small><strong>2.8w</strong><p>Operating outflows</p></div><div class="driver"><small>Tax reserve coverage</small><strong>100%</strong><p>VAT ring-fenced</p></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="card panel" style="margin-top:14px">
+    <div class="head"><div><h3 class="pt">Recommended data architecture</h3><div class="ps">One cost ledger, multiple operational sources, no duplicate truth</div></div></div>
+    <div class="source-map">
+      <div class="source"><h4>Lightspeed K-Series</h4><p>Sales mix, item quantities, recipe depletion, stock levels, stock movements, purchase orders, suppliers, purchased quantities and cost prices.</p><div class="sync">THEORETICAL & INVENTORY SOURCE</div></div>
+      <div class="source"><h4>Supplier invoices / statements</h4><p>Line-level pack size, usable-unit price, tax, delivery charges, credits, substitutions, invoice dates and payment terms.</p><div class="sync">PURCHASE PRICE SOURCE</div></div>
+      <div class="source"><h4>QuickBooks</h4><p>Chart of accounts, bills, expense accruals, fixed costs, accounts payable, cash payment timing, budget and financial reconciliation.</p><div class="sync">FINANCIAL LEDGER SOURCE</div></div>
+      <div class="source"><h4>Revenue & Labour modules</h4><p>Forecast/actual net revenue and fully loaded labour budgets/costs, enabling prime cost, break-even and site contribution.</p><div class="sync">PROFITABILITY SOURCE</div></div>
+    </div>
+  </div>
+  <div class="footer">Coyote Burger · Cost & Supplier Command Centre · illustrative design only</div>
+</div>
+<script>
+const tabs=document.querySelectorAll('.tab');tabs.forEach(b=>b.addEventListener('click',()=>{tabs.forEach(x=>x.classList.remove('active'));document.querySelectorAll('.page').forEach(x=>x.classList.remove('active'));b.classList.add('active');document.getElementById(b.dataset.tab).classList.add('active');window.scrollTo({top:0,behavior:'smooth'})}));
+const revSlider=document.getElementById('revSlider'),inflation=document.getElementById('inflation'),usageGap=document.getElementById('usageGap'),fixedChange=document.getElementById('fixedChange');
+const money=n=>new Intl.NumberFormat('en-GB',{style:'currency',currency:'GBP',maximumFractionDigits:0}).format(n);
+function labourBand(rev){if(rev<24000)return 32.5;if(rev<28000)return 30.2;if(rev<32000)return 28.6;if(rev<36000)return 27.2;return 26.0}
+function bandName(rev){if(rev<24000)return'Very Quiet';if(rev<28000)return'Quiet';if(rev<32000)return'Shoulder';if(rev<36000)return'Busy';return'Peak'}
+function update(){const rev=+revSlider.value,inf=+inflation.value||0,gap=+usageGap.value||0,fc=+fixedChange.value||0;const base=28.9;const infPts=inf*.30;const cogsPct=base+infPts+gap;const cogs=rev*cogsPct/100;const labPct=labourBand(rev),lab=rev*labPct/100;const otherPct=3.7,other=rev*otherPct/100;const fixed=3740*(1+fc/100);const contrib=rev-cogs-lab-other-fixed;const cp=contrib/rev*100;const variableMargin=1-(cogsPct+labPct+otherPct)/100;const breakeven=fixed/Math.max(.01,variableMargin);
+ document.getElementById('revLabel').textContent=money(rev);document.getElementById('scRevenue').textContent=money(rev);document.getElementById('scRevBar').style.width=Math.min(100,rev/500)+'%';document.getElementById('scCogsPct').textContent=cogsPct.toFixed(1)+'%';document.getElementById('scCogsCost').textContent=money(cogs);document.getElementById('scCogsBar').style.width=Math.min(100,cogsPct*2.7)+'%';document.getElementById('scLabourPct').textContent=labPct.toFixed(1)+'%';document.getElementById('scLabourCost').textContent=money(lab)+' · '+bandName(rev)+' band';document.getElementById('scOtherPct').textContent=otherPct.toFixed(1)+'%';document.getElementById('scOtherCost').textContent=money(other);document.getElementById('scFixed').textContent=money(fixed);document.getElementById('scContribution').textContent=money(contrib);document.getElementById('scContributionPct').innerHTML='<span class="'+(cp>=25?'up':cp>=20?'flat':'down')+'">'+cp.toFixed(1)+'%</span> of revenue';document.getElementById('scContribBar').style.width=Math.max(10,Math.min(100,cp*2.8))+'%';document.getElementById('theoreticalCard').textContent=base.toFixed(1)+'%';document.getElementById('inflationCard').textContent=(infPts>=0?'+':'')+infPts.toFixed(1)+' pts';document.getElementById('gapCard').textContent='+'+gap.toFixed(1)+' pts';document.getElementById('breakevenCard').textContent=money(breakeven)}
+[revSlider,inflation,usageGap,fixedChange].forEach(x=>x.addEventListener('input',update));update();
+</script>
+</body></html>
