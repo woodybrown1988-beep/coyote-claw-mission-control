@@ -180,6 +180,7 @@ const PAGES = [
   require('./ui/pages/coyote/issues.js'),
   require('./ui/pages/coyote/reports.js'),
   require('./ui/pages/coyote/reservations.js'),
+  require('./ui/pages/coyote/costs.js'),
   require('./ui/pages/coyote/report-library.js'),
   require('./ui/pages/coyote/rota-review.js'),
   require('./ui/pages/coyote/labour.js'),

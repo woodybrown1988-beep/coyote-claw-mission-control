@@ -74,6 +74,9 @@ const WORKSPACES = [
       // Labour Centre L1 (2026-07-21): labour moved from Departments into Reports (after
       // reservations) — the centre keeps the /coyote/labour route, so no redirect is needed.
       { key: 'labour', label: 'Labour', route: '/coyote/labour', ico: '<circle cx="9" cy="7" r="3"/><circle cx="17" cy="9" r="2.5"/><path d="M3 20v-1a6 6 0 0 1 12 0v1"/><path d="M15 20v-1a5 5 0 0 1 7-4.6"/>' },
+      // Costs & Supplier Centre C1 (2026-07-22): the costs command centre joins Reports after
+      // labour — QB ledger shadow + bank truth on /coyote/costs.
+      { key: 'costs', label: 'Costs', route: '/coyote/costs', ico: '<path d="M12 1v22M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>' },
     ] },
     { group: 'Departments', items: [
       { key: 'recipes', label: 'Recipes & Costs', route: '/coyote/recipes', ico: '<path d="M5 3h11l3 3v15H5z"/><path d="M9 8h6M9 12h6M9 16h4"/>' },
