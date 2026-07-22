@@ -25,7 +25,7 @@ function greenDb() {
     CREATE TABLE ks_sync_meta(table_name TEXT PRIMARY KEY,row_count INTEGER,synced_at INTEGER);
     CREATE TABLE ks_app_settings(id TEXT,key TEXT,value TEXT,category TEXT);
     CREATE TABLE ks_incident_reports(id TEXT,reference_number TEXT,title TEXT,category TEXT,severity TEXT,status TEXT,occurred_at TEXT,reported_to_authority INTEGER,affected_people_count INTEGER);
-    CREATE TABLE ks_allergen_incidents(id TEXT,status TEXT,severity TEXT,created_at TEXT);
+    CREATE TABLE ks_allergen_incidents(id TEXT,incident_report_id TEXT,allergen TEXT,menu_item_name_snapshot TEXT,medical_attention_required INTEGER,created_at TEXT);
     CREATE TABLE ks_checklist_items(id TEXT,is_critical INTEGER);
     CREATE TABLE ks_checklist_responses(id TEXT,item_id TEXT,is_pass INTEGER,corrective_action_required INTEGER,is_corrected INTEGER);
     CREATE TABLE ks_checklist_runs(id TEXT,status TEXT,signed_off_at TEXT);
@@ -34,15 +34,16 @@ function greenDb() {
     CREATE TABLE ks_allergen_menu_items(id TEXT,celery INTEGER,is_active INTEGER);
     CREATE TABLE ks_equipment_units(id TEXT,name TEXT,equipment_type TEXT,min_temp_celsius REAL,max_temp_celsius REAL,calibration_due_date TEXT,is_active INTEGER);
     CREATE TABLE ks_training_records(id TEXT,status TEXT,expires_at TEXT);
-    CREATE TABLE ks_haccp_documents(id TEXT,status TEXT);
-    CREATE TABLE ks_house_rules_versions(id TEXT,is_active INTEGER);
+    CREATE TABLE ks_haccp_documents(id TEXT,title TEXT,document_type TEXT,is_active INTEGER,created_at TEXT);
+    CREATE TABLE ks_house_rules_versions(id TEXT,section_id TEXT,version_number INTEGER,status TEXT,published_at TEXT,created_at TEXT);
     CREATE TABLE ks_risk_assessments(id TEXT,critical_control_point INTEGER);
     CREATE TABLE ks_sites(id TEXT,name TEXT,local_authority TEXT,registration_number TEXT);
     CREATE TABLE labour_day(actual_minutes INTEGER);
     INSERT INTO ks_sync_meta VALUES('ks_temp_log_entries',802,${NOW - 3600000});
     INSERT INTO ks_app_settings VALUES('a','fridge_max_temp_celsius','"5"','temperature'),('b','cooking_min_temp_celsius','"75"','temperature'),('c','freezer_max_temp_celsius','"-18"','temperature'),('d','reheating_min_temp_celsius','"82"','temperature'),('e','hot_hold_min_temp_celsius','"63"','temperature'),('f','delivery_max_chilled_temp_celsius','"8"','temperature');
     INSERT INTO ks_sites VALUES('s','Coyote','Test Council','REG-1');
-    INSERT INTO ks_house_rules_versions VALUES('h',1);
+    INSERT INTO ks_house_rules_versions VALUES('h','sec1',1,'active',NULL,'2026-01-01');
+    INSERT INTO ks_haccp_documents VALUES('hd','Cook plan','plan',1,'2026-01-01');
     INSERT INTO labour_day VALUES(120000);
     INSERT INTO ks_checklist_items VALUES('crit',1),('norm',0);
     INSERT INTO ks_checklist_runs VALUES('run','completed','2026-07-22');
@@ -102,7 +103,7 @@ test('all four cap triggers force RED; a green board clears the cap', () => {
   assert.equal(sectionOf(db).cap.active, true, 'uncorrected critical breach → RED');
   // (b) open allergen incident
   db = greenDb();
-  db.prepare(`INSERT INTO ks_allergen_incidents VALUES('ai','open','high','2026-07-20')`).run();
+  db.prepare(`INSERT INTO ks_allergen_incidents VALUES('ai',NULL,'peanuts','Satay',1,'2026-07-20')`).run(); // unlinked → open
   assert.equal(sectionOf(db).cap.active, true, 'open allergen incident → RED');
   // (c) overdue critical corrective action
   db = greenDb();

@@ -91,7 +91,11 @@ module.exports = {
        WHERE lower(coalesce(status,'')) IN ('open','in_progress','investigating','reported')
          AND lower(coalesce(severity,''))='critical'`);
     const openAllergenIncidents = rows(
-      `SELECT id FROM ks_allergen_incidents WHERE lower(coalesce(status,'')) NOT IN ('resolved','closed','')`);
+      // allergen_incidents has no status of its own — openness comes from the linked incident_report
+      // (an unlinked allergen incident is treated as open/unresolved).
+      `SELECT ai.id FROM ks_allergen_incidents ai
+         LEFT JOIN ks_incident_reports ir ON ir.id = ai.incident_report_id
+        WHERE ir.id IS NULL OR lower(coalesce(ir.status,'')) NOT IN ('resolved','closed')`);
     const openCriticalBreaches = rows(
       `SELECT r.id FROM ks_checklist_responses r JOIN ks_checklist_items i ON i.id = r.item_id
        WHERE r.is_pass = 0 AND r.corrective_action_required = 1 AND coalesce(r.is_corrected,0) = 0 AND i.is_critical = 1`);
@@ -202,8 +206,8 @@ module.exports = {
 
     // ---- audit readiness ----
     const auditCount = (one(`SELECT count(*) n FROM ks_audits`) || {}).n || 0;
-    const haccpActive = (one(`SELECT count(*) n FROM ks_haccp_documents WHERE lower(coalesce(status,'')) IN ('active','approved','current')`) || {}).n || 0;
-    const hrCurrent = (one(`SELECT count(*) n FROM ks_house_rules_versions WHERE is_active=1`) || {}).n || 0;
+    const haccpActive = (one(`SELECT count(*) n FROM ks_haccp_documents WHERE is_active=1`) || {}).n || 0;
+    const hrCurrent = (one(`SELECT count(*) n FROM ks_house_rules_versions WHERE lower(coalesce(status,'')) IN ('active','published','current')`) || {}).n || 0;
     const ccps = (one(`SELECT count(*) n FROM ks_risk_assessments WHERE critical_control_point=1`) || {}).n || 0;
     const site = one(`SELECT name, local_authority, registration_number FROM ks_sites LIMIT 1`) || {};
 
