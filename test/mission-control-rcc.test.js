@@ -69,3 +69,9 @@ test('Labour Centre Stage 1 verdict: the canon holds UNCHANGED — no new tokens
   assert.match(S.rcc.css(), /#ff8a5b/, "the canon's own orange stop is the family");
   assert.equal(S.rcc.tokens.accent, '#e44b36');
 });
+
+test('Costs Centre Stage 1 verdict: the canon holds — noise greys and the twice-seen orange stay out (pinned until the operator rules)', () => {
+  assert.equal(S.rcc.tokens.bg, '#0b0d10', 'the canon ground survives the mock\'s #0a0c0f noise variant');
+  assert.equal(S.rcc.tokens.o, undefined, '--orange #ff8b55 seen TWICE in mocks but still 1-hex from the canon stop — excluded until ruled');
+  assert.equal(S.rcc.tokens.cyan, '#5bd1d7', 'cyan already canonical (Reservations)');
+});
