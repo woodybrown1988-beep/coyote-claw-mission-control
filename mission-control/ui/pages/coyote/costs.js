@@ -1,0 +1,961 @@
+'use strict';
+// Costs — the COSTS & SUPPLIER COMMAND CENTRE (C1, built from the Stage-1 gap map
+// docs/costs-centre/gap-map.md + the operator mocks reference/mock-*.png). ONE route
+// (/coyote/costs), seven subtabs per the mock:
+//   executive (default) · forecast · cogs · margins · suppliers · fixed · cash
+// C1 SCOPE: the shell + EXECUTIVE + FIXED & SEMI-FIXED + CASH COMMITMENTS fully built (the
+// QB-strong core); forecast/cogs/margins/suppliers each render ONE pending note (the C2/C3
+// split) — no frame theatre, no mock digits.
+// THE WIRES (all probed, gap map — binding):
+//   • qb_pl_monthly — POPULATED (93 months 2018-11 → 2026-07 in the golden snapshot), joined
+//     to qb_accounts for classification/acct_type. THE account-month P&L source for COGS,
+//     overheads, cost mix. CAVEAT (probed): QB income accounts stop posting after Apr 2026 —
+//     REVENUE therefore ALWAYS comes from v_sales_day_all (the day-net canon), never QB income.
+//   • qb_journal_lines (55,822 lines, 8yr) — the rent aggregation ('Rent (205)' + 'Rent + SC
+//     Clearing Account', quarterly-billed via Workman) + the fee-collapse finding ('Bank
+//     charges (207)' — card-fee-scale until Apr 2026, then net settlement) + P&L-vs-cash.
+//   • qb_bank_txns purchases by counterparty — the supplier/outflow TRUTH (8yr; Booker-led).
+//     The 13-week cash calendar derives from RECURRING bank-outflow patterns (the corrected
+//     premise) — NEVER from bill due dates: qb_bills is DEAD (8 rows, all 2022) and AP ageing
+//     is a designed empty-state saying exactly that.
+//   • labour_day (TRUE ruler: locked rates × burden + salaried/365) + v_sales_day_all IMPORT
+//     as summary pointers — one home per fact: the labour story lives in /coyote/labour, the
+//     revenue story in /coyote/revenue; each month £ renders ONCE here, beside its pointer.
+//   • recipe_lines = 0 (the Calum gate): every theoretical column stays gated with the carrot.
+// MONTH-GRAIN HONESTY (ruled): QB is month-grain — the mock's "13-week" executive frame
+// renders as TRAILING MONTHS with the grain stated in the sub; weekly figures exist only
+// where a wire supports them (the bank-truth cash calendar) or as stated derivations.
+// CLASSIFICATION HONESTY: fixed / semi-fixed / variable is a PRESENTATION JUDGMENT, captioned
+// as such on every panel that uses it — never a ruling. Payroll-class QB accounts are
+// excluded from overheads (labour's one home is the Labour Centre on the TRUE basis) — also
+// a stated judgment.
+// Contract: { key, route, workspace, title, sub, getSection, render }. SELECT-only via ctx.q.
+const S = require('../../shared.js');
+const REP = require('../../reporting.js');
+const K = require('../../kpi.js');
+
+function rowsOf(res) { return res && res.ok && Array.isArray(res.rows) ? res.rows : []; }
+function num(v) { if (v === null || v === undefined) return null; const n = Number(v); return Number.isFinite(n) ? n : null; }
+const MONTHS_ABBR = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+function monthLabel(ym) { const m = String(ym || '').match(/^(\d{4})-(\d{2})$/); return m ? `${MONTHS_ABBR[Number(m[2])] || m[2]} ${m[1]}` : String(ym || ''); }
+/** Shift 'YYYY-MM' by n months. */
+function monthShift(ym, n) {
+  const y = Number(ym.slice(0, 4)); const m = Number(ym.slice(5, 7)) - 1 + n;
+  const d = new Date(Date.UTC(y, m, 1));
+  return d.toISOString().slice(0, 7);
+}
+/** The latest COMPLETE calendar month on a day-grain record: the max date's own month when the
+ *  max date is that month's final day, else the month before. */
+function refMonthOf(maxIso) {
+  if (!maxIso) return null;
+  if (K.shiftDays(maxIso, 1).slice(8, 10) === '01') return maxIso.slice(0, 7);
+  return monthShift(maxIso.slice(0, 7), -1);
+}
+function median(arr) {
+  if (!arr.length) return null;
+  const a = [...arr].sort((x, y) => x - y);
+  const mid = Math.floor(a.length / 2);
+  return a.length % 2 ? a[mid] : (a[mid - 1] + a[mid]) / 2;
+}
+
+const TABS = [
+  { key: 'executive', label: 'Executive' },
+  { key: 'forecast', label: 'Cost Forecast' },
+  { key: 'cogs', label: 'COGS & Inventory' },
+  { key: 'margins', label: 'Recipe Margins' },
+  { key: 'suppliers', label: 'Suppliers & Purchasing' },
+  { key: 'fixed', label: 'Fixed & Semi-Fixed' },
+  { key: 'cash', label: 'Cash Commitments' },
+];
+const TAB_KEYS = TABS.map((t) => t.key);
+// The C1 split: the four QB-weak / gated tabs ship next — ONE pending note each.
+const PENDING_TABS = ['forecast', 'cogs', 'margins', 'suppliers'];
+const PENDING_NOTE = 'C2/C3 build pending — the C1 split shipped Executive, Fixed & Semi-Fixed and Cash Commitments (the QB-strong core) first; this tab lands with the next Costs Centre phase per the gap map.';
+
+// ---------------------------------------------------------------------------------------------
+// THE RENT STEP — a CONTRACTUAL constant, HARD-ENCODED from the lease canon (the lease's rent
+// review: £60,000/yr until 2026-10-27, £65,000/yr from 2026-10-28, quarterly-billed via the
+// rent agent Workman). NEVER derived from any wire — the ledger shows payments, the LEASE sets
+// the obligation; a derived figure would drift on billing noise. Single home for the canon.
+// ---------------------------------------------------------------------------------------------
+const RENT_STEP = {
+  date: '2026-10-28',
+  beforePenceYr: 6000000, // £60,000/yr — the current contractual rent
+  afterPenceYr: 6500000,  // £65,000/yr — from the step date
+  basis: 'contractual — lease canon (rent review), quarterly-billed via Workman',
+};
+function rentStepDaysUntil(now) {
+  return Math.ceil((Date.parse(`${RENT_STEP.date}T00:00:00Z`) - now) / 86400000);
+}
+
+// The recipe gate (the Calum gate): theoretical costing is locked until recipe_lines holds
+// rows; the standing carrot names the one-session unlock.
+const RECIPE_CARROT = 'recipe costing: top-20 = 59.5% coverage, one session';
+
+// The AP-ageing disposition — the mapped empty-state, verbatim (gap-map probe 1).
+const AP_BLOCKER = 'QB Bills not in use — 8 rows since 2022. The venue pays suppliers direct from the bank; there is no bills ledger, so the cash calendar derives from recurring bank-outflow patterns + contractual lines instead.';
+
+// ---------------------------------------------------------------------------------------------
+// Account bucketing — PRESENTATION JUDGMENTS, captioned wherever they render.
+//   bucket: cogs (QB Cost-of-Goods-Sold accounts) · labour (payroll-class names — excluded
+//   from overheads; the TRUE labour home is the Labour Centre) · overhead (the rest).
+//   behaviour (overheads only): fixed / semi / variable by account-name class.
+// ---------------------------------------------------------------------------------------------
+const PAYROLL_NAME_RE = /wage|salar|pension|national insurance|paye|recruitment|staff/i;
+function bucketOf(acctType, name) {
+  if (acctType === 'Cost of Goods Sold') return 'cogs';
+  if (PAYROLL_NAME_RE.test(String(name || ''))) return 'labour';
+  return 'overhead';
+}
+function behaviourOf(name) {
+  const n = String(name || '').toLowerCase();
+  if (/rent|rates|insurance|licen|subscription|software|accountanc|legal|professional|depreciation|amortis/.test(n)) return 'fixed';
+  if (/light|heat|gas|electric|energy|water|telephone|broadband|repair|maintain|clean|waste|laundry/.test(n)) return 'semi';
+  return 'variable';
+}
+const BEHAVIOUR_LABEL = { fixed: 'Fixed', semi: 'Semi-fixed', variable: 'Variable' };
+const BEHAVIOUR_TONE = { fixed: 'info', semi: 'warn', variable: '' };
+
+// Recurring bank-outflow detection (the corrected Cash-Commitments premise): a counterparty
+// recurs when the 6-month purchase window holds ≥3 payment DAYS (same-day txns collapse to one)
+// whose day-gaps sit near a regular cadence: median gap m in [2, 45] days and every gap within
+// [max(1, 0.5m − 3), 1.5m + 3]. One-off history NEVER projects.
+const RECUR_WINDOW_DAYS = 183;
+function detectRecurrence(dayRows) {
+  // dayRows: [{cp, d, p}] one row per counterparty × date (p = that day's total pence), any order.
+  const byCp = new Map();
+  for (const r of dayRows) {
+    if (!byCp.has(r.cp)) byCp.set(r.cp, []);
+    byCp.get(r.cp).push({ d: r.d, p: r.p });
+  }
+  const out = [];
+  for (const [cp, days] of byCp) {
+    if (days.length < 3) continue; // a one-off (or a pair) is history, not a pattern
+    days.sort((a, b) => (a.d < b.d ? -1 : 1));
+    const gaps = [];
+    for (let i = 1; i < days.length; i++) {
+      gaps.push(Math.round((Date.parse(`${days[i].d}T12:00:00Z`) - Date.parse(`${days[i - 1].d}T12:00:00Z`)) / 86400000));
+    }
+    const m = median(gaps);
+    if (!(m >= 2 && m <= 45)) continue;
+    const lo = Math.max(1, 0.5 * m - 3); const hi = 1.5 * m + 3;
+    if (!gaps.every((g) => g >= lo && g <= hi)) continue;
+    out.push({
+      cp,
+      n: days.length,
+      cadenceDays: Math.round(m),
+      medianPence: median(days.map((x) => x.p)),
+      lastDate: days[days.length - 1].d,
+      spendPence: days.reduce((s, x) => s + x.p, 0),
+    });
+  }
+  out.sort((a, b) => b.spendPence - a.spendPence);
+  return out;
+}
+/** Project a recurring pattern forward: lastDate + k·cadence for every date in (fromIso, toIso]. */
+function projectDates(rec, fromIso, toIso) {
+  const dates = [];
+  for (let k = 1; k <= 400; k++) {
+    const d = K.shiftDays(rec.lastDate, k * rec.cadenceDays);
+    if (d > toIso) break;
+    if (d > fromIso) dates.push(d);
+  }
+  return dates;
+}
+
+// ---------------------------------------------------------------------------------------------
+// getSection builders — SELECT-only; every read degrades to an honest null on a missing table.
+// ---------------------------------------------------------------------------------------------
+
+/** Per-month QB expense rows (qb_pl_monthly ⋈ qb_accounts) bucketed cogs/labour/overhead,
+ *  overheads split by behaviour. Returns Map ym → {cogs, labourQb, over, fixed, semi, variable,
+ *  accounts:[{name, acctType, p}]}. */
+function qbMonths(q, months) {
+  const byYm = new Map();
+  for (const ym of months) byYm.set(ym, { cogs: 0, labourQb: 0, over: 0, fixed: 0, semi: 0, variable: 0, any: false, accounts: [] });
+  const rows = rowsOf(q(
+    `SELECT p.month ym, p.account_name name, a.acct_type at, SUM(p.net_pence) p
+       FROM qb_pl_monthly p JOIN qb_accounts a ON a.account_id = p.account_id AND a.realm_id = p.realm_id
+      WHERE a.classification = 'Expense' AND p.month BETWEEN ? AND ?
+      GROUP BY p.month, p.account_name, a.acct_type`, [months[0], months[months.length - 1]]));
+  for (const r of rows) {
+    const m = byYm.get(String(r.ym));
+    if (!m) continue;
+    const p = num(r.p) || 0;
+    const bucket = bucketOf(String(r.at || ''), String(r.name || ''));
+    m.any = true;
+    m.accounts.push({ name: String(r.name || ''), acctType: String(r.at || ''), bucket, p });
+    if (bucket === 'cogs') m.cogs += p;
+    else if (bucket === 'labour') m.labourQb += p;
+    else { m.over += p; m[behaviourOf(r.name)] += p; }
+  }
+  return byYm;
+}
+
+/** Month net from the day-net canon (v_sales_day_all, premises current) — null when no rows. */
+function monthNet(q, ym) {
+  const r = rowsOf(q(
+    `SELECT SUM(net_sales_pence) net, COUNT(*) days FROM v_sales_day_all
+      WHERE substr(business_date, 1, 7) = ? AND premises = 'current'`, [ym]))[0];
+  return r && num(r.days) > 0 ? { net: num(r.net) || 0, days: num(r.days) } : null;
+}
+
+/** Month TRUE labour (labour_day, burdened) — null when the month has no rows (the June hole
+ *  renders as an honest gap, never bridged). */
+function monthLabour(q, ym) {
+  const r = rowsOf(q(
+    `SELECT SUM(actual_cost_pence) c, COUNT(*) days FROM labour_day WHERE substr(business_date, 1, 7) = ?`, [ym]))[0];
+  return r && num(r.days) > 0 ? { cost: num(r.c) || 0, days: num(r.days) } : null;
+}
+
+// EXECUTIVE — KPI strip, trailing-6-month trend (the ruled monthly grain), owner attention
+// queue (REAL findings), profitability bridge, cost mix, core control ratios.
+function buildExecutive(q, now) {
+  const mx = rowsOf(q(`SELECT MAX(business_date) d FROM v_sales_day_all WHERE premises = 'current'`))[0];
+  const salesMax = mx && mx.d ? String(mx.d) : null;
+  const e = { salesMax, refMonth: refMonthOf(salesMax), months: [], recipeLines: null };
+  const rl = rowsOf(q(`SELECT COUNT(*) n FROM recipe_lines`))[0];
+  e.recipeLines = rl ? (num(rl.n) || 0) : null;
+  // the rent step + recipe gate are standing facts (encoded canon / a live gate) — they queue
+  // even before any ledger wire exists.
+  e.queue = { supplier: null, fees: null, rentDays: rentStepDaysUntil(now), recipeGated: e.recipeLines === 0 };
+  if (!e.refMonth) return e;
+
+  const months = []; for (let i = 5; i >= 0; i--) months.push(monthShift(e.refMonth, -i));
+  const qb = qbMonths(q, months);
+  for (const ym of months) {
+    const m = qb.get(ym);
+    const net = monthNet(q, ym);
+    const lab = monthLabour(q, ym);
+    e.months.push({
+      ym,
+      net: net ? net.net : null, netDays: net ? net.days : 0,
+      labour: lab ? lab.cost : null, labourDays: lab ? lab.days : 0,
+      qbAny: m.any, cogs: m.any ? m.cogs : null, over: m.any ? m.over : null,
+      fixed: m.fixed, semi: m.semi, variable: m.variable,
+      accounts: m.accounts,
+    });
+  }
+  const cur = e.months[e.months.length - 1];
+  // ---- the reference-month KPI set (every derivation captioned at render) ----
+  const netP = cur.net, cogsP = cur.cogs, labP = cur.labour, varP = cur.qbAny ? cur.variable : null;
+  const k = {};
+  k.cogsPct = netP > 0 && cogsP != null ? (cogsP / netP) * 100 : null;
+  k.labourPct = netP > 0 && labP != null ? (labP / netP) * 100 : null;
+  k.primePct = k.cogsPct != null && k.labourPct != null ? k.cogsPct + k.labourPct : null;
+  k.contribution = netP > 0 && cogsP != null && labP != null && varP != null ? netP - cogsP - labP - varP : null;
+  k.overheads = cur.qbAny ? cur.over : null;
+  k.cmRatio = k.contribution != null && netP > 0 ? k.contribution / netP : null;
+  const fixedMonthly = cur.qbAny ? cur.fixed + cur.semi : null; // fixed + semi-fixed classified overheads
+  k.fixedMonthly = fixedMonthly;
+  k.breakEvenWeek = k.cmRatio > 0 && fixedMonthly != null ? (fixedMonthly / k.cmRatio) * (12 / 52) : null;
+  e.kpi = k;
+
+  // ---- owner attention queue: REAL findings only ----
+  const queue = e.queue;
+  const bmx = rowsOf(q(`SELECT MAX(txn_date) d FROM qb_bank_txns WHERE txn_kind = 'purchase'`))[0];
+  const bankMax = bmx && bmx.d ? String(bmx.d) : null;
+  if (bankMax) {
+    // largest supplier-spend delta: bank-max month-to-date vs the SAME counterparty's average
+    // over the SAME DAY-SPAN of the 3 prior months (bank purchases — the supplier truth wire).
+    // Like-for-like windows: MTD vs full prior months would flag every supplier as collapsed
+    // early in a month — a fabricated finding.
+    const curYm = bankMax.slice(0, 7);
+    const dd = bankMax.slice(8, 10);
+    const curRows = rowsOf(q(
+      `SELECT counterparty cp, SUM(total_pence) p FROM qb_bank_txns
+        WHERE txn_kind = 'purchase' AND txn_date BETWEEN ? AND ? AND counterparty IS NOT NULL AND counterparty != ''
+        GROUP BY counterparty`, [`${curYm}-01`, bankMax]));
+    const prevAgg = new Map();
+    for (let kk = 1; kk <= 3; kk++) {
+      const ym2 = monthShift(curYm, -kk);
+      for (const r of rowsOf(q(
+        `SELECT counterparty cp, SUM(total_pence) p FROM qb_bank_txns
+          WHERE txn_kind = 'purchase' AND txn_date BETWEEN ? AND ? AND counterparty IS NOT NULL AND counterparty != ''
+          GROUP BY counterparty`, [`${ym2}-01`, `${ym2}-${dd}`]))) {
+        prevAgg.set(String(r.cp), (prevAgg.get(String(r.cp)) || 0) + (num(r.p) || 0));
+      }
+    }
+    const prevAvg = new Map([...prevAgg.entries()].map(([cp, p]) => [cp, p / 3]));
+    const curBy = new Map(curRows.map((r) => [String(r.cp), num(r.p) || 0]));
+    let best = null;
+    for (const cp of new Set([...curBy.keys(), ...prevAvg.keys()])) {
+      const curP = curBy.get(cp) || 0; const avg = prevAvg.get(cp) || 0;
+      if (Math.max(curP, avg) < 50000) continue; // sub-£500 movements are noise, not findings
+      const delta = curP - avg;
+      if (!best || Math.abs(delta) > Math.abs(best.delta)) best = { cp, cur: curP, avg, delta };
+    }
+    queue.supplier = best ? { ...best, month: curYm, dd } : null;
+    queue.bankMax = bankMax;
+  }
+  // fee-collapse: 'Bank charges' journal account — the last-2-months average vs the preceding
+  // 6-month avg; a >75% collapse on a card-fee-scale base = the net-settlement finding.
+  const feeMonths = []; for (let i = 7; i >= 0; i--) feeMonths.push(monthShift(e.refMonth, -i));
+  const feeRows = rowsOf(q(
+    `SELECT period_month m, SUM(COALESCE(debit_pence, 0)) - SUM(COALESCE(credit_pence, 0)) p
+       FROM qb_journal_lines WHERE account_name LIKE 'Bank charges%' AND period_month BETWEEN ? AND ?
+      GROUP BY period_month`, [feeMonths[0], feeMonths[feeMonths.length - 1]]));
+  const feeBy = new Map(feeRows.map((r) => [String(r.m), num(r.p) || 0]));
+  const recent2 = feeMonths.slice(-2).map((m2) => feeBy.get(m2) || 0);
+  const prior6 = feeMonths.slice(0, 6).map((m2) => feeBy.get(m2) || 0);
+  const recentAvg = recent2.reduce((a, b) => a + b, 0) / 2;
+  const priorAvg = prior6.reduce((a, b) => a + b, 0) / 6;
+  if (priorAvg > 50000 && recentAvg < priorAvg * 0.25) {
+    queue.fees = { priorAvg, recentAvg, from: feeMonths[feeMonths.length - 2], to: feeMonths[feeMonths.length - 1] };
+  }
+  return e;
+}
+
+// FIXED & SEMI-FIXED — monthly overheads by account, behaviour map, 12-month trend, renewal &
+// commitment calendar. Overheads = QB Expense accounts EX COGS-class EX payroll-class (stated).
+function buildFixed(q, now) {
+  const mx = rowsOf(q(`SELECT MAX(month) m FROM qb_pl_monthly`))[0];
+  const qbMax = mx && mx.m ? String(mx.m) : null;
+  const f = { qbMax };
+  if (!qbMax) return f;
+  f.qbMaxPartial = qbMax === new Date(now).toISOString().slice(0, 7); // the now-month is in progress
+  const t12 = []; for (let i = 11; i >= 0; i--) t12.push(monthShift(qbMax, -i));
+  f.months12 = t12;
+  f.tableMonths = t12.slice(-7); // 6 trailing + the current column
+  const qb = qbMonths(q, t12);
+  // account × month grid (overhead bucket only)
+  const acc = new Map(); // name → {name, behaviour, byYm: Map, total6}
+  for (const ym of t12) {
+    for (const a of qb.get(ym).accounts) {
+      if (a.bucket !== 'overhead') continue;
+      if (!acc.has(a.name)) acc.set(a.name, { name: a.name, behaviour: behaviourOf(a.name), byYm: new Map(), total6: 0, total12: 0 });
+      const e = acc.get(a.name);
+      e.byYm.set(ym, (e.byYm.get(ym) || 0) + a.p);
+      e.total12 += a.p;
+      if (f.tableMonths.slice(0, 6).includes(ym)) e.total6 += a.p;
+    }
+  }
+  const all = [...acc.values()].sort((a, b) => b.total6 - a.total6);
+  f.topAccounts = all.slice(0, 15);
+  f.otherAccounts = all.slice(15);
+  f.monthTotals = t12.map((ym) => ({ ym, over: qb.get(ym).any ? qb.get(ym).over : null, any: qb.get(ym).any }));
+  // behaviour classes (averaged over the 6 FULL trailing table months — a partial current
+  // month would understate)
+  const fullSix = f.tableMonths.slice(0, 6);
+  const classes = { fixed: { total: 0, names: [] }, semi: { total: 0, names: [] }, variable: { total: 0, names: [] } };
+  for (const a of all) {
+    const c = classes[a.behaviour];
+    c.total += fullSix.reduce((s, ym) => s + (a.byYm.get(ym) || 0), 0);
+    if (a.total6 > 0) c.names.push(a.name);
+  }
+  f.behaviour = Object.fromEntries(Object.entries(classes).map(([k2, c]) => [k2, { avgMonth: c.total / 6, count: c.names.length, top: c.names.slice(0, 4) }]));
+  // 12-month trend: total + the 3 biggest accounts by 12-month total
+  f.trendTop3 = [...acc.values()].sort((a, b) => b.total12 - a.total12).slice(0, 3);
+  // rent (the gap-map rule): 'Rent (205)' + 'Rent + SC Clearing Account' journal accounts
+  // aggregated, quarterly-billed via Workman — the last 4 quarters' journal total.
+  const rentFrom = monthShift(qbMax, -11);
+  f.rent12 = num(rowsOf(q(
+    `SELECT SUM(COALESCE(debit_pence, 0)) - SUM(COALESCE(credit_pence, 0)) p FROM qb_journal_lines
+      WHERE account_name IN ('Rent (205)', 'Rent + SC Clearing Account') AND period_month BETWEEN ? AND ?`,
+    [rentFrom, qbMax]))[0]?.p);
+  // rates observed cadence (Highland Council bank txns, trailing 365d — an OBSERVED pattern,
+  // captioned as such, never contractual)
+  const bmx = rowsOf(q(`SELECT MAX(txn_date) d FROM qb_bank_txns WHERE txn_kind = 'purchase'`))[0];
+  const bankMax = bmx && bmx.d ? String(bmx.d) : null;
+  if (bankMax) {
+    const rows = rowsOf(q(
+      `SELECT txn_date d, total_pence p FROM qb_bank_txns
+        WHERE txn_kind = 'purchase' AND counterparty = 'Highland Council' AND total_pence >= 10000
+          AND txn_date BETWEEN ? AND ? ORDER BY txn_date`, [K.shiftDays(bankMax, -364), bankMax]));
+    if (rows.length) {
+      f.rates = {
+        n: rows.length,
+        medianPence: median(rows.map((r) => num(r.p) || 0)),
+        last: String(rows[rows.length - 1].d),
+        totalPence: rows.reduce((s, r) => s + (num(r.p) || 0), 0),
+      };
+    }
+  }
+  f.rentDays = rentStepDaysUntil(now);
+  return f;
+}
+
+// CASH COMMITMENTS — 13-week calendar from recurring bank-outflow patterns + the contractual
+// rent line; AP ageing empty-state; P&L vs cash; large commitments; working-capital controls.
+function buildCash(q, now) {
+  const bmx = rowsOf(q(`SELECT MAX(txn_date) d FROM qb_bank_txns WHERE txn_kind = 'purchase'`))[0];
+  const bankMax = bmx && bmx.d ? String(bmx.d) : null;
+  const c = { bankMax, rentDays: rentStepDaysUntil(now) };
+  const todayIso = new Date(now).toISOString().slice(0, 10);
+  c.todayIso = todayIso;
+  if (bankMax) {
+    // ---- recurrence detection over the trailing 6 months of bank purchases ----
+    const from = K.shiftDays(bankMax, -(RECUR_WINDOW_DAYS - 1));
+    const dayRows = rowsOf(q(
+      `SELECT counterparty cp, txn_date d, SUM(total_pence) p FROM qb_bank_txns
+        WHERE txn_kind = 'purchase' AND txn_date BETWEEN ? AND ? AND counterparty IS NOT NULL AND counterparty != ''
+        GROUP BY counterparty, txn_date`, [from, bankMax]))
+      .map((r) => ({ cp: String(r.cp), d: String(r.d), p: num(r.p) || 0 }));
+    c.window = { from, to: bankMax };
+    c.recurring = detectRecurrence(dayRows);
+    // SURVEILLANCE BOUNDARY (the standing labour ruling, applied here): person-named
+    // counterparties (payroll payees) are recurring cash outflows — a real commitment — but
+    // people render as AGGREGATES, never as per-person £ lines. Pool them into ONE 'Staff
+    // payroll' pattern (summed medians, the modal cadence, earliest next date), captioned.
+    const persons = c.recurring.filter((r) => /^(mr|mrs|miss|ms)\s/i.test(r.cp));
+    if (persons.length) {
+      c.recurring = c.recurring.filter((r) => !persons.includes(r));
+      const agg = {
+        cp: `Staff payroll (${persons.length} payees, aggregated)`, isAggregate: true,
+        n: Math.max(...persons.map((p) => p.n)),
+        cadenceDays: Math.round(median(persons.map((p) => p.cadenceDays))),
+        medianPence: persons.reduce((s2, p) => s2 + p.medianPence, 0),
+        lastDate: persons.map((p) => p.lastDate).sort().pop(),
+        spendPence: persons.reduce((s2, p) => s2 + p.spendPence, 0),
+        members: persons, // kept for the week-landing projection (per-payee cadence, pooled label)
+      };
+      c.recurring.push(agg);
+      c.recurring.sort((a, b) => b.spendPence - a.spendPence);
+    }
+    // ---- project the next 13 weeks (from today) ----
+    const horizonEnd = K.shiftDays(todayIso, 91);
+    const weeks = [];
+    const monday0 = K.weekMonday(todayIso);
+    for (let i = 0; i < 13; i++) weeks.push({ monday: K.shiftDays(monday0, 7 * i), totalPence: 0, items: new Map() });
+    const weekOf = new Map(weeks.map((w, i) => [w.monday, i]));
+    for (const rec of c.recurring) {
+      if (rec.isAggregate) {
+        // pooled payroll: project each payee on its OWN cadence, land under the ONE label
+        const label = 'Staff payroll';
+        let next = null;
+        for (const p of rec.members) {
+          for (const d of projectDates(p, todayIso, horizonEnd)) {
+            if (!next || d < next) next = d;
+            const w = weeks[weekOf.get(K.weekMonday(d))];
+            if (!w) continue;
+            w.totalPence += p.medianPence;
+            w.items.set(label, (w.items.get(label) || 0) + 1);
+          }
+        }
+        rec.nextDate = next;
+        continue;
+      }
+      rec.projected = projectDates(rec, todayIso, horizonEnd);
+      rec.nextDate = rec.projected[0] || null;
+      for (const d of rec.projected) {
+        const w = weeks[weekOf.get(K.weekMonday(d))];
+        if (!w) continue;
+        w.totalPence += rec.medianPence;
+        w.items.set(rec.cp, (w.items.get(rec.cp) || 0) + 1);
+      }
+    }
+    c.weeks = weeks.map((w) => ({ monday: w.monday, totalPence: w.totalPence, items: [...w.items.entries()].map(([cp, n]) => ({ cp, n })) }));
+    // ---- P&L cost vs cash paid: month grain, trailing 6 ending the bank-max month ----
+    const cashYm = bankMax.slice(0, 7);
+    const months = []; for (let i = 5; i >= 0; i--) months.push(monthShift(cashYm, -i));
+    const jRows = rowsOf(q(
+      `SELECT j.period_month m, SUM(COALESCE(j.debit_pence, 0)) - SUM(COALESCE(j.credit_pence, 0)) p
+         FROM qb_journal_lines j JOIN qb_accounts a ON a.account_id = j.account_id AND a.realm_id = j.realm_id
+        WHERE a.classification = 'Expense' AND j.period_month BETWEEN ? AND ? GROUP BY j.period_month`,
+      [months[0], months[months.length - 1]]));
+    const bRows = rowsOf(q(
+      `SELECT substr(txn_date, 1, 7) m, SUM(total_pence) p FROM qb_bank_txns
+        WHERE txn_kind = 'purchase' AND substr(txn_date, 1, 7) BETWEEN ? AND ? GROUP BY 1`,
+      [months[0], months[months.length - 1]]));
+    const jBy = new Map(jRows.map((r) => [String(r.m), num(r.p)]));
+    const bBy = new Map(bRows.map((r) => [String(r.m), num(r.p)]));
+    c.plVsCash = months.map((ym) => ({ ym, pl: jBy.get(ym) ?? null, cash: bBy.get(ym) ?? null, partial: ym === cashYm && refMonthOf(bankMax) !== cashYm }));
+    // ---- working-capital controls: the honest cash-out cadence set (90d) ----
+    const from90 = K.shiftDays(bankMax, -89);
+    const w = rowsOf(q(
+      `SELECT COUNT(*) n, SUM(total_pence) p, COUNT(DISTINCT txn_date) days FROM qb_bank_txns
+        WHERE txn_kind = 'purchase' AND txn_date BETWEEN ? AND ?`, [from90, bankMax]))[0];
+    const big = rowsOf(q(
+      `SELECT counterparty cp, txn_date d, total_pence p FROM qb_bank_txns
+        WHERE txn_kind = 'purchase' AND txn_date BETWEEN ? AND ? ORDER BY total_pence DESC LIMIT 1`, [from90, bankMax]))[0];
+    c.controls = w && num(w.n) > 0 ? {
+      n: num(w.n), totalPence: num(w.p) || 0, days: num(w.days) || 0,
+      largest: big ? { cp: String(big.cp || '—'), d: String(big.d), p: num(big.p) || 0 } : null,
+      recurringShare: null,
+    } : null;
+    if (c.controls && c.controls.totalPence > 0) {
+      const recurCps = new Set(c.recurring.flatMap((r) => (r.isAggregate ? r.members.map((p) => p.cp) : [r.cp])));
+      const rec90 = rowsOf(q(
+        `SELECT SUM(total_pence) p FROM qb_bank_txns
+          WHERE txn_kind = 'purchase' AND txn_date BETWEEN ? AND ? AND counterparty IS NOT NULL AND counterparty != ''`,
+        [from90, bankMax]))[0];
+      let recP = 0;
+      for (const r of rowsOf(q(
+        `SELECT counterparty cp, SUM(total_pence) p FROM qb_bank_txns
+          WHERE txn_kind = 'purchase' AND txn_date BETWEEN ? AND ? GROUP BY counterparty`, [from90, bankMax]))) {
+        if (recurCps.has(String(r.cp))) recP += num(r.p) || 0;
+      }
+      c.controls.recurringShare = num(rec90 && rec90.p) > 0 ? (recP / c.controls.totalPence) * 100 : null;
+    }
+  }
+  return c;
+}
+
+module.exports = {
+  key: 'costs', route: '/coyote/costs', workspace: 'coyote', title: 'Costs',
+  sub: 'Costs & supplier command centre · QB ledger shadow + bank truth',
+
+  getSection(db, ctx) {
+    const q = ctx && ctx.q;
+    const now = (ctx && ctx.now) || Date.now();
+    const query = (ctx && ctx.query) || {};
+    const tab = TAB_KEYS.includes(String(query.tab || '')) ? String(query.tab) : 'executive';
+    const m = { now, tab, exec: null, fixed: null, cash: null };
+    if (typeof q !== 'function') return m;
+    if (tab === 'executive') m.exec = buildExecutive(q, now);
+    if (tab === 'fixed') m.fixed = buildFixed(q, now);
+    if (tab === 'cash') m.cash = buildCash(q, now);
+    return m;
+  },
+
+  render(section, ctx) {
+    const m = section || {};
+    const tab = TAB_KEYS.includes(String(m.tab || '')) ? String(m.tab) : 'executive';
+    const now = m.now || (ctx && ctx.now) || Date.now();
+    const esc = S.escapeHtml;
+    const int = S.fmtInt;
+    const gbp = S.fmtGbpPence; // exact 2dp — the pointer/caption format
+    // chart + table display rounding (exact inputs, compute exact, ROUND AT DISPLAY)
+    const gbp0 = (p) => {
+      if (p == null || !Number.isFinite(Number(p))) return '—';
+      const v = Math.round(Number(p) / 100);
+      return `${v < 0 ? '−' : ''}£${Math.abs(v).toLocaleString('en-GB')}`;
+    };
+    const pct1 = (v) => (v == null || !Number.isFinite(Number(v)) ? '—' : `${Number(v).toFixed(1)}%`);
+
+    // Page styles: the RCC canon + the reports shell grammar (r-tabs etc.) + the three
+    // page-local grammars this centre needs (month clusters, the waterfall — ported verbatim
+    // from the reports reconciliation tab — and the overhead trend chart).
+    const styles = `<style>${S.rcc.css()}</style><style>
+      .rcc .r-tabs{display:flex;gap:4px;border-bottom:1px solid var(--rline);margin:0 0 14px;overflow:auto}
+      .rcc .r-tab{color:#9ba4ae;padding:11px 14px;font-weight:700;border-bottom:2px solid transparent;white-space:nowrap;text-decoration:none;font-size:13px}
+      .rcc .r-tab.active{color:#fff;border-bottom-color:var(--raccent)}
+      .rcc .r-grid{display:grid;gap:14px}
+      .rcc .r-kpi-grid{grid-template-columns:repeat(6,minmax(0,1fr));margin-bottom:8px}
+      .rcc .r-two-col{grid-template-columns:minmax(0,2fr) minmax(330px,1fr);margin-bottom:14px}
+      .rcc .r-three-col{grid-template-columns:repeat(3,minmax(0,1fr));margin-bottom:14px}
+      @media(max-width:1200px){.rcc .r-kpi-grid{grid-template-columns:repeat(3,1fr)}}
+      @media(max-width:1100px){.rcc .r-three-col{grid-template-columns:1fr}}
+      @media(max-width:820px){.rcc .r-two-col{grid-template-columns:1fr}.rcc .r-kpi-grid{grid-template-columns:repeat(2,1fr)}}
+      .rcc .r-legend{display:flex;gap:12px;flex-wrap:wrap;color:#aeb6bf;font-size:11px}
+      .rcc .r-legend i{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px}
+      .rcc .r-mini-note{color:#8f99a4;font-size:10px;margin-top:10px}
+      .rcc .rv2-caption{font-family:var(--font-mono,monospace);font-size:10.5px;color:var(--muted,#7a8);margin:8px 2px 2px;line-height:1.55}
+      .rcc .r-driver-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+      @media(max-width:820px){.rcc .r-driver-grid{grid-template-columns:repeat(2,1fr)}}
+      .rcc .r-meters{display:grid;gap:10px}
+      /* month clusters (the ruled monthly grain replacing the mock's 13-week frame) */
+      .rcc .cst-cluster{display:flex;gap:16px;height:210px;padding:4px 2px 0}
+      .rcc .cst-mcol{flex:1;display:flex;flex-direction:column;min-width:0}
+      .rcc .cst-bars{flex:1;display:flex;align-items:flex-end;gap:4px;border-bottom:1px solid #2a3138;padding:0 5px}
+      .rcc .cst-bar{flex:1;border-radius:3px 3px 1px 1px;min-height:2px}
+      .rcc .cst-mlabel{color:#7f8994;font-size:10px;text-align:center;margin-top:6px;white-space:nowrap}
+      /* waterfall — the reports reconciliation grammar, ported verbatim */
+      .rcc .waterfall{display:flex;align-items:flex-end;gap:8px;height:210px;padding:18px 8px 30px;border-bottom:1px solid #303842;position:relative;margin-bottom:26px}
+      .rcc .wf-col{flex:1;text-align:center;position:relative;min-width:48px}
+      .rcc .wf-bar{margin:0 auto;width:68%;border-radius:8px 8px 3px 3px;background:linear-gradient(180deg,#e6654f,#b83e2e);min-height:8px;position:relative}
+      .rcc .wf-col.neg .wf-bar{background:linear-gradient(180deg,#5c6876,#39434e)}
+      .rcc .wf-col.total .wf-bar{background:linear-gradient(180deg,#4dc58a,#2d895c)}
+      .rcc .wf-val{position:absolute;top:-20px;width:100%;font-size:10px;font-weight:800}
+      .rcc .wf-lab{position:absolute;top:calc(100% + 8px);left:50%;transform:translateX(-50%);width:96px;color:#8e98a2;font-size:9px;line-height:1.2}
+      /* overhead trend chart */
+      .rcc .chart-wrap{height:250px;position:relative}
+      .rcc .chart-wrap svg{width:100%;height:100%;display:block;overflow:visible}
+      .rcc .gridline{stroke:#2a3138;stroke-width:1}
+      .rcc .axistext{fill:#7f8994;font-size:11px}
+      .rcc .cst-line{fill:none;stroke-width:2.5}
+      .rcc .cst-pt{stroke:#171b20;stroke-width:2}
+      .rcc .cst-behave{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+      @media(max-width:820px){.rcc .cst-behave{grid-template-columns:1fr}}
+    </style>`;
+
+    const tabsNav = `<div class="r-tabs">${TABS.map((t) =>
+      `<a class="r-tab${t.key === tab ? ' active' : ''}" href="/coyote/costs?tab=${t.key}">${esc(t.label)}</a>`).join('')}</div>`;
+
+    const legend = (items) => `<div class="r-legend">${items.map(([c2, l]) => `<span><i style="background:${c2}"></i>${esc(l)}</span>`).join('')}</div>`;
+    // series colours (RCC tokens): COGS accent · labour blue · overheads warn · contribution good
+    const C_COGS = S.rcc.tokens.accent, C_LAB = S.rcc.tokens.blue, C_OVER = S.rcc.tokens.warn, C_CONTRIB = S.rcc.tokens.good;
+    const behaviourChip = (b) => S.rcc.tag(BEHAVIOUR_LABEL[b] || b, BEHAVIOUR_TONE[b]);
+    const rentStepText = (days) => (days >= 0
+      ? `£60,000 → £65,000/yr from ${RENT_STEP.date} — ${int(days)} day(s) away`
+      : `£60,000 → £65,000/yr stepped on ${RENT_STEP.date} — ${int(-days)} day(s) ago`);
+
+    // ============================ EXECUTIVE ============================
+    const renderExecutiveTab = () => {
+      const ex = m.exec || {};
+      const months = ex.months || [];
+      const cur = months.length ? months[months.length - 1] : null;
+      const k = ex.kpi || {};
+      const refLabel = ex.refMonth ? monthLabel(ex.refMonth) : null;
+
+      // ---- (1) KPI strip: prime cost (the one-home NEW fact) · COGS % · labour % (IMPORT) ·
+      // contribution · overheads £ · break-even week £ (one-home derivation) ----
+      const labourImportTile = `<div class="r-card r-kpi"><div class="r-kpi-label">Labour %</div><div class="r-kpi-value">${esc(pct1(k.labourPct))}</div><div class="r-kpi-sub">IMPORT · <a href="/coyote/labour" style="color:${S.rcc.tokens.blue}">the Labour Centre</a></div></div>`;
+      const kpis = [
+        S.rcc.kpi({ label: 'Prime cost %', value: pct1(k.primePct), sub: 'COGS % + labour % · one net base · lives HERE' }),
+        S.rcc.kpi({ label: 'COGS %', value: pct1(k.cogsPct), sub: 'QB COGS accounts ÷ month net' }),
+        labourImportTile,
+        S.rcc.kpi({ label: 'Contribution', value: gbp0(k.contribution), sub: 'net − COGS − labour − variable overheads' }),
+        S.rcc.kpi({ label: 'Overheads / month', value: gbp0(k.overheads), sub: 'QB overhead accounts (ex COGS, ex payroll)' }),
+        S.rcc.kpi({ label: 'Break-even week', value: gbp0(k.breakEvenWeek), sub: 'fixed monthly ÷ CM ratio · derivation · lives HERE' }),
+      ].join('');
+      // the ONE-HOME import caption: the labour month £ and the revenue month £ render HERE,
+      // once each, beside their pointers — never as duplicated panels.
+      let kpiCaption;
+      if (cur && ex.refMonth) {
+        const labourLine = cur.labour != null
+          ? `labour = labour_day TRUE month ${gbp(cur.labour)} (locked rates × burden + salaried/365, ${int(cur.labourDays)} day(s)) — imported; the labour story lives in <a href="/coyote/labour" style="color:${S.rcc.tokens.blue}">the Labour Centre</a>`
+          : `labour_day has NO rows for ${esc(refLabel)} — labour %, prime cost, contribution and break-even stay empty (a hole is a hole, never bridged); the labour story lives in <a href="/coyote/labour" style="color:${S.rcc.tokens.blue}">the Labour Centre</a>`;
+        const netLine = cur.net != null
+          ? `net = ${gbp(cur.net)} (v_sales_day_all, ${int(cur.netDays)} day(s), ex-VAT) — imported; the revenue story lives in <a href="/coyote/revenue" style="color:${S.rcc.tokens.blue}">the Revenue Centre</a>`
+          : 'no sales record for the month';
+        kpiCaption = `<div class="rv2-caption">month = ${esc(refLabel)} (the latest complete month on the day-net record) · ${netLine} · COGS = QB Cost-of-Goods-Sold accounts, qb_pl_monthly ÷ that net · ${labourLine} · prime cost = COGS % + labour % on the ONE net base (both bases stated — its one home is this strip) · contribution = net − COGS − labour − variable-classified overheads (classification = presentation judgment) · break-even week = (fixed + semi-fixed overheads ÷ contribution-margin ratio) × 12⁄52 — a derivation, not a wire fact.</div>`;
+      } else {
+        kpiCaption = `<div class="rv2-caption">no day-net sales record yet (v_sales_day_all) — no reference month, no derived figure; the strip stays empty rather than guessing.</div>`;
+      }
+
+      // ---- (2) trailing-6-month cost & contribution trend — the gap map RULED the mock's
+      // 13-week frame onto the QB MONTH grain, grain stated in the sub ----
+      let trendBody;
+      const plotMonths = months.filter((mo) => mo.qbAny || mo.net != null || mo.labour != null);
+      if (plotMonths.length) {
+        const vals = [];
+        for (const mo of months) { for (const v of [mo.cogs, mo.labour, mo.over, mo.qbAny && mo.net != null && mo.labour != null ? mo.net - mo.cogs - mo.labour - mo.variable : null]) if (v != null) vals.push(v); }
+        const maxV = Math.max(...vals.map((v) => Math.abs(v)), 1);
+        const bar = (v, color, lab) => (v == null ? '' :
+          `<div class="cst-bar" style="height:${Math.max(1, Math.round((Math.abs(v) / maxV) * 100))}%;background:${color}" title="${esc(lab)}: ${esc(gbp0(v))}"></div>`);
+        const cols = months.map((mo) => {
+          const contrib = mo.qbAny && mo.net != null && mo.labour != null ? mo.net - mo.cogs - mo.labour - mo.variable : null;
+          return `<div class="cst-mcol"><div class="cst-bars">${bar(mo.cogs, C_COGS, 'COGS')}${bar(mo.labour, C_LAB, 'Labour')}${bar(mo.over, C_OVER, 'Overheads')}${bar(contrib, C_CONTRIB, 'Contribution')}</div><div class="cst-mlabel">${esc(monthLabel(mo.ym))}</div></div>`;
+        }).join('');
+        // a HOLE is a month that renders a cost bar (has QB and/or net) but is missing labour —
+        // a fully-absent month (outside the data) is not a labour hole, it simply has no bar.
+        const holes = months.filter((mo) => (mo.qbAny || mo.net != null) && mo.labour == null).map((mo) => monthLabel(mo.ym));
+        trendBody = `<div class="cst-cluster">${cols}</div>
+          <div class="r-mini-note">monthly grain stated — QB is a month-grain ledger, so the mock's weekly frame renders as trailing months (interpolating months into weeks would fabricate) · COGS/overheads: qb_pl_monthly · labour: labour_day TRUE · contribution = net − COGS − labour − variable overheads${holes.length ? ` · month(s) without a labour_day record show no labour/contribution bar: ${esc(holes.join(', '))} (never bridged)` : ''}.</div>`;
+      } else {
+        trendBody = S.rcc.emptyState({ title: 'Cost and contribution trend', blocker: 'No QB month and no day-net record in the trailing 6 months.', unlock: 'the QuickBooks ledger ingest (qb_pl_monthly)' });
+      }
+      const trendPanel = S.rcc.panel({
+        title: 'Cost and contribution trend', sub: 'trailing 6 months · MONTHLY grain (QB month-grain ledger — the mock’s weekly frame renders monthly, stated)',
+        headRight: legend([[C_COGS, 'COGS'], [C_LAB, 'Labour'], [C_OVER, 'Overheads'], [C_CONTRIB, 'Contribution']]),
+        body: trendBody,
+      });
+
+      // ---- (3) owner attention queue — REAL findings only ----
+      const qd = ex.queue || {};
+      const alerts = [];
+      if (qd.supplier) {
+        const s2 = qd.supplier;
+        alerts.push(S.rcc.alert({
+          title: `Supplier spend delta — ${s2.cp}`,
+          text: `${monthLabel(s2.month)} to day ${Number(s2.dd)}: ${gbp0(s2.cur)} vs the same day-span's 3-month average ${gbp0(s2.avg)} (bank purchases by counterparty — the supplier truth wire; like-for-like windows). The largest movement this month.`,
+          impact: `${s2.delta >= 0 ? '+' : '−'}${gbp0(Math.abs(s2.delta))}`, tone: s2.delta > 0 ? 'bad' : 'good',
+        }));
+      }
+      if (qd.fees) {
+        alerts.push(S.rcc.alert({
+          title: 'Processor fees vanished from the ledger — net settlement',
+          text: `'Bank charges' ran ${gbp0(qd.fees.priorAvg)}/month (card-fee scale), then collapsed to ${gbp0(qd.fees.recentAvg)}/month over ${monthLabel(qd.fees.from)}–${monthLabel(qd.fees.to)}. Reading: the processor now deducts fees at source — current fees are INVISIBLE in QB until the processor statement is wired.`,
+          impact: 'fee visibility', tone: 'bad',
+        }));
+      }
+      if (qd.rentDays != null) {
+        alerts.push(S.rcc.alert({
+          title: 'Rent step — contractual (lease canon)',
+          text: `${rentStepText(qd.rentDays)} · quarterly-billed via Workman. Encoded from the lease, never derived from the ledger.`,
+          impact: qd.rentDays >= 0 ? `${int(qd.rentDays)}d` : 'stepped',
+        }));
+      }
+      if (qd.recipeGated) {
+        alerts.push(S.rcc.alert({
+          title: 'Theoretical costing locked — the recipe gate',
+          text: `recipe_lines = 0 — ${RECIPE_CARROT} → /coyote/recipes.`,
+          impact: 'unlock', tone: 'good',
+        }));
+      }
+      const queuePanel = S.rcc.panel({
+        title: 'Owner attention queue', sub: 'real findings — bank deltas, the fee-visibility gap, the encoded rent step, the recipe gate',
+        headRight: alerts.length ? S.rcc.tag(`${alerts.length} live`, 'warn') : '',
+        body: alerts.length ? `<div style="display:grid;gap:10px">${alerts.join('')}</div>`
+          : S.rcc.emptyState({ title: 'Owner attention queue', blocker: 'No bank or ledger record to derive findings from yet.', unlock: 'the QuickBooks ingest (qb_bank_txns + qb_journal_lines)' }),
+      });
+
+      // ---- (4) profitability bridge (waterfall grammar) — month grain ----
+      let bridgeBody;
+      if (cur && cur.net > 0 && cur.cogs != null && cur.labour != null && cur.over != null) {
+        const contribAll = cur.net - cur.cogs - cur.labour - cur.over; // site contribution: after ALL overheads
+        const H = 175;
+        const barH = (v) => Math.max(1, Math.round((Math.abs(v) / cur.net) * H));
+        const col = (label, v, cls, val) =>
+          `<div class="wf-col${cls ? ' ' + cls : ''}"><div class="wf-bar" style="height:${barH(v)}px"><div class="wf-val">${esc(val)}</div></div><div class="wf-lab">${esc(label)}</div></div>`;
+        bridgeBody = `<div class="waterfall">
+            ${col('Revenue (net ex-VAT)', cur.net, '', gbp0(cur.net))}
+            ${col('COGS', cur.cogs, 'neg', `−${gbp0(cur.cogs)}`)}
+            ${col('Labour (import)', cur.labour, 'neg', `−${gbp0(cur.labour)}`)}
+            ${col('Overheads', cur.over, 'neg', `−${gbp0(cur.over)}`)}
+            ${col('Contribution', contribAll, 'total', gbp0(contribAll))}
+          </div>
+          <div class="r-mini-note">${esc(refLabel)} · month grain · revenue: v_sales_day_all (import) · COGS + overheads: qb_pl_monthly · labour: labour_day TRUE (import) · bridge contribution = after ALL overheads (the site-contribution basis) · theoretical overlay ABSENT — recipe_lines = 0 (the Calum gate): actual-vs-theoretical lands when recipe costing exists.</div>`;
+      } else {
+        const missing = !cur ? 'no reference month' : cur.labour == null ? `labour_day has no rows for ${refLabel}` : !cur.qbAny ? 'no QB ledger rows for the month' : 'no sales record for the month';
+        bridgeBody = S.rcc.emptyState({ title: 'Profitability bridge', blocker: `Bridge needs revenue, COGS, labour and overheads for the SAME month — ${missing}; a partial bridge would fabricate a contribution.`, unlock: 'the missing wire for the month' });
+      }
+      const bridgePanel = S.rcc.panel({ title: 'Profitability bridge', sub: 'revenue → COGS → labour → overheads → contribution · month grain', body: bridgeBody });
+
+      // ---- (5) cost mix: QB expense-account shares for the month (top 8 + other) ----
+      let mixBody;
+      if (cur && cur.qbAny && cur.accounts.length) {
+        const positive = cur.accounts.filter((a) => a.p > 0).sort((a, b) => b.p - a.p);
+        const total = positive.reduce((s2, a) => s2 + a.p, 0);
+        const top = positive.slice(0, 8);
+        const otherP = total - top.reduce((s2, a) => s2 + a.p, 0);
+        const rows = top.map((a) => S.rcc.barrow({
+          label: a.name, value: `${pct1((a.p / total) * 100)} · ${gbp0(a.p)}`,
+          segs: [{ pct: (a.p / total) * 100, color: a.bucket === 'cogs' ? C_COGS : a.bucket === 'labour' ? C_LAB : C_OVER }],
+        }));
+        if (otherP > 0) rows.push(S.rcc.barrow({ label: `Other (${int(positive.length - top.length)} accounts)`, value: `${pct1((otherP / total) * 100)} · ${gbp0(otherP)}`, segs: [{ pct: (otherP / total) * 100, color: '#56616e' }] }));
+        mixBody = `<div class="r-meters">${rows.join('')}</div>
+          <div class="r-mini-note">${esc(refLabel)} · QB P&amp;L expense accounts (qb_pl_monthly), shares of total month expenses ${gbp0(total)} · QB LEDGER basis — the payroll-class accounts here are the ledger's wage lines, NOT the TRUE labour ruler (that story lives in the Labour Centre).</div>`;
+      } else {
+        mixBody = S.rcc.emptyState({ title: 'Cost mix', blocker: 'No QB ledger rows for the reference month.', unlock: 'the QuickBooks ledger ingest (qb_pl_monthly)' });
+      }
+      const mixPanel = S.rcc.panel({ title: 'Cost mix', sub: 'where the month’s cost went · QB expense categories', body: mixBody });
+
+      // ---- (6) core control ratios: month + 3-month trend arrows + site contribution ----
+      let ratioBody;
+      if (cur && cur.net > 0 && cur.qbAny) {
+        const prior3 = months.slice(-4, -1);
+        const avgRatio = (fn) => {
+          const vals = prior3.map(fn).filter((v) => v != null);
+          return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
+        };
+        const arrow = (curV, avgV, goodWhenDown) => {
+          if (curV == null || avgV == null) return { txt: 'no 3-mo base', cls: 'r-flat' };
+          const d = curV - avgV;
+          if (Math.abs(d) < 0.15) return { txt: `→ flat vs 3-mo avg ${pct1(avgV)}`, cls: 'r-flat' };
+          const up = d > 0;
+          const good = goodWhenDown ? !up : up;
+          return { txt: `${up ? '▲' : '▼'} ${pct1(Math.abs(d))} vs 3-mo avg ${pct1(avgV)}`, cls: good ? 'r-up' : 'r-down' };
+        };
+        const ratioOf = {
+          cogs: (mo) => (mo.net > 0 && mo.cogs != null ? (mo.cogs / mo.net) * 100 : null),
+          labour: (mo) => (mo.net > 0 && mo.labour != null ? (mo.labour / mo.net) * 100 : null),
+          over: (mo) => (mo.net > 0 && mo.over != null ? (mo.over / mo.net) * 100 : null),
+          cm: (mo) => (mo.net > 0 && mo.cogs != null && mo.labour != null && mo.qbAny ? ((mo.net - mo.cogs - mo.labour - mo.variable) / mo.net) * 100 : null),
+        };
+        const driver = (label, curV, a, sub) => `<div class="r-driver"><small>${esc(label)}</small><strong>${esc(pct1(curV))}</strong><p><span class="${a.cls}">${esc(a.txt)}</span> · ${esc(sub)}</p></div>`;
+        const siteContrib = cur.labour != null ? cur.net - cur.cogs - cur.labour - cur.over : null;
+        ratioBody = `<div class="r-driver-grid">
+            ${driver('COGS ÷ revenue', ratioOf.cogs(cur), arrow(ratioOf.cogs(cur), avgRatio(ratioOf.cogs), true), 'QB COGS ÷ month net')}
+            ${driver('Labour ÷ revenue', ratioOf.labour(cur), arrow(ratioOf.labour(cur), avgRatio(ratioOf.labour), true), 'TRUE labour ÷ month net (import)')}
+            ${driver('Overheads ÷ revenue', ratioOf.over(cur), arrow(ratioOf.over(cur), avgRatio(ratioOf.over), true), 'QB overheads ÷ month net')}
+            ${driver('Contribution margin', ratioOf.cm(cur), arrow(ratioOf.cm(cur), avgRatio(ratioOf.cm), false), 'after variable overheads')}
+          </div>
+          <div style="margin-top:10px">${S.rcc.driver({ label: 'Site contribution', value: gbp0(siteContrib), sub: `net − COGS − labour − ALL overheads · ${refLabel} · its one home` })}</div>
+          <div class="r-mini-note">${esc(refLabel)} vs the 3 prior months' average (arrows; cost ratios read down-as-good) · same bases as the strip · a month missing a wire contributes nothing to the average.</div>`;
+      } else {
+        ratioBody = S.rcc.emptyState({ title: 'Core control ratios', blocker: 'No month with both a sales record and QB ledger rows yet.', unlock: 'the QuickBooks + Lightspeed ingests' });
+      }
+      const ratioPanel = S.rcc.panel({ title: 'Core control ratios', sub: 'the driver set · month + 3-month trend', body: ratioBody });
+
+      return `<div class="r-grid r-kpi-grid">${kpis}</div>${kpiCaption}
+        <div class="r-grid r-two-col">${trendPanel}${queuePanel}</div>
+        ${bridgePanel}
+        <div class="r-grid r-two-col">${mixPanel}${ratioPanel}</div>`;
+    };
+
+    // ============================ FIXED & SEMI-FIXED ============================
+    const renderFixedTab = () => {
+      const f = m.fixed || {};
+
+      // ---- (1) monthly overheads by account: trailing 6 + current, top 15 + aggregate ----
+      let tableBody;
+      if (f.qbMax && (f.topAccounts || []).length) {
+        const cols = f.tableMonths;
+        const colLabel = (ym, i) => `${monthLabel(ym)}${i === cols.length - 1 && f.qbMaxPartial ? ' (in progress)' : ''}`;
+        const head = `<tr><th>Account</th><th>Class</th>${cols.map((ym, i) => `<th class="r-num">${esc(colLabel(ym, i))}</th>`).join('')}</tr>`;
+        const rowHtml = (a) => `<tr><td>${esc(a.name)}</td><td>${behaviourChip(a.behaviour)}</td>${cols.map((ym) =>
+          `<td class="r-num mono">${a.byYm.has(ym) ? esc(gbp0(a.byYm.get(ym))) : '—'}</td>`).join('')}</tr>`;
+        const otherRow = f.otherAccounts.length
+          ? `<tr><td>All other overhead accounts (${int(f.otherAccounts.length)}) — aggregated</td><td>${S.rcc.tag('mixed')}</td>${cols.map((ym) => {
+            const s2 = f.otherAccounts.reduce((acc, a) => acc + (a.byYm.get(ym) || 0), 0);
+            return `<td class="r-num mono">${s2 !== 0 ? esc(gbp0(s2)) : '—'}</td>`;
+          }).join('')}</tr>` : '';
+        tableBody = `<div style="overflow:auto"><table><thead>${head}</thead><tbody>${f.topAccounts.map(rowHtml).join('')}${otherRow}</tbody></table></div>
+          <div class="r-mini-note">qb_pl_monthly ⋈ qb_accounts, Expense classification EX Cost-of-Goods-Sold EX payroll-class accounts (labour's one home is the Labour Centre) · top ${int(f.topAccounts.length)} accounts by trailing-6-month size, the rest aggregated (stated) · account names as the ledger writes them, '(NNN)' suffixes included · class chips = the presentation judgment below.</div>`;
+      } else {
+        tableBody = S.rcc.emptyState({ title: 'Monthly overheads', blocker: 'No QB ledger months yet (qb_pl_monthly is empty).', unlock: 'the QuickBooks ledger ingest' });
+      }
+      const tablePanel = S.rcc.panel({ title: 'Monthly fixed and semi-fixed overheads', sub: 'QB expense accounts by month · trailing 6 + current', body: tableBody });
+
+      // ---- (2) cost behaviour map — the captioned presentation judgment ----
+      let mapBody;
+      if (f.behaviour) {
+        const card = (key2, tone) => {
+          const b = f.behaviour[key2];
+          return `<div class="r-driver"><small>${esc(BEHAVIOUR_LABEL[key2])}</small><strong>${esc(gbp0(b.avgMonth))}<span style="font-size:11px;color:#8d97a2">/mo avg</span></strong><p>${int(b.count)} account(s)${b.top.length ? ` · ${esc(b.top.join(' · '))}` : ''}</p>${tone ? '' : ''}</div>`;
+        };
+        mapBody = `<div class="cst-behave">${card('fixed')}${card('semi')}${card('variable')}</div>
+          <div class="r-mini-note">classification = presentation judgment, not a ruling — rent/rates/insurance/subscriptions read fixed, energy/water/repairs semi-fixed, the rest variable (account-name classes; say the word and any account moves) · monthly averages over the 6 full trailing months.</div>`;
+      } else {
+        mapBody = S.rcc.emptyState({ title: 'Cost behaviour map', blocker: 'No QB ledger months to classify.', unlock: 'the QuickBooks ledger ingest' });
+      }
+      const mapPanel = S.rcc.panel({ title: 'Cost behaviour map', sub: 'fixed / semi-fixed / variable · a presentation judgment, captioned', body: mapBody });
+
+      // ---- (3) overhead trend: 12-month line, total + the 3 biggest accounts ----
+      let trendBody;
+      if (f.months12 && (f.monthTotals || []).some((r) => r.any)) {
+        const T = 20, B = 220, L = 60, R = 865;
+        const n = f.months12.length;
+        const X = (i) => Math.round((L + (i * (R - L)) / Math.max(1, n - 1)) * 10) / 10;
+        const series = [
+          { name: 'Total overheads', color: S.rcc.tokens.accent, pts: f.monthTotals.map((r) => (r.any ? r.over : null)) },
+          ...(f.trendTop3 || []).map((a, i) => ({
+            name: a.name, color: [S.rcc.tokens.blue, S.rcc.tokens.accent2, S.rcc.tokens.purple][i],
+            pts: f.months12.map((ym) => (a.byYm.has(ym) ? a.byYm.get(ym) : null)),
+          })),
+        ];
+        const maxV = Math.max(...series.flatMap((s2) => s2.pts.filter((v) => v != null)), 1);
+        const Y = (v) => Math.round((B - ((B - T) * v) / maxV) * 10) / 10;
+        const grid = [0.25, 0.5, 0.75, 1].map((t) => `<line x1="54" y1="${Y(maxV * t)}" x2="870" y2="${Y(maxV * t)}" class="gridline"/><text x="2" y="${Y(maxV * t) + 4}" class="axistext">${esc(gbp0(maxV * t))}</text>`).join('');
+        const lines = series.map((s2) => {
+          const idx = s2.pts.map((v, i) => ({ i, v }));
+          return REP.contiguousRuns(idx, (p) => p.v != null).map((run) => run.length === 1
+            ? `<circle cx="${X(run[0].i)}" cy="${Y(run[0].v)}" r="3.5" fill="${s2.color}" class="cst-pt"/>`
+            : `<polyline points="${run.map((p) => `${X(p.i)},${Y(p.v)}`).join(' ')}" class="cst-line" stroke="${s2.color}"/>`).join('');
+        }).join('');
+        const xlabs = f.months12.map((ym, i) => (i % 2 === 0 ? `<text x="${X(i) - 12}" y="243" class="axistext">${esc(MONTHS_ABBR[Number(ym.slice(5, 7))])}</text>` : '')).join('');
+        trendBody = `<div class="chart-wrap"><svg viewBox="0 0 900 260" role="img" aria-label="Twelve month overhead trend">${grid}${lines}${xlabs}</svg></div>
+          <div style="margin-top:8px">${legend(series.map((s2) => [s2.color, s2.name]))}</div>
+          <div class="r-mini-note">trailing 12 QB months to ${esc(monthLabel(f.qbMax))}${f.qbMaxPartial ? ' (current month in progress)' : ''} · a month without a posting is a GAP — the line breaks, never interpolates.</div>`;
+      } else {
+        trendBody = S.rcc.emptyState({ title: 'Overhead trend', blocker: 'No QB ledger months to plot.', unlock: 'the QuickBooks ledger ingest' });
+      }
+      const trendPanel = S.rcc.panel({ title: 'Overhead trend and budget control', sub: 'total + the three biggest accounts · 12 months', body: trendBody });
+
+      // ---- (4) renewal & commitment calendar — basis-carrying entries ----
+      const calRows = [];
+      calRows.push(`<tr><td>Rent — the step</td><td class="mono">${esc(RENT_STEP.date)}</td><td class="r-num mono">${esc(rentStepText(f.rentDays != null ? f.rentDays : rentStepDaysUntil(now)))}</td><td>${S.rcc.tag('contractual', 'info')}</td><td>lease canon (encoded, never derived) · quarterly-billed via Workman${f.rent12 != null ? ` · ledger last 12 months ${esc(gbp0(f.rent12))} (Rent (205) + Rent + SC Clearing Account aggregated)` : ''}</td></tr>`);
+      if (f.rates) {
+        calRows.push(`<tr><td>Business rates — Highland Council</td><td class="mono">last ${esc(f.rates.last)}</td><td class="r-num mono">${esc(gbp0(f.rates.medianPence))} median · ${esc(gbp0(f.rates.totalPence))} / 12 mo</td><td>${S.rcc.tag('observed', 'warn')}</td><td>observed cadence — ${int(f.rates.n)} bank payment(s) ≥ £100 in the trailing year (bank truth, not a rates bill)</td></tr>`);
+      } else {
+        calRows.push(`<tr><td>Business rates — Highland Council</td><td class="mono">—</td><td class="r-num mono">—</td><td>${S.rcc.tag('observed', 'warn')}</td><td>no Highland Council bank payments in the trailing year — the schedule renders when the bank wire shows one</td></tr>`);
+      }
+      const calPanel = S.rcc.panel({
+        title: 'Renewal and commitment calendar', sub: 'every entry carries its basis — contractual vs observed',
+        body: `<div style="overflow:auto"><table><thead><tr><th>Commitment</th><th>When</th><th class="r-num">Amount</th><th>Basis</th><th>Notes</th></tr></thead><tbody>${calRows.join('')}</tbody></table></div>
+          <div class="r-mini-note">contractual entries are encoded canon (the lease); observed entries are bank-txn patterns and say so — an observed cadence is evidence, not an obligation.</div>`,
+      });
+
+      return `${tablePanel}
+        <div class="r-grid r-two-col">${trendPanel}${mapPanel}</div>
+        ${calPanel}`;
+    };
+
+    // ============================ CASH COMMITMENTS ============================
+    const renderCashTab = () => {
+      const c = m.cash || {};
+
+      // ---- (1) 13-week cash commitment calendar — the corrected premise ----
+      let calBody;
+      const rentNote = S.rcc.note(`Rent (via Workman) — contractual, lease canon: ${rentStepText(c.rentDays != null ? c.rentDays : rentStepDaysUntil(now))}. Quarterly-billed; payment dates are observed when they land, never projected.`);
+      if (c.bankMax && (c.recurring || []).length) {
+        const weekRows = c.weeks.map((w) => `<tr><td class="mono">wk of ${esc(w.monday)}</td><td class="r-num mono">${w.totalPence > 0 ? esc(gbp0(w.totalPence)) : '—'}</td><td>${w.items.length ? esc(w.items.map((it) => it.n > 1 ? `${it.cp} ×${it.n}` : it.cp).join(' · ')) : '<span class="ash">no projected pattern lands</span>'}</td></tr>`).join('');
+        const recRows = c.recurring.map((r) => `<tr><td>${esc(r.cp)}</td><td class="r-num mono">${int(r.n)}</td><td class="r-num mono">~${int(r.cadenceDays)}d</td><td class="r-num mono">${esc(gbp0(r.medianPence))}</td><td class="mono">${r.nextDate ? esc(r.nextDate) : '—'}</td><td>${S.rcc.tag('projected from observed cadence', 'warn')}</td></tr>`).join('');
+        calBody = `${rentNote}
+          <div class="r-grid r-two-col" style="margin-top:12px">
+            <div><div style="overflow:auto"><table><thead><tr><th>Counterparty</th><th class="r-num">Days paid · 6mo</th><th class="r-num">Cadence</th><th class="r-num">Median £</th><th>Next projected</th><th>Basis</th></tr></thead><tbody>${recRows}</tbody></table></div></div>
+            <div><div style="overflow:auto"><table><thead><tr><th>Week</th><th class="r-num">Projected outflow</th><th>Patterns landing</th></tr></thead><tbody>${weekRows}</tbody></table></div></div>
+          </div>
+          <div class="r-mini-note">every projected row is PROJECTED FROM OBSERVED CADENCE — bank purchases ${esc(c.window.from)} → ${esc(c.window.to)} (qb_bank_txns): a counterparty recurs at ≥3 payment days with near-regular gaps (median gap 2–45d, every gap within ±half-a-cadence ±3d); projection = last payment + k × median cadence at the median day-£ · a one-off is history, NEVER projected · person-named payroll counterparties pool into ONE Staff-payroll line — people render as aggregates (the surveillance-boundary ruling), the payment pattern itself is a cash fact · no bills ledger exists (qb_bills dead — see AP ageing), so due dates cannot be the source.</div>`;
+      } else if (c.bankMax) {
+        calBody = `${rentNote}<div style="margin-top:12px">${S.rcc.emptyState({ title: '13-week cash commitment calendar', blocker: 'No recurring bank-outflow pattern detected in the trailing 6 months (≥3 near-regular payment days) — one-off history is never projected.', unlock: 'more bank history (qb_bank_txns)' })}</div>`;
+      } else {
+        calBody = `${rentNote}<div style="margin-top:12px">${S.rcc.emptyState({ title: '13-week cash commitment calendar', blocker: 'No bank purchases recorded (qb_bank_txns).', unlock: 'the QuickBooks bank ingest' })}</div>`;
+      }
+      const calPanel = S.rcc.panel({
+        title: '13-week cash commitment calendar', sub: 'recurring bank-outflow patterns + contractual lines · NOT bill due dates (no bills ledger — stated)',
+        body: calBody,
+      });
+
+      // ---- (2) AP ageing — the mapped empty-state, verbatim ----
+      const apPanel = S.rcc.panel({
+        title: 'Accounts payable ageing', sub: 'the bills ledger the venue does not run',
+        headRight: S.rcc.tag('designed empty-state', 'info'),
+        body: S.rcc.emptyState({ title: 'Accounts payable ageing', blocker: AP_BLOCKER }),
+      });
+
+      // ---- (3) P&L cost versus cash paid — month grain, timing delta stated ----
+      let pvBody;
+      if (c.plVsCash && c.plVsCash.some((r) => r.pl != null || r.cash != null)) {
+        const rows = c.plVsCash.map((r) => {
+          const delta = r.pl != null && r.cash != null ? r.cash - r.pl : null;
+          return `<tr><td class="mono">${esc(monthLabel(r.ym))}${r.partial ? ' <span class="ash">(in progress)</span>' : ''}</td><td class="r-num mono">${esc(gbp0(r.pl))}</td><td class="r-num mono">${esc(gbp0(r.cash))}</td><td class="r-num mono">${delta != null ? `${delta >= 0 ? '+' : '−'}${esc(gbp0(Math.abs(delta)))}` : '—'}</td></tr>`;
+        }).join('');
+        pvBody = `<div style="overflow:auto"><table><thead><tr><th>Month</th><th class="r-num">P&amp;L expense (journal)</th><th class="r-num">Cash paid (bank)</th><th class="r-num">Delta</th></tr></thead><tbody>${rows}</tbody></table></div>
+          <div class="r-mini-note">month grain, trailing 6 to the bank record's latest month · P&amp;L = qb_journal_lines expense-classified accounts (debit − credit) · cash = qb_bank_txns purchases — which include VAT, payroll, HMRC and capital items the P&amp;L expense line does not · the delta is BASIS + TIMING, stated not hidden.</div>`;
+      } else {
+        pvBody = S.rcc.emptyState({ title: 'P&L cost versus cash paid', blocker: 'Needs both the journal and the bank record for a month.', unlock: 'the QuickBooks ingests (qb_journal_lines + qb_bank_txns)' });
+      }
+      const pvPanel = S.rcc.panel({ title: 'P&L cost versus cash paid', sub: 'accrual ledger vs bank truth · month grain', body: pvBody });
+
+      // ---- (4) upcoming large commitments ----
+      const bigRows = [];
+      bigRows.push(`<tr><td>Rent — the step</td><td class="r-num mono">${esc(gbp0(RENT_STEP.afterPenceYr / 4))}/quarter from ${esc(RENT_STEP.date)} (now ${esc(gbp0(RENT_STEP.beforePenceYr / 4))})</td><td>${S.rcc.tag('contractual', 'info')}</td><td>${esc(rentStepText(c.rentDays != null ? c.rentDays : rentStepDaysUntil(now)))}</td></tr>`);
+      const bigRecurring = (c.recurring || []).filter((r) => r.medianPence * (91 / r.cadenceDays) > 500000);
+      for (const r of bigRecurring) {
+        bigRows.push(`<tr><td>${esc(r.cp)}</td><td class="r-num mono">~${esc(gbp0(r.medianPence * (91 / r.cadenceDays)))}/quarter</td><td>${S.rcc.tag('projected from observed cadence', 'warn')}</td><td>${esc(gbp0(r.medianPence))} every ~${int(r.cadenceDays)}d (bank pattern, 6-month window)</td></tr>`);
+      }
+      const bigPanel = S.rcc.panel({
+        title: 'Upcoming large commitments', sub: 'the rent step + projected recurring above 5k/quarter · basis stated per row',
+        body: `<div style="overflow:auto"><table><thead><tr><th>Commitment</th><th class="r-num">Scale</th><th>Basis</th><th>Detail</th></tr></thead><tbody>${bigRows.join('')}</tbody></table></div>`,
+      });
+
+      // ---- (5) working-capital controls — the honest set ----
+      let wcBody;
+      if (c.controls) {
+        const w = c.controls;
+        wcBody = `<div class="r-driver-grid">
+            ${S.rcc.driver({ label: 'Cash out · 90d', value: gbp0(w.totalPence), sub: `${int(w.n)} bank purchase(s) over ${int(w.days)} payment day(s)` })}
+            ${S.rcc.driver({ label: 'Payment days / week', value: (w.days / (90 / 7)).toFixed(1), sub: 'distinct outflow days ÷ 90d weeks — the cash-out cadence' })}
+            ${S.rcc.driver({ label: 'Largest single outflow', value: gbp0(w.largest ? w.largest.p : null), sub: w.largest ? `${w.largest.cp} · ${w.largest.d}` : '' })}
+            ${S.rcc.driver({ label: 'Recurring-pattern share', value: w.recurringShare != null ? pct1(w.recurringShare) : '—', sub: 'share of 90d cash-out from detected recurring counterparties' })}
+          </div>
+          <div style="margin-top:10px">${S.rcc.driver({ label: 'Debtor days', value: 'n/a — cash business', sub: 'customers pay at the till; there is no debtor book to age' })}</div>
+          <div class="r-mini-note">what the wires honestly support: bank cash-out cadence stats (qb_bank_txns, 90d to ${esc(c.bankMax)}) · stock-holding and creditor-days need wires that do not exist (no stock counts, no bills ledger) — absent, not faked.</div>`;
+      } else {
+        wcBody = S.rcc.emptyState({ title: 'Working-capital controls', blocker: 'No bank purchases in the trailing 90 days (qb_bank_txns).', unlock: 'the QuickBooks bank ingest' });
+      }
+      const wcPanel = S.rcc.panel({ title: 'Working-capital controls', sub: 'cash-out cadence · the debtor side stated honestly', body: wcBody });
+
+      return `${calPanel}
+        <div class="r-grid r-two-col">${pvPanel}${apPanel}</div>
+        <div class="r-grid r-two-col">${bigPanel}${wcPanel}</div>`;
+    };
+
+    // ============================ the pending tabs (C2/C3) ============================
+    const renderPendingTab = (key2) => {
+      const t = TABS.find((x) => x.key === key2);
+      return S.rcc.panel({
+        title: t.label, sub: 'not built in C1',
+        body: S.rcc.emptyState({ title: t.label, blocker: PENDING_NOTE }),
+      });
+    };
+
+    const tabBody = tab === 'fixed' ? renderFixedTab()
+      : tab === 'cash' ? renderCashTab()
+      : PENDING_TABS.includes(tab) ? renderPendingTab(tab)
+      : renderExecutiveTab();
+
+    const body = `<div class="rcc">` + styles + tabsNav + tabBody + `</div>`;
+
+    // stamp: the active tab's own anchor — QB month for the ledger tabs, bank date for cash.
+    let stamp;
+    if (tab === 'executive' && m.exec && m.exec.refMonth) stamp = `month ${monthLabel(m.exec.refMonth)} · QB ledger + day-net canon`;
+    else if (tab === 'fixed' && m.fixed && m.fixed.qbMax) stamp = `QB ledger to ${monthLabel(m.fixed.qbMax)}`;
+    else if (tab === 'cash' && m.cash && m.cash.bankMax) stamp = `bank truth to ${m.cash.bankMax}`;
+    else stamp = 'QB ledger shadow + bank truth';
+    return { stamp, body };
+  },
+};
