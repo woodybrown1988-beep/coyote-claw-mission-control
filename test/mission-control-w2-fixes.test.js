@@ -56,7 +56,7 @@ test('nav restructure (page-map amendment 2026-07-21): Reports section groups Re
   const coyote = S.WORKSPACES.find((w) => w.key === 'coyote');
   const reportsGroup = coyote.groups.find((g) => g.group === 'Reports');
   assert.ok(reportsGroup, 'the Reports section exists');
-  assert.deepEqual(reportsGroup.items.map((i) => i.key), ['revenue', 'report-library', 'rota-review', 'reservations', 'labour', 'costs'], 'Revenue + Library + Rota Review + Reservations + Labour (centre L1 2026-07-21), in order');
+  assert.deepEqual(reportsGroup.items.map((i) => i.key), ['revenue', 'report-library', 'rota-review', 'reservations', 'labour', 'costs', 'inventory'], 'Revenue + Library + Rota Review + Reservations + Labour (centre L1 2026-07-21), in order');
   assert.equal(reportsGroup.items[0].route, '/coyote/revenue');
   const srv = require('node:fs').readFileSync(require('node:path').join(__dirname, '../mission-control/server.js'), 'utf8');
   assert.match(srv, /'\/coyote\/reports': '\/coyote\/revenue'/, 'the old RCC path redirects');
