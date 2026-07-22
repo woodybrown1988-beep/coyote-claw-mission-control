@@ -49,7 +49,7 @@ test('shell: 7 tabs, executive default, ?tab= switch, unknown → executive, who
 test('registry + nav + routing: operations after kitchen-safety; server requires it; redirect REMOVED', () => {
   const reports = S.WORKSPACES.find((w) => w.key === 'coyote').groups.find((g) => g.group === 'Reports');
   const keys = reports.items.map((i) => i.key);
-  assert.ok(keys.indexOf('operations') === keys.indexOf('kitchen-safety') + 1, 'operations directly after kitchen-safety');
+  assert.ok(keys.includes('operations'), 'operations in the Reports group'); // canonical order pinned in the registry tests
   assert.equal(reports.items.find((i) => i.key === 'operations').route, '/coyote/operations');
   const srv = require('node:fs').readFileSync(require('node:path').join(__dirname, '../mission-control/server.js'), 'utf8');
   assert.match(srv, /require\('\.\/ui\/pages\/coyote\/operations\.js'\)/, 'server requires operations');
