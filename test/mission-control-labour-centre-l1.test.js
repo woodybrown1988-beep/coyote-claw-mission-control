@@ -312,3 +312,17 @@ test('empty DB (tables present, zero rows): honest states on every tab, zero £ 
   const stamp = labour.render(labour.getSection(db, ctxFor(db)), ctxFor(db)).stamp;
   assert.ok(stamp.includes('awaiting labour-day record'), 'the stamp never claims freshness without data');
 });
+
+test('no-clock ruling captions (2026-07-21): SPLH strip, coverage heatmap and the drift decomposition each state the rota-as-worked proxy', () => {
+  const db = makeDb();
+  seedKpiWeek(db);
+  seedRota(db);
+  const exec = renderTab(db);
+  assert.match(exec, /SPLH denominator\) include rota-as-worked for no-clock salaried/, 'the Executive strip caption');
+  const rota = renderTab(db, { tab: 'rota' });
+  assert.match(rota, /their variance is 0 by construction, so they never appear here/, 'the decomposition states WHY deemed staff are absent from variance classes');
+  // the heatmap needs staffing rows to render either branch (empty grid = no caption to carry)
+  db.prepare(`INSERT INTO labour_hourly (business_date, hour, actual_minutes, actual_cost_pence) VALUES ('2026-07-18', 12, 120, 20000), ('2026-07-18', 13, 60, 10000)`).run();
+  const cov = renderTab(db, { tab: 'coverage' });
+  assert.match(cov, /staffed hours include rota-as-worked for no-clock salaried/, 'the heatmap actual line (either branch)');
+});

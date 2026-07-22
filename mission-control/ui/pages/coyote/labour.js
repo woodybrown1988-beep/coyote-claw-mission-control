@@ -804,7 +804,7 @@ module.exports = {
           sub: 'salaried/365 ÷ TRUE actual · labour_day',
         }),
       ].join('');
-      const kpiCaption = `<div class="lbc-caption">window = the last full Mon–Sun week ${esc(wk.from)} → ${esc(wk.to)} · ruler: TRUE all-in (labour_day — locked rates × 1.159 burden + salaried/365); RC-screen figures never render on this tab · % and SPLH divide over the sales∩labour intersection only (${inter ? int(num(inter.days)) : 0} day(s)) · formula budget = (Σ salaried + 22.4% × net) ÷ net — kitchen 14.3% + FOH 8.1%, the ruled variable splits.</div>`;
+      const kpiCaption = `<div class="lbc-caption">window = the last full Mon–Sun week ${esc(wk.from)} → ${esc(wk.to)} · ruler: TRUE all-in (labour_day — locked rates × 1.159 burden + salaried/365); RC-screen figures never render on this tab · % and SPLH divide over the sales∩labour intersection only (${inter ? int(num(inter.days)) : 0} day(s)) · formula budget = (Σ salaried + 22.4% × net) ÷ net — kitchen 14.3% + FOH 8.1%, the ruled variable splits · worked hours (SPLH denominator) include rota-as-worked for no-clock salaried.</div>`;
 
       // ---- (2) 13-week labour control trend (absorbs the old page's 8-week hero spark) ----
       const weeks = e.trend.weeks;
@@ -1010,7 +1010,7 @@ module.exports = {
         decompBody = `<div class="r-meters">${rows.map((x) => S.rcc.meterRow({
           label: x.lab, pct: (x.mins / maxM) * 100, color: x.color, value: `${int(x.n)} · ${hrs(x.mins)}`,
         })).join('')}</div>
-        <div class="r-mini-note">early-in vs late-out CANNOT be split — labour_shifts carries no per-shift clock timestamps, only variance_minutes; what IS computable renders above · SITE-level aggregate (labour_shifts carries no department key — checked) · counts and hours only, NO names — the surveillance boundary ruling.</div>`;
+        <div class="r-mini-note">early-in vs late-out CANNOT be split — labour_shifts carries no per-shift clock timestamps, only variance_minutes; what IS computable renders above · SITE-level aggregate (labour_shifts carries no department key — checked) · counts and hours only, NO names — the surveillance boundary ruling · worked hours include rota-as-worked for no-clock salaried (the deemed-from-rota ruling — their variance is 0 by construction, so they never appear here).</div>`;
       } else {
         decompBody = S.rcc.emptyState({ title: 'Where the extra hours came from', blocker: 'no labour_shifts rows in the 14-day window.', unlock: 'the daily RotaCloud ingest (shift grain)' });
       }
@@ -1524,7 +1524,7 @@ module.exports = {
             : 'ONLINE ORDER lines excluded — no true hour (the online-order ruling)';
           heatLegend = `<div class="r-legend"><span><i style="background:${S.rcc.tokens.heat[0]}"></i>Staffed under required</span><span><i style="background:${S.rcc.tokens.heat[5]}"></i>Staffed over required</span></div>`;
           heatBody = `<div class="r-heatmap">${head}${grid}</div>
-            <div class="r-mini-note"><b>required = formula budget spread by demand share — a derivation, not a rota standard.</b> budget = Σ salaried + 22.4% × net over the last settled week ${esc(B.from)} → ${esc(B.to)} (${gbp(B.pence)}, ${int(B.days)} intersection day(s)) · demand share = line-grain net by weekday × LOCAL London hour, 28d to ${esc(D.apiMax)} · ${esc(onlineNote)}.</div>
+            <div class="r-mini-note"><b>required = formula budget spread by demand share — a derivation, not a rota standard.</b> budget = Σ salaried + 22.4% × net over the last settled week ${esc(B.from)} → ${esc(B.to)} (${gbp(B.pence)}, ${int(B.days)} intersection day(s)) · demand share = line-grain net by weekday × LOCAL London hour, 28d to ${esc(D.apiMax)} · ${esc(onlineNote)} · staffed hours include rota-as-worked for no-clock salaried.</div>
             <div class="r-mini-note">staffed = labour_hourly TRUE £ (hourly × 1.159 burden + the ingest's salaried hour share) averaged per weekday occurrence, 28d to ${esc(H.to)} · SITE-level — labour_hourly carries no department key (checked) · levels centre on balanced: 1–3 staffed under the derived requirement, 4–6 over · a weekday with no hourly record renders blank, never zero${missNote}${uncNote}. This grid ABSORBED the old staffing-shape panel — one home.</div>`;
         } else {
           // staffing-only fallback — the honest half while the required side is underivable
@@ -1548,7 +1548,7 @@ module.exports = {
           }).join('')).join('');
           heatSub = 'weekday × hour · staffing density (the required side is not derivable yet)';
           heatBody = `<div class="r-heatmap">${head}${grid}</div>
-            <div class="r-mini-note">STAFFING ONLY — the required side is not derivable: ${esc(reasons.join(' and '))}; shade = worked-hours density by quantile (minute grain, ruler-free) · SITE-level (no department key — checked) · 28d to ${esc(H.to)}${missNote}${uncNote}. This grid ABSORBED the old staffing-shape panel — one home; the derived requirement lights up with the demand + budget wires.</div>`;
+            <div class="r-mini-note">STAFFING ONLY — the required side is not derivable: ${esc(reasons.join(' and '))}; shade = worked-hours density by quantile (minute grain, ruler-free) · SITE-level (no department key — checked) · 28d to ${esc(H.to)}${missNote}${uncNote}. This grid ABSORBED the old staffing-shape panel — one home; the derived requirement lights up with the demand + budget wires. · staffed hours include rota-as-worked for no-clock salaried.</div>`;
         }
       }
       const heatPanel = S.rcc.panel({
