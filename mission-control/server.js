@@ -183,6 +183,7 @@ const PAGES = [
   require('./ui/pages/coyote/costs.js'),
   require('./ui/pages/coyote/inventory.js'),
   require('./ui/pages/coyote/kitchen-safety.js'),
+  require('./ui/pages/coyote/operations.js'),
   require('./ui/pages/coyote/report-library.js'),
   require('./ui/pages/coyote/rota-review.js'),
   require('./ui/pages/coyote/labour.js'),
@@ -199,8 +200,9 @@ const LEGACY_REDIRECTS = {
   // Nav restructure (page-map amendment 2026-07-21): the RCC renamed Revenue under the Reports section.
   '/coyote/reports': '/coyote/revenue',
   '/': '/coyote/overview',
-  // page-map audit 2026-07-21: Operations cut (dead since birth), YoY merged into Reports
-  '/coyote/operations': '/coyote/overview',
+  // page-map audit 2026-07-21: YoY merged into Reports. (Operations was cut then, but is REVIVED
+  // 2026-07-22 as the build-ahead Operations & Service scaffold — so /coyote/operations now serves
+  // the page and the redirect is removed; /operations → /coyote/operations still stands below.)
   '/coyote/yoy': '/coyote/revenue',  // no double-hop — straight to the new home
   '/claw/agents': '/claw/engine',
   '/claw/health': '/claw/engine',
