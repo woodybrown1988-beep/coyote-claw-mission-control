@@ -77,7 +77,7 @@ test('nav move: labour lives in the Reports group AFTER reservations; Department
   const S = require('../mission-control/ui/shared.js');
   const coyote = S.WORKSPACES.find((w) => w.key === 'coyote');
   const reports = coyote.groups.find((g) => g.group === 'Reports');
-  assert.deepEqual(reports.items.map((i) => i.key), ['revenue', 'report-library', 'rota-review', 'reservations', 'labour', 'costs', 'inventory', 'kitchen-safety', 'operations'], 'Reports order — labour after reservations');
+  assert.deepEqual(reports.items.map((i) => i.key), ['revenue', 'report-library', 'rota-review', 'reservations', 'labour', 'costs', 'inventory', 'kitchen-safety', 'operations', 'customer-growth'], 'Reports order — labour after reservations');
   const labItem = reports.items[4];
   assert.equal(labItem.label, 'Labour');
   assert.equal(labItem.route, '/coyote/labour', 'same route — no redirect needed');

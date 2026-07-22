@@ -85,6 +85,10 @@ const WORKSPACES = [
       // a new service-execution domain (KDS/OpenTable/digital-order/defect-capture), sources connect
       // later; every panel a source-gated empty-state, zero mock numbers.
       { key: 'operations', label: 'Operations', route: '/coyote/operations', ico: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/>' },
+      // Customer Growth Centre (2026-07-22): build-ahead scaffold, four-way verdict per panel
+      // (live/wired-degraded/needs-integration/no-source). Live reputation slice + CRM anchor
+      // (0 profiles, ~100% unknown revenue); ~75% no-source = a customer-identity business gap.
+      { key: 'customer-growth', label: 'Customer Growth', route: '/coyote/customer-growth', ico: '<circle cx="9" cy="8" r="3"/><path d="M3 20v-1a6 6 0 0 1 12 0v1"/><path d="M16 3.5a3 3 0 0 1 0 5.8M18 20v-1a5 5 0 0 0-3-4.6"/>' },
     ] },
     { group: 'Departments', items: [
       { key: 'recipes', label: 'Recipes & Costs', route: '/coyote/recipes', ico: '<path d="M5 3h11l3 3v15H5z"/><path d="M9 8h6M9 12h6M9 16h4"/>' },
