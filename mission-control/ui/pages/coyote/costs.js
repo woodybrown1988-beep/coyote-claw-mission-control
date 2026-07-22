@@ -68,9 +68,9 @@ const TABS = [
   { key: 'cash', label: 'Cash Commitments' },
 ];
 const TAB_KEYS = TABS.map((t) => t.key);
-// The C1 split: the four QB-weak / gated tabs ship next — ONE pending note each.
-const PENDING_TABS = ['forecast', 'cogs', 'margins', 'suppliers'];
-const PENDING_NOTE = 'C2/C3 build pending — the C1 split shipped Executive, Fixed & Semi-Fixed and Cash Commitments (the QB-strong core) first; this tab lands with the next Costs Centre phase per the gap map.';
+// All seven tabs are built (C1 Executive/Fixed/Cash · C2 Cost Forecast/Suppliers · C3 COGS/Recipe
+// Margins). No pending tabs remain.
+const PENDING_TABS = [];
 
 // ---------------------------------------------------------------------------------------------
 // THE RENT STEP — a CONTRACTUAL constant, HARD-ENCODED from the lease canon (the lease's rent
@@ -94,6 +94,16 @@ const RECIPE_CARROT = 'recipe costing: top-20 = 59.5% coverage, one session';
 
 // The AP-ageing disposition — the mapped empty-state, verbatim (gap-map probe 1).
 const AP_BLOCKER = 'QB Bills not in use — 8 rows since 2022. The venue pays suppliers direct from the bank; there is no bills ledger, so the cash calendar derives from recurring bank-outflow patterns + contractual lines instead.';
+
+// The INVOICE-LINE gate (gap-map's named future build): QB category totals cannot show a unit
+// price (beef £7.21 → £7.84/usable-kg). Purchase-price variance + ingredient price watch need
+// invoice-LINE data (unit prices, pack sizes, yields → canonical ingredients, normalised units)
+// — an ingest that does not yet exist. Candidate routes: K-Series purchase/inventory endpoints
+// (currently 403, operations-scope-gated — re-probe on grant) OR invoice-document ingest (Booker
+// portal exports → email-ingest → sub_items). Both dependent panels name THIS.
+const INVOICE_LINE_BLOCKER = 'supplier invoice-LINE data (unit prices, pack sizes, yields) is not ingested — QB category totals cannot show a per-unit price. This is the named future build (invoice-line ingest → canonical ingredients).';
+const INVOICE_LINE_UNLOCK = 'invoice-line ingest — K-Series purchase endpoints (currently operations-scope-gated) or Booker invoice-document ingest';
+const RECIPE_BLOCKER = 'recipe_lines is empty — theoretical costing, per-item margin and the economics matrix are all locked until recipes carry ingredient costs (the Calum gate).';
 
 // ---------------------------------------------------------------------------------------------
 // Account bucketing — PRESENTATION JUDGMENTS, captioned wherever they render.
@@ -491,6 +501,146 @@ function buildCash(q, now) {
   return c;
 }
 
+// COST FORECAST — the accrual-basis forward cost view (distinct from Cash Commitments' cash-out
+// TIMING: this is what cost is INCURRED, that is when money LEAVES). Interactive scenario on the
+// revenue projection + the ruled cost ratios; the contractual rent step enters as a hard line.
+function buildForecast(q, now) {
+  const f = { rentStep: RENT_STEP, rentDays: rentStepDaysUntil(now) };
+  // the trailing-3 complete months set the ratio base (COGS% + variable-overhead% of net) — a
+  // ratio is a ratio, projected forward on the revenue projection; fixed costs held at their level.
+  const salesMx = rowsOf(q(`SELECT MAX(business_date) d FROM v_sales_day_all WHERE premises = 'current'`))[0];
+  const salesMax = salesMx && salesMx.d ? String(salesMx.d) : null;
+  if (!salesMax) { f.ready = false; return f; }
+  f.ready = true;
+  const refM = refMonthOf(salesMax) || salesMax.slice(0, 7);
+  f.refMonth = refM;
+  const base = [monthShift(refM, -2), monthShift(refM, -1), refM];
+  const qb = qbMonths(q, base);
+  let cogsSum = 0, varSum = 0, fixedSum = 0, netSum = 0, monthsWithBoth = 0;
+  for (const ym of base) {
+    const net = monthNet(q, ym); const mm = qb.get(ym);
+    if (net && mm && mm.any) { cogsSum += mm.cogs; varSum += mm.variable; fixedSum += mm.fixed + mm.semi; netSum += net.net; monthsWithBoth++; }
+  }
+  f.base = monthsWithBoth ? {
+    months: base, monthsWithBoth,
+    cogsPct: netSum > 0 ? (cogsSum / netSum) * 100 : null,
+    varPct: netSum > 0 ? (varSum / netSum) * 100 : null,
+    fixedMonthly: monthsWithBoth ? fixedSum / monthsWithBoth : null,
+    netMonthly: monthsWithBoth ? netSum / monthsWithBoth : null,
+  } : null;
+  // 8-week forward outlook (accrual): the base monthly fixed + COGS%×projected-net; projection net
+  // is the trailing monthly net (honest flat carry — the RCC forecast owns the seasonality model,
+  // we pointer to it, never re-derive). Rent step lands as a hard event within the horizon.
+  f.outlook = [];
+  if (f.base && f.base.netMonthly != null) {
+    for (let i = 1; i <= 3; i++) {
+      const ym = monthShift(refM, i);
+      const projNet = f.base.netMonthly; // flat carry, stated
+      const cogs = f.base.cogsPct != null ? (f.base.cogsPct / 100) * projNet : null;
+      const varo = f.base.varPct != null ? (f.base.varPct / 100) * projNet : null;
+      const stepActive = ym >= RENT_STEP.date.slice(0, 7);
+      f.outlook.push({ ym, projNet, cogs, varo, fixed: f.base.fixedMonthly, rentStepActive: stepActive });
+    }
+  }
+  return f;
+}
+
+// SUPPLIERS & PURCHASING — the scorecard + concentration are REAL (qb_bank_txns purchases by
+// counterparty, the corrected supplier-spend wire); PPV + ingredient price watch are invoice-line-
+// gated; the invoice queue is the no-bills empty-state.
+function buildSuppliers(q, now) {
+  const s = {};
+  const mx = rowsOf(q(`SELECT MAX(txn_date) d FROM qb_bank_txns WHERE txn_kind = 'purchase'`))[0];
+  const bankMax = mx && mx.d ? String(mx.d) : null;
+  s.bankMax = bankMax;
+  if (!bankMax) return s;
+  const from = K.shiftDays(bankMax, -364); // trailing 12 months
+  const prevFrom = K.shiftDays(bankMax, -729); const prevTo = K.shiftDays(bankMax, -365);
+  const cur = rowsOf(q(
+    `SELECT counterparty cp, COUNT(*) n, SUM(total_pence) p FROM qb_bank_txns
+      WHERE txn_kind = 'purchase' AND counterparty IS NOT NULL AND counterparty != '' AND txn_date BETWEEN ? AND ?
+      GROUP BY counterparty ORDER BY p DESC`, [from, bankMax]));
+  const prev = new Map(rowsOf(q(
+    `SELECT counterparty cp, SUM(total_pence) p FROM qb_bank_txns
+      WHERE txn_kind = 'purchase' AND txn_date BETWEEN ? AND ? GROUP BY counterparty`, [prevFrom, prevTo]))
+    .map((r) => [String(r.cp), num(r.p) || 0]));
+  // SURVEILLANCE BOUNDARY: person-named counterparties (payroll payees) pool into a Staff-payroll
+  // aggregate — spend is a fact, per-person £ lines are not.
+  const isPerson = (cp) => /^(mr|mrs|miss|ms)\s/i.test(cp);
+  const people = cur.filter((r) => isPerson(String(r.cp)));
+  let rows = cur.filter((r) => !isPerson(String(r.cp))).map((r) => ({
+    cp: String(r.cp), n: num(r.n), spend: num(r.p) || 0, prev: prev.get(String(r.cp)) ?? null,
+  }));
+  if (people.length) {
+    rows.push({
+      cp: `Staff payroll (${people.length} payees, aggregated)`, isAggregate: true,
+      n: people.reduce((a, r) => a + num(r.n), 0),
+      spend: people.reduce((a, r) => a + (num(r.p) || 0), 0),
+      prev: people.reduce((a, r) => a + (prev.get(String(r.cp)) ?? 0), 0) || null,
+    });
+    rows.sort((a, b) => b.spend - a.spend);
+  }
+  const total = rows.reduce((a, r) => a + r.spend, 0);
+  s.total = total; s.window = { from, to: bankMax };
+  s.suppliers = rows.slice(0, 12).map((r) => ({
+    ...r, sharePct: total > 0 ? (r.spend / total) * 100 : 0,
+    trendPct: r.prev != null && r.prev > 0 ? ((r.spend - r.prev) / r.prev) * 100 : null,
+  }));
+  // concentration: top-1 and top-3 shares of the total
+  s.concentration = total > 0 ? {
+    top1: (rows[0]?.spend || 0) / total * 100,
+    top3: rows.slice(0, 3).reduce((a, r) => a + r.spend, 0) / total * 100,
+    n: rows.length,
+  } : null;
+  return s;
+}
+
+// COGS & INVENTORY — the actual side (QB COGS category grain) + Other-variable (QB) are REAL;
+// theoretical/variance/ingredient-price/stock are gated.
+function buildCogs(q, now) {
+  const c = {};
+  const salesMx = rowsOf(q(`SELECT MAX(business_date) d FROM v_sales_day_all WHERE premises = 'current'`))[0];
+  const salesMax = salesMx && salesMx.d ? String(salesMx.d) : null;
+  const qbMx = rowsOf(q(`SELECT MAX(month) m FROM qb_pl_monthly`))[0];
+  const qbMax = qbMx && qbMx.m ? String(qbMx.m) : null;
+  const refM = refMonthOf(salesMax) || qbMax;
+  if (!refM) return c;
+  c.refMonth = refM;
+  const qb = qbMonths(q, [refM]);
+  const mm = qb.get(refM);
+  const net = monthNet(q, refM);
+  c.net = net ? net.net : null;
+  c.cogsTotal = mm && mm.any ? mm.cogs : null;
+  c.cogsPct = c.net && c.net > 0 && c.cogsTotal != null ? (c.cogsTotal / c.net) * 100 : null;
+  // actual COGS by category (the COGS-bucket accounts for the month)
+  c.cogsCats = (mm && mm.any ? mm.accounts.filter((a) => a.bucket === 'cogs') : [])
+    .sort((a, b) => b.p - a.p).map((a) => ({ name: a.name, p: a.p }));
+  // OTHER variable cost control: overhead-bucket accounts classed 'variable' (packaging/cleaning
+  // etc.) — the honest non-COGS variable set, real at QB category grain.
+  c.otherVar = (mm && mm.any ? mm.accounts.filter((a) => a.bucket === 'overhead' && behaviourOf(a.name) === 'variable') : [])
+    .sort((a, b) => b.p - a.p).map((a) => ({ name: a.name, p: a.p }));
+  c.recipeLines = (rowsOf(q(`SELECT COUNT(*) c FROM recipe_lines`))[0] || {}).c || 0;
+  return c;
+}
+
+// RECIPE MARGINS — ALL recipe-gated. The recipe-data-quality panel shows the LIVE coverage
+// figures (real, small) from the recipes worklist wires; everything else is the designed
+// empty-state with the Calum carrot.
+function buildMargins(q, now) {
+  const m = {};
+  m.recipeLines = (rowsOf(q(`SELECT COUNT(*) c FROM recipe_lines`))[0] || {}).c || 0;
+  m.products = (rowsOf(q(`SELECT COUNT(*) c FROM products`))[0] || {}).c || 0;
+  m.subItems = (rowsOf(q(`SELECT COUNT(*) c FROM sub_items`))[0] || {}).c || 0;
+  // costed products = ≥1 recipe line AND no uncosted ingredient (the recipes-page definition)
+  const costed = rowsOf(q(
+    `SELECT COUNT(*) c FROM products p
+      WHERE (SELECT COUNT(*) FROM recipe_lines rl WHERE rl.product_id = p.id) > 0
+        AND (SELECT COUNT(*) FROM recipe_lines rl JOIN sub_items si ON si.id = rl.sub_item_id
+               WHERE rl.product_id = p.id AND (si.pack_cost_pence IS NULL OR si.pack_qty IS NULL)) = 0`))[0];
+  m.costedProducts = costed ? (num(costed.c) || 0) : 0;
+  return m;
+}
+
 module.exports = {
   key: 'costs', route: '/coyote/costs', workspace: 'coyote', title: 'Costs',
   sub: 'Costs & supplier command centre · QB ledger shadow + bank truth',
@@ -500,11 +650,15 @@ module.exports = {
     const now = (ctx && ctx.now) || Date.now();
     const query = (ctx && ctx.query) || {};
     const tab = TAB_KEYS.includes(String(query.tab || '')) ? String(query.tab) : 'executive';
-    const m = { now, tab, exec: null, fixed: null, cash: null };
+    const m = { now, tab, exec: null, fixed: null, cash: null, forecast: null, suppliers: null, cogs: null, margins: null };
     if (typeof q !== 'function') return m;
     if (tab === 'executive') m.exec = buildExecutive(q, now);
-    if (tab === 'fixed') m.fixed = buildFixed(q, now);
-    if (tab === 'cash') m.cash = buildCash(q, now);
+    else if (tab === 'fixed') m.fixed = buildFixed(q, now);
+    else if (tab === 'cash') m.cash = buildCash(q, now);
+    else if (tab === 'forecast') m.forecast = buildForecast(q, now);
+    else if (tab === 'suppliers') m.suppliers = buildSuppliers(q, now);
+    else if (tab === 'cogs') m.cogs = buildCogs(q, now);
+    else if (tab === 'margins') m.margins = buildMargins(q, now);
     return m;
   },
 
@@ -934,18 +1088,146 @@ module.exports = {
         <div class="r-grid r-two-col">${bigPanel}${wcPanel}</div>`;
     };
 
-    // ============================ the pending tabs (C2/C3) ============================
-    const renderPendingTab = (key2) => {
-      const t = TABS.find((x) => x.key === key2);
-      return S.rcc.panel({
-        title: t.label, sub: 'not built in C1',
-        body: S.rcc.emptyState({ title: t.label, blocker: PENDING_NOTE }),
+    // ============================ COST FORECAST (C2) ============================
+    const renderForecastTab = () => {
+      const f = m.forecast || {};
+      const rentLine = S.rcc.note(`Contractual rent step — lease canon: ${rentStepText(f.rentDays != null ? f.rentDays : rentStepDaysUntil(now))}. Enters the outlook as a hard line the ${esc(RENT_STEP.date)} obligation begins, never inferred from the ledger.`);
+      if (!f.ready || !f.base) {
+        return S.rcc.panel({ title: 'Cost forecast', sub: 'accrual-basis forward cost — distinct from the cash-out timing on Cash Commitments',
+          body: rentLine + `<div style="margin-top:12px">${S.rcc.emptyState({ title: 'Cost forecast', blocker: 'not enough complete months with BOTH day-net sales and QB expense rows to set the cost-ratio base.', unlock: 'the QuickBooks P&L + sales ingest over ≥1 complete month' })}</div>` });
+      }
+      const b = f.base;
+      // interactive scenario: client-only slider scaling revenue; recompute COGS/variable/contribution.
+      const netP = Math.round(b.netMonthly), cogsP = b.cogsPct != null ? Math.round(b.netMonthly * b.cogsPct / 100) : 0,
+        varP = b.varPct != null ? Math.round(b.netMonthly * b.varPct / 100) : 0, fixP = Math.round(b.fixedMonthly || 0);
+      const scenarioPanel = S.rcc.panel({
+        title: 'Interactive cost scenario', sub: `base = trailing ${b.monthsWithBoth} complete month(s) · ratios carried forward · what-if only, nothing stored`,
+        body: `<div class="cst-scn" data-net="${netP}" data-cogspct="${b.cogsPct != null ? b.cogsPct.toFixed(3) : ''}" data-varpct="${b.varPct != null ? b.varPct.toFixed(3) : ''}" data-fixed="${fixP}">
+            <div class="r-grid" style="grid-template-columns:1fr;gap:8px">
+              <label class="cst-slabel">Revenue vs base <b id="cst-rv">0%</b><input id="cst-rslider" type="range" min="-20" max="20" step="1" value="0" style="width:100%;accent-color:${S.rcc.tokens.accent}"></label>
+            </div>
+            <table style="margin-top:10px"><tbody>
+              <tr><td>Revenue (month)</td><td class="r-num mono" id="cst-net">${esc(gbp0(netP))}</td></tr>
+              <tr><td>− COGS <span class="ash">(${b.cogsPct != null ? b.cogsPct.toFixed(1) : '—'}% of net)</span></td><td class="r-num mono" id="cst-cogs">${esc(gbp0(cogsP))}</td></tr>
+              <tr><td>− Variable overheads <span class="ash">(${b.varPct != null ? b.varPct.toFixed(1) : '—'}%)</span></td><td class="r-num mono" id="cst-var">${esc(gbp0(varP))}</td></tr>
+              <tr><td>− Fixed + semi-fixed <span class="ash">(held)</span></td><td class="r-num mono">${esc(gbp0(fixP))}</td></tr>
+              <tr style="border-top:1px solid ${S.rcc.tokens.line}"><td><b>Contribution</b></td><td class="r-num mono" id="cst-con"><b>${esc(gbp0(netP - cogsP - varP - fixP))}</b></td></tr>
+            </tbody></table>
+          </div>
+          <script>(function(){
+            var box=document.querySelector('.cst-scn'); if(!box) return;
+            var net=+box.dataset.net, cp=parseFloat(box.dataset.cogspct)||0, vp=parseFloat(box.dataset.varpct)||0, fx=+box.dataset.fixed;
+            var sl=document.getElementById('cst-rslider');
+            function gbp(p){var v=Math.round(p/100);return '\\u00a3'+v.toLocaleString('en-GB');}
+            function upd(){var pct=+sl.value; var n=net*(1+pct/100); var c=n*cp/100, vo=n*vp/100;
+              document.getElementById('cst-rv').textContent=(pct>=0?'+':'')+pct+'%';
+              document.getElementById('cst-net').textContent=gbp(n);
+              document.getElementById('cst-cogs').textContent=gbp(c);
+              document.getElementById('cst-var').textContent=gbp(vo);
+              document.getElementById('cst-con').innerHTML='<b>'+gbp(n-c-vo-fx)+'</b>';}
+            sl.addEventListener('input',upd);
+          })();</script>`,
       });
+      const rulePanel = S.rcc.panel({ title: 'Scenario decision rule', sub: 'the ruled cost discipline',
+        body: `<div class="r-formula">${['COGS and variable overheads move WITH revenue (ratio-held); fixed + semi-fixed are level.',
+          'A revenue fall does NOT proportionally cut cost — the fixed base is the exposure.',
+          'The contractual rent step is a hard obligation, not a scenario input.',
+          'Theoretical COGS (recipe-costed) would sharpen COGS% — locked behind the Calum gate.'].map(esc).join('<br>')}</div>` });
+      const outRows = f.outlook.map((o) => `<tr><td class="mono">${esc(monthLabel(o.ym))}</td><td class="r-num mono">${esc(gbp0(o.projNet))}</td><td class="r-num mono">${esc(gbp0(o.cogs))}</td><td class="r-num mono">${esc(gbp0(o.varo))}</td><td class="r-num mono">${esc(gbp0(o.fixed))}</td><td class="r-num mono">${esc(gbp0((o.projNet || 0) - (o.cogs || 0) - (o.varo || 0) - (o.fixed || 0)))}</td>${o.rentStepActive ? `<td>${S.rcc.tag('rent step live', 'warn')}</td>` : '<td></td>'}</tr>`).join('');
+      const outlookPanel = S.rcc.panel({ title: '3-month cost outlook', sub: 'accrual basis — cost INCURRED (Cash Commitments owns the cash-OUT timing) · projected net = flat carry of the base month (the RCC forecast owns the seasonality model — pointered, not re-derived)',
+        body: `<div style="overflow:auto"><table><thead><tr><th>Month</th><th class="r-num">Proj net</th><th class="r-num">COGS</th><th class="r-num">Var OH</th><th class="r-num">Fixed</th><th class="r-num">Contribution</th><th></th></tr></thead><tbody>${outRows}</tbody></table></div>
+          <div class="r-mini-note">projected revenue is a FLAT CARRY of the base month, stated — for the seasonality-aware headline see <a href="/coyote/revenue?tab=forecast" style="color:${S.rcc.tokens.blue}">Revenue → Forecast</a> (one home) · rent step ${esc(RENT_STEP.date)}: £${(RENT_STEP.beforePenceYr / 100 / 1000)}k → £${(RENT_STEP.afterPenceYr / 100 / 1000)}k/yr.</div>` });
+      const risks = [
+        { t: 'Contractual rent step', p: `£${(RENT_STEP.beforePenceYr / 100 / 1000)}k → £${(RENT_STEP.afterPenceYr / 100 / 1000)}k/yr from ${RENT_STEP.date} — a fixed-cost increase locked in the lease.`, tone: 'warn' },
+        { t: 'Processor fee visibility', p: 'card fees moved to net settlement — current fees are invisible in QB until the processor statement is wired (the Reconciliation unlock).', tone: 'info' },
+        { t: 'Recipe-costing gap', p: 'without recipe costs, COGS% cannot be split actual-vs-theoretical — waste/spec drift is unmeasured (the Calum gate).', tone: 'info' },
+      ];
+      const riskPanel = S.rcc.panel({ title: 'Forward cost risks', sub: 'named, with basis',
+        body: `<div class="r-alert-list">${risks.map((r) => S.rcc.alert({ title: r.t, text: r.p, tone: r.tone })).join('')}</div>` });
+      return `<div class="r-grid r-two-col">${scenarioPanel}${rulePanel}</div>${outlookPanel}${riskPanel}`;
+    };
+
+    // ============================ SUPPLIERS & PURCHASING (C2) ============================
+    const renderSuppliersTab = () => {
+      const s = m.suppliers || {};
+      if (!s.bankMax || !s.suppliers || !s.suppliers.length) {
+        return S.rcc.panel({ title: 'Supplier scorecard', sub: 'from bank purchases (qb_bank_txns)',
+          body: S.rcc.emptyState({ title: 'Supplier scorecard', blocker: 'no bank purchases recorded (qb_bank_txns).', unlock: 'the QuickBooks bank ingest' }) });
+      }
+      const rows = s.suppliers.map((r) => `<tr><td>${esc(r.cp)}${r.isAggregate ? ` ${S.rcc.tag('aggregated', 'info')}` : ''}</td><td class="r-num mono">${esc(gbp0(r.spend))}</td><td class="r-num mono">${r.n != null ? int(r.n) : '—'}</td><td class="r-num mono">${r.sharePct.toFixed(1)}%</td><td class="r-num mono">${r.trendPct != null ? `<span style="color:${r.trendPct > 0 ? S.rcc.tokens.bad : S.rcc.tokens.good}">${r.trendPct >= 0 ? '+' : ''}${r.trendPct.toFixed(0)}%</span>` : '<span class="ash">—</span>'}</td></tr>`).join('');
+      const scorePanel = S.rcc.panel({ title: 'Supplier scorecard', sub: `bank purchases by counterparty · ${esc(s.window.from)} → ${esc(s.window.to)} (trailing 12mo) · TRUE supplier-spend wire (qb_bills is dead)`,
+        body: `<div style="overflow:auto"><table><thead><tr><th>Counterparty</th><th class="r-num">Spend 12mo</th><th class="r-num">Payments</th><th class="r-num">Share</th><th class="r-num">vs prior yr</th></tr></thead><tbody>${rows}</tbody></table></div>
+          <div class="r-mini-note">spend = qb_bank_txns purchases (VAT-inclusive; includes non-food outflows — rent agent, HMRC, utilities) · person-named payees pool into ONE Staff-payroll line (the surveillance boundary) · a supplier scorecard'\''s delivery/quality axis needs data no wire holds — see the dependency matrix.</div>` });
+      const con = s.concentration;
+      const concPanel = S.rcc.panel({ title: 'Supplier spend concentration', sub: 'dependency risk',
+        body: con ? `<div class="r-grid" style="grid-template-columns:1fr 1fr;gap:12px">
+            <div class="r-card r-kpi"><div class="r-kpi-label">Top supplier share</div><div class="r-kpi-value">${con.top1.toFixed(1)}%</div><div class="r-kpi-sub">of 12mo purchase spend</div></div>
+            <div class="r-card r-kpi"><div class="r-kpi-label">Top-3 share</div><div class="r-kpi-value">${con.top3.toFixed(1)}%</div><div class="r-kpi-sub">${int(con.n)} counterparties total</div></div>
+          </div><div class="r-mini-note">concentration = the exposure if a top supplier fails or raises prices · Booker-led food supply is the single largest dependency.</div>`
+          : S.rcc.emptyState({ title: 'Concentration', blocker: 'no purchase spend in the window.' }) });
+      const ppvPanel = S.rcc.panel({ title: 'Purchase price variance', sub: 'per-unit price movement', headRight: S.rcc.tag('invoice-line gated', 'warn'),
+        body: S.rcc.emptyState({ title: 'Purchase price variance', blocker: INVOICE_LINE_BLOCKER, unlock: INVOICE_LINE_UNLOCK }) });
+      const invPanel = S.rcc.panel({ title: 'Invoice control queue', sub: 'the bills ledger the venue does not run', headRight: S.rcc.tag('designed empty-state', 'info'),
+        body: S.rcc.emptyState({ title: 'Invoice control queue', blocker: AP_BLOCKER }) });
+      const depPanel = S.rcc.panel({ title: 'Supplier dependency × performance', sub: 'spend axis real · performance axis absent',
+        body: S.rcc.emptyState({ title: 'Dependency × performance', blocker: 'the spend (dependency) axis is real (concentration, above), but the performance axis — on-time delivery, fill rate, quality/credit rate — needs supplier-performance data no current wire holds.', unlock: 'delivery/quality capture (invoice-line ingest carries some; the rest is a supplier-portal decision)' }) });
+      const oppPanel = S.rcc.panel({ title: 'Commercial opportunity register', sub: 'operator-curated — a write-path decision',
+        body: S.rcc.emptyState({ title: 'Opportunity register', blocker: 'consolidation/renegotiation opportunities are an OPERATOR-ENTERED register — no write-path exists yet (unlike the read-only panels here).', unlock: 'a gated write-path ruling (like the recipe/review action paths)' }) });
+      return `${scorePanel}${concPanel}<div class="r-grid r-two-col">${ppvPanel}${invPanel}</div><div class="r-grid r-two-col">${depPanel}${oppPanel}</div>`;
+    };
+
+    // ============================ COGS & INVENTORY (C3) ============================
+    const renderCogsTab = () => {
+      const c = m.cogs || {};
+      if (!c.refMonth) {
+        return S.rcc.panel({ title: 'COGS & inventory', sub: 'QB category grain',
+          body: S.rcc.emptyState({ title: 'COGS & inventory', blocker: 'no QB expense or sales month to anchor on.', unlock: 'the QuickBooks + sales ingest' }) });
+      }
+      const catRows = c.cogsCats.length
+        ? c.cogsCats.map((a) => `<tr><td>${esc(a.name)}</td><td class="r-num mono">${esc(gbp0(a.p))}</td><td>${S.rcc.tag('actual (QB)', 'good')}</td><td class="ash">theoretical — recipe-gated</td></tr>`).join('')
+        : `<tr><td colspan="4" class="ash">no COGS-classed accounts in ${esc(monthLabel(c.refMonth))}</td></tr>`;
+      const avtPanel = S.rcc.panel({ title: 'Actual versus theoretical by category', sub: `${esc(monthLabel(c.refMonth))} · actual = QB COGS accounts${c.cogsPct != null ? ` · COGS ${c.cogsPct.toFixed(1)}% of net` : ''}`,
+        body: `<div style="overflow:auto"><table><thead><tr><th>Category</th><th class="r-num">Actual £</th><th>Basis</th><th>Theoretical</th></tr></thead><tbody>${catRows}</tbody></table></div>
+          <div class="r-mini-note">actual side is REAL at QB category grain · the theoretical column (what the recipes SHOULD cost) is locked — ${esc(RECIPE_CARROT)} → <a href="/coyote/recipes" style="color:${S.rcc.tokens.blue}">Recipes</a>.</div>` });
+      const bridgePanel = S.rcc.panel({ title: 'COGS variance bridge', sub: 'actual vs theoretical waterfall', headRight: S.rcc.tag('recipe-gated', 'warn'),
+        body: S.rcc.emptyState({ title: 'COGS variance bridge', blocker: RECIPE_BLOCKER, unlock: RECIPE_CARROT }) });
+      const pricePanel = S.rcc.panel({ title: 'Ingredient price watch', sub: 'per-unit ingredient price trend', headRight: S.rcc.tag('invoice-line gated', 'warn'),
+        body: S.rcc.emptyState({ title: 'Ingredient price watch', blocker: INVOICE_LINE_BLOCKER, unlock: INVOICE_LINE_UNLOCK }) });
+      const stockPanel = S.rcc.panel({ title: 'Stock and waste control', sub: 'counts + waste', headRight: S.rcc.tag('no wire', 'bad'),
+        body: S.rcc.emptyState({ title: 'Stock and waste control', blocker: 'no stock-count wire exists — K-Series inventory is operations-scope-gated (403), and QB holds no inventory. Waste is unmeasured without either stock counts or theoretical COGS.', unlock: 'K-Series inventory scope grant OR a stock-count capture' }) });
+      const otherRows = c.otherVar.length
+        ? c.otherVar.map((a) => `<tr><td>${esc(a.name)}</td><td class="r-num mono">${esc(gbp0(a.p))}</td></tr>`).join('')
+        : `<tr><td colspan="2" class="ash">no other-variable accounts in ${esc(monthLabel(c.refMonth))}</td></tr>`;
+      const otherPanel = S.rcc.panel({ title: 'Other variable cost control', sub: `${esc(monthLabel(c.refMonth))} · non-COGS variable accounts (packaging, cleaning, consumables)`,
+        body: `<div style="overflow:auto"><table><thead><tr><th>Account</th><th class="r-num">Actual £</th></tr></thead><tbody>${otherRows}</tbody></table></div>
+          <div class="r-mini-note">variable/COGS classification is a presentation judgment (QB account names), captioned · REAL at QB category grain.</div>` });
+      return `${avtPanel}<div class="r-grid r-two-col">${bridgePanel}${pricePanel}</div><div class="r-grid r-two-col">${stockPanel}${otherPanel}</div>`;
+    };
+
+    // ============================ RECIPE MARGINS (C3 — all recipe-gated) ============================
+    const renderMarginsTab = () => {
+      const g = m.margins || {};
+      const unlock = `${RECIPE_CARROT} → cost the top-20 at /coyote/recipes`;
+      const gated = (title) => S.rcc.panel({ title, sub: 'recipe-gated', headRight: S.rcc.tag('recipe-gated', 'warn'),
+        body: S.rcc.emptyState({ title, blocker: RECIPE_BLOCKER, unlock }) });
+      // the recipe-data-quality panel shows the LIVE coverage figures (real, small) — the ONE panel
+      // on this tab that fills before recipe costing, because it MEASURES the gate itself.
+      const cov = g.products > 0 ? (g.costedProducts / g.products) * 100 : null;
+      const qualityPanel = S.rcc.panel({ title: 'Recipe data quality', sub: 'the gate, measured live',
+        body: `<div class="r-grid" style="grid-template-columns:repeat(3,1fr);gap:12px">
+            <div class="r-card r-kpi"><div class="r-kpi-label">Products</div><div class="r-kpi-value">${int(g.products || 0)}</div><div class="r-kpi-sub">live Lightspeed SKUs</div></div>
+            <div class="r-card r-kpi"><div class="r-kpi-label">Costed</div><div class="r-kpi-value">${int(g.costedProducts || 0)}</div><div class="r-kpi-sub">${cov != null ? cov.toFixed(1) + '% of products' : 'no products yet'}</div></div>
+            <div class="r-card r-kpi"><div class="r-kpi-label">Recipe lines</div><div class="r-kpi-value">${int(g.recipeLines || 0)}</div><div class="r-kpi-sub">${(g.recipeLines || 0) === 0 ? 'the Calum gate — 0' : 'ingredient links'}</div></div>
+          </div><div class="r-mini-note">this is the ONLY panel here that fills before recipe costing — it MEASURES the gate · ${esc(RECIPE_CARROT)} unlocks the four gated panels · manage at <a href="/coyote/recipes" style="color:${S.rcc.tokens.blue}">Recipes & Costs</a>.</div>` });
+      return `<div class="r-grid r-two-col">${gated('Menu margin erosion watch')}${gated('Product economics matrix')}</div><div class="r-grid r-two-col">${gated('Smokehouse BBQ cost build')}${qualityPanel}</div>`;
     };
 
     const tabBody = tab === 'fixed' ? renderFixedTab()
       : tab === 'cash' ? renderCashTab()
-      : PENDING_TABS.includes(tab) ? renderPendingTab(tab)
+      : tab === 'forecast' ? renderForecastTab()
+      : tab === 'suppliers' ? renderSuppliersTab()
+      : tab === 'cogs' ? renderCogsTab()
+      : tab === 'margins' ? renderMarginsTab()
       : renderExecutiveTab();
 
     const body = `<div class="rcc">` + styles + tabsNav + tabBody + `</div>`;

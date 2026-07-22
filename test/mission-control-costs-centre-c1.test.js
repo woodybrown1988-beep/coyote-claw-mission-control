@@ -154,13 +154,9 @@ test('contract + shell: seven tabs on /coyote/costs, executive default, ?tab= sw
   assert.match(render(db, { tab: 'nonsense' }), /class="r-tab active" href="\/coyote\/costs\?tab=executive"/, 'unknown falls back to executive');
 });
 
-test('C1 split: forecast/cogs/margins/suppliers each render the ONE pending note; built tabs never do', () => {
+test('the centre is COMPLETE — NO tab renders a pending note (C2 + C3 shipped: Cost Forecast, Suppliers, COGS, Recipe Margins)', () => {
   const db = makeDb();
-  for (const tab of ['forecast', 'cogs', 'margins', 'suppliers']) {
-    const body = render(db, { tab });
-    assert.equal(count(body, 'C2/C3 build pending'), 1, `${tab}: exactly one pending note`);
-  }
-  for (const tab of ['executive', 'fixed', 'cash']) {
+  for (const tab of ['executive', 'forecast', 'cogs', 'margins', 'suppliers', 'fixed', 'cash']) {
     assert.ok(!render(db, { tab }).includes('C2/C3 build pending'), `${tab} is built — no pending note`);
   }
 });
