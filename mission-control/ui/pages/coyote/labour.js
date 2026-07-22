@@ -55,6 +55,10 @@
 const S = require('../../shared.js');
 const REP = require('../../reporting.js');
 const K = require('../../kpi.js');
+// Rota Review consolidation (2026-07-22): the standalone page was retired; its full report
+// (FORWARD/HINDSIGHT verdicts + per-daypart items + run history) is hosted here as a tab by
+// delegating to the same renderer. The cadence timers still write rota_review_runs, which it reads.
+const ROTA_REVIEW = require('./rota-review.js');
 
 function rowsOf(res) { return res && res.ok && Array.isArray(res.rows) ? res.rows : []; }
 function num(v) { if (v === null || v === undefined) return null; const n = Number(v); return Number.isFinite(n) ? n : null; }
@@ -68,6 +72,7 @@ const TABS = [
   { key: 'executive', label: 'Executive' },
   { key: 'forecast', label: 'Labour Forecast' },
   { key: 'rota', label: 'Rota vs Actual' },
+  { key: 'rota-review', label: 'Rota Review' },
   { key: 'kitchen', label: 'Kitchen' },
   { key: 'foh', label: 'Front of House' },
   { key: 'coverage', label: 'Coverage & People' },
@@ -690,6 +695,7 @@ module.exports = {
     m.maxDate = mx && mx.d ? String(mx.d) : null;
     if (tab === 'executive') m.exec = buildExecutive(q, m.maxDate);
     if (tab === 'rota') m.rota = buildRota(q, m.maxDate);
+    if (tab === 'rota-review') m.rr = ROTA_REVIEW.getSection(db, ctx); // delegate — same renderer, hosted as a tab
     if (tab === 'forecast') m.fc = buildForecast(q, m.maxDate, now);
     if (tab === 'kitchen' || tab === 'foh') m.dept = buildDept(q, m.maxDate, tab, now);
     if (tab === 'coverage') m.cov = buildCoverage(q, m.maxDate);
@@ -877,8 +883,8 @@ module.exports = {
         : `<div class="r-alert good"><div class="r-bar"></div><div><h4>All clear</h4><p>${hasRuns ? 'no verdict deltas, WTR flags, parity findings or unmapped shifts on record.' : 'no rota-review runs on record yet — the cadence timers persist them; no WTR/parity/unmapped findings.'}</p></div><div class="r-impact"></div></div>`;
       const queuePanel = S.rcc.panel({
         title: 'Owner attention queue', sub: 'ranked findings, £-valued · verdicts from the latest FORWARD + HINDSIGHT runs',
-        headRight: `<a class="r-pill" href="/coyote/rota-review">Rota Review report →</a>`,
-        body: queueBody + `<div class="r-mini-note">verdict receipts (history + full text) stay on the <a href="/coyote/rota-review" style="color:${S.rcc.tokens.accent2}">Rota Review report</a> — no duplication. The People exception queue is EXCLUDED BY RULING (surveillance boundary): people appear as rota-structural facts only.</div>`,
+        headRight: `<a class="r-pill" href="/coyote/labour?tab=rota-review">Rota Review →</a>`,
+        body: queueBody + `<div class="r-mini-note">the full verdict receipts (per-daypart items + the week-on-week run history) are on the <a href="/coyote/labour?tab=rota-review" style="color:${S.rcc.tokens.accent2}">Rota Review tab</a>. The People exception queue is EXCLUDED BY RULING (surveillance boundary): people appear as rota-structural facts only.</div>`,
       });
 
       // ---- (4) labour variance bridge (waterfall) ----
@@ -1783,6 +1789,7 @@ module.exports = {
     };
 
     const tabBody = tab === 'rota' ? renderRotaTab()
+      : tab === 'rota-review' ? ROTA_REVIEW.render(m.rr, ctx).body
       : tab === 'forecast' ? renderForecastTab()
       : tab === 'kitchen' ? renderKitchenTab()
       : tab === 'foh' ? renderFohTab()

@@ -274,14 +274,14 @@ module.exports = {
     // ============ (4) WEEK AHEAD — the forward panel ============
     parts.push(`<div class="sec-label">The week ahead<span class="rule"></span></div>`);
     if (!m.ahead || !m.ahead.days.length) {
-      parts.push(`<div class="banner muted">No forward rota/forecast on file yet — the rota-ahead pull (daily 10:00) fills this in. <a href="/coyote/rota-review" style="color:var(--cyan,#22D3EE)">Rota Review →</a></div>`);
+      parts.push(`<div class="banner muted">No forward rota/forecast on file yet — the rota-ahead pull (daily 10:00) fills this in. <a href="/coyote/labour?tab=rota-review" style="color:var(--cyan,#22D3EE)">Rota Review →</a></div>`);
     } else {
       let fwdLine = '';
       if (m.ahead.forward) {
         const f = m.ahead.forward;
         const vs = f.verdicts.map((v) => v.deltaPence == null ? `${esc(v.dept)}: no budget`
           : `${esc(v.dept)} ${v.deltaPence > 0 ? `<span style="color:var(--amber,#FBBF24)">${signedGbp(v.deltaPence)} vs formula</span>` : `<span style="color:var(--green,#34D399)">${signedGbp(v.deltaPence)} vs formula</span>`}`).join(' · ');
-        fwdLine = `<div class="rp-hint" style="margin:6px 0 10px">FORWARD verdict w/c ${esc(f.week)}: ${vs}${f.unpublished ? ' · <span style="color:var(--amber,#FBBF24)">kitchen rota unpublished — provisional</span>' : ''} · <a href="/coyote/rota-review" style="color:var(--cyan,#22D3EE)">full report →</a></div>`;
+        fwdLine = `<div class="rp-hint" style="margin:6px 0 10px">FORWARD verdict w/c ${esc(f.week)}: ${vs}${f.unpublished ? ' · <span style="color:var(--amber,#FBBF24)">kitchen rota unpublished — provisional</span>' : ''} · <a href="/coyote/labour?tab=rota-review" style="color:var(--cyan,#22D3EE)">full report →</a></div>`;
       }
       const rowsHtml = m.ahead.days.map((r) => `<tr>
         <td class="mono">${esc(dowShort(r.date))} ${esc(r.date.slice(5))}</td>
@@ -307,7 +307,7 @@ module.exports = {
     if (m.labourWeek && m.labourWeek.actPct != null) {
       const lw = m.labourWeek;
       const over = lw.budPct != null && lw.actPct > lw.budPct;
-      lines.push(`Labour last week: <b>${lw.actPct.toFixed(1)}%</b> vs budget ${lw.budPct != null ? lw.budPct.toFixed(1) + '%' : '—'} (scorecard ruler, ${S.fmtInt(lw.days)}d)${over ? ' <span class="rp-yoy-down">over</span>' : ' <span class="rp-yoy-up">within</span>'} · <a href="/coyote/labour" style="color:var(--cyan,#22D3EE)">labour →</a> · <a href="/coyote/rota-review" style="color:var(--cyan,#22D3EE)">rota review →</a>`);
+      lines.push(`Labour last week: <b>${lw.actPct.toFixed(1)}%</b> vs budget ${lw.budPct != null ? lw.budPct.toFixed(1) + '%' : '—'} (scorecard ruler, ${S.fmtInt(lw.days)}d)${over ? ' <span class="rp-yoy-down">over</span>' : ' <span class="rp-yoy-up">within</span>'} · <a href="/coyote/labour" style="color:var(--cyan,#22D3EE)">labour →</a> · <a href="/coyote/labour?tab=rota-review" style="color:var(--cyan,#22D3EE)">rota review →</a>`);
     }
     if (lines.length) {
       parts.push(`<div class="sec-label">Verdicts<span class="rule"></span></div>`);

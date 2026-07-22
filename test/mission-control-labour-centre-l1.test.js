@@ -73,12 +73,12 @@ test('shell: six tabs on the ONE route, executive default, ?tab= switches; title
   assert.match(renderTab(db, { tab: 'nonsense' }), /class="r-tab active" href="\/coyote\/labour\?tab=executive"/, 'an unknown tab falls back to executive');
 });
 
-test('nav move: labour lives in the Reports group AFTER reservations; Departments no longer holds it', () => {
+test('nav: labour is 2nd in the Reports group (after Revenue, per the 2026-07-22 reorder); Departments no longer holds it', () => {
   const S = require('../mission-control/ui/shared.js');
   const coyote = S.WORKSPACES.find((w) => w.key === 'coyote');
   const reports = coyote.groups.find((g) => g.group === 'Reports');
-  assert.deepEqual(reports.items.map((i) => i.key), ['revenue', 'report-library', 'rota-review', 'reservations', 'labour', 'costs', 'inventory', 'kitchen-safety', 'operations', 'customer-growth'], 'Reports order — labour after reservations');
-  const labItem = reports.items[4];
+  assert.deepEqual(reports.items.map((i) => i.key), ['revenue', 'labour', 'costs', 'reservations', 'operations', 'inventory', 'customer-growth', 'kitchen-safety', 'report-library'], 'Reports order — labour is 2nd');
+  const labItem = reports.items[1];
   assert.equal(labItem.label, 'Labour');
   assert.equal(labItem.route, '/coyote/labour', 'same route — no redirect needed');
   const depts = coyote.groups.find((g) => g.group === 'Departments');
@@ -161,7 +161,7 @@ test('executive attention queue: seeded verdicts £-valued with the Rota Review 
   assert.match(body, /r-alert bad[\s\S]{0,400}KITCHEN — FORWARD/, 'over-materiality verdict = bad tone');
   assert.ok(body.includes('FOH — HINDSIGHT w/c 2026-07-13') && body.includes('£50.00 under'), 'under verdict too');
   assert.ok(body.includes('£4,415.00'), 'the formula budget is named');
-  assert.ok(body.includes('href="/coyote/rota-review"') && body.includes('Rota Review report'), 'action pointer to the receipts');
+  assert.ok(body.includes('href="/coyote/labour?tab=rota-review"') && body.includes('Rota Review'), 'action pointer to the Rota Review tab (consolidated 2026-07-22)');
   assert.ok(body.includes('2 flag(s)'), 'WTR count');
   assert.ok(body.includes('1 finding(s)'), 'rate-parity count');
   assert.ok(body.includes('Una Mapped'), 'unmapped-shift names surfaced (data hygiene — ruled compliant)');

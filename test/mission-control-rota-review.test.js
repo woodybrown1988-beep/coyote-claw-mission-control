@@ -102,8 +102,8 @@ test('rota-review: empty DB renders the honest banner; history renders the recei
   assert.match(out2.body, /thursday/);
 });
 
-test('report-library: carries the standing Rota Review link (empty state included)', () => {
+test('report-library: carries the standing Rota Review link — now the Labour tab (consolidated 2026-07-22)', () => {
   const db = new sqlite.DatabaseSync(':memory:');
   const out = library.render(library.getSection(db, ctxFor(db)), ctxFor(db));
-  assert.match(out.body, /href="\/coyote\/rota-review"/);
+  assert.match(out.body, /href="\/coyote\/labour\?tab=rota-review"/);
 });

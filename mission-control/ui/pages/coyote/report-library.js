@@ -80,7 +80,7 @@ module.exports = {
     </style>`;
 
     if (!m.reports.length && !(m.departments || []).length) {
-      return { stamp: 'no reports yet', body: styles + `<div class="banner muted" style="border-left:3px solid #22D3EE"><b><a href="/coyote/rota-review">Rota Review — weekly FORWARD &amp; HINDSIGHT rota verdicts →</a></b> <span class="ash">labour vs demand on the banded formula ruler; runs persist as dated receipts (kitchen/FOH filterable)</span></div>` + `<div class="banner muted">No reports yet. Specialists (financial planner first) publish here: verdict-first, every claim source-cited, gaps explicit. Masters are committed to the vault under <span class="mono">reports/</span>.</div>` };
+      return { stamp: 'no reports yet', body: styles + `<div class="banner muted" style="border-left:3px solid #22D3EE"><b><a href="/coyote/labour?tab=rota-review">Rota Review — weekly FORWARD &amp; HINDSIGHT rota verdicts →</a></b> <span class="ash">labour vs demand on the banded formula ruler; runs persist as dated receipts (kitchen/FOH filterable)</span></div>` + `<div class="banner muted">No reports yet. Specialists (financial planner first) publish here: verdict-first, every claim source-cited, gaps explicit. Masters are committed to the vault under <span class="mono">reports/</span>.</div>` };
     }
 
     const items = m.reports.map((r) => {
@@ -123,7 +123,7 @@ module.exports = {
     </div>` : '';
     return {
       stamp: `${m.reports.length} report${m.reports.length === 1 ? '' : 's'}${m.deptFilter ? ` · ${esc(m.deptFilter)}` : ''}`,
-      body: styles + (viewer ? viewer : '') + `<div class="banner muted" style="border-left:3px solid #22D3EE"><b><a href="/coyote/rota-review">Rota Review — weekly FORWARD &amp; HINDSIGHT rota verdicts →</a></b> <span class="ash">labour vs demand on the banded formula ruler; runs persist as dated receipts (kitchen/FOH filterable)</span></div>` + `<div class="sec-label">Reports <span class="mono">(${m.sort === 'department' ? 'by department, newest within' : 'newest first'})</span><span class="rule"></span></div>` + bar + `<div class="rl-list">${items}</div>`,
+      body: styles + (viewer ? viewer : '') + `<div class="banner muted" style="border-left:3px solid #22D3EE"><b><a href="/coyote/labour?tab=rota-review">Rota Review — weekly FORWARD &amp; HINDSIGHT rota verdicts →</a></b> <span class="ash">labour vs demand on the banded formula ruler; runs persist as dated receipts (kitchen/FOH filterable)</span></div>` + `<div class="sec-label">Reports <span class="mono">(${m.sort === 'department' ? 'by department, newest within' : 'newest first'})</span><span class="rule"></span></div>` + bar + `<div class="rl-list">${items}</div>`,
     };
   },
 };

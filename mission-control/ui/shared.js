@@ -66,29 +66,22 @@ const WORKSPACES = [
     { group: 'Command', items: [
       { key: 'overview', label: 'Overview', route: '/coyote/overview', ico: '<rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/>' },
     ] },
+    // Reports order (operator ruling 2026-07-22): Revenue, Labour, Costs, Reservations, Operations,
+    // Inventory, Customer Growth, Kitchen Safety, Report Library. The standalone "Rota Review" nav item
+    // was RETIRED in the same ruling — its full report (FORWARD/HINDSIGHT verdicts + per-daypart items +
+    // run history) now lives as the Labour Centre's "Rota Review" tab; /coyote/rota-review 308-redirects
+    // to /coyote/labour?tab=rota-review. The cadence timers still write to rota_review_runs, which that
+    // tab reads.
     { group: 'Reports', items: [
       { key: 'revenue', label: 'Revenue', route: '/coyote/revenue', ico: '<path d="M3 3v18h18"/><rect x="7" y="11" width="3" height="7"/><rect x="12" y="7" width="3" height="11"/><rect x="17" y="4" width="3" height="14"/>' },
-      { key: 'report-library', label: 'Report Library', route: '/coyote/report-library', ico: '<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><path d="M9 7h7M9 11h7"/>' },
-      { key: 'rota-review', label: 'Rota Review', route: '/coyote/rota-review', ico: '<rect x="3" y="4" width="18" height="17" rx="2"/><path d="M8 2v4M16 2v4M3 9h18M8 14h3M8 17h6"/>' },
-      { key: 'reservations', label: 'Reservations', route: '/coyote/reservations', ico: '<path d="M12 2a4 4 0 0 1 4 4c0 2.5-4 7-4 7s-4-4.5-4-7a4 4 0 0 1 4-4z"/><path d="M4 21h16M6 17h12"/>' },
-      // Labour Centre L1 (2026-07-21): labour moved from Departments into Reports (after
-      // reservations) — the centre keeps the /coyote/labour route, so no redirect is needed.
       { key: 'labour', label: 'Labour', route: '/coyote/labour', ico: '<circle cx="9" cy="7" r="3"/><circle cx="17" cy="9" r="2.5"/><path d="M3 20v-1a6 6 0 0 1 12 0v1"/><path d="M15 20v-1a5 5 0 0 1 7-4.6"/>' },
-      // Costs & Supplier Centre C1 (2026-07-22): the costs command centre joins Reports after
-      // labour — QB ledger shadow + bank truth on /coyote/costs.
       { key: 'costs', label: 'Costs', route: '/coyote/costs', ico: '<path d="M12 1v22M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>' },
-      { key: 'inventory', label: 'Inventory', route: '/coyote/inventory', ico: '<path d="M20 7 12 3 4 7v10l8 4 8-4z"/><path d="M4 7l8 4 8-4M12 11v10"/>' },
-      // Kitchen Safety Centre (2026-07-22): owner oversight of the Kitchen Safety App (Supabase,
-      // mirrored into ks_*). Real live source — the red-cap is a hard critical-only override.
-      { key: 'kitchen-safety', label: 'Kitchen Safety', route: '/coyote/kitchen-safety', ico: '<path d="M12 2a3 3 0 0 1 3 3c0 1-.4 1.7-1 2.3V9h2a2 2 0 0 1 2 2v3a6 6 0 0 1-12 0v-3a2 2 0 0 1 2-2h2V7.3c-.6-.6-1-1.3-1-2.3a3 3 0 0 1 3-3z"/><path d="M6 21h12"/>' },
-      // Operations Centre (2026-07-22): REVIVED as the build-ahead Operations & Service scaffold —
-      // a new service-execution domain (KDS/OpenTable/digital-order/defect-capture), sources connect
-      // later; every panel a source-gated empty-state, zero mock numbers.
+      { key: 'reservations', label: 'Reservations', route: '/coyote/reservations', ico: '<path d="M12 2a4 4 0 0 1 4 4c0 2.5-4 7-4 7s-4-4.5-4-7a4 4 0 0 1 4-4z"/><path d="M4 21h16M6 17h12"/>' },
       { key: 'operations', label: 'Operations', route: '/coyote/operations', ico: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/>' },
-      // Customer Growth Centre (2026-07-22): build-ahead scaffold, four-way verdict per panel
-      // (live/wired-degraded/needs-integration/no-source). Live reputation slice + CRM anchor
-      // (0 profiles, ~100% unknown revenue); ~75% no-source = a customer-identity business gap.
+      { key: 'inventory', label: 'Inventory', route: '/coyote/inventory', ico: '<path d="M20 7 12 3 4 7v10l8 4 8-4z"/><path d="M4 7l8 4 8-4M12 11v10"/>' },
       { key: 'customer-growth', label: 'Customer Growth', route: '/coyote/customer-growth', ico: '<circle cx="9" cy="8" r="3"/><path d="M3 20v-1a6 6 0 0 1 12 0v1"/><path d="M16 3.5a3 3 0 0 1 0 5.8M18 20v-1a5 5 0 0 0-3-4.6"/>' },
+      { key: 'kitchen-safety', label: 'Kitchen Safety', route: '/coyote/kitchen-safety', ico: '<path d="M12 2a3 3 0 0 1 3 3c0 1-.4 1.7-1 2.3V9h2a2 2 0 0 1 2 2v3a6 6 0 0 1-12 0v-3a2 2 0 0 1 2-2h2V7.3c-.6-.6-1-1.3-1-2.3a3 3 0 0 1 3-3z"/><path d="M6 21h12"/>' },
+      { key: 'report-library', label: 'Report Library', route: '/coyote/report-library', ico: '<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><path d="M9 7h7M9 11h7"/>' },
     ] },
     { group: 'Departments', items: [
       { key: 'recipes', label: 'Recipes & Costs', route: '/coyote/recipes', ico: '<path d="M5 3h11l3 3v15H5z"/><path d="M9 8h6M9 12h6M9 16h4"/>' },

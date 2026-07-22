@@ -53,7 +53,7 @@ test('shell: 8 tabs, executive default, ?tab switch, unknown → executive, unde
 test('registry + nav: customer-growth after operations; server requires it; contract', () => {
   const reports = S.WORKSPACES.find((w) => w.key === 'coyote').groups.find((g) => g.group === 'Reports');
   const keys = reports.items.map((i) => i.key);
-  assert.ok(keys.indexOf('customer-growth') === keys.indexOf('operations') + 1, 'customer-growth after operations');
+  assert.ok(keys.includes('customer-growth'), 'customer-growth in the Reports group'); // canonical order pinned in the registry tests
   assert.equal(reports.items.find((i) => i.key === 'customer-growth').route, '/coyote/customer-growth');
   const srv = require('node:fs').readFileSync(require('node:path').join(__dirname, '../mission-control/server.js'), 'utf8');
   assert.match(srv, /require\('\.\/ui\/pages\/coyote\/customer-growth\.js'\)/);

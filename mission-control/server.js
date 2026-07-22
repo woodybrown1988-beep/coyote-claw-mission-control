@@ -150,7 +150,10 @@ function handleRequest(req, res) {
 
   const redirect = LEGACY_REDIRECTS[url.pathname];
   if (redirect) {
-    res.writeHead(308, { Location: redirect + url.search });
+    // query-safe: if the redirect TARGET already carries a query (e.g. a deep-link to a tab),
+    // merge the incoming query with '&' instead of a second '?'.
+    const loc = url.search ? (redirect.includes('?') ? `${redirect}&${url.search.slice(1)}` : redirect + url.search) : redirect;
+    res.writeHead(308, { Location: loc });
     res.end();
     return;
   }
@@ -186,7 +189,9 @@ const PAGES = [
   require('./ui/pages/coyote/operations.js'),
   require('./ui/pages/coyote/customer-growth.js'),
   require('./ui/pages/coyote/report-library.js'),
-  require('./ui/pages/coyote/rota-review.js'),
+  // rota-review is NOT a standalone route any more (2026-07-22): retired into the Labour Centre's
+  // Rota Review tab; /coyote/rota-review 308-redirects there. The module is still required by
+  // labour.js, which hosts its renderer as that tab.
   require('./ui/pages/coyote/labour.js'),
   require('./ui/pages/coyote/recipes.js'),
 ];
@@ -205,6 +210,9 @@ const LEGACY_REDIRECTS = {
   // 2026-07-22 as the build-ahead Operations & Service scaffold — so /coyote/operations now serves
   // the page and the redirect is removed; /operations → /coyote/operations still stands below.)
   '/coyote/yoy': '/coyote/revenue',  // no double-hop — straight to the new home
+  // Rota Review retired into the Labour Centre (2026-07-22): deep-link to its tab. ?dept=... is
+  // preserved via the query-safe merge above.
+  '/coyote/rota-review': '/coyote/labour?tab=rota-review',
   '/claw/agents': '/claw/engine',
   '/claw/health': '/claw/engine',
   '/overview': '/coyote/overview',
