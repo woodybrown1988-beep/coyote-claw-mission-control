@@ -78,6 +78,9 @@ const WORKSPACES = [
       // labour — QB ledger shadow + bank truth on /coyote/costs.
       { key: 'costs', label: 'Costs', route: '/coyote/costs', ico: '<path d="M12 1v22M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>' },
       { key: 'inventory', label: 'Inventory', route: '/coyote/inventory', ico: '<path d="M20 7 12 3 4 7v10l8 4 8-4z"/><path d="M4 7l8 4 8-4M12 11v10"/>' },
+      // Kitchen Safety Centre (2026-07-22): owner oversight of the Kitchen Safety App (Supabase,
+      // mirrored into ks_*). Real live source — the red-cap is a hard critical-only override.
+      { key: 'kitchen-safety', label: 'Kitchen Safety', route: '/coyote/kitchen-safety', ico: '<path d="M12 2a3 3 0 0 1 3 3c0 1-.4 1.7-1 2.3V9h2a2 2 0 0 1 2 2v3a6 6 0 0 1-12 0v-3a2 2 0 0 1 2-2h2V7.3c-.6-.6-1-1.3-1-2.3a3 3 0 0 1 3-3z"/><path d="M6 21h12"/>' },
     ] },
     { group: 'Departments', items: [
       { key: 'recipes', label: 'Recipes & Costs', route: '/coyote/recipes', ico: '<path d="M5 3h11l3 3v15H5z"/><path d="M9 8h6M9 12h6M9 16h4"/>' },
