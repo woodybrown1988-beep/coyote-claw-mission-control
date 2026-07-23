@@ -181,6 +181,27 @@ function clientScript() {
   });
   // BOM (Recipes & Costs) — gated edits: submit an rc-form to POST /api/recipe-action (the closed allowlist).
   document.addEventListener('submit',(e)=>{const f=e.target; if(!f||!f.classList||!f.classList.contains('rc-form'))return; e.preventDefault(); if(aqBusy)return; const kind=f.getAttribute('data-rc'); const d={}; new FormData(f).forEach((v,k)=>{d[k]=v;}); let body; if(kind==='sub_item'){body={op:'upsert_sub_item',id:d.id,name:d.name,supplier:d.supplier,pack_description:d.pack_description,pack_cost_pence:(d.pack_cost===''||d.pack_cost==null)?null:Math.round(parseFloat(d.pack_cost)*100),pack_qty:(d.pack_qty===''?null:d.pack_qty),unit_of_measure:d.unit_of_measure};}else{body={op:'set_recipe_line',product_id:d.product_id,sub_item_id:d.sub_item_id,quantity:d.quantity};} aqBusy=true; fetch('/api/recipe-action',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}).then(r=>r.json()).then(r=>{aqBusy=false; if(r&&r.ok){location.reload();}else{alert('Rejected: '+((r&&r.error)||'unknown'));}}).catch(()=>{aqBusy=false;}); });
+  (function(){
+    function ru(file){var out=document.querySelector('[data-res-result]');if(!file)return;
+      if(!/\\.csv$/i.test(file.name)){if(out)out.innerHTML='<span class="res-bad">only .csv files are accepted</span>';return;}
+      if(file.size>26214400){if(out)out.innerHTML='<span class="res-bad">file too large (max 25 MB)</span>';return;}
+      if(out)out.innerHTML='<span class="res-busy">uploading & ingesting '+file.name+'…</span>';
+      fetch('/api/reservations-upload?name='+encodeURIComponent(file.name),{method:'POST',headers:{'content-type':'text/csv'},body:file}).then(function(r){return r.json();}).then(function(r){
+        if(!r||!r.ok){if(out)out.innerHTML='<span class="res-bad">refused: '+((r&&r.error)||'unknown')+'</span>';return;}
+        var range=r.date_from?(' ('+r.date_from+'..'+r.date_to+')'):'';var cov=(r.covers!=null)?(' · '+r.covers+' covers'):'';var m;
+        if(r.duplicate){m='<span class="res-ok">already ingested — no-op</span> · '+(r.rows_written||0)+' rows'+range;}
+        else if(r.queued){m='<span class="res-ok">saved to inbox</span> · '+(r.message||'');}
+        else if(r.status==='ok'){m='<span class="res-ok">ingested ✓</span> '+(r.rows_written||0)+' rows'+range+cov;}
+        else if(r.status==='quarantined'){m='<span class="res-bad">quarantined</span> — '+(r.detail||'malformed');}
+        else{m='<span class="res-busy">'+(r.status||'processing')+'</span> '+(r.message||'');}
+        if(out)out.innerHTML=m; if(r.status==='ok'||r.duplicate){setTimeout(function(){location.reload();},1500);}
+      }).catch(function(){if(out)out.innerHTML='<span class="res-bad">network error</span>';});}
+    document.addEventListener('click',function(e){var t=e.target;if(t&&t.closest&&t.closest('[data-res-browse]')){e.preventDefault();var f=document.querySelector('.res-file');if(f)f.click();}});
+    document.addEventListener('change',function(e){var t=e.target;if(t&&t.classList&&t.classList.contains('res-file')&&t.files&&t.files[0])ru(t.files[0]);});
+    ['dragover','dragenter'].forEach(function(ev){document.addEventListener(ev,function(e){var dz=e.target&&e.target.closest&&e.target.closest('[data-res-dropzone]');if(dz){e.preventDefault();dz.classList.add('res-over');}});});
+    document.addEventListener('dragleave',function(e){var dz=e.target&&e.target.closest&&e.target.closest('[data-res-dropzone]');if(dz)dz.classList.remove('res-over');});
+    document.addEventListener('drop',function(e){var dz=e.target&&e.target.closest&&e.target.closest('[data-res-dropzone]');if(dz){e.preventDefault();dz.classList.remove('res-over');var f=e.dataTransfer&&e.dataTransfer.files&&e.dataTransfer.files[0];if(f)ru(f);}});
+  })();
   if(!document.querySelector('[data-chat-page]')) setTimeout(()=>location.reload(),30000);`;
 }
 

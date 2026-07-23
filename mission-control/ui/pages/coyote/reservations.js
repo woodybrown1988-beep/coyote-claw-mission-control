@@ -178,6 +178,13 @@ function buildExecutive(q) {
         WHERE r.business_date BETWEEN ? AND ? AND m.channel_label = 'EAT IN' AND ${SALE_WHERE}`, [from28, apiMax]))[0];
     if (row && num(row.txn) > 0) e.pos = { from: from28, to: apiMax, net: num(row.net) || 0, txn: num(row.txn) || 0 };
   }
+
+  // ---- ingest ledger state (feeds the Data-drop panel + the last-ingests table). Tables may be
+  // absent on an un-migrated DB → q degrades to []/null, the drop panel still renders. ----
+  e.ingest = {
+    runs: rowsOf(q(`SELECT file_name, source, status, rows_written, date_from, date_to, detail, ingested_at FROM reservations_ingest_runs ORDER BY ingested_at DESC LIMIT 6`)),
+    cov: rowsOf(q(`SELECT COUNT(*) days, MIN(business_date) f, MAX(business_date) t, COALESCE(SUM(total_covers),0) covers FROM covers_day`))[0] || null,
+  };
   return e;
 }
 
@@ -208,6 +215,16 @@ module.exports = {
     // meterRow/stars extensions) + the reports shell grammar ported VERBATIM (.r-tabs nav,
     // grids, trend-SVG classes, captions) + the two page-local grammars this tab needs.
     const styles = `<style>${S.rcc.css()}</style><style>
+      .rcc .res-drop{display:grid;gap:9px}
+      .rcc .res-dz{border:2px dashed #3a434d;border-radius:14px;padding:26px 16px;text-align:center;background:#0f1419;color:#9aa4ae;font-size:12px;cursor:pointer;transition:border-color .12s,background .12s}
+      .rcc .res-dz b{display:block;color:#d5dbe1;font-size:13px;margin-bottom:3px}
+      .rcc .res-dz span{display:block}
+      .rcc .res-dz a{color:var(--rblue,#67a7ff)}
+      .rcc .res-dz.res-over{border-color:var(--raccent,#e6654f);background:#171b20;color:#d5dbe1}
+      .rcc .res-result{font-size:12px;min-height:16px;line-height:1.5}
+      .rcc .res-result .res-ok{color:#8ee1b4;font-weight:800}
+      .rcc .res-result .res-bad{color:#f4a09f;font-weight:800}
+      .rcc .res-result .res-busy{color:#f3c76f;font-weight:800}
       .rcc .r-tabs{display:flex;gap:4px;border-bottom:1px solid var(--rline);margin:0 0 14px;overflow:auto}
       .rcc .r-tab{color:#9ba4ae;padding:11px 14px;font-weight:700;border-bottom:2px solid transparent;white-space:nowrap;text-decoration:none;font-size:13px}
       .rcc .r-tab.active{color:#fff;border-bottom-color:var(--raccent)}
@@ -376,10 +393,35 @@ module.exports = {
           ${readyRow('OpenTable reservations', ot.tag, ot.detail)}
           ${readyRow('Guest identity map', S.rcc.tag('not started'), 'review↔guest identity linking — needs OpenTable + the identity-map decision')}
         </tbody></table>
-        <div class="r-mini-note">readiness read from the DB; the export inbox is a box path the board cannot see.</div>`,
+        <div class="r-mini-note">readiness read from the DB; drop the export in the panel above — no filesystem, no CLI.</div>`,
+      });
+
+      // ---- (7) Data drop + recent ingests: the browser drop point for the OpenTable export.
+      // The drop zone + upload logic live in shared.js (delegated); here we render the hooks. ----
+      const ing = ex.ingest || { runs: [], cov: null };
+      const dropPanel = S.rcc.panel({
+        title: 'Data drop — OpenTable export', sub: 'drag the weekly CSV here (or the one-off history file) — it ingests immediately',
+        headRight: S.rcc.tag('.csv · 25 MB max', 'info'),
+        body: `<div class="res-drop">
+          <input type="file" accept=".csv,text/csv" class="res-file" style="display:none">
+          <div class="res-dz" data-res-dropzone><b>Drop the .csv here</b><span>or <a href="#" data-res-browse>click to browse</a></span></div>
+          <div class="res-result" data-res-result></div>
+        </div>
+        <div class="r-mini-note">lands in the box inbox and runs the ingest — malformed files quarantine with the reason shown here; a repeat drop is a visible no-op. The folder + 30-min timer keep working as fallback.</div>`,
+      });
+      const covSub = ing.cov && ing.cov.days ? `${ing.cov.days} days · ${ing.cov.f}..${ing.cov.t} · ${Number(ing.cov.covers || 0).toLocaleString('en-GB')} covers` : 'no covers yet — drop an export above';
+      const runRows = (ing.runs || []).map((r) => {
+        const st = r.status === 'ok' ? S.rcc.tag('ok', 'good') : r.status === 'quarantined' ? S.rcc.tag('quarantined', 'bad') : S.rcc.tag(r.status || '—', 'warn');
+        const when = r.ingested_at ? new Date(Number(r.ingested_at)).toISOString().slice(0, 16).replace('T', ' ') : '—';
+        return `<tr><td>${esc(r.file_name || '—')}</td><td>${r.date_from ? esc(r.date_from + '..' + r.date_to) : '—'}</td><td class="num">${r.rows_written != null ? esc(String(r.rows_written)) : '—'}</td><td>${st}</td><td>${esc(when)}</td></tr>`;
+      }).join('') || `<tr><td colspan="5" class="muted">no ingests yet</td></tr>`;
+      const ingestPanel = S.rcc.panel({
+        title: 'Recent ingests', sub: covSub,
+        body: `<div class="scroll"><table><thead><tr><th>file</th><th>date range</th><th class="num">rows</th><th>status</th><th>ingested</th></tr></thead><tbody>${runRows}</tbody></table></div>`,
       });
 
       return `<div class="r-grid r-kpi-grid">${kpis}</div>${kpiCaption}
+        <div class="r-grid r-two-col">${dropPanel}${ingestPanel}</div>
         <div class="r-grid r-two-col">${stackPanel}${queuePanel}</div>
         <div class="r-grid r-three-col">${pickupPanel}${mixPanel}${readinessPanel}</div>`;
     };
