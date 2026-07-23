@@ -116,6 +116,13 @@ function handleRequest(req, res) {
     handleRecipeTemplate(res);
     return;
   }
+  // Download the opted-in lapsed-regular win-back list (Customer Growth). CONSENT is enforced in the
+  // data layer (marketing_opt_in = 1 in the SQL) — never the query string; a downloaded file, never
+  // rendered on a page. Tailnet-only like the rest of MC.
+  if (req.method === 'GET' && url.pathname === '/api/lapsed-export') {
+    handleLapsedExport(res, url);
+    return;
+  }
 
   if (req.method !== 'GET') {
     sendText(res, 405, 'Method not allowed');
@@ -915,6 +922,24 @@ function buildRecipeTemplate(db) {
   const lines = rows.map((r) => `${csvCell(r.lightspeed_sku)},${csvCell(r.name)},,`);
   return `${header}\n${lines.join('\n')}\n`;
 }
+function handleLapsedExport(res, url) {
+  const GROWTH = require('./ui/growth-export.js');
+  const opened = openDatabase();
+  let out = { minVisits: 3, rows: [] };
+  try {
+    if (opened.ok) out = GROWTH.lapsedExportRows(opened.db, url.searchParams.get('minVisits'));
+  } catch (_) { out = { minVisits: 3, rows: [] }; } finally {
+    if (opened.ok) { try { opened.db.close(); } catch (_) { /* not user-actionable */ } }
+  }
+  res.writeHead(200, {
+    'content-type': 'text/csv; charset=utf-8',
+    'content-disposition': `attachment; filename="lapsed-regulars-optedin-min${out.minVisits}.csv"`,
+    'cache-control': 'no-store',
+    'x-content-type-options': 'nosniff',
+  });
+  res.end(GROWTH.toCsv(out.rows));
+}
+
 function handleRecipeTemplate(res) {
   const opened = openDatabase();
   let csv;

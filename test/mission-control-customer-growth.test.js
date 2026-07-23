@@ -17,6 +17,9 @@ const sqlite = require('node:sqlite');
 const DATA = require('../mission-control/ui/data.js');
 const page = require('../mission-control/ui/pages/coyote/customer-growth.js');
 const S = require('../mission-control/ui/shared.js');
+const GROWTH = require('../mission-control/ui/growth-export.js');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const TABS = ['executive', 'market', 'acquisition', 'retention', 'campaigns', 'partners', 'content', 'crm'];
 const render = (db, tab) => { const ctx = { q: (s, p) => DATA.safeSelect(db, s, p), now: 0, query: tab ? { tab } : {} }; return page.render(page.getSection(db, ctx), ctx); };
@@ -116,4 +119,82 @@ test('source register: reviews degraded, CRM no-source, counts reflect real box 
   assert.equal(byKey.channel, 'live', 'sales_by_channel present → live');
   assert.equal(byKey.crm, 'nosource', 'no identity tables → no-source');
   assert.ok(sec.counts.nosource >= 1 && sec.counts.integration >= 3, 'the split is mostly integration/no-source');
+});
+
+// ---- PR-B: retention panels off OpenTable guest_profiles + the opted-in export ----
+
+function growthDb() {
+  const db = new sqlite.DatabaseSync(':memory:');
+  db.exec(`
+    CREATE TABLE covers_day (business_date TEXT PRIMARY KEY, total_covers INT, seated_covers INT);
+    CREATE TABLE guest_profiles (identity_key TEXT PRIMARY KEY, marketing_opt_in INT, completed_visits INT,
+      first_visit_date TEXT, recent_visit_date TEXT, lifetime_spend_pence INT, window_covers INT);
+    CREATE TABLE reservations (reservation_key TEXT PRIMARY KEY, identity_key TEXT, status TEXT, visit_date TEXT,
+      first_visit_date TEXT, party_size INT, guest TEXT, email TEXT, phone TEXT, marketing_opt_in INT);
+    CREATE TABLE review_corpus (platform TEXT, overall REAL, reviewed_date TEXT, has_reply INT);
+  `);
+  db.prepare(`INSERT INTO covers_day VALUES ('2024-06-01', 50, 50)`).run();
+  db.prepare(`INSERT INTO covers_day VALUES ('2026-07-22', 50, 50)`).run();
+  const gp = db.prepare(`INSERT INTO guest_profiles VALUES (?,?,?,?,?,?,?)`);
+  gp.run('k-ana', 1, 5, '2024-06-01', '2026-01-01', 12000, 12);   // opted + lapsed regular → in the export
+  gp.run('k-bob', 0, 4, '2024-06-10', '2026-01-01', 9000, 8);     // NOT opted + lapsed → MUST be excluded
+  gp.run('k-cid', 1, 2, '2025-01-01', '2026-07-20', 4000, 6);     // opted but recent → not lapsed
+  gp.run('k-dan', null, 1, '2026-07-01', '2026-07-01', 2000, 4);  // one-timer
+  const rv = db.prepare(`INSERT INTO reservations VALUES (?,?,?,?,?,?,?,?,?,?)`);
+  rv.run('r1', 'k-ana', 'finished', '2024-06-01', '2024-06-01', 2, 'Ana Adams', 'ana@example.com', '+44700', 1);
+  rv.run('r2', 'k-ana', 'finished', '2024-06-20', '2024-06-01', 4, 'Ana Adams', 'ana@example.com', '+44700', 1);
+  rv.run('r3', 'k-bob', 'finished', '2024-06-10', '2024-06-10', 2, 'Bob Boyle', 'bob@example.com', '+44701', 0);
+  rv.run('r4', 'k-cid', 'finished', '2025-01-01', '2025-01-01', 3, 'Cid Clark', 'cid@example.com', '+44702', 1);
+  return db;
+}
+
+test('PR-B retention: four panels render with real values + the LIVE ceiling caption on every one', () => {
+  const body = render(growthDb(), 'retention').body;
+  assert.match(body, /Second-visit conversion/); assert.match(body, /Visit-frequency distribution/);
+  assert.match(body, /Lapsed regulars/); assert.match(body, /Repeat vs new covers/);
+  assert.match(body, /Identified guests<\/div><div class="r-kpi-value"[^>]*>4</);
+  assert.match(body, /Lapsed regulars \(≥3\)<\/div><div class="r-kpi-value"[^>]*>2</, 'two lapsed regulars (Ana + Bob, both ≥3 visits)');
+  assert.match(body, /…contactable<\/div><div class="r-kpi-value"[^>]*>1</, 'but only 1 contactable — Ana (Bob is not opted-in)');
+  assert.match(body, /identified guests only — \d+\.\d+% of covers/, 'live-computed identity ceiling');
+  assert.match(body, /consent: \d+% of identified opted-in/, 'consent ceiling stated (separate from identity)');
+});
+
+test('PR-B NEGATIVE CONTROL: no identity-derived panel renders without its ceiling caption', () => {
+  const body = render(growthDb(), 'retention').body;
+  const idTags = (body.match(/OpenTable identity/g) || []).length;
+  const ceilings = (body.match(/identified guests only —/g) || []).length;
+  assert.ok(idTags >= 4, 'the four retention identity panels are present');
+  assert.equal(ceilings, idTags, 'the ceiling caption is on EXACTLY the identity panels — none without it');
+});
+
+test('PR-B: no per-guest NAMES/emails render on ANY tab (aggregates + segments only)', () => {
+  const db = growthDb();
+  for (const tab of ['retention', 'acquisition', 'crm', 'executive']) {
+    const body = render(db, tab).body;
+    for (const pii of ['Ana Adams', 'Bob Boyle', 'Cid Clark', 'ana@example.com', '+44700']) {
+      assert.doesNotMatch(body, new RegExp(pii.replace(/[.+*?^${}()|[\]\\]/g, '\\$&')), `${tab}: "${pii}" must never render on the board`);
+    }
+  }
+});
+
+test('PR-B EXPORT: lapsed-regular list is opted-in only (data-layer) — refuses non-opted-in guests', () => {
+  const out = GROWTH.lapsedExportRows(growthDb(), '3');
+  assert.deepEqual(out.rows.map((r) => r.name), ['Ana Adams'], 'only opted-in lapsed Ana; Bob (not opted) excluded');
+  assert.ok(out.rows.every((r) => r.email), 'the download carries contact detail (not a board render)');
+  const src = fs.readFileSync(path.join(__dirname, '../mission-control/ui/growth-export.js'), 'utf8');
+  assert.match(src, /marketing_opt_in\s*=\s*1/, 'consent enforced in the SQL, not the caller');
+  assert.equal(GROWTH.clampMinVisits('1'), 2); assert.equal(GROWTH.clampMinVisits('99'), 20); assert.equal(GROWTH.clampMinVisits('x'), 3);
+  assert.match(GROWTH.toCsv(out.rows), /^name,email,phone,lifetime_visits,last_visit,lifetime_spend_gbp\nAna Adams,ana@example.com/);
+});
+
+test('PR-B: server registers the GET /api/lapsed-export download route', () => {
+  const srv = fs.readFileSync(path.join(__dirname, '../mission-control/server.js'), 'utf8');
+  assert.match(srv, /'\/api\/lapsed-export'/); assert.match(srv, /handleLapsedExport/);
+  assert.match(srv, /content-disposition[\s\S]{0,90}attachment/i, 'a download, not a page render');
+});
+
+test('PR-B NO-SOURCE fallback: with no guest_profiles the retention tab keeps its honest nosource verdict', () => {
+  const body = render(reviewsDb(), 'retention').body;
+  assert.match(body, /no source|not captured/i, 'reverts to the nosource verdict');
+  assert.doesNotMatch(body, /identified guests only —/, 'no ceiling caption without identity data');
 });
