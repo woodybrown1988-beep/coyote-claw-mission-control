@@ -141,7 +141,7 @@ test('shell: default tab executive, ?tab=forecast switches, 5 links, everything 
 
 // ---------------- (b) Executive ----------------
 
-test('executive KPIs: real week net/gross/ATV vs weekday-aligned LY; covers = not wired, ZERO digits', () => {
+test('executive KPIs: real week net/gross/ATV vs weekday-aligned LY; covers honest fallback when no OpenTable rows', () => {
   const db = makeDb();
   seedExecutive(db);
   const body = render(db);
@@ -150,10 +150,11 @@ test('executive KPIs: real week net/gross/ATV vs weekday-aligned LY; covers = no
   assert.match(body, /£22\.00/, 'ATV = net ÷ txn');
   assert.match(body, /▲ 10\.0%/, 'delta vs the −364d weekday twin');
   assert.match(body, /2026-07-06 → 2026-07-12/, 'the window is named');
-  // covers: never a number — the tile must contain NO digits at all
+  // covers: this fixture holds NO covers_day rows → the tile is honest ('—', no fabricated digit).
+  // The WIRED case (real covers + reserved/walk-in split) is proven in mission-control-covers-wire.test.js.
   const covers = body.match(/<div class="r-kpi-label">Covers<\/div>[\s\S]*?<\/div><\/div>/);
   assert.ok(covers, 'covers tile renders');
-  assert.match(covers[0], /not wired/);
+  assert.match(covers[0], /no covers this week/, 'honest — no OpenTable covers in the window');
   assert.match(covers[0], /OpenTable/);
   assert.doesNotMatch(covers[0], /\d/, 'covers tile carries no digits — POS guest-count is not covers');
   assert.match(body, /Average spend \/ cover/);

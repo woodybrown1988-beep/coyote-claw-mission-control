@@ -161,7 +161,7 @@ function buildExecutive(q) {
   e.ready = {
     receipts: probe('sales_receipts_api'),
     corpus: probe('review_corpus'),
-    otRes: probe('opentable_reservations'),
+    otRes: probe('reservations'),
     otCovers: probe('covers_day'),
   };
 
@@ -188,19 +188,74 @@ function buildExecutive(q) {
   return e;
 }
 
+// Phase 2 PR1: the covers feed is LIVE (covers_day + reservations). This builds the real covers facts
+// for the previously-gated panels — day-grain only (daypart/occupancy stays gated until covers_slot,
+// PR3; guest identity stays gated — a business decision, not a wiring task). Every metric is an
+// AGGREGATE over party_size/status/source/duration — NO guest/staff identity is read (surveillance
+// boundary). Anchored to the covers feed's own MAX date; windows are captioned, never assumed.
+function buildCovers(q) {
+  const c = { max: null, from28: null, win: null, weeks: [], party: [], lead: [], turn: [], winFrom: null };
+  const mx = rowsOf(q(`SELECT MAX(business_date) d FROM covers_day`))[0];
+  const maxD = mx && mx.d ? String(mx.d) : null;
+  if (!maxD) return c;                                   // no feed → callers keep the gate-state
+  c.max = maxD;
+  const from28 = K.shiftDays(maxD, -27);
+  c.from28 = from28;
+  c.win = rowsOf(q(
+    `SELECT COUNT(*) days, COALESCE(SUM(total_covers),0) covers, COALESCE(SUM(seated_covers),0) seated,
+            COALESCE(SUM(reserved_covers),0) reserved, COALESCE(SUM(walkin_covers),0) walkin,
+            ROUND(AVG(NULLIF(avg_party,0)),2) party, ROUND(AVG(NULLIF(avg_duration_min,0)),0) turn
+       FROM covers_day WHERE business_date BETWEEN ? AND ?`, [from28, maxD]))[0] || null;
+  // 13-week reserved-vs-walk-in cover series — fixed Monday slots so a quiet week is an honest gap.
+  const mon0 = K.weekMonday(maxD);
+  const from13 = K.shiftDays(mon0, -7 * 12);
+  c.winFrom = from13;
+  const byWk = new Map(rowsOf(q(
+    `SELECT date(business_date,'weekday 1','-7 day') wk, COALESCE(SUM(reserved_covers),0) reserved,
+            COALESCE(SUM(walkin_covers),0) walkin, COALESCE(SUM(total_covers),0) total
+       FROM covers_day WHERE business_date BETWEEN ? AND ? GROUP BY wk`, [from13, maxD])).map((r) => [String(r.wk), r]));
+  for (let i = 12; i >= 0; i--) {
+    const wk = K.shiftDays(mon0, -7 * i);
+    const r = byWk.get(wk);
+    c.weeks.push({ wk, reserved: r ? num(r.reserved) || 0 : 0, walkin: r ? num(r.walkin) || 0 : 0, total: r ? num(r.total) || 0 : 0, has: !!r });
+  }
+  // per-booking distributions (reservations table, aggregates only) over the 13-week window
+  c.party = rowsOf(q(
+    `SELECT party_size sz, COUNT(*) bookings, SUM(party_size) covers FROM reservations
+      WHERE visit_date BETWEEN ? AND ? AND status IN ('seated','finished') AND party_size > 0
+      GROUP BY party_size ORDER BY party_size`, [from13, maxD]));
+  c.lead = rowsOf(q(
+    `SELECT CASE WHEN created_lead_days IS NULL THEN 'Unknown'
+                 WHEN created_lead_days < 0.5 THEN 'Same day (walk-in/late)'
+                 WHEN created_lead_days < 1.5 THEN '1 day'
+                 WHEN created_lead_days < 7 THEN '2–6 days'
+                 WHEN created_lead_days < 30 THEN '1–4 weeks'
+                 ELSE '1 month+' END bucket,
+            COUNT(*) bookings, SUM(party_size) covers FROM reservations
+      WHERE visit_date BETWEEN ? AND ? AND status IN ('seated','finished') GROUP BY bucket`, [from13, maxD]));
+  c.turn = rowsOf(q(
+    `SELECT party_size sz, COUNT(*) n, ROUND(AVG(actual_duration_min),0) avg_min FROM reservations
+      WHERE visit_date BETWEEN ? AND ? AND status IN ('seated','finished') AND actual_duration_min > 0 AND party_size > 0
+      GROUP BY party_size ORDER BY party_size`, [from13, maxD]));
+  return c;
+}
+
 module.exports = {
   key: 'reservations', route: '/coyote/reservations', workspace: 'coyote', title: 'Reservations',
-  sub: 'Guest & reservations command centre · OpenTable feed pending',
+  sub: 'Guest & reservations command centre · covers live (OpenTable) · daypart + identity gated',
 
   getSection(db, ctx) {
     const q = ctx && ctx.q;
     const now = (ctx && ctx.now) || Date.now();
     const query = (ctx && ctx.query) || {};
     const tab = TAB_KEYS.includes(String(query.tab || '')) ? String(query.tab) : 'executive';
-    const m = { now, tab, rev: null, exec: null };
+    const m = { now, tab, rev: null, exec: null, cov: null };
     if (typeof q !== 'function') return m;
     if (tab === 'reviews') m.rev = buildReviews(q, now);
     if (tab === 'executive') m.exec = buildExecutive(q);
+    // Phase 2 PR1: the covers feed lights the Executive, Behaviour and Capacity tabs (day-grain covers
+    // + per-booking distributions). Demand (forecast model) and Customer Intelligence (identity) stay gated.
+    if (tab === 'executive' || tab === 'behaviour' || tab === 'capacity') m.cov = buildCovers(q);
     return m;
   },
 
@@ -288,6 +343,13 @@ module.exports = {
     const identityGate = (title) => `<div class="rsv-gate">${S.rcc.emptyState({ title, blocker: IDENTITY_GATE_BLOCKER })}</div>`;
     const noFeedKpi = (label) => S.rcc.kpi({ label, value: '—', sub: 'no feed — OpenTable weekly export' });
     const legend = (items) => `<div class="r-legend">${items.map(([c, l]) => `<span><i style="background:${c}"></i>${esc(l)}</span>`).join('')}</div>`;
+    // Phase 2 PR1 covers helpers — cov is the real feed (null until covers land, keeping the gate-state).
+    const cov = m.cov;
+    const covLive = !!(cov && cov.win && num(cov.win.days) > 0);
+    const pct = (a, b) => (num(b) > 0 ? `${(100 * num(a) / num(b)).toFixed(1)}%` : '—');
+    const perDay = (v, d) => (num(d) > 0 ? `${int(Math.round(num(v) / num(d)))}/day` : '—');
+    // reserved-vs-walk-in caption — on EVERY covers panel, so booked covers are never read as total.
+    const splitCaption = (w) => `<div class="rv2-caption">seated covers = reserved + walk-in — never read booked/reserved covers as total · this window: ${int(w.reserved)} reserved (${pct(w.reserved, w.seated)}) + ${int(w.walkin)} walk-in (${pct(w.walkin, w.seated)}) = ${int(w.seated)} seated covers.</div>`;
     // Empty-table frame: the mock's column headers, NO rows — a header is grammar, a row would
     // be a claim.
     const emptyTable = (cols) => `<div style="overflow:auto"><table><thead><tr>${cols.map(([h, n]) =>
@@ -306,33 +368,66 @@ module.exports = {
       const ex = m.exec || { pos: null, ready: null };
       const pos = ex.pos;
 
-      // ---- (1) KPI strip: the mock's 6 tiles = 4 OpenTable-gated zero-digit 'no feed' tiles +
-      // the TWO HONEST POS VARIANTS from the gap map (per-receipt EAT IN truth) ----
+      // ---- (1) KPI strip: covers are LIVE (covers_day) → four real cover tiles + the TWO HONEST POS
+      // VARIANTS. Until the feed lands the four cover tiles stay 'no feed' (honest gate-state). ----
+      const cw = covLive ? cov.win : null;
       const kpis = [
-        noFeedKpi('Seated dine-in covers'),
-        noFeedKpi('Reserved cover share'),
-        noFeedKpi('Booking → seated'),
-        noFeedKpi('No-show cover rate'),
+        cw ? S.rcc.kpi({ label: 'Seated dine-in covers · 28d', value: int(cw.covers), sub: `${perDay(cw.covers, cw.days)} · ${esc(cov.from28)}→${esc(cov.max)}` }) : noFeedKpi('Seated dine-in covers'),
+        cw ? S.rcc.kpi({ label: 'Reserved cover share', value: pct(cw.reserved, cw.seated), sub: `${int(cw.reserved)} reserved of ${int(cw.seated)} seated` }) : noFeedKpi('Reserved cover share'),
+        cw ? S.rcc.kpi({ label: 'Walk-in cover share', value: pct(cw.walkin, cw.seated), sub: `${int(cw.walkin)} walk-in covers` }) : noFeedKpi('Walk-in cover share'),
+        cw ? S.rcc.kpi({ label: 'Average party', value: cw.party != null ? String(cw.party) : '—', sub: 'covers ÷ seated bookings' }) : noFeedKpi('Average party'),
         S.rcc.kpi({ label: 'Dine-in net · 28d', value: pos ? S.fmtGbpPence(pos.net) : '—', sub: 'transactions basis, not covers' }),
-        S.rcc.kpi({ label: 'Spend / transaction', value: pos ? S.fmtGbpPence(pos.net / pos.txn) : '—', sub: 'per TRANSACTION — per-cover unlocks with OpenTable' }),
+        S.rcc.kpi({ label: 'Spend / transaction', value: pos ? S.fmtGbpPence(pos.net / pos.txn) : '—', sub: 'per TRANSACTION — £/cover on Revenue' }),
       ].join('');
+      // caption keyed on POS (preserves the two-variant detail) with a covers clause prepended.
+      const covLine = cw
+        ? `covers are LIVE (OpenTable → covers_day, to ${esc(cov.max)}) · seated = SUM(party size); reserved vs walk-in from booking source — booked covers are NEVER total · trailing 28d ${esc(cov.from28)}→${esc(cov.max)} · booking→seated + no-show need cancel/no-show rows (completed-visits-only export)`
+        : `the four cover tiles carry no number until the reservation feed lands`;
       const kpiCaption = pos
-        ? `<div class="rv2-caption">the two POS variants = the per-receipt record (sales_receipts_api, EAT IN channel label, SALE receipts only), trailing 28d ${esc(pos.from)} → ${esc(pos.to)}, net ex-VAT · TRANSACTIONS basis — POS guest-count is never covers · spend/transaction = net ÷ ${int(pos.txn)} transactions; per-cover unlocks with OpenTable · the four gated tiles carry no number until the reservation feed lands.</div>`
-        : `<div class="rv2-caption">the two POS variants (dine-in net · spend/transaction) light up from the per-receipt record (sales_receipts_api + the channel map, EAT IN label) — no window computable yet · the four gated tiles carry no number until the reservation feed lands.</div>`;
+        ? `<div class="rv2-caption">${covLine} · the two POS variants = the per-receipt record (sales_receipts_api, EAT IN channel label, SALE receipts only), trailing 28d ${esc(pos.from)} → ${esc(pos.to)}, net ex-VAT · TRANSACTIONS basis — POS guest-count is never covers · spend/transaction = net ÷ ${int(pos.txn)} transactions.</div>`
+        : `<div class="rv2-caption">${covLine} · the two POS variants (dine-in net · spend/transaction) light up from the per-receipt record (sales_receipts_api + the channel map, EAT IN label) — no window computable yet.</div>`;
 
       // ---- (2) 13-week cover performance: the stacked-column FRAME — axis + REAL calendar-week
       // labels (the 13 Mondays ending this week), NO columns ----
-      const wk13 = [];
-      for (let i = 12; i >= 0; i--) wk13.push(K.shiftDays(monday0, -7 * i));
       const X13 = (i) => Math.round((62 + (i * (846 - 62)) / 12) * 10) / 10;
-      const stackPanel = S.rcc.panel({
-        title: '13-week dine-in cover performance',
-        sub: 'reserved seated covers + walk-in covers vs total dine-in covers last year · real calendar weeks, no columns until the feed',
-        headRight: legend([[S.rcc.tokens.accent, 'Reserved'], [S.rcc.tokens.cyan, 'Walk-in'], ['#7a8490', 'LY total']]),
-        body: chartFrame(900, 260, [30, 88, 146, 204], 'Thirteen-week dine-in cover frame — no data yet',
-          wk13.map((iso, i) => `<text x="${X13(i) - 14}" y="250" class="axistext">${esc(weekLabel(iso))}</text>`).join(''))
-          + gate('13-week dine-in cover performance'),
-      });
+      let stackPanel;
+      if (covLive && cov.weeks.some((w) => w.has)) {
+        // REAL stacked columns: reserved (accent) below, walk-in (cyan) above, per calendar week.
+        const maxTot = Math.max(1, ...cov.weeks.map((w) => w.total));
+        const Y0 = 236, H = 200, BW = 30;
+        const yFor = (v) => Math.round((H * num(v)) / maxTot);
+        const cols = cov.weeks.map((w, i) => {
+          if (!w.has) return '';
+          const x = X13(i);
+          const rH = yFor(w.reserved), wH = yFor(w.walkin);
+          const resY = Y0 - rH, walkY = resY - wH;
+          const tip = `${weekLabel(w.wk)}: ${int(w.total)} covers — ${int(w.reserved)} reserved, ${int(w.walkin)} walk-in`;
+          return `<rect x="${x - BW / 2}" y="${resY}" width="${BW}" height="${rH}" fill="${S.rcc.tokens.accent}"><title>${esc(tip)}</title></rect>`
+            + `<rect x="${x - BW / 2}" y="${walkY}" width="${BW}" height="${wH}" fill="${S.rcc.tokens.cyan}"><title>${esc(tip)}</title></rect>`;
+        }).join('');
+        const grid = [30, 88, 146, 204].map((y) => `<line x1="55" y1="${y}" x2="880" y2="${y}" class="gridline"/>`).join('');
+        const yMax = `<text x="8" y="34" class="axistext">${int(maxTot)}</text>`;
+        const xlab = cov.weeks.map((w, i) => `<text x="${X13(i) - 14}" y="250" class="axistext">${esc(weekLabel(w.wk))}</text>`).join('');
+        const totWin = cov.weeks.reduce((a, w) => ({ reserved: a.reserved + w.reserved, walkin: a.walkin + w.walkin, seated: a.seated + w.reserved + w.walkin }), { reserved: 0, walkin: 0, seated: 0 });
+        stackPanel = S.rcc.panel({
+          title: '13-week dine-in cover performance',
+          sub: `reserved + walk-in seated covers per week · to ${esc(cov.max)}`,
+          headRight: legend([[S.rcc.tokens.accent, 'Reserved'], [S.rcc.tokens.cyan, 'Walk-in']]),
+          body: `<div class="chart-wrap"><svg viewBox="0 0 900 260" role="img" aria-label="Thirteen-week dine-in covers, reserved and walk-in">${grid}${yMax}${cols}${xlab}</svg></div>`
+            + splitCaption(totWin),
+        });
+      } else {
+        const wk13 = [];
+        for (let i = 12; i >= 0; i--) wk13.push(K.shiftDays(monday0, -7 * i));
+        stackPanel = S.rcc.panel({
+          title: '13-week dine-in cover performance',
+          sub: 'reserved seated covers + walk-in covers vs total dine-in covers last year · real calendar weeks, no columns until the feed',
+          headRight: legend([[S.rcc.tokens.accent, 'Reserved'], [S.rcc.tokens.cyan, 'Walk-in'], ['#7a8490', 'LY total']]),
+          body: chartFrame(900, 260, [30, 88, 146, 204], 'Thirteen-week dine-in cover frame — no data yet',
+            wk13.map((iso, i) => `<text x="${X13(i) - 14}" y="250" class="axistext">${esc(weekLabel(iso))}</text>`).join(''))
+            + gate('13-week dine-in cover performance'),
+        });
+      }
 
       // ---- (3) owner attention queue: the alert-card frame, zero cards ----
       const queuePanel = S.rcc.panel({
@@ -383,7 +478,7 @@ module.exports = {
       } else if ((ready.otRes || 0) + (ready.otCovers || 0) === 0) {
         ot = { tag: S.rcc.tag('no feed — 0 files received', 'bad'), detail: 'reservation store present but empty — no export ingested yet' };
       } else {
-        ot = { tag: S.rcc.tag('Ready', 'good'), detail: 'reservation rows present' };
+        ot = { tag: S.rcc.tag('Ready', 'good'), detail: `covers_day + reservations live — ${int(ready.otCovers)} cover-days, ${int(ready.otRes)} bookings` };
       }
       const readinessPanel = S.rcc.panel({
         title: 'Data readiness', sub: 'what the centre can already stand on · real statuses',
@@ -484,15 +579,41 @@ module.exports = {
           <div class="r-mini-note">the last stage matters — a booking without a durable, consented customer identity is operational data but weak CRM data.</div>`
           + gate('Booking funnel'),
       });
-      const leadPanel = S.rcc.panel({
-        title: 'Lead-time distribution', sub: 'when guests book relative to arrival',
-        body: chartFrame(700, 230, [40, 100, 160, 208], 'Lead-time distribution frame — no data yet')
-          + gate('Lead-time distribution'),
-      });
-      const partyPanel = S.rcc.panel({
-        title: 'Party-size mix', sub: 'reserved parties only',
-        body: `<div class="rsv-donut-frame"></div>` + gate('Party-size mix'),
-      });
+      let leadPanel;
+      if (covLive && cov.lead.length) {
+        const order = ['Same day (walk-in/late)', '1 day', '2–6 days', '1–4 weeks', '1 month+', 'Unknown'];
+        const byB = new Map(cov.lead.map((r) => [String(r.bucket), r]));
+        const totB = cov.lead.reduce((a, r) => a + (num(r.bookings) || 0), 0);
+        const sameDay = byB.get('Same day (walk-in/late)');
+        const rows = order.filter((b) => byB.has(b)).map((b) => {
+          const r = byB.get(b);
+          return S.rcc.meterRow({ label: b, pct: totB > 0 ? Math.round(100 * num(r.bookings) / totB) : 0, value: int(r.bookings), color: S.rcc.tokens.blue });
+        }).join('');
+        leadPanel = S.rcc.panel({
+          title: 'Lead-time distribution', sub: `bookings by lead time · ${esc(cov.winFrom)}→${esc(cov.max)}`,
+          body: `<div class="r-meters">${rows}</div><div class="rv2-caption">created→visit lead (created_lead_days) · "same day" = walk-ins + late bookings, ${pct(sameDay ? sameDay.bookings : 0, totB)} of bookings.</div>`,
+        });
+      } else {
+        leadPanel = S.rcc.panel({
+          title: 'Lead-time distribution', sub: 'when guests book relative to arrival',
+          body: chartFrame(700, 230, [40, 100, 160, 208], 'Lead-time distribution frame — no data yet')
+            + gate('Lead-time distribution'),
+        });
+      }
+      let partyPanel;
+      if (covLive && cov.party.length) {
+        const totC = cov.party.reduce((a, r) => a + (num(r.covers) || 0), 0);
+        const rows = cov.party.map((r) => S.rcc.meterRow({ label: `Party of ${num(r.sz)}`, pct: totC > 0 ? Math.round(100 * num(r.covers) / totC) : 0, value: `${int(r.covers)} covers`, color: S.rcc.tokens.accent })).join('');
+        partyPanel = S.rcc.panel({
+          title: 'Party-size mix', sub: `seated covers by booked party size · ${esc(cov.winFrom)}→${esc(cov.max)}`,
+          body: `<div class="r-meters">${rows}</div><div class="rv2-caption">share of seated covers by party size (reservations grain) — reserved + walk-in together.</div>`,
+        });
+      } else {
+        partyPanel = S.rcc.panel({
+          title: 'Party-size mix', sub: 'reserved parties only',
+          body: `<div class="rsv-donut-frame"></div>` + gate('Party-size mix'),
+        });
+      }
       const nvrPanel = S.rcc.panel({
         title: 'New versus returning', sub: 'guest profile history',
         body: `<div class="r-driver-grid g2">${[
@@ -534,11 +655,21 @@ module.exports = {
         ].map(([h, p]) => `<div class="rsv-leak-row"><div><h4>${esc(h)}</h4><p>${esc(p)}.</p></div><strong>—</strong></div>`).join('')}</div>`
           + gate('Capacity leakage'),
       });
-      const turnPanel = S.rcc.panel({
-        title: 'Table-turn performance', sub: 'targets should vary by party size and daypart',
-        body: emptyTable([['Party size'], ['Target duration', 1], ['Actual duration', 1], ['On target', 1], ['Peak variance', 1], ['Action']])
-          + gate('Table-turn performance'),
-      });
+      let turnPanel;
+      if (covLive && cov.turn.length) {
+        const trows = cov.turn.map((r) => `<tr><td>Party of ${num(r.sz)}</td><td class="r-num">${int(r.n)}</td><td class="r-num">${r.avg_min != null ? int(r.avg_min) + ' min' : '—'}</td></tr>`).join('');
+        turnPanel = S.rcc.panel({
+          title: 'Table-turn performance', sub: `actual dine duration by party size · ${esc(cov.winFrom)}→${esc(cov.max)}`,
+          body: `<div style="overflow:auto"><table><thead><tr><th>Party size</th><th class="r-num">Seated bookings</th><th class="r-num">Avg actual duration</th></tr></thead><tbody>${trows}</tbody></table></div>
+            <div class="r-mini-note">actual seated→finished duration (Total Actual Duration) by party size · targets + on-target/peak variance stay gated until a turn-time target is ruled and daypart lands (covers_slot).</div>`,
+        });
+      } else {
+        turnPanel = S.rcc.panel({
+          title: 'Table-turn performance', sub: 'targets should vary by party size and daypart',
+          body: emptyTable([['Party size'], ['Target duration', 1], ['Actual duration', 1], ['On target', 1], ['Peak variance', 1], ['Action']])
+            + gate('Table-turn performance'),
+        });
+      }
       const flowPanel = S.rcc.panel({
         title: 'Guest-flow signals', sub: 'OpenTable status events combined with POS table status',
         body: `<div class="r-driver-grid">${[

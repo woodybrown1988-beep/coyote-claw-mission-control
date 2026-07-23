@@ -125,6 +125,19 @@ function buildExec(q, maxDate, rv2) {
       lyTxn: lyComparable ? num(ly.txn) : null, lyComparable,
     };
 
+    // ---- covers (OpenTable → covers_day, Phase 2 PR1): the covers denominator + reserved/walk-in
+    // split. Lightspeed £ stays canonical; spend/cover is the DERIVED join (net ÷ covers). SUM over
+    // zero cover-rows is null → the tiles render '—' honestly (no covers that week). ----
+    const covAgg = (from, to) => rowsOf(q(
+      `SELECT SUM(total_covers) covers, SUM(reserved_covers) reserved, SUM(walkin_covers) walkin
+         FROM covers_day WHERE business_date BETWEEN ? AND ?`, [from, to]))[0] || {};
+    const cc = covAgg(wk.from, wk.to);
+    const lc = covAgg(lyFrom, lyTo);
+    exec.week.covers = num(cc.covers);
+    exec.week.reserved = num(cc.reserved) || 0;
+    exec.week.walkin = num(cc.walkin) || 0;
+    exec.week.lyCovers = lyComparable ? num(lc.covers) : null;
+
     // ---- 8-week trend: trailing 8 full weeks ending at the KPI week; LY −364d; target =
     // the rota-ahead forecast basis (DISTINCT dedups the per-dept duplicate target rows).
     // A week without published targets simply has NO target point (honest gap in the dash). ----
@@ -257,7 +270,7 @@ function buildExec(q, maxDate, rv2) {
 // hourly heatmap on the line grain (LOCAL London hour, ONLINE excluded — no true hour), the
 // designed capacity empty-state, and the 14-day trading scorecard on the RULED status classes.
 function buildDrivers(q, maxDate, rv2) {
-  const d = { apiMax: null, from: null, revHour: null, splh: null, peak: null, attach: null, heat: null, score: null };
+  const d = { apiMax: null, from: null, revHour: null, splh: null, peak: null, attach: null, heat: null, score: null, cpt: null };
   const apiMax = rv2 && rv2.maxApiDate ? rv2.maxApiDate : null;
 
   if (apiMax) {
@@ -340,6 +353,14 @@ function buildDrivers(q, maxDate, rv2) {
          FROM sales_day s JOIN labour_day l ON l.business_date = s.business_date
         WHERE s.business_date BETWEEN ? AND ? AND s.net_sales_pence > 0`, [from, apiMax]))[0];
     if (spl && num(spl.days) > 0 && num(spl.mins) > 0) d.splh = { net: num(spl.net) || 0, mins: num(spl.mins), days: num(spl.days) };
+
+    // ---- covers-per-transaction (Phase 2 PR1): OpenTable covers ÷ Lightspeed transactions over the
+    // same 28d window — a SANITY metric (~1.9-2.0), NOT a KPI. Null if either side is absent. ----
+    const cpt = rowsOf(q(
+      `SELECT (SELECT SUM(total_covers) FROM covers_day WHERE business_date BETWEEN ? AND ?) covers,
+              (SELECT SUM(transactions) FROM v_sales_day_all WHERE business_date BETWEEN ? AND ?) txn`,
+      [from, apiMax, from, apiMax]))[0];
+    if (cpt && num(cpt.covers) != null && num(cpt.txn) > 0) d.cpt = { covers: num(cpt.covers), txn: num(cpt.txn), from, to: apiMax };
   }
 
   // ---- daily trading scorecard: last 14 recorded days; a missing sales day = an absent row ----
@@ -355,12 +376,16 @@ function buildDrivers(q, maxDate, rv2) {
       const lab = new Map();
       for (const r of rowsOf(q(`SELECT business_date d, actual_minutes am, actual_cost_pence ac, salaried_cost_pence sal FROM labour_day WHERE business_date BETWEEN ? AND ?`, [scFrom, maxDate])))
         lab.set(String(r.d), { am: num(r.am), ac: num(r.ac), sal: num(r.sal) });
+      const covMap = new Map(); // per-day covers (OpenTable → covers_day)
+      for (const r of rowsOf(q(`SELECT business_date d, total_covers c FROM covers_day WHERE business_date BETWEEN ? AND ?`, [scFrom, maxDate])))
+        covMap.set(String(r.d), num(r.c));
       d.score = {
         from: scFrom, to: maxDate,
         rows: days.map((r) => ({
           date: String(r.d), net: num(r.net) || 0, disc: num(r.disc),
           twin: ly.get(K.shiftDays(String(r.d), -364)) || null,
           lab: lab.get(String(r.d)) || null,
+          covers: covMap.has(String(r.d)) ? covMap.get(String(r.d)) : null,
         })),
       };
     }
@@ -547,7 +572,7 @@ function channelMonthStats(rv2) {
 
 module.exports = {
   key: 'revenue', route: '/coyote/revenue', workspace: 'coyote', title: 'Revenue',
-  sub: 'Revenue Command Centre — all five tabs live · contribution gated on recipe costing · covers via OpenTable (not wired)',
+  sub: 'Revenue Command Centre — all five tabs live · contribution gated on recipe costing · covers live via OpenTable (spend/cover derived)',
 
   getSection(db, ctx) {
     const q = ctx && ctx.q;
@@ -795,6 +820,10 @@ module.exports = {
       const atv = wk && wk.net != null && wk.txn ? Math.round(wk.net / wk.txn) : null;
       const lyAtv = wk && wk.lyNet != null && wk.lyTxn ? Math.round(wk.lyNet / wk.lyTxn) : null;
       const noLySub = wk && !wk.lyComparable ? 'LY not comparable' : null;
+      const covSeated = wk ? (wk.reserved || 0) + (wk.walkin || 0) : 0;
+      const resShare = wk && covSeated > 0 ? `${Math.round((100 * wk.reserved) / covSeated)}%` : '—';
+      const walkShare = wk && covSeated > 0 ? `${Math.round((100 * wk.walkin) / covSeated)}%` : '—';
+      const cptTxt = wk && wk.covers != null && wk.txn ? (wk.covers / wk.txn).toFixed(2) : null;
       const kpis = [
         S.rcc.kpi({
           label: 'Net revenue · ex-VAT', value: wk && wk.net != null ? gbp(wk.net) : '—',
@@ -808,9 +837,17 @@ module.exports = {
           sub: wk ? (noLySub || 'inc. VAT · vs same week LY') : 'no settled sales record yet',
           barPct: wk ? barFor(wk.gross, wk.lyGross) : null,
         }),
-        // Covers stay NOT WIRED — POS guest-count is not covers (canon); never a number here.
-        S.rcc.kpi({ label: 'Covers', value: 'not wired', sub: 'unlock: OpenTable email export' }),
-        S.rcc.kpi({ label: 'Average spend / cover', value: 'not wired', sub: 'needs real covers — OpenTable' }),
+        // Covers are LIVE (OpenTable → covers_day). POS guest-count is STILL not covers (canon).
+        S.rcc.kpi({
+          label: 'Covers', value: wk && wk.covers != null ? int(wk.covers) : '—',
+          delta: wk ? deltaFor(wk.covers, wk.lyCovers) : null,
+          sub: wk && wk.covers != null ? `OpenTable seated · ${resShare} reserved / ${walkShare} walk-in` : 'no covers this week (OpenTable)',
+          barPct: wk ? barFor(wk.covers, wk.lyCovers) : null,
+        }),
+        S.rcc.kpi({
+          label: 'Average spend / cover', value: wk && wk.net != null && wk.covers ? gbp(Math.round(wk.net / wk.covers)) : '—',
+          sub: 'Lightspeed net ÷ OpenTable covers · ex-VAT (derived join)',
+        }),
         S.rcc.kpi({
           label: 'Average transaction', value: atv != null ? gbp(atv) : '—',
           delta: deltaFor(atv, lyAtv),
@@ -820,7 +857,7 @@ module.exports = {
         S.rcc.kpi({ label: 'Revenue quality score', value: 'not ruled', sub: 'composite pending operator definition' }),
       ].join('');
       const kpiCaption = wk
-        ? `<div class="rv2-caption">${esc(wk.from)} → ${esc(wk.to)} (last full week, Mon–Sun) · vs same weekday-aligned week LY (−364d: ${esc(wk.lyFrom)} → ${esc(wk.lyTo)}) · per-receipt truth (day-net canon, v_sales_day_all)${wk.lyComparable ? '' : ' · LY not comparable (premises guard / no record) — deltas omitted, never a cross-site %'}</div>`
+        ? `<div class="rv2-caption">${esc(wk.from)} → ${esc(wk.to)} (last full week, Mon–Sun) · vs same weekday-aligned week LY (−364d: ${esc(wk.lyFrom)} → ${esc(wk.lyTo)}) · per-receipt truth (day-net canon, v_sales_day_all)${wk.lyComparable ? '' : ' · LY not comparable (premises guard / no record) — deltas omitted, never a cross-site %'}${wk.covers != null ? ` · covers = OpenTable seated (covers_day): ${int(wk.covers)} = ${int(wk.reserved)} reserved + ${int(wk.walkin)} walk-in — booked covers are NEVER read as total${cptTxt ? ` · covers/transaction ${cptTxt} (sanity ~1.9–2.0; a material drift is a data finding, not a KPI)` : ''} · spend/cover = Lightspeed net ÷ covers (derived); POS guest-count is still not covers` : ' · covers stay not-wired until OpenTable lands'}</div>`
         : `<div class="rv2-caption">No Lightspeed sales yet — the daily ingest (05:30) fills the day-grain record; covers stay not-wired until OpenTable lands.</div>`;
 
       // ---- 8-week trend (inline SVG, mock grammar: orange current+area, amber dashed target,
@@ -1261,8 +1298,12 @@ module.exports = {
           label: 'Peak revenue hour', value: dv.peak ? `${pad2(dv.peak.hour)}:00 ${gbp0(dv.peak.net)}` : '—',
           sub: dv.peak ? 'top London hour by 28d line-grain net · ONLINE excluded' : 'no timed per-receipt lines yet',
         }),
-        // Covers stay NOT WIRED — POS guest-count is not covers (canon); never a number here.
-        S.rcc.kpi({ label: 'Covers / transaction', value: 'not wired', sub: 'covers land with the OpenTable email wire — POS guest-count is never covers' }),
+        // Covers / transaction: LIVE (OpenTable covers ÷ Lightspeed transactions) — a SANITY metric,
+        // not a KPI. POS guest-count is still not covers (canon).
+        S.rcc.kpi({
+          label: 'Covers / transaction', value: dv.cpt ? (dv.cpt.covers / dv.cpt.txn).toFixed(2) : '—',
+          sub: dv.cpt ? 'OpenTable covers ÷ txns · sanity ~1.9–2.0 (drift = data finding, not a KPI)' : 'no covers in the window (OpenTable)',
+        }),
         attachKpi('Drink attachment', att.drink, 'receipts with ≥1 drink-class line'),
         attachKpi('Side attachment', att.side, 'sides = FRYER-station classes'),
       ].join('');
@@ -1331,14 +1372,14 @@ module.exports = {
                 : S.rcc.tag('On formula', 'good');
           }
           return `<tr><td>${esc(dow)} ${esc(r.date)}</td><td class="r-num mono">${gbp(r.net)}</td><td class="r-num mono">${yoy}</td>
-            <td class="r-num mono ash">—</td><td class="r-num mono ash">—</td>
+            <td class="r-num mono${r.covers != null ? '' : ' ash'}">${r.covers != null ? int(r.covers) : '—'}</td><td class="r-num mono${r.covers ? '' : ' ash'}">${r.covers ? gbp(Math.round(r.net / r.covers)) : '—'}</td>
             <td class="r-num mono">${hrs != null ? `${hrs.toFixed(1)}h` : '—'}</td>
             <td class="r-num mono">${daySplh != null ? gbp(daySplh) : '—'}</td>
             <td class="r-num mono">${discPct != null ? `${discPct.toFixed(1)}%` : '—'}</td>
             <td>${chip}</td></tr>`;
         }).join('');
         scoreBody = `<div style="overflow:auto"><table><thead><tr><th>Day</th><th class="r-num">Net revenue</th><th class="r-num">YoY</th><th class="r-num">Covers</th><th class="r-num">Spend / cover</th><th class="r-num">Labour hrs</th><th class="r-num">Sales / labour hr</th><th class="r-num">Discount %</th><th>Status</th></tr></thead><tbody>${rowsHtml}</tbody></table></div>
-          <div class="r-mini-note">last 14 recorded days to ${esc(dv.score.to)} — a missing sales day is an ABSENT row, never zeros · net/discounts: sales_day (day grain) · YoY: v_sales_day_all −364d weekday twin, premises-guarded · covers + spend/cover not wired (OpenTable) · labour hrs: labour_day worked minutes; day SPLH = net ÷ worked hours · STATUS: TRUE labour (actual_cost_pence, burdened) vs the banded formula budget = salaried + 22.4% × net (K 14.3% + F 8.1% combined — banded formula, rota-review spec); OVER only beyond the ruled £45 materiality.</div>`;
+          <div class="r-mini-note">last 14 recorded days to ${esc(dv.score.to)} — a missing sales day is an ABSENT row, never zeros · net/discounts: sales_day (day grain) · YoY: v_sales_day_all −364d weekday twin, premises-guarded · covers: OpenTable covers_day (blank day = no cover record); spend/cover = net ÷ covers · labour hrs: labour_day worked minutes; day SPLH = net ÷ worked hours · STATUS: TRUE labour (actual_cost_pence, burdened) vs the banded formula budget = salaried + 22.4% × net (K 14.3% + F 8.1% combined — banded formula, rota-review spec); OVER only beyond the ruled £45 materiality.</div>`;
       } else {
         scoreBody = S.rcc.emptyState({ title: 'Daily trading scorecard', blocker: 'No day-grain sales record in the trailing 14 days.', unlock: 'the daily Lightspeed ingest' });
       }

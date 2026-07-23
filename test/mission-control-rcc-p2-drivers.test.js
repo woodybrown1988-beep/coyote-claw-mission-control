@@ -176,13 +176,15 @@ test('attachment %: dict-class filter pinned — decoys never count; deltas vs p
   db.close();
 });
 
-test('covers / transaction: not wired, OpenTable named, ZERO digits in the tile', () => {
+test('covers / transaction: honest fallback with no covers rows, OpenTable named, ZERO digits in the tile', () => {
   const db = makeDb();
   seedDrivers(db);
   const body = render(db);
+  // this fixture holds no covers_day rows → the sanity tile is honest ('—'); the WIRED ~1.9-2.0
+  // value is proven in mission-control-covers-wire.test.js.
   const tile = body.match(/<div class="r-kpi-label">Covers \/ transaction<\/div>[\s\S]*?<\/div><\/div>/);
   assert.ok(tile, 'the tile renders');
-  assert.match(tile[0], /not wired/);
+  assert.match(tile[0], /no covers in the window/);
   assert.match(tile[0], /OpenTable/);
   assert.doesNotMatch(tile[0], /\d/, 'POS guest-count is never covers — no digits at all');
   db.close();

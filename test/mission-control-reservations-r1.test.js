@@ -150,7 +150,7 @@ test('contract: key/route/workspace/title as ruled', () => {
   assert.equal(page.route, '/coyote/reservations');
   assert.equal(page.workspace, 'coyote');
   assert.equal(page.title, 'Reservations');
-  assert.match(page.sub, /OpenTable feed pending/);
+  assert.match(page.sub, /covers live \(OpenTable\)/);
 });
 
 // ---------------- (b) the KPI strip ----------------
@@ -313,12 +313,14 @@ test('readiness: a PRESENT OpenTable store flips honestly — empty store ≠ ab
 
   const withRows = makeDb();
   seedReviews(withRows);
-  withRows.exec(`CREATE TABLE opentable_reservations (reservation_id TEXT PRIMARY KEY, business_date TEXT)`);
-  withRows.prepare(`INSERT INTO opentable_reservations VALUES ('ot1','2026-07-01')`).run();
+  withRows.exec(`CREATE TABLE reservations (reservation_key TEXT PRIMARY KEY, visit_date TEXT);
+                 CREATE TABLE covers_day (business_date TEXT PRIMARY KEY, total_covers INTEGER)`);
+  withRows.prepare(`INSERT INTO reservations VALUES ('r1','2026-07-01')`).run();
+  withRows.prepare(`INSERT INTO covers_day VALUES ('2026-07-01', 40)`).run();
   const b2 = render(withRows, { tab: 'executive' });
   const panel = readinessSlice(b2);
   assert.equal((panel.match(/<span class="r-tag good">Ready<\/span>/g) || []).length, 3, 'the OpenTable row goes Ready with rows');
-  assert.match(panel, /reservation rows present/);
+  assert.match(panel, /covers_day \+ reservations live/);
   assert.doesNotMatch(panel, /no feed — 0 files received/);
   withRows.close();
 });
