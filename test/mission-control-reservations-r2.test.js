@@ -115,15 +115,16 @@ test('executive: 4 gated zero-digit tiles + the two POS variants real, captioned
   const db = makeDb();
   seedPos(db);
   const body = render(db, 'executive');
-  // the four gated tiles: mock labels, honest dashes, the no-feed sub — never a number
-  for (const label of ['Seated dine-in covers', 'Reserved cover share', 'Booking → seated', 'No-show cover rate'])
+  // the four cover tiles: with NO covers_day rows they are honest dashes + the no-feed sub. The
+  // labels are the covers-live set (Booking→seated / No-show drop off — completed-visits-only export).
+  for (const label of ['Seated dine-in covers', 'Reserved cover share', 'Walk-in cover share', 'Average party'])
     assert.match(body, new RegExp(`${label.replace(/[.*+?^${'{}'}()|[\\]\\\\]/g, '\\$&')}</div><div class="r-kpi-value">—<`), `gated tile ${label} is a dash`);
   assert.equal(count(body, 'no feed — OpenTable weekly export'), 4, 'the no-feed sub on all four gated tiles');
   // the two honest variants — hand-computed: EAT IN 28d net 6000p = £60.00 over 3 txn → £20.00
   assert.match(body, /Dine-in net · 28d<\/div><div class="r-kpi-value">£60\.00</, 'the hand-computed dine-in net');
   assert.match(body, /Spend \/ transaction<\/div><div class="r-kpi-value">£20\.00</, 'the hand-computed net÷txn');
   assert.match(body, /transactions basis, not covers/, 'variant 1 caption verbatim');
-  assert.match(body, /per TRANSACTION — per-cover unlocks with OpenTable/, 'variant 2 caption verbatim');
+  assert.match(body, /per TRANSACTION — £\/cover on Revenue/, 'variant 2 caption verbatim');
   // the caption names the real window + the real txn count
   assert.match(body, /trailing 28d 2026-06-05 → 2026-07-02/, 'the window is stated');
   assert.match(body, /net ÷ 3 transactions/, 'the divisor is stated');
