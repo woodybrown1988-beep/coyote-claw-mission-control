@@ -224,7 +224,7 @@ test('readiness panel: ON executive (real statuses), GONE from reviews; architec
   assert.match(ready, /<span class="r-tag bad">no rows<\/span>/, 'the empty reviews store reads no rows, never Ready');
   assert.match(ready, /no feed — 0 files received/, 'the OpenTable status is the real zero-files state');
   assert.match(ready, /<span class="r-tag">not started<\/span>/, 'guest identity is neutral, not red');
-  assert.match(ready, /readiness read from the DB; the export inbox is a box path the board cannot see/, 'the fs-vs-db caption');
+  assert.match(ready, /readiness read from the DB; drop the export in the panel above — no filesystem, no CLI./, 'the fs-vs-db caption');
 
   const reviews = render(db, 'reviews');
   assert.ok(!reviews.includes('Data readiness'), 'DELETION PIN: the reviews tab no longer carries the readiness panel');

@@ -4,7 +4,7 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const { homedir } = require('node:os');
-const { execFileSync } = require('node:child_process');
+const { execFileSync, execFile } = require('node:child_process');
 const { join } = require('node:path');
 
 const HOST = '127.0.0.1';
@@ -29,6 +29,14 @@ const ROOT = path.resolve(__dirname, '..');
 const STATIC_ROOT = path.resolve(__dirname, 'static');
 const DB_PATH = process.env.COYOTE_CLAW_DB || path.join(ROOT, 'data', 'librarian.db');
 const RATES_PATH = path.join(ROOT, 'config', 'api-rates.json');
+// OpenTable reservations upload (2026-07-23): the browser drop lands a .csv in the SAME inbox the
+// cc ingest already watches, then triggers the ingest immediately. cc engine dir + inbox are fixed
+// paths (never derived from request input); the upload only ever writes inside OPENTABLE_INBOX.
+const crypto = require('node:crypto');
+const UP = require('./ui/upload.js');
+const CC_DIR = process.env.COYOTE_CLAW_DIR || path.join(homedir(), 'coyote-claw');
+const OPENTABLE_INBOX = process.env.OPENTABLE_INBOX || path.join(CC_DIR, 'data', 'opentable-inbox');
+const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;   // 25 MB — generous for the one-off 26-month backfill
 
 // The commit this process is serving — the gated deploy link's generic content check
 // (`/version` == target sha) reads this to confirm a merge actually shipped, not just
@@ -92,6 +100,10 @@ function handleRequest(req, res) {
 
   if (req.method === 'POST' && url.pathname === '/api/recipe-action') {
     handleRecipeAction(req, res);
+    return;
+  }
+  if (req.method === 'POST' && url.pathname === '/api/reservations-upload') {
+    handleReservationsUpload(req, res, url);
     return;
   }
   if (req.method === 'POST' && url.pathname === '/api/recipe-import') {
@@ -802,6 +814,68 @@ function applyRecipeImport(db, kind, csvText, now) {
   }
   const rejected = results.filter((r) => !r.ok);
   return { ok: true, status: 200, kind, imported, rejected };
+}
+
+// The reservations drop: a browser drag-drop/browse lands a .csv in the SAME inbox the cc ingest
+// watches, then triggers the ingest immediately and returns the outcome inline. Security: .csv-only,
+// 25 MB cap (enforced during the streamed read), the file can ONLY land inside OPENTABLE_INBOX (no
+// traversal), and the ingest command is FIXED (the filename is read from the directory, never passed
+// as an arg). Content-sha dedup makes a re-drop a visible no-op with no second write. The ingest runs
+// ASYNC (execFile) so a big backfill never blocks the server; if it errors/times out the file is
+// safely in the inbox for the 30-min timer. MC stays read-only on the DB — the cc process does the write.
+function handleReservationsUpload(req, res, url) {
+  const rawName = url.searchParams.get('name') || '';
+  if (!UP.isCsvName(rawName)) { sendJson(res, 400, { ok: false, error: 'only .csv files are accepted' }); return; }
+  const safeName = UP.sanitizeUploadName(rawName);
+  const dest = path.join(OPENTABLE_INBOX, safeName);
+  if (!UP.isCsvName(safeName) || !UP.isWithinDir(OPENTABLE_INBOX, dest)) { sendJson(res, 400, { ok: false, error: 'invalid file name' }); return; }
+  // clean size refusal up front (browsers + curl set Content-Length); the streamed cap in readTextBody
+  // is the backstop for a chunked body with no length.
+  const clen = Number(req.headers['content-length'] || 0);
+  if (clen > MAX_UPLOAD_BYTES) { sendJson(res, 413, { ok: false, error: 'file too large — 25 MB max' }); return; }
+  readTextBody(req, res, MAX_UPLOAD_BYTES, (csvText) => {
+    if (!csvText || !csvText.trim()) { sendJson(res, 400, { ok: false, error: 'empty file' }); return; }
+    const fileSha = crypto.createHash('sha256').update(csvText).digest('hex');
+    const prior = readReservationsRun(fileSha);
+    if (prior) { sendJson(res, 200, { ok: true, duplicate: true, ...prior }); return; }  // visible no-op, no re-write
+    try { fs.mkdirSync(OPENTABLE_INBOX, { recursive: true }); fs.writeFileSync(dest, csvText); }
+    catch (_) { sendJson(res, 500, { ok: false, error: 'could not save to the inbox' }); return; }
+    execFile('node', ['--import', 'tsx', '--import', './src/warnings.ts', 'src/reservations/cli.ts', 'ingest', '--inbox-only'],
+      { cwd: CC_DIR, env: { ...process.env, COYOTE_CLAW_DB: DB_PATH, HOME: homedir() }, timeout: 240000, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8' },
+      (err, stdout) => {
+        if (err) { sendJson(res, 200, { ok: true, queued: true, file: safeName, message: 'saved to the inbox — the ingest timer will process it within 30 minutes' }); return; }
+        // The ingest child is the source of truth for the just-processed file — parse ITS output
+        // (immune to any cross-process WAL read-back timing). Covers come from the DB, best-effort.
+        const parsed = UP.parseIngestOutcome(String(stdout || ''), safeName);
+        const dbRow = readReservationsRun(fileSha) || {};
+        const status = parsed.status || dbRow.status || 'processing';
+        sendJson(res, 200, {
+          ok: true, file: safeName, status: status === 'skipped' ? 'ok' : status,
+          duplicate: status === 'skipped' || undefined,
+          rows_written: parsed.rows != null ? parsed.rows : (dbRow.rows_written ?? null),
+          date_from: parsed.from || dbRow.date_from || null, date_to: parsed.to || dbRow.date_to || null,
+          covers: dbRow.covers ?? null,
+          detail: parsed.detail || dbRow.detail || null,
+        });
+      });
+  });
+}
+
+/** Read one ingest outcome (+ its covers) from the ledger, read-only. Returns null if not present. */
+function readReservationsRun(fileSha) {
+  let db;
+  try {
+    db = new sqlite.DatabaseSync(DB_PATH, { readOnly: true });
+    const r = db.prepare(`SELECT file_name, source, status, rows_written, date_from, date_to, detail, ingested_at FROM reservations_ingest_runs WHERE file_sha = ?`).get(fileSha);
+    if (!r) return null;
+    let covers = null;
+    if (r.date_from && r.date_to) {
+      const c = db.prepare(`SELECT COALESCE(SUM(total_covers), 0) c FROM covers_day WHERE business_date BETWEEN ? AND ?`).get(r.date_from, r.date_to);
+      covers = c ? c.c : null;
+    }
+    return { file: r.file_name, status: r.status, rows_written: r.rows_written, date_from: r.date_from, date_to: r.date_to, covers, detail: r.detail, ingested_at: r.ingested_at };
+  } catch (_) { return null; }
+  finally { if (db) { try { db.close(); } catch (_) { /* noop */ } } }
 }
 
 function handleRecipeImport(req, res, url) {

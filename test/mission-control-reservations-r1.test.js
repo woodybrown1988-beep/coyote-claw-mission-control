@@ -298,7 +298,7 @@ test('readiness: Ready paths real, the ABSENT OpenTable store says exactly so, i
   assert.match(panel, /<span class="r-tag bad">no feed — 0 files received<\/span>/, 'the OpenTable bad tag');
   assert.match(panel, /no reservation store in the DB — the weekly export has never landed/, 'the absent-store sentence, exactly');
   assert.match(panel, /<span class="r-tag">not started<\/span>/, 'guest identity is neutral, not red');
-  assert.match(panel, /readiness read from the DB; the export inbox is a box path the board cannot see/, 'the fs-vs-db honesty caption');
+  assert.match(panel, /readiness read from the DB; drop the export in the panel above — no filesystem, no CLI./, 'the fs-vs-db honesty caption');
   db.close();
 });
 
