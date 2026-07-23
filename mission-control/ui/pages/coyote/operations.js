@@ -29,8 +29,8 @@ const GATE = {
   },
   opentable: {
     tag: 'OpenTable-gated', tone: 'warn',
-    blocker: 'needs OpenTable event timestamps — arrival, seated, turn time, waitlist, occupancy. OpenTable is export-gated (inbox-zero); the Reservations Centre named the same wall.',
-    unlock: 'start the OpenTable event export (the Reservations Centre unlock)',
+    blocker: 'the weekly covers export lights TYPICAL arrival waves (covers_slot); the LIVE event stream — per-reservation arrival / seated / turn / waitlist timestamps — is still not wired, so on-time seating, turn and waitlist stay gated.',
+    unlock: 'the live OpenTable event export (arrival/seated/turn/waitlist timestamps)',
   },
   digital: {
     tag: 'digital-order gated', tone: 'warn',
@@ -61,6 +61,22 @@ function homePanel(title, sub, home, route) {
 }
 // A live KPI tile that only ever reads — (no mock numbers), with the honest source-gate sub.
 function dashKpi(label, sub) { return `<div class="r-card r-kpi"><div class="r-kpi-label">${S.escapeHtml(label)}</div><div class="r-kpi-value">—</div><div class="r-kpi-sub">${S.escapeHtml(sub)}</div></div>`; }
+
+// Typical arrival waves (Phase 2 PR3b) — covers arriving by hour of day from covers_slot. The one
+// slice the WEEKLY export lights for Operations: the historical demand shape, NOT the live event feed.
+function arrivalWavesPanel(arr) {
+  const max = Math.max(1, ...arr.rows.map((r) => r.a));
+  const bars = arr.rows.map((r) => {
+    const avg = r.days > 0 ? Math.round(r.a / r.days) : 0;
+    const pct = Math.round((r.a / max) * 100);
+    return `<div class="ops-wave"><span class="h">${String(r.h).padStart(2, '0')}:00</span><div class="t"><i style="width:${pct}%"></i></div><span class="v">${avg}/day</span></div>`;
+  }).join('');
+  return S.rcc.panel({
+    title: 'Typical arrival waves', sub: 'covers arriving by hour of day · covers_slot',
+    headRight: S.rcc.tag('OpenTable · historical', 'info'),
+    body: `<div class="ops-waves">${bars}</div><div class="r-mini-note">SUM(arrivals) by seated hour ÷ days with a record = typical covers/hour — the demand SHAPE from the weekly export (covers_slot), NOT the live event stream. On-time seating, turn and waitlist need the live OpenTable event feed (still gated).</div>`,
+  });
+}
 
 // The four service sources to wire (real-text unlock plan — a plan is not data).
 const SOURCE_PLAN = [
@@ -111,7 +127,14 @@ module.exports = {
     const liveImports = sources.filter((s) => s.kind === 'import' && s.state === 'live').length;
     const importTotal = sources.filter((s) => s.kind === 'import').length;
     const serviceWired = sources.filter((s) => s.kind === 'service' && s.state === 'live').length;
-    return { sources, liveImports, importTotal, serviceWired };
+    // Phase 2 PR3b: the ONE slice the weekly covers export lights for Operations — the TYPICAL arrival
+    // shape by hour (covers_slot). Historical demand, not the live event stream (still gated).
+    let arrivals = null;
+    if (tableExists(q, 'covers_slot')) {
+      const rows = rowsOf(q(`SELECT slot_hour h, SUM(arrivals) a, COUNT(DISTINCT business_date) days FROM covers_slot GROUP BY slot_hour HAVING SUM(arrivals) > 0 ORDER BY slot_hour`));
+      if (rows.length) arrivals = { rows: rows.map((r) => ({ h: Number(r.h), a: Number(r.a), days: Number(r.days) })) };
+    }
+    return { sources, liveImports, importTotal, serviceWired, arrivals };
   },
 
   render(sec, ctx) {
@@ -143,6 +166,12 @@ module.exports = {
       .ops-wk .k{font-size:11.5px;font-weight:800;color:var(--raccent2)}
       .ops-wk p{margin:3px 0 0;color:#8f99a4;font-size:10.5px;line-height:1.5}
       @media(max-width:820px){.ops-wk{grid-template-columns:1fr}}
+      .ops-waves{display:grid;gap:5px}
+      .ops-wave{display:grid;grid-template-columns:52px 1fr 60px;gap:8px;align-items:center}
+      .ops-wave .h{font-size:10.5px;color:#8f99a4;font-variant-numeric:tabular-nums}
+      .ops-wave .t{height:12px;background:#12161a;border-radius:6px;overflow:hidden}
+      .ops-wave .t i{display:block;height:100%;background:var(--raccent);border-radius:6px}
+      .ops-wave .v{font-size:10.5px;text-align:right;color:#c3ccd6;font-variant-numeric:tabular-nums}
     </style>`;
 
     const tabsNav = `<div class="r-tabs">${TABS.map(([k, lbl]) => `<a class="r-tab${k === tab ? ' active' : ''}" href="/coyote/operations?tab=${k}">${esc(lbl)}</a>`).join('')}</div>`;
@@ -190,7 +219,10 @@ module.exports = {
         <div class="r-two">${gatePanel('Kitchen demand heatmap', 'Late-ticket % by day and hour', 'kds')}${gatePanel('Kitchen decision ratios', 'Balanced throughput and quality', 'kds')}</div>`;
     } else if (tab === 'foh') {
       const kpis = ['On-time seating', 'Median booking delay', 'Average table turn', 'Waitlist quote accuracy', 'Waitlist conversion', 'FOH order accuracy'].map((l) => dashKpi(l, 'OpenTable-gated')).join('');
+      // Typical arrival waves (covers_slot) light from the weekly export; the live/event panels stay gated.
+      const waves = sec.arrivals ? arrivalWavesPanel(sec.arrivals) : gatePanel('Typical arrival waves', 'Covers arriving by hour of day', 'opentable');
       body = `<div class="r-grid r-kpi-grid">${kpis}</div>
+        ${waves}
         <div class="r-two">${gatePanel('Turn-time by party size', 'Actual versus configured turn time', 'opentable')}${gatePanel('FOH service funnel', 'Where guest flow is lost or delayed', 'opentable')}</div>
         <div class="r-two">${gatePanel('Seating-delay diagnosis', 'Root causes for reservations seated late', 'opentable')}${gatePanel('FOH decision ratios', 'Service speed plus commercial outcomes', 'opentable')}</div>`;
     } else if (tab === 'takeaway') {
