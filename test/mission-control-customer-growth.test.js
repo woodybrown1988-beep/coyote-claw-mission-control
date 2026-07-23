@@ -152,9 +152,13 @@ test('PR-B retention: four panels render with real values + the LIVE ceiling cap
   const body = render(growthDb(), 'retention').body;
   assert.match(body, /Second-visit conversion/); assert.match(body, /Visit-frequency distribution/);
   assert.match(body, /Lapsed regulars/); assert.match(body, /Repeat vs new covers/);
+  assert.match(body, /Repeat rate \(lifetime\)<\/div><div class="r-kpi-value"[^>]*>75\.0%</, 'lifetime repeat rate is the HEADLINE (3 of 4 booked 2+)');
   assert.match(body, /Identified guests<\/div><div class="r-kpi-value"[^>]*>4</);
   assert.match(body, /Lapsed regulars \(≥3\)<\/div><div class="r-kpi-value"[^>]*>2</, 'two lapsed regulars (Ana + Bob, both ≥3 visits)');
-  assert.match(body, /…contactable<\/div><div class="r-kpi-value"[^>]*>1</, 'but only 1 contactable — Ana (Bob is not opted-in)');
+  assert.match(body, /90\+ days lapsed · 1 contactable/, 'only 1 lapsed regular is contactable — Ana (Bob not opted-in)');
+  assert.match(body, /VIPs \(6\+ bookings\)/, 'the VIP segment KPI');
+  assert.match(body, /Measures re-BOOKING[\s\S]*?UNDERSTATES true repeat behaviour/, 're-booking caveat present on the panels');
+  assert.match(body, /short-window view — the lifetime repeat rate above is the headline/, 'second-visit reframed as short-window, not hero');
   assert.match(body, /identified guests only — \d+\.\d+% of covers/, 'live-computed identity ceiling');
   assert.match(body, /consent: \d+% of identified opted-in/, 'consent ceiling stated (separate from identity)');
 });
