@@ -677,6 +677,31 @@ function buildCoverage(q, maxDate) {
   c.parity = rowsOf(q(`SELECT user_name, role_name, kind, rc_value, locked_value FROM labour_rate_parity ORDER BY user_name, role_id`));
   c.roster = rowsOf(q(`SELECT COUNT(DISTINCT user_name) n FROM labour_shifts WHERE user_name IS NOT NULL`))[0] || null;
   c.parityPeople = rowsOf(q(`SELECT COUNT(DISTINCT user_name) n FROM labour_rate_parity`))[0] || null;
+
+  // ---- covers demand (Phase 2 PR3b): OpenTable arrivals by weekday × hour from covers_slot, 28d to
+  // the covers feed's own max — the DEMAND shape in COVERS (the true staffing driver), averaged per
+  // weekday occurrence (an absent weekday is absent, never a zero). Additive: read against the
+  // staffing/required grid; the working staffing heatmap is untouched. ----
+  c.coversHeat = null;
+  const cmx = rowsOf(q(`SELECT MAX(business_date) d FROM covers_slot`))[0];
+  const cMax = cmx && cmx.d ? String(cmx.d) : null;
+  if (cMax) {
+    const cFrom = K.shiftDays(cMax, -27);
+    const rows = rowsOf(q(`SELECT business_date d, slot_hour h, arrivals a FROM covers_slot WHERE business_date BETWEEN ? AND ?`, [cFrom, cMax]));
+    if (rows.length) {
+      const occ = [0, 0, 0, 0, 0, 0, 0];
+      const dates = new Set(rows.map((r) => String(r.d)));
+      for (let i = 0; i < 28; i++) { const d = K.shiftDays(cFrom, i); if (dates.has(d)) occ[dowIdx(d)] += 1; }
+      const sum = {};
+      for (const r of rows) {
+        const h = num(r.h); if (h == null || h < 11 || h > 21) continue;
+        sum[`${dowIdx(String(r.d))}-${h}`] = (sum[`${dowIdx(String(r.d))}-${h}`] || 0) + (num(r.a) || 0);
+      }
+      const avg = {}; const vals = [];
+      for (const k of Object.keys(sum)) { const dw = Number(k.split('-')[0]); if (occ[dw] > 0) { const v = sum[k] / occ[dw]; avg[k] = v; if (v > 0) vals.push(v); } }
+      if (vals.length) c.coversHeat = { from: cFrom, to: cMax, occ, avg, vals: vals.sort((a, b) => a - b) };
+    }
+  }
   return c;
 }
 
@@ -1774,7 +1799,7 @@ module.exports = {
       const arch = [
         ['RotaCloud', 'Rota & attendance — LIVE', 'shifts, clock data and rates → labour_day / labour_shifts / labour_hourly + the rota_ahead_* forward snapshots; daily settle + hourly intraday pull. The staffing side of every grid on this centre.'],
         ['Lightspeed K-Series', 'Demand — LIVE', 'per-receipt lines carry the hour truth (ONLINE has no true hour and is excluded from hour grids); sales_day net funds labour %, SPLH and the formula budget.'],
-        ['Reservations / covers', 'OpenTable — not wired', 'real covers come from OpenTable emailed reports (not wired); the POS guest-count is NOT covers (no-fabrication ruling) — covers-based productivity stays gated at zero digits.'],
+        ['Reservations / covers', 'OpenTable — LIVE', 'real covers from the OpenTable export → covers_day / covers_slot; the POS guest-count is still NOT covers (no-fabrication ruling). Covers demand by weekday × hour lights the Coverage tab; daypart staffing-to-covers is the true driver.'],
         ['Payroll', 'QuickBooks — gated', 'the settlement truth for paid £. Phase 0 is GET-only structural discovery; paid-vs-TRUE reconciliation lands when the wire graduates — until then labour_day TRUE is the operating truth.'],
       ].map(([src, name, txt]) => `<div class="r-driver"><small>${esc(src)}</small><strong>${esc(name)}</strong><p>${esc(txt)}</p></div>`).join('');
       const archPanel = S.rcc.panel({
@@ -1782,8 +1807,29 @@ module.exports = {
         body: `<div class="lbc-arch">${arch}</div>`,
       });
 
+      // ---- covers demand heatmap (Phase 2 PR3b) — the DEMAND side in covers, weekday × hour, from
+      // covers_slot. Additive alongside the staffing/required grid; the true staffing driver. ----
+      const CH = c.coversHeat;
+      let coversBody;
+      if (!CH || !CH.vals.length) {
+        coversBody = S.rcc.emptyState({ title: 'Covers demand by weekday × hour', blocker: 'no covers_slot record yet — OpenTable arrivals by hour.', unlock: 'the OpenTable export + a reservations rebuild' });
+      } else {
+        const chead = '<div></div>' + HEAT_HOURS.map((h) => `<div class="r-hlabel">${h}</div>`).join('');
+        const clevel = (v) => Math.max(1, Math.ceil((CH.vals.filter((x) => x <= v).length / CH.vals.length) * 6));
+        const cgrid = DOWS.map((nm, dw) => `<div class="r-hday">${nm}</div>` + HEAT_HOURS.map((h) => {
+          const v = CH.avg[`${dw}-${h}`];
+          return v ? S.rcc.heatCell(clevel(v), `${nm} ${h}:00 — ${Math.round(v)} covers/${nm} (avg)`) : S.rcc.heatCell(null);
+        }).join('')).join('');
+        coversBody = `<div class="r-heatmap">${chead}${cgrid}</div>
+          <div class="r-mini-note">DEMAND in covers — OpenTable arrivals (covers_slot) by weekday × LOCAL hour, averaged per weekday occurrence, 28d to ${esc(CH.to)} · shade = arrival volume by quantile · this is the TRUE staffing driver (covers, not £) — read it against the staffing/required grid above · a weekday with no record renders blank, never zero.</div>`;
+      }
+      const coversDemandPanel = S.rcc.panel({
+        title: 'Covers demand by weekday × hour', sub: 'OpenTable arrivals — the demand side in covers', headRight: S.rcc.tag('OpenTable', 'info'), body: coversBody,
+      });
+
       return parts.join('\n')
         + `<div class="r-grid r-two-col">${heatPanel}${compPanel}</div>`
+        + coversDemandPanel
         + `<div class="r-grid r-two-col">${ratiosPanel}${rulesPanel}</div>`
         + archPanel;
     };
