@@ -398,7 +398,7 @@ function buildDrivers(q, maxDate, rv2) {
 // bank side (UNMATCHED — no matching algorithm yet), the recon-battery exception ledger and the
 // day-grain gross-to-net bridge. Every side degrades to its honest empty-state, never a number.
 function buildRecon(q, rv2) {
-  const rc = { apiMax: null, from: null, tenders: null, bank: null, refunds: null, exceptions: null, ledger: [], bridge: null };
+  const rc = { apiMax: null, from: null, tenders: null, bank: null, refunds: null, exceptions: null, ledger: [], bridge: null, coverCheck: null };
   const apiMax = rv2 && rv2.maxApiDate ? rv2.maxApiDate : null;
   if (!apiMax) return rc;
   const from = K.shiftDays(apiMax, -27);
@@ -459,6 +459,23 @@ function buildRecon(q, rv2) {
       days: num(br.days), gross: num(br.gross), disc: num(br.disc) || 0, comps: num(br.comps) || 0,
       refunds: num(br.refunds) || 0, voids: num(br.voids) || 0, svc: num(br.svc) || 0,
       net: num(br.net) || 0, vat: num(br.vat) || 0,
+    };
+  }
+
+  // ---- OpenTable £/cover cross-check (Phase 2 PR2b): OpenTable's POS-integrated revenue vs the
+  // Lightspeed net over the same days. Lightspeed £ stays canon — this is a CROSS-CHECK, not a
+  // correction. OpenTable revenue is dine-in seated-with-POS-match only (a SUBSET of all-channel
+  // Lightspeed net), so OT/LS below 100% is the expected healthy shape; a swing is a data finding. ----
+  const cc = rowsOf(q(
+    `SELECT SUM(cd.revenue_net_pence) ot_net, SUM(cd.revenue_gross_pence) ot_gross,
+            SUM(cd.revenue_covers) covers, SUM(cd.seated_covers) seated,
+            SUM(s.net_sales_pence) ls_net, COUNT(*) days
+       FROM covers_day cd JOIN v_sales_day_all s ON s.business_date = cd.business_date
+      WHERE cd.business_date BETWEEN ? AND ? AND cd.revenue_covers > 0`, [from, apiMax]))[0];
+  if (cc && num(cc.covers) > 0 && num(cc.ot_net) != null) {
+    rc.coverCheck = {
+      from, to: apiMax, days: num(cc.days) || 0, otNet: num(cc.ot_net), otGross: num(cc.ot_gross) || 0,
+      covers: num(cc.covers), seated: num(cc.seated) || 0, lsNet: num(cc.ls_net),
     };
   }
   return rc;
@@ -1516,9 +1533,30 @@ module.exports = {
         body: ledgerBody,
       });
 
+      // OpenTable £/cover cross-check (Phase 2 PR2b): OpenTable's POS-integrated revenue vs Lightspeed
+      // net over the same window. Lightspeed stays canon — this reconciles the two sources.
+      const cvk = rc.coverCheck;
+      const coverCheckPanel = cvk
+        ? S.rcc.panel({
+            title: 'OpenTable £/cover cross-check', sub: `OpenTable POS revenue vs Lightspeed net · ${esc(cvk.from)} → ${esc(cvk.to)}`,
+            headRight: S.rcc.tag('cross-check', 'info'),
+            body: `<div class="r-driver-grid">
+                ${S.rcc.driver({ label: 'OpenTable £/cover (net)', value: gbp(Math.round(cvk.otNet / cvk.covers)), sub: 'revenue_net ÷ revenue_covers · ex-VAT' })}
+                ${S.rcc.driver({ label: 'OpenTable net · window', value: gbp0(cvk.otNet), sub: `${int(cvk.covers)} covers with a POS match` })}
+                ${S.rcc.driver({ label: 'Lightspeed net · window', value: gbp0(cvk.lsNet), sub: 'all channels · v_sales_day_all' })}
+                ${S.rcc.driver({ label: 'OpenTable ÷ Lightspeed', value: cvk.lsNet ? `${((100 * cvk.otNet) / cvk.lsNet).toFixed(1)}%` : '—', sub: 'dine-in matched share of all-channel net' })}
+              </div>
+              <div class="r-mini-note">OpenTable surfaces the SAME Lightspeed POS £ per booking — Lightspeed stays the canon (v_sales_day_all); this is a CROSS-CHECK, not a correction. OpenTable revenue is dine-in seated with a POS match only (${cvk.seated ? `${Math.round((100 * cvk.covers) / cvk.seated)}% of seated covers` : 'a subset'}), so OT ÷ LS sits BELOW 100% by design — a material swing is a reconciliation finding.</div>`,
+          })
+        : S.rcc.panel({
+            title: 'OpenTable £/cover cross-check', sub: 'OpenTable POS revenue vs Lightspeed net',
+            body: S.rcc.emptyState({ title: 'OpenTable £/cover cross-check', blocker: 'no OpenTable POS revenue in the window — covers_day.revenue_covers is empty.', unlock: 'the OpenTable export + a reservations rebuild (parser widening lands the £)' }),
+          });
+
       return `<div class="r-grid r-kpi-grid">${kpis}</div>${kpiCaption}
         <div class="r-grid recon-grid">${tenderPanel}${formulaPanel}</div>
-        <div class="r-grid r-two-col">${bridgePanel}${ledgerPanel}</div>`;
+        <div class="r-grid r-two-col">${bridgePanel}${ledgerPanel}</div>
+        ${coverCheckPanel}`;
     };
 
     // ============================ MENU GROWTH (P5) ============================

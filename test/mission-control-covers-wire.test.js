@@ -132,3 +132,49 @@ test('Revenue NEGATIVE CONTROL — no covers rows → tiles read "—", never a 
   assert.match(body, /no covers this week \(OpenTable\)/, 'the Covers tile is honest about no covers');
   assert.doesNotMatch(body, /covers\/transaction \d/, 'no sanity ratio without covers');
 });
+
+// ---- Phase 2 PR2b: OpenTable £/cover cross-check on the Reconciliation tab ----
+
+function reconDb(revenue = true) {
+  const db = new sqlite.DatabaseSync(':memory:');
+  db.exec(`
+    CREATE TABLE sales_receipts_api (receipt_id TEXT, business_date TEXT, net_without_tax_pence INT, cancelled INT, type TEXT, account_profile_code TEXT);
+    CREATE TABLE v_sales_day_all (business_date TEXT, net_sales_pence INT, transactions INT, premises TEXT);
+    CREATE TABLE covers_day (business_date TEXT PRIMARY KEY, seated_covers INT, revenue_net_pence INT, revenue_gross_pence INT, revenue_covers INT);
+    CREATE TABLE sales_payments_api (business_date TEXT, code TEXT, net_with_tax_pence INT, tip_pence INT, surcharge_pence INT);
+    CREATE TABLE sales_day (business_date TEXT, gross_sales_pence INT, discounts_pence INT, comps_pence INT, refunds_pence INT, voids_pence INT, service_charges_pence INT, net_sales_pence INT, taxes_pence INT);
+  `);
+  db.prepare(`INSERT INTO sales_receipts_api VALUES ('r1','2026-07-12',2000,0,'SALE','')`).run();
+  const va = db.prepare('INSERT INTO v_sales_day_all VALUES (?,?,?,?)');
+  const cd = db.prepare('INSERT INTO covers_day VALUES (?,?,?,?,?)');
+  va.run('2026-07-12', 120000, 60, 'current'); va.run('2026-07-11', 100000, 50, 'current');
+  if (revenue) {
+    cd.run('2026-07-12', 55, 100000, 120000, 50);  // £1000 net / 50 covers
+    cd.run('2026-07-11', 44, 80000, 96000, 40);     // £800 net / 40 covers
+  } else {
+    cd.run('2026-07-12', 55, 0, 0, 0);              // seated but NO POS revenue
+  }
+  return db;
+}
+
+test('Reconciliation — OpenTable £/cover cross-check: £/cover, OT/LS ratio, "cross-check not canon" framing', () => {
+  const db = reconDb();
+  const ctx = { q: q(db), now: Date.parse('2026-07-13T09:00:00Z'), query: { tab: 'reconciliation' } };
+  const body = revPage.render(revPage.getSection(db, ctx), ctx).body;
+  assert.match(body, /OpenTable £\/cover cross-check/);
+  assert.match(body, /£20\.00/, '£/cover = (100000+80000) ÷ (50+40) = £20.00');
+  assert.match(body, /81\.8%/, 'OT ÷ LS = 180000 ÷ 220000');
+  assert.match(body, /91% of seated covers/, 'coverage 90/99 seated');
+  assert.match(body, /Lightspeed stays the canon/, 'canon framing');
+  assert.match(body, /CROSS-CHECK, not a correction/);
+  assert.doesNotMatch(body, /NaN|undefined/);
+});
+
+test('Reconciliation NEGATIVE CONTROL — no OpenTable revenue → honest empty-state, no fabricated £/cover', () => {
+  const db = reconDb(false);
+  const ctx = { q: q(db), now: Date.parse('2026-07-13T09:00:00Z'), query: { tab: 'reconciliation' } };
+  const body = revPage.render(revPage.getSection(db, ctx), ctx).body;
+  assert.match(body, /OpenTable £\/cover cross-check/);
+  assert.match(body, /no OpenTable POS revenue in the window/, 'honest empty-state, not a number');
+  assert.doesNotMatch(body, /OpenTable £\/cover \(net\)<\/small><strong>£/, 'no £/cover value without revenue');
+});
