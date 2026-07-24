@@ -79,6 +79,11 @@ function buildRetention(q, minVisits) {
     fb[row.b] = num(row.n);
   r.freq = fb;
   r.repeatGuests = fb['2-5'] + fb['6-10'] + fb['11+'];
+  r.repeatRatePct = r.guests ? (100 * r.repeatGuests) / r.guests : null;   // the HEADLINE retention metric
+  r.vip = one(q, `SELECT
+      SUM(completed_visits >= 11) v11, SUM(completed_visits >= 11 AND marketing_opt_in = 1) v11opt,
+      SUM(completed_visits BETWEEN 6 AND 10) v6, SUM(completed_visits BETWEEN 6 AND 10 AND marketing_opt_in = 1) v6opt
+    FROM guest_profiles`) || { v11: 0, v11opt: 0, v6: 0, v6opt: 0 };
   // lapsed regulars: >= minVisits lifetime visits, last visit 90+ days before the feed's latest day
   r.lapsed = winEnd ? one(q,
     `SELECT COUNT(*) n, COALESCE(SUM(marketing_opt_in),0) opted FROM guest_profiles
@@ -214,7 +219,7 @@ module.exports = {
     // THE CEILING CAPTION (hard rule — appended to EVERY identity-derived panel via retPanel). Live-
     // computed, never hardcoded. Identity ceiling ≠ consent ceiling (consent is smaller).
     const ceilingCaption = ret
-      ? `<div class="r-mini-note cg-ceiling"><b>identified guests only — ${ret.idCoveragePct.toFixed(1)}% of covers</b>; ${(100 - ret.idCoveragePct).toFixed(1)}% walk-in and anonymous · consent: ${ret.consentPct.toFixed(0)}% of identified opted-in (the contactable ceiling, smaller than identity).</div>`
+      ? `<div class="r-mini-note cg-ceiling"><b>identified guests only — ${ret.idCoveragePct.toFixed(1)}% of covers</b>; ${(100 - ret.idCoveragePct).toFixed(1)}% walk-in and anonymous · consent: ${ret.consentPct.toFixed(0)}% of identified opted-in (the contactable ceiling, smaller than identity). <b>Measures re-BOOKING</b> among identified guests — walk-in returns are invisible (${(100 - ret.idCoveragePct).toFixed(1)}% of covers), so this UNDERSTATES true repeat behaviour.</div>`
       : '';
     const retPanel = (title, sub, bodyHtml) => S.rcc.panel({ title, sub, headRight: S.rcc.tag('OpenTable identity', 'info'), body: bodyHtml + ceilingCaption });
 
@@ -314,17 +319,19 @@ module.exports = {
       }
     } else if (tab === 'retention') {
       if (ret) {
-        const l = ret.lapsed;
+        const l = ret.lapsed, vip = ret.vip;
+        const vip6plus = num(vip.v6) + num(vip.v11), vip6plusOpt = num(vip.v6opt) + num(vip.v11opt);
         const kpis = [
+          // HEADLINE: lifetime repeat rate (booked 2+). The short-window 30/60/90 cohort view sits in the panel below, not here.
+          realKpi('Repeat rate (lifetime)', ret.repeatRatePct != null ? `${ret.repeatRatePct.toFixed(1)}%` : '—', `${ret.repeatGuests.toLocaleString()} of ${ret.guests.toLocaleString()} identified have booked 2+`, T.good),
           realKpi('Identified guests', ret.guests.toLocaleString(), `${ret.idCoveragePct.toFixed(1)}% of covers`),
-          realKpi('Repeat guests', ret.repeatGuests.toLocaleString(), `${ret.guests ? Math.round((100 * ret.repeatGuests) / ret.guests) : 0}% of identified (2+ visits)`),
+          realKpi('VIPs (6+ bookings)', vip6plus.toLocaleString(), `${num(vip.v11)} at 11+ · ${num(vip.v6)} at 6-10`),
+          realKpi('…contactable VIPs', vip6plusOpt.toLocaleString(), 'opted-in — your best win-back'),
+          realKpi(`Lapsed regulars (≥${ret.minVisits})`, num(l.n).toLocaleString(), `90+ days lapsed · ${num(l.opted)} contactable`, T.warn),
           realKpi('Opted-in', ret.opted.toLocaleString(), `${ret.consentPct.toFixed(0)}% — the consent ceiling`),
-          realKpi(`Lapsed regulars (≥${ret.minVisits})`, num(l.n).toLocaleString(), '90+ days lapsed', T.warn),
-          realKpi('…contactable', num(l.opted).toLocaleString(), 'opted-in win-back list'),
-          dashKpi('Loyalty penetration', 'no loyalty scheme — a business call'),
         ].join('');
         body = `<div class="r-grid r-kpi-grid">${kpis}</div>
-          <div class="r-two">${retPanel('Second-visit conversion', 'new identified guests returning within 30 / 60 / 90 days', secondVisitBody(ret))}${retPanel('Visit-frequency distribution', '1 / 2-5 / 6-10 / 11+ lifetime visits', freqBody(ret))}</div>
+          <div class="r-two">${retPanel('Second-visit conversion', 'short-window view — the lifetime repeat rate above is the headline', secondVisitBody(ret))}${retPanel('Visit-frequency distribution', '1 / 2-5 / 6-10 / 11+ lifetime visits', freqBody(ret))}</div>
           <div class="r-two">${retPanel('Lapsed regulars', `≥${ret.minVisits} visits, 90+ days lapsed — count + segment, never a name`, lapsedBody(ret))}${retPanel('Repeat vs new covers', 'identified population, by month', rvnBody(ret))}</div>
           <div class="r-two">${vPanel('Loyalty programme health', 'Enrolment, activity, reward economics', 'nosource', 'there is no loyalty scheme (identity is captured, a loyalty MECHANISM is not).')}${vPanel('RFM monetary segments', 'Recency / frequency / MONETARY', 'integration', 'lifetime spend is captured per guest; the monetary RFM cut is the next build on this data.')}</div>`;
       } else {
