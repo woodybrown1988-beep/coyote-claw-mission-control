@@ -69,7 +69,7 @@ function makeDb() {
     CREATE TABLE sales_by_channel (business_date TEXT, profile_id TEXT, profile_name TEXT, net_sales_pence INTEGER, gross_sales_pence INTEGER, pos_guest_count INTEGER, transactions INTEGER, tips_pence INTEGER, discounts_pence INTEGER, updated_at INTEGER, PRIMARY KEY (business_date, profile_id));
     CREATE TABLE labour_dept (business_date TEXT, department TEXT, sched_minutes INTEGER, act_minutes INTEGER, sched_cost_rc_pence INTEGER, act_cost_rc_pence INTEGER, rc_uncosted_sched_min INTEGER, rc_uncosted_act_min INTEGER, rc_uncosted_names TEXT, updated_at INTEGER, PRIMARY KEY (business_date, department));
     CREATE TABLE labour_budget (business_date TEXT, department TEXT, labour_pct REAL, updated_at INTEGER, PRIMARY KEY (business_date, department));
-    CREATE TABLE sales_receipts_api (receipt_id TEXT PRIMARY KEY, business_date TEXT, type TEXT, cancelled INTEGER, account_profile_code TEXT, net_without_tax_pence INTEGER);
+    CREATE TABLE sales_receipts_api (receipt_id TEXT PRIMARY KEY, business_date TEXT, type TEXT, cancelled INTEGER, account_profile_code TEXT, net_without_tax_pence INTEGER, table_name TEXT);
     CREATE TABLE sales_channel_map_api (account_profile_code TEXT PRIMARY KEY, profile_name TEXT, channel_label TEXT);
     CREATE TABLE rota_ahead_budget (business_date TEXT, department TEXT, labour_pct REAL, revenue_target_pence INTEGER, as_of INTEGER, PRIMARY KEY (business_date, department));
     CREATE TABLE rota_ahead_shifts (business_date TEXT, rc_shift_id INTEGER, sched_minutes INTEGER, sched_cost_true_pence INTEGER, department TEXT, as_of INTEGER);
@@ -170,23 +170,36 @@ test('overview: THE WEEK — yesterday + last full week verdict tiles, premises-
   db.close();
 });
 
-test('overview: QR verdict line reads the PER-RECEIPT record (parity vs direct SQL) + £38 reference', () => {
+test('overview: QR verdict line renders spend per SITTING (fragmentation ruling 2026-07-31) — QR slots group, EAT IN splits group, £38 target retired', () => {
   const db = makeDb();
   seedSales(db);
   db.prepare(`INSERT INTO sales_channel_map_api VALUES ('storekit_orderpay','Storekit','STOREKIT ORDER & PAY')`).run();
-  const ins = db.prepare(`INSERT INTO sales_receipts_api VALUES (?,?,?,0,'storekit_orderpay',?)`);
-  for (let d = 6; d <= 12; d++) for (let i = 0; i < 5; i++) ins.run(`Q${d}-${i}`, `2026-07-${pad(d)}`, 'SALE', 3300);
-  ins.run('QV', '2026-07-10', 'VOID', 99999); // must be excluded
+  db.prepare(`INSERT INTO sales_channel_map_api VALUES ('LOCAL','Local','EAT IN')`).run();
+  const ins = db.prepare(`INSERT INTO sales_receipts_api VALUES (?,?,?,0,?,?,?)`);
+  // QR: 5 orders/day on 3 session slots (2+2+1) → 21 sittings over 7 days, £33/order, £55/sitting
+  for (let d = 6; d <= 12; d++) for (let i = 0; i < 5; i++) {
+    ins.run(`Q${d}-${i}`, `2026-07-${pad(d)}`, 'SALE', 'storekit_orderpay', 3300, `Order ${1 + Math.floor(i / 2)}`);
+  }
+  // EAT IN: 2 closed tabs/day ('Order N' = device counter → each its own sitting) @ £100…
+  for (let d = 6; d <= 12; d++) for (let i = 0; i < 2; i++) {
+    ins.run(`E${d}-${i}`, `2026-07-${pad(d)}`, 'SALE', 'LOCAL', 10000, `Order ${10 + i}`);
+  }
+  // …plus one party split across two bills ('Table 5.1'/'Table 5.2' → ONE sitting): keeps the
+  // per-sitting figure at £100.00 ONLY if base-table grouping works (else 16 sittings → £93.75)
+  ins.run('ES-1', '2026-07-12', 'SALE', 'LOCAL', 5000, 'Table 5.1');
+  ins.run('ES-2', '2026-07-12', 'SALE', 'LOCAL', 5000, 'Table 5.2');
+  ins.run('QV', '2026-07-10', 'VOID', 'storekit_orderpay', 99999, 'Order 9'); // must be excluded
   const ctx = ctxFor(db);
   const m = overview.getSection(db, ctx);
-  const direct = DATA.safeSelect(db,
-    `SELECT SUM(net_without_tax_pence) * 1.0 / COUNT(*) atv FROM sales_receipts_api
-      WHERE account_profile_code = 'storekit_orderpay' AND cancelled = 0 AND type = 'SALE'`).rows[0];
-  assert.equal(m.qr.atv, Number(direct.atv), 'parity with the direct per-receipt query');
-  assert.equal(m.qr.atv, 3300);
+  assert.equal(m.qr.sittings, 21, '3 QR slots/day × 7 days');
+  assert.equal(m.qr.perSit, 5500, '£55.00/sitting = 115500p / 21 sittings');
+  assert.equal(m.qr.atv, 3300, 'per-order ATV still computed for the caption');
+  assert.equal(m.qr.eatPerSit, 10000, 'EAT IN £100.00/sitting — split bills grouped to one sitting');
   const out = overview.render(m, ctx);
-  assert.match(out.body, /vs the £38 target/);
+  assert.match(out.body, /QR <b>£55\.00<\/b>\/sitting vs EAT IN £100\.00/);
+  assert.match(out.body, /QR orders fragment per sitting/, 'the ruled caption');
   assert.match(out.body, /per-receipt record/, 'source stated');
+  assert.doesNotMatch(out.body, /£38 target/, 'the per-order target is retired');
   db.close();
 });
 

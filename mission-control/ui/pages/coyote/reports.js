@@ -66,7 +66,10 @@ const TAB_KEYS = TABS.map((t) => t.key);
 const SALE_WHERE = `r.cancelled = 0 AND (r.type IS NULL OR r.type NOT IN ('VOID','CANCEL','RECALL'))`;
 
 const QR_LABEL = 'STOREKIT ORDER & PAY';
-const QR_TARGET_PENCE = 3800; // the standing £38 net/txn decision (docs/qr-upsell-spec.md)
+// The £38/order QR target is RETIRED (operator ruling 2026-07-31): a QR sitting places several
+// orders, so per-order ATV structurally understates QR spend. The decision feed renders spend
+// per SITTING; per-cover is the honest comparison once the OpenTable covers feed is regular.
+// Evidence + sitting-key derivation: docs/qr-sitting-basis-2026-07-31.md.
 const API_ERA_NOTE = 'window inside API-era coverage (from 2026-06-30)';
 
 // Drivers scorecard STATUS ruler — the RULED rota-review verdict classes, never invented:
@@ -191,14 +194,30 @@ function buildExec(q, maxDate, rv2) {
          FROM sales_reconciliation WHERE business_date BETWEEN ? AND ?`, [K.shiftDays(recAnchor, -13), recAnchor]))[0];
     if (rec && num(rec.days) > 0) exec.feed.push({ kind: 'recon', days: num(rec.days), fails: num(rec.fails) || 0 });
   }
-  // (3) QR ATV vs the £38 target, trailing 28d of the per-receipt record (the Overview pattern)
+  // (3) QR vs EAT IN spend per SITTING, trailing 28d of the per-receipt record (the Overview
+  // pattern; £38/order target retired 2026-07-31 — sitting keys per docs/qr-sitting-basis-2026-07-31.md)
   if (apiMax) {
     const qrFrom = K.shiftDays(apiMax, -27);
-    const qrr = rowsOf(q(
-      `SELECT SUM(r.net_without_tax_pence) net, COUNT(*) txn
+    const sitRows = rowsOf(q(
+      `SELECT m.channel_label ch, SUM(r.net_without_tax_pence) net, COUNT(*) txn,
+              COUNT(DISTINCT CASE
+                WHEN m.channel_label = ? THEN r.business_date || '|' || r.table_name
+                WHEN r.table_name LIKE 'Table %' THEN r.business_date || '|T' || CAST(substr(r.table_name, 7) AS INTEGER)
+                ELSE 'R' || r.receipt_id END) sittings
          FROM sales_receipts_api r JOIN sales_channel_map_api m ON m.account_profile_code = COALESCE(r.account_profile_code,'')
-        WHERE r.business_date BETWEEN ? AND ? AND m.channel_label = ? AND ${SALE_WHERE}`, [qrFrom, apiMax, QR_LABEL]))[0];
-    if (qrr && num(qrr.txn) > 0) exec.feed.push({ kind: 'qr', atv: Math.round(num(qrr.net) / num(qrr.txn)), txn: num(qrr.txn), to: apiMax });
+        WHERE r.business_date BETWEEN ? AND ? AND m.channel_label IN (?, 'EAT IN') AND ${SALE_WHERE}
+        GROUP BY 1`, [QR_LABEL, qrFrom, apiMax, QR_LABEL]));
+    const sk = sitRows.find((x) => x.ch === QR_LABEL);
+    const eatSit = sitRows.find((x) => x.ch === 'EAT IN');
+    if (sk && num(sk.sittings) > 0) {
+      exec.feed.push({
+        kind: 'qr',
+        perSit: Math.round(num(sk.net) / num(sk.sittings)), sittings: num(sk.sittings),
+        atv: Math.round(num(sk.net) / num(sk.txn)), txn: num(sk.txn),
+        eatPerSit: eatSit && num(eatSit.sittings) > 0 ? Math.round(num(eatSit.net) / num(eatSit.sittings)) : null,
+        to: apiMax,
+      });
+    }
 
     // (4) attachment signal — the DICT decides the drink class (name-guessing on products is
     // banned as fabrication risk); no drink-named accounting group → honest pending note.
@@ -947,10 +966,13 @@ module.exports = {
             ? S.rcc.alert({ tone: 'bad', title: `${f.fails} reconciliation check failure(s)`, text: `last ${f.days} recorded day(s) · day_gross excluded (documented VAT-basis class) · see Reconciliation`, impact: `${f.fails} checks` })
             : S.rcc.alert({ tone: 'good', title: 'Reconciliation clean', text: `reconciliation clean — ${f.days} days, day_gross variance is the documented VAT-basis class`, impact: 'clean' }));
         } else if (f.kind === 'qr') {
-          const below = f.atv < QR_TARGET_PENCE;
-          alerts.push(below
-            ? S.rcc.alert({ tone: 'bad', title: `QR ATV ${gbp(f.atv)} vs the £38 target`, text: `28d to ${f.to} · ${int(f.txn)} txn · per-receipt record · push checkout cross-sell`, impact: `−${gbp((QR_TARGET_PENCE - f.atv) * f.txn)}` })
-            : S.rcc.alert({ tone: 'good', title: 'QR ATV on target', text: `28d to ${f.to} · ${int(f.txn)} txn · per-receipt record`, impact: gbp(f.atv) }));
+          const behind = f.eatPerSit != null && f.perSit < f.eatPerSit;
+          alerts.push(S.rcc.alert({
+            tone: behind ? 'bad' : 'good',
+            title: `QR ${gbp(f.perSit)}/sitting${f.eatPerSit != null ? ` vs EAT IN ${gbp(f.eatPerSit)}` : ''}`,
+            text: `28d to ${f.to} · ${int(f.sittings)} QR sittings · QR orders fragment per sitting — per-order ATV (${gbp(f.atv)}, ${int(f.txn)} txn) understates spend; per-cover basis is the honest comparison`,
+            impact: `${gbp(f.perSit)}/sitting`,
+          }));
         } else if (f.kind === 'attach') {
           if (f.prior === null) {
             alerts.push(S.rcc.alert({ title: `Drink attachment ${(f.cur * 100).toFixed(1)}%`, text: `first 28d window on record — no prior window to compare yet (${f.groups.join(' + ')})`, impact: 'baseline' }));
@@ -1478,8 +1500,8 @@ module.exports = {
         title: 'Control formulas', sub: 'the rulings the batteries enforce',
         body: S.rcc.formula([
           'day net (ex-VAT) = SUM(net_without_tax_pence) over non-cancelled SALE receipts',
-          'ATV = net ÷ transactions · ex-VAT · sales_by_channel basis',
-          'QR = STOREKIT ORDER & PAY',
+          'ATV = net ÷ receipts · ex-VAT · per-receipt record basis',
+          'QR = STOREKIT ORDER & PAY · sitting = table/QR-slot per day, split bills grouped; per-order ATV understates QR spend (fragmentation ruling 2026-07-31)',
           'gross = net + VAT; day_gross deltas vs the scraper eras = DOCUMENTED VAT-basis class (ruled 2026-07-20)',
           'covers ≠ POS guest count (OpenTable only)',
           'single-writer: values live in the DB; docs carry pointers',
