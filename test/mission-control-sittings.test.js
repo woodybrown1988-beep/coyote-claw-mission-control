@@ -21,9 +21,16 @@ function baseDb() {
     CREATE TABLE sales_receipts_api (receipt_id TEXT PRIMARY KEY, business_date TEXT, type TEXT, cancelled INTEGER, account_profile_code TEXT, net_without_tax_pence INTEGER, updated_at INTEGER);
     CREATE TABLE sales_channel_map_api (account_profile_code TEXT PRIMARY KEY, profile_name TEXT, delivery_mode TEXT, channel_label TEXT, first_seen INTEGER, updated_at INTEGER, label_source TEXT);
   `);
-  // one API receipt so rv2.maxApiDate = APIMAX (the drivers window anchor)
-  db.prepare(`INSERT INTO sales_receipts_api VALUES ('R1', ?, 'SALE', 0, 'LOCAL', 3000, 1)`).run(APIMAX);
-  db.prepare(`INSERT INTO sales_channel_map_api VALUES ('LOCAL','Local','NONE','EAT IN',1,1,'operator'),('storekit_orderpay','SK','NONE','STOREKIT ORDER & PAY',1,1,'operator')`).run();
+  db.prepare(`INSERT INTO sales_channel_map_api VALUES ('LOCAL','Local','NONE','EAT IN',1,1,'operator'),('storekit_orderpay','SK','NONE','STOREKIT ORDER & PAY',1,1,'operator'),('TAKEAWAY','TA','TAKE_AWAY',NULL,1,1,NULL)`).run();
+  // FULL dine-in receipts (all tables) = the per-cover numerator: EAT IN 3000 + STOREKIT 3000 + EAT IN 6000
+  // = 12000. R1 is dated APIMAX so rv2.maxApiDate = APIMAX (the drivers window anchor). The takeaway
+  // receipt (9999) must be EXCLUDED from dine-in net. Deliberately ≠ the sittings subset net so the test
+  // guards the exact bug: per-cover must use RECEIPTS dine-in net, never dine_in_sittings.totNet.
+  const ins = db.prepare(`INSERT INTO sales_receipts_api VALUES (?, ?, 'SALE', 0, ?, ?, 1)`);
+  ins.run('R1', APIMAX, 'LOCAL', 3000);
+  ins.run('R2', shift(APIMAX, -3), 'storekit_orderpay', 3000);
+  ins.run('R3', shift(APIMAX, -3), 'LOCAL', 6000);
+  ins.run('R9', APIMAX, 'TAKEAWAY', 9999); // takeaway — NOT dine-in, excluded from net/cover
   return db;
 }
 function addSittings(db) {
@@ -78,14 +85,16 @@ test('SITTINGS render: per-sitting by channel renders real £; per-cover gates w
   assert.match(body, /MIXED/, 'mixed sittings are surfaced, not hidden or forced into a channel');
 });
 
-test('SITTINGS + covers: per-cover renders overall (dine-in net ÷ OpenTable covers)', () => {
+test('SITTINGS + covers: per-cover = FULL dine-in receipts net ÷ covers (NOT the sittings subset)', () => {
   const db = baseDb();
-  addSittings(db);
-  addCovers(db); // 300 covers
+  addSittings(db); // sittings subset net = 3600+3400+3000+5000 = 15000 → the BUG would show £0.50
+  addCovers(db);   // 300 covers
   const body = render(db);
   const cover = tileOf(body, 'Net / cover');
-  // total dine-in net = 3600+3400+3000+5000 = 15000 pence ÷ 300 covers = 50 pence = £0.50
-  assert.match(cover, /£0\.50/, 'net/cover = 15000p ÷ 300 covers = £0.50');
+  // CORRECT: full dine-in RECEIPTS net = 3000+3000+6000 = 12000 (takeaway 9999 excluded) ÷ 300 = £0.40.
+  // The regression guard: £0.40 (receipts) ≠ £0.50 (sittings subset) — proves the numerator is full net.
+  assert.match(cover, /£0\.40/, 'net/cover = full dine-in net 12000p ÷ 300 covers = £0.40');
+  assert.doesNotMatch(cover, /£0\.50/, 'must NOT divide the physical-table sittings subset by all covers');
   assert.match(cover, /300 OpenTable covers/);
   assert.match(cover, /not channel-split/, 'per-cover is honestly labelled overall, not by channel');
 });
