@@ -361,6 +361,24 @@ function buildDrivers(q, maxDate, rv2) {
               (SELECT SUM(transactions) FROM v_sales_day_all WHERE business_date BETWEEN ? AND ?) txn`,
       [from, apiMax, from, apiMax]))[0];
     if (cpt && num(cpt.covers) != null && num(cpt.txn) > 0) d.cpt = { covers: num(cpt.covers), txn: num(cpt.txn), from, to: apiMax };
+
+    // ---- SITTINGS (2026-07-31): the honest per-PARTY QR-vs-served basis. dine_in_sittings clusters
+    // receipts by physical table (20-min window); net_pence is ex-VAT. Absent/empty table → d.sit
+    // stays null → the panel gates. Per-cover here is OVERALL (dine-in net ÷ OpenTable covers) — covers
+    // are channel-agnostic and "POS guest-count is never covers", so it gates when covers are absent. ----
+    const sitRows = rowsOf(q(
+      `SELECT channel, COUNT(*) sittings, SUM(net_pence) net, SUM(receipt_count) rcpts
+         FROM dine_in_sittings WHERE business_date BETWEEN ? AND ? GROUP BY channel`, [from, apiMax]));
+    if (sitRows.length) {
+      const by = {}; let totNet = 0, totSit = 0;
+      for (const r of sitRows) {
+        by[String(r.channel)] = { sittings: num(r.sittings), net: num(r.net) || 0, rcpts: num(r.rcpts) || 0 };
+        totNet += num(r.net) || 0; totSit += num(r.sittings) || 0;
+      }
+      const cov = rowsOf(q(`SELECT SUM(total_covers) c FROM covers_day WHERE business_date BETWEEN ? AND ?`, [from, apiMax]))[0];
+      const covers = cov ? num(cov.c) : null;
+      d.sit = { from, to: apiMax, by, totNet, totSit, covers: covers != null && covers > 0 ? covers : null };
+    }
   }
 
   // ---- daily trading scorecard: last 14 recorded days; a missing sales day = an absent row ----
@@ -1405,7 +1423,41 @@ module.exports = {
         body: scoreBody,
       });
 
+      // ---- SITTINGS panel: the honest QR-vs-served unit (net per party, not per order) + per-cover.
+      // A per-order ATV under-counts QR because QR fragments a party into many small receipts. ----
+      const sit = dv.sit;
+      const perSit = (x) => (x && x.sittings > 0 ? gbp(Math.round(x.net / x.sittings)) : '—');
+      const chOf = (k) => (sit && sit.by[k] && sit.by[k].sittings > 0 ? sit.by[k] : null);
+      const qrSit = chOf('QR'), servedSit = chOf('served'), mixedSit = chOf('mixed');
+      const sitTiles = [
+        S.rcc.kpi({
+          label: 'Net / QR sitting', value: perSit(qrSit),
+          sub: qrSit ? `${int(qrSit.sittings)} QR sittings · ${(qrSit.rcpts / qrSit.sittings).toFixed(2)} receipts/sitting`
+            : (sit ? 'no QR sittings in the window' : 'no sittings yet — run: lightspeed-api -- sittings-backfill'),
+        }),
+        S.rcc.kpi({
+          label: 'Net / served sitting', value: perSit(servedSit),
+          sub: servedSit ? `${int(servedSit.sittings)} served sittings (EAT IN + MON-FRI DEAL)`
+            : (sit ? 'no served sittings in the window' : 'dine_in_sittings not populated'),
+        }),
+        S.rcc.kpi({
+          label: 'Net / cover (overall)', value: (sit && sit.covers ? gbp(Math.round(sit.totNet / sit.covers)) : '—'),
+          sub: (sit && sit.covers) ? `dine-in net ÷ ${int(sit.covers)} OpenTable covers · not channel-split (POS guest-count is never covers)`
+            : 'no covers in the window (OpenTable)',
+        }),
+      ].join('');
+      const mixNote = mixedSit ? ` MIXED (both channels in one sitting): ${int(mixedSit.sittings)} (${(mixedSit.sittings / sit.totSit * 100).toFixed(1)}% — immaterial, hybrid ordering).` : '';
+      const sitCaption = sit
+        ? `<div class="rv2-caption">Sittings 28d to ${esc(sit.to)} · a sitting = one party at a physical table (dine_in_sittings — 20-min cluster of receipts, ex-VAT; the honest QR-vs-served unit — a per-order ATV under-counts QR). Per-cover is OVERALL: OpenTable covers are day-total + channel-agnostic, so it is not split by channel.${mixNote}</div>`
+        : `<div class="rv2-caption">dine_in_sittings not populated yet — after the derivation deploys, run <code>npm run lightspeed-api -- sittings-backfill</code> (ongoing days fill at ingest); until then this gates honestly.</div>`;
+      const sitPanel = S.rcc.panel({
+        title: 'Sittings — net per party by channel',
+        sub: 'the honest QR-vs-served unit: net per sitting (party), not per order',
+        body: `<div class="r-grid r-kpi-grid">${sitTiles}</div>${sitCaption}`,
+      });
+
       return `<div class="r-grid r-kpi-grid">${kpis}</div>${kpiCaption}
+        ${sitPanel}
         <div class="r-grid r-two-col">${heatPanel}${capacityPanel}</div>
         ${scorePanel}`;
     };
