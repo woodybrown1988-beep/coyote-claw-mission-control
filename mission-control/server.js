@@ -34,9 +34,15 @@ const RATES_PATH = path.join(ROOT, 'config', 'api-rates.json');
 // paths (never derived from request input); the upload only ever writes inside OPENTABLE_INBOX.
 const crypto = require('node:crypto');
 const UP = require('./ui/upload.js');
+const AUTH = require('./ui/auth.js');
 const CC_DIR = process.env.COYOTE_CLAW_DIR || path.join(homedir(), 'coyote-claw');
 const OPENTABLE_INBOX = process.env.OPENTABLE_INBOX || path.join(CC_DIR, 'data', 'opentable-inbox');
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;   // 25 MB — generous for the one-off 26-month backfill
+
+// Wave 1 auth (2026-07-31 security remediation): every response gets these headers, and a SINGLE
+// process-global login limiter guards POST /login. See ui/auth.js for the model + the revoke recipe.
+const MC_CSP = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'";
+let LOGIN_LIMITER = AUTH.createLoginLimiter();
 
 // The commit this process is serving — the gated deploy link's generic content check
 // (`/version` == target sha) reads this to confirm a merge actually shipped, not just
@@ -71,6 +77,40 @@ function main() {
 
 function handleRequest(req, res) {
   const url = new URL(req.url, `http://${HOST}`);
+
+  // --- Wave 1: security headers on EVERY response (set before any writeHead; route handlers may
+  // add their own content-type/nosniff, which merge). Kills clickjacking + the CSRF/XSS drive-by. ---
+  res.setHeader('Content-Security-Policy', MC_CSP);
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+
+  const acceptsHtml = (req.headers.accept || '').indexOf('text/html') !== -1;
+
+  // --- Login endpoint (the ONLY unauthenticated write) ---
+  if (url.pathname === '/login') {
+    if (req.method === 'POST') { handleLogin(req, res); return; }
+    if (req.method === 'GET') { serveLoginPage(res); return; }
+    sendText(res, 405, 'Method not allowed');
+    return;
+  }
+
+  // --- Auth gate: 401 by DEFAULT. Everything except the login page and the machine health/version
+  // probes requires a valid session cookie. The dumb-pipe forwarder means we cannot trust peer IP —
+  // the cookie IS the trust boundary. ---
+  if (!AUTH.isPublicPath(url.pathname, acceptsHtml)) {
+    if (!AUTH.isAuthed(req, Date.now())) {
+      if (acceptsHtml && req.method === 'GET') { res.writeHead(302, { Location: '/login' }); res.end(); }
+      else { sendJson(res, 401, { ok: false, error: 'authentication required' }); }
+      return;
+    }
+    // CSRF: state-changing requests must be same-origin (SameSite=Strict already withholds the
+    // cookie cross-site; this refuses any lingering cross-origin POST as defence-in-depth).
+    if (req.method !== 'GET' && !AUTH.originOk(req)) {
+      sendJson(res, 403, { ok: false, error: 'cross-origin request refused' });
+      return;
+    }
+  }
 
   // The ONE narrow write-path (Step 2). TIER 2 of the two-tier boundary: a fixed allowlist of
   // safe/reversible ops (mark TA/OT responded, snooze, log an action) via a SEPARATE write handle.
@@ -3349,6 +3389,96 @@ function sendText(res, status, body) {
   res.end(body);
 }
 
+// --- Wave 1 auth handlers (2026-07-31 security remediation) ------------------------------------
+function logAuth(kind, extra) {
+  // stderr → the coyote-mc-dashboard systemd journal. Login failures + lockouts are operator/Rex-
+  // visible here and (durably) in the mc_auth_events table below.
+  try { console.error(`[mc-auth] ${kind} ${JSON.stringify(extra || {})}`); } catch (_) { /* never throw from logging */ }
+}
+
+// Pure + testable: append one auth security event. Rex reads librarian.db, so a lockout surfaces
+// there (the Rex brief line is a paired spine follow-up). Table is created on first write.
+function applyAuthEvent(db, kind, fails, nowMs) {
+  db.exec('CREATE TABLE IF NOT EXISTS mc_auth_events (id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, kind TEXT NOT NULL, fails INTEGER, note TEXT)');
+  db.prepare('INSERT INTO mc_auth_events (at, kind, fails, note) VALUES (?, ?, ?, ?)')
+    .run(nowMs, String(kind), fails == null ? null : Number(fails), null);
+}
+function recordAuthEvent(kind, fails) {
+  try {
+    const opened = openWritableDatabase();
+    if (!opened.ok) return;
+    try { applyAuthEvent(opened.db, kind, fails, Date.now()); }
+    finally { opened.db.close(); }
+  } catch (_) { /* a logging failure must never break the auth response */ }
+}
+
+function handleLogin(req, res) {
+  // A cross-site drive-by must not be able to burn the operator's login attempts and trip the global
+  // lockout (an availability attack). The real login page is same-origin (its Origin host matches
+  // Host); a CLI client sends no Origin and is allowed. Reject cross-site WITHOUT advancing the counter.
+  if (!AUTH.originOk(req)) { sendJson(res, 403, { ok: false, error: 'cross-origin login refused' }); return; }
+  const now = Date.now();
+  const pre = LOGIN_LIMITER.state(now);
+  if (pre.locked) {
+    logAuth('lockout-refused', { fails: pre.fails, retryAfterMs: pre.retryAfterMs });
+    recordAuthEvent('lockout-refused', pre.fails);
+    res.setHeader('Retry-After', String(Math.ceil(pre.retryAfterMs / 1000)));
+    sendJson(res, 429, { ok: false, error: 'too many attempts — locked out', retryAfterSeconds: Math.ceil(pre.retryAfterMs / 1000) });
+    return;
+  }
+  readTextBody(req, res, 4096, (raw) => {
+    let secret = '';
+    try { secret = String((JSON.parse(raw || '{}') || {}).secret || ''); } catch (_) { secret = ''; }
+    if (AUTH.checkSecret(secret)) {
+      LOGIN_LIMITER.succeed();
+      logAuth('login-ok', {});
+      res.setHeader('Set-Cookie', AUTH.issueCookie(Date.now()));
+      sendJson(res, 200, { ok: true });
+      return;
+    }
+    const r = LOGIN_LIMITER.fail(Date.now());
+    logAuth('login-fail', { fails: r.fails, locked: r.locked });
+    recordAuthEvent('login-fail', r.fails);
+    const finish = () => {
+      if (r.locked) {
+        res.setHeader('Retry-After', String(Math.ceil(r.retryAfterMs / 1000)));
+        sendJson(res, 429, { ok: false, error: 'too many attempts — locked out', retryAfterSeconds: Math.ceil(r.retryAfterMs / 1000) });
+      } else {
+        sendJson(res, 401, { ok: false, error: 'invalid secret' });
+      }
+    };
+    // Per-failure response slowdown is a minor speed bump only — the GLOBAL lockout (state()/fail()
+    // above, threshold in auth.js) is the real brute-force control; it engages regardless of this
+    // delay and is enforced on the HTTP path. Skipped when MC_LOGIN_DELAY_MS=0 (tests).
+    const delay = Number(process.env.MC_LOGIN_DELAY_MS != null ? process.env.MC_LOGIN_DELAY_MS : 750);
+    if (delay > 0) setTimeout(finish, delay); else finish();
+  });
+}
+
+function serveLoginPage(res) {
+  const html = [
+    '<!doctype html><html lang="en"><head><meta charset="utf-8">',
+    '<meta name="viewport" content="width=device-width,initial-scale=1">',
+    '<title>Mission Control — Sign in</title><style>',
+    'body{font-family:system-ui,-apple-system,sans-serif;background:#0b0f14;color:#e6edf3;display:grid;place-items:center;min-height:100vh;margin:0}',
+    'form{background:#111823;padding:28px;border-radius:14px;border:1px solid #22303f;min-width:280px}',
+    'h1{font-size:15px;margin:0 0 14px;letter-spacing:.02em}',
+    'input{width:100%;padding:10px;border-radius:8px;border:1px solid #2a3a4d;background:#0b0f14;color:#e6edf3;box-sizing:border-box}',
+    'button{margin-top:12px;width:100%;padding:10px;border:0;border-radius:8px;background:#2f7cff;color:#fff;font-weight:600;cursor:pointer}',
+    '.err{color:#ff6b6b;font-size:12px;margin-top:10px;min-height:14px}</style></head><body>',
+    '<form id="f"><h1>Mission Control</h1>',
+    '<input id="s" type="password" placeholder="operator secret" autocomplete="current-password" autofocus>',
+    '<button>Sign in</button><div class="err" id="e"></div></form><script>',
+    "var f=document.getElementById('f'),s=document.getElementById('s'),e=document.getElementById('e');",
+    "f.onsubmit=async function(ev){ev.preventDefault();e.textContent='';",
+    "var r=await fetch('/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({secret:s.value})});",
+    "if(r.ok){location.href='/';}else if(r.status===429){e.textContent='Too many attempts — locked out. Wait, then retry.';}else{e.textContent='Invalid secret.';}};",
+    '</script></body></html>',
+  ].join('');
+  res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+  res.end(html);
+}
+
 function escapeHtml(value) {
   return String(value)
     .replace(/&/g, '&amp;')
@@ -3632,4 +3762,7 @@ module.exports = {
   applyChatMessage,
   applyForecastOverride,
   chatUpdates,
+  handleRequest,
+  applyAuthEvent,
+  __resetAuthLimiter: () => { LOGIN_LIMITER = AUTH.createLoginLimiter(); },
 };
