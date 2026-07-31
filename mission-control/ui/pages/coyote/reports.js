@@ -377,7 +377,15 @@ function buildDrivers(q, maxDate, rv2) {
       }
       const cov = rowsOf(q(`SELECT SUM(total_covers) c FROM covers_day WHERE business_date BETWEEN ? AND ?`, [from, apiMax]))[0];
       const covers = cov ? num(cov.c) : null;
-      d.sit = { from, to: apiMax, by, totNet, totSit, covers: covers != null && covers > 0 ? covers : null };
+      // Per-cover numerator must be the FULL dine-in net (all dine-in receipts, every table), NOT the
+      // physical-table sittings subset — dividing a ~34% subset by ALL OpenTable covers understates
+      // it badly. Dine-in channels = EAT IN + MON-FRI DEAL + STOREKIT ORDER & PAY (QR).
+      const dn = rowsOf(q(
+        `SELECT SUM(r.net_without_tax_pence) net
+           FROM sales_receipts_api r JOIN sales_channel_map_api m ON m.account_profile_code = COALESCE(r.account_profile_code,'')
+          WHERE r.business_date BETWEEN ? AND ? AND ${SALE_WHERE}
+            AND m.channel_label IN ('EAT IN','MON-FRI DEAL','STOREKIT ORDER & PAY')`, [from, apiMax]))[0];
+      d.sit = { from, to: apiMax, by, totNet, totSit, dineNet: dn ? num(dn.net) : null, covers: covers != null && covers > 0 ? covers : null };
     }
   }
 
@@ -1441,8 +1449,8 @@ module.exports = {
             : (sit ? 'no served sittings in the window' : 'dine_in_sittings not populated'),
         }),
         S.rcc.kpi({
-          label: 'Net / cover (overall)', value: (sit && sit.covers ? gbp(Math.round(sit.totNet / sit.covers)) : '—'),
-          sub: (sit && sit.covers) ? `dine-in net ÷ ${int(sit.covers)} OpenTable covers · not channel-split (POS guest-count is never covers)`
+          label: 'Net / cover (overall)', value: (sit && sit.covers && sit.dineNet != null ? gbp(Math.round(sit.dineNet / sit.covers)) : '—'),
+          sub: (sit && sit.covers && sit.dineNet != null) ? `full dine-in net ÷ ${int(sit.covers)} OpenTable covers · sanity cross-check · not channel-split (POS guest-count is never covers)`
             : 'no covers in the window (OpenTable)',
         }),
       ].join('');
