@@ -118,6 +118,17 @@ function getSection(db, ctx) {
     rising: toIntOrNull(row.rising) === 1,
   }));
 
+  // Tagging-engine boundary (2026-08-04 re-rail Claude → gpt-5.6-sol). The rising panel compares
+  // trailing-30d (current) vs the prior 30d, so its window spans [now-60d, now]. If the classifier
+  // switched inside that span, a rise/fall may be the ENGINE, not complaints — caption it (the same
+  // premises/StoreKit-boundary doctrine: a data step-change must never read as a real step-change).
+  // Switch date is single-writer — MIN(extracted_at) of the first non-Claude tag; no separate store.
+  const swRes = q(`SELECT MIN(extracted_at) AS t FROM issue_extractions WHERE model IS NOT NULL AND model <> 'claude-sonnet-4-6'`);
+  const switchAt = (swRes.ok && swRes.rows[0] && swRes.rows[0].t != null) ? Number(swRes.rows[0].t) : null;
+  const engineSwitchNote = (switchAt != null && switchAt > now - 60 * 86400000 && switchAt <= now)
+    ? `Tagging engine changed ${new Date(switchAt).toISOString().slice(0, 10)} (Claude → gpt-5.6-sol) — a rise or fall spanning it may reflect the classifier, not complaints`
+    : null;
+
   const escalations = (escRes.ok ? escRes.rows : []).map((row) => ({
     code: str(row.issue_code),
     status: str(row.status),
@@ -152,7 +163,7 @@ function getSection(db, ctx) {
       }
     : null;
 
-  return { ok: true, cards, trends, escalations, snapshot, ratingTrend, pendingTotal, qpage };
+  return { ok: true, cards, trends, escalations, snapshot, ratingTrend, pendingTotal, qpage, engineSwitchNote };
 }
 
 // =====================================================================================
@@ -292,6 +303,9 @@ function render(section, ctx) {
   const escalationBanner = renderEscalationBanner(model.escalations || []);
   const ratings = renderRatings(snap, model.ratingTrend);
   const rising = renderRising(model.trends || []);
+  const boundaryNote = model.engineSwitchNote
+    ? `<div class="rmeta" style="font-size:11px;opacity:.8;margin:2px 0 8px;color:var(--amber,#F59E0B)">⚠ ${S.escapeHtml(model.engineSwitchNote)}</div>`
+    : '';
 
   const awaitingTap = cards.filter((c) => c.platform === 'google' && c.status === 'awaiting_approval').length;
   const cardsHtml = cards.length
@@ -308,7 +322,7 @@ function render(section, ctx) {
     awaitingTap
   )} awaiting Telegram tap</span></div>
     <div class="panel-body">
-      ${rising}
+      ${rising}${boundaryNote}
       ${cardsHtml}
       ${pager}
     </div>
