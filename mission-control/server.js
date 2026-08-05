@@ -126,6 +126,13 @@ function handleRequest(req, res) {
   // MC CHAT (ruling: mc-chat-approved) — the THIRD narrow write-path: typing in /claw/chat writes
   // ONE chat_messages 'in' row; the box-side web adapter routes it through the SAME frontdoor core
   // Telegram uses. The board never routes, never enqueues — pure transport. Tailnet-only surface.
+  // LIFE OS capture — the first command on the sole-writer path (engine ops/life-os.md).
+  // MC validates + relays over the writer's Unix socket; the ENGINE owns every life.db
+  // write. Sits AFTER the auth wall like every write route (unauth = 401 before this line).
+  if (req.method === 'POST' && url.pathname === '/api/life/capture') {
+    handleLifeCapture(req, res);
+    return;
+  }
   if (req.method === 'POST' && url.pathname === '/api/chat-message') {
     handleChatMessage(req, res);
     return;
@@ -250,6 +257,7 @@ function handleRequest(req, res) {
 
 // ---- multi-page router (ops-centre) ----
 const SHARED = require('./ui/shared.js');
+const LIFECMD = require('./ui/life-command-lib.js');
 const DATA = require('./ui/data.js');
 // MC CHAT stale-tab self-heal (incident 2026-07-21: a tab open across a deploy kept rendering
 // with pre-deploy page JS forever — the short-poll delivered new data into old code). The rev
@@ -3371,6 +3379,17 @@ function readTextBody(req, res, maxLen, cb) {
     cb(raw);
   });
 }
+// Life OS capture relay: validate (fail-closed), forward to the sole writer, pass the
+// writer's verdict through untouched. A writer that never saw the command yields a NAMED
+// 503 — never a silent queue, never a fake success (writer-down honesty, ops/life-os.md).
+function handleLifeCapture(req, res) {
+  readJsonBody(req, res, 8192, (body) => {
+    const v = LIFECMD.validateCapture(body);
+    if (!v.ok) { sendJson(res, v.status, { ok: false, error: v.error }); return; }
+    LIFECMD.sendCommand(v.cmd, (status, reply) => sendJson(res, status, reply));
+  });
+}
+
 function readJsonBody(req, res, maxLen, cb) {
   readTextBody(req, res, maxLen, (raw) => {
     let parsed;
