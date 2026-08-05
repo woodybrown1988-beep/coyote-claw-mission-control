@@ -76,4 +76,40 @@ function validateCancel(body) {
   return { ok: true, cmd: { command: 'cancel', payload: { taskId }, idempotencyKey: key } };
 }
 
-module.exports = { sockPath, validateCapture, validateCancel, sendCommand };
+/** The planner command multiplexer (A6-A13 surfaces). One route, an ALLOWLIST of command
+ *  names, per-command shape checks — and the writer re-validates everything (fail-closed
+ *  twice). Anything not listed here cannot leave Mission Control. */
+const COMMAND_SHAPES = {
+  note: (p) => typeof p.taskId === 'string' && typeof p.text === 'string' && p.text.trim() && p.text.length <= 4000,
+  decide: (p) => typeof p.proposalId === 'string' && ['accept', 'edit', 'reject'].includes(p.decision),
+  transition: (p) => typeof p.taskId === 'string' && typeof p.to === 'string',
+  complete: (p) => typeof p.taskId === 'string',
+  set_waiting: (p) => typeof p.taskId === 'string' && typeof p.dependencyLabel === 'string' && typeof p.fallbackAt === 'string',
+  wake: (p) => typeof p.taskId === 'string',
+  reopen: (p) => typeof p.taskId === 'string',
+  undo: (p) => typeof p.taskId === 'string',
+  plan_today: () => true,
+  approve_plan: () => true,
+  compile_week: () => true,
+  approve_week: () => true,
+  compile_quarter: () => true,
+  approve_quarter: () => true,
+  pause_capability: (p) => typeof p.capabilityKey === 'string',
+  resume_capability: (p) => typeof p.capabilityKey === 'string',
+};
+
+function validateCommand(body) {
+  const b = body || {};
+  const name = typeof b.command === 'string' ? b.command : '';
+  const shape = COMMAND_SHAPES[name];
+  if (!shape) return { ok: false, status: 400, error: `unknown or unrelayed command '${name}'` };
+  const key = typeof b.idempotencyKey === 'string' ? b.idempotencyKey : '';
+  if (key.length < 8 || key.length > 128) {
+    return { ok: false, status: 400, error: 'idempotencyKey required (8–128 chars) — retries must be safe end-to-end' };
+  }
+  const payload = (b.payload && typeof b.payload === 'object') ? b.payload : {};
+  if (!shape(payload)) return { ok: false, status: 400, error: `${name}: payload shape refused` };
+  return { ok: true, cmd: { command: name, payload, idempotencyKey: key } };
+}
+
+module.exports = { sockPath, validateCapture, validateCancel, validateCommand, sendCommand };

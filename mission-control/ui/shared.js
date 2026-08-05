@@ -125,7 +125,11 @@ const WORKSPACES = [
 
 // Resolve the active workspace from the active page key (falls back to the first workspace for '/').
 function workspaceOf(activeKey) {
-  return WORKSPACES.find((w) => w.groups.some((g) => g.items.some((it) => it.key === activeKey))) || WORKSPACES[0];
+  return WORKSPACES.find((w) => w.groups.some((g) => g.items.some((it) => it.key === activeKey)))
+    // Prefix fallback: routes that live in a workspace without a sidebar slot (the Life OS
+    // task drawer, key 'life-task') still render their own workspace's shell.
+    || WORKSPACES.find((w) => typeof activeKey === 'string' && activeKey.startsWith(`${w.key}-`))
+    || WORKSPACES[0];
 }
 
 // The workspace switcher — two chips in the shared shell; the active workspace is highlighted, each links to
@@ -287,6 +291,65 @@ function clientScript() {
           if(location.pathname==='/life/today'){setTimeout(function(){location.reload();},700);}
         } else {out.className='lc-result lc-err';out.textContent=(r&&r.error)||'refused';}
       }).catch(function(){busy=false;out.className='lc-result lc-err';out.textContent='network error — NOT captured (your retry reuses the same key: no double-create)';});
+    });
+    // PLANNER ACTIONS (A6-A13): any [data-lc-cmd] button carries its full command as JSON;
+    // the handler adds a fresh idempotency key, posts to the allowlisted relay, reloads on
+    // success and ALERTS the writer's named error on refusal — nothing silent either way.
+    document.addEventListener('click',function(e){var t=e.target;if(!t||!t.closest)return;
+      var b=t.closest('[data-lc-cmd]');
+      if(b){e.preventDefault();if(busy)return;busy=true;b.disabled=true;
+        var cmd;try{cmd=JSON.parse(b.getAttribute('data-lc-cmd'));}catch(_){busy=false;b.disabled=false;return;}
+        cmd.idempotencyKey=hex();
+        fetch('/api/life/command',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(cmd)})
+        .then(function(r){return r.json();}).then(function(r){if(r&&r.ok){location.reload();}else{busy=false;b.disabled=false;alert('refused: '+((r&&r.error)||'unknown'));}})
+        .catch(function(){busy=false;b.disabled=false;alert('network error — nothing changed');});
+        return;}
+      var dn=t.closest('[data-lc-complete]');
+      if(dn){e.preventDefault();if(busy)return;
+        var ev=prompt('Closure evidence (what proves it done?) — optional for low-risk tasks:','');
+        if(ev===null)return;
+        busy=true;dn.disabled=true;
+        var pay={taskId:dn.getAttribute('data-lc-complete')};if(ev.trim())pay.evidenceNote=ev.trim();
+        fetch('/api/life/command',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({command:'complete',idempotencyKey:hex(),payload:pay})})
+        .then(function(r){return r.json();}).then(function(r){if(r&&r.ok){location.reload();}else{busy=false;dn.disabled=false;alert('refused: '+((r&&r.error)||'unknown'));}})
+        .catch(function(){busy=false;dn.disabled=false;alert('network error — nothing changed');});
+        return;}
+      var wt=t.closest('[data-lc-wait]');
+      if(wt){e.preventDefault();if(busy)return;
+        var dep=prompt('Waiting on (who/what):','');if(dep===null||!dep.trim())return;
+        var fb2=prompt('Fallback date (YYYY-MM-DD) — required:','');if(fb2===null)return;
+        if(!/^\d{4}-\d{2}-\d{2}$/.test(fb2)){alert('fallback must be YYYY-MM-DD — waiting work must never rot silently');return;}
+        busy=true;wt.disabled=true;
+        fetch('/api/life/command',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({command:'set_waiting',idempotencyKey:hex(),payload:{taskId:wt.getAttribute('data-lc-wait'),dependencyLabel:dep.trim(),wakeType:'HUMAN_UPDATE',fallbackAt:fb2+'T09:00:00.000Z'}})})
+        .then(function(r){return r.json();}).then(function(r){if(r&&r.ok){location.reload();}else{busy=false;wt.disabled=false;alert('refused: '+((r&&r.error)||'unknown'));}})
+        .catch(function(){busy=false;wt.disabled=false;alert('network error — nothing changed');});
+        return;}
+      var ed=t.closest('[data-lc-edit]');
+      if(ed){e.preventDefault();if(busy)return;
+        var info;try{info=JSON.parse(ed.getAttribute('data-lc-edit'));}catch(_){return;}
+        var label=prompt('Waiting on (dependency label):',info.dependencyLabel||'');if(label===null)return;
+        var fb=prompt('Fallback date (YYYY-MM-DD) — required:',(info.fallbackAt||'').slice(0,10));if(fb===null)return;
+        if(!fb){alert('a fallback date is required — waiting work must never rot silently');return;}
+        busy=true;ed.disabled=true;
+        fetch('/api/life/command',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({
+          command:'decide',idempotencyKey:hex(),
+          payload:{proposalId:info.proposalId,decision:'edit',editedCommand:{dependencyLabel:label,wakeType:info.wakeType||'HUMAN_UPDATE',fallbackAt:fb}}})})
+        .then(function(r){return r.json();}).then(function(r){if(r&&r.ok){location.reload();}else{busy=false;ed.disabled=false;alert('refused: '+((r&&r.error)||'unknown'));}})
+        .catch(function(){busy=false;ed.disabled=false;alert('network error — nothing changed');});
+        return;}
+    });
+    // Add-note form (task drawer): textarea + record-only checkbox → the note command.
+    document.addEventListener('submit',function(e){var f=e.target;
+      if(!f||!f.classList||!f.classList.contains('lc-note-form'))return;
+      e.preventDefault();if(busy)return;
+      var txt=(f.querySelector('[name=text]').value||'').trim();
+      if(!txt){alert('write the note first');return;}
+      busy=true;
+      fetch('/api/life/command',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({
+        command:'note',idempotencyKey:hex(),
+        payload:{taskId:f.getAttribute('data-task'),text:txt,recordOnly:!!(f.querySelector('[name=record_only]')||{}).checked}})})
+      .then(function(r){return r.json();}).then(function(r){busy=false;if(r&&r.ok){location.reload();}else{alert('refused: '+((r&&r.error)||'unknown'));}})
+      .catch(function(){busy=false;alert('network error — note NOT recorded');});
     });
   })();`;
 }

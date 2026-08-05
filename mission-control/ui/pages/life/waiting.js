@@ -12,7 +12,7 @@ module.exports = {
     if (!o.ok) return { engine: { ok: false, reason: o.reason } };
     try {
       const rows = LIFE.lifeSelect(o.db,
-        `SELECT t.title, w.dependency_label, w.wake_type, w.fallback_at
+        `SELECT t.id AS task_id, t.title, w.dependency_label, w.wake_type, w.fallback_at
            FROM life_waiting_conditions w JOIN life_tasks t ON t.id = w.task_id
           WHERE w.state = 'ACTIVE' ORDER BY w.fallback_at IS NULL, w.fallback_at LIMIT 100`);
       return { engine: { ok: true }, rows: rows.ok ? rows.rows : [], err: rows.ok ? null : rows.error };
@@ -30,11 +30,15 @@ module.exports = {
       body = `<div class="panel"><h3>Waiting for</h3><div style="padding:14px 4px;color:var(--muted,#8aa);font-size:13px">`
         + `Nothing waiting — or nothing captured yet. Every future waiting item carries one active wake condition by DB constraint.</div></div>`;
     } else {
-      const tr = s.rows.map((r) =>
-        `<tr><td>${LIFE.esc(r.title)}</td><td>${LIFE.esc(r.dependency_label)}</td>`
-        + `<td>${LIFE.esc(r.wake_type)}</td><td>${LIFE.esc(r.fallback_at || 'no fallback')}</td></tr>`).join('');
+      const nowIso = new Date().toISOString();
+      const tr = s.rows.map((r) => {
+        const overdue = r.fallback_at && String(r.fallback_at) < nowIso;
+        const wakeBtn = `<button class="lc-btn lc-ghost" style="min-width:0" data-lc-cmd="${LIFE.esc(JSON.stringify({ command: 'wake', payload: { taskId: r.task_id } }))}">Wake</button>`;
+        return `<tr${overdue ? ' style="color:#f5c96b"' : ''}><td><a href="/life/task?id=${encodeURIComponent(r.task_id)}">${LIFE.esc(r.title)}</a></td><td>${LIFE.esc(r.dependency_label)}</td>`
+          + `<td>${LIFE.esc(r.wake_type)}</td><td>${LIFE.esc(r.fallback_at || 'no fallback')}${overdue ? ' — PASSED' : ''}</td><td>${wakeBtn}</td></tr>`;
+      }).join('');
       body = `<div class="panel"><h3>Waiting for (${s.rows.length})</h3><table class="data"><thead>`
-        + `<tr><th>Task</th><th>Waiting on</th><th>Wakes on</th><th>Fallback</th></tr></thead><tbody>${tr}</tbody></table></div>`;
+        + `<tr><th>Task</th><th>Waiting on</th><th>Wakes on</th><th>Fallback</th><th></th></tr></thead><tbody>${tr}</tbody></table></div>`;
     }
     body += LIFE.gatePanel('Reply-match wake-ups (EMAIL_REPLY)', 'the Microsoft Graph phase — a SEPARATE go/no-go after the 30-day pilot; DATE/HUMAN_UPDATE wakes work without it');
     return { stamp: `life-waiting · ${s.rows ? s.rows.length : 0} active`, body };

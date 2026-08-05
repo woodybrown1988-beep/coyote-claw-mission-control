@@ -137,6 +137,11 @@ function handleRequest(req, res) {
     handleLifeCancel(req, res);
     return;
   }
+  // The planner command multiplexer (allowlisted names; writer re-validates). Below the wall.
+  if (req.method === 'POST' && url.pathname === '/api/life/command') {
+    handleLifeCommand(req, res);
+    return;
+  }
   if (req.method === 'POST' && url.pathname === '/api/chat-message') {
     handleChatMessage(req, res);
     return;
@@ -299,6 +304,7 @@ const PAGES = [
   require('./ui/pages/life/waiting.js'),
   require('./ui/pages/life/review.js'),
   require('./ui/pages/life/trust.js'),
+  require('./ui/pages/life/task.js'),   // the drawer — reached by links, no sidebar slot
 ];
 const PAGE_BY_ROUTE = {};
 for (const p of PAGES) PAGE_BY_ROUTE[p.route] = p;
@@ -3398,6 +3404,14 @@ function handleLifeCapture(req, res) {
 function handleLifeCancel(req, res) {
   readJsonBody(req, res, 2048, (body) => {
     const v = LIFECMD.validateCancel(body);
+    if (!v.ok) { sendJson(res, v.status, { ok: false, error: v.error }); return; }
+    LIFECMD.sendCommand(v.cmd, (status, reply) => sendJson(res, status, reply));
+  });
+}
+
+function handleLifeCommand(req, res) {
+  readJsonBody(req, res, 8192, (body) => {
+    const v = LIFECMD.validateCommand(body);
     if (!v.ok) { sendJson(res, v.status, { ok: false, error: v.error }); return; }
     LIFECMD.sendCommand(v.cmd, (status, reply) => sendJson(res, status, reply));
   });
