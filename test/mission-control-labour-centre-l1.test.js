@@ -77,7 +77,7 @@ test('nav: labour is 2nd in the Reports group (after Revenue, per the 2026-07-22
   const S = require('../mission-control/ui/shared.js');
   const coyote = S.WORKSPACES.find((w) => w.key === 'coyote');
   const reports = coyote.groups.find((g) => g.group === 'Reports');
-  assert.deepEqual(reports.items.map((i) => i.key), ['revenue', 'labour', 'costs', 'reservations', 'operations', 'inventory', 'customer-growth', 'kitchen-safety', 'report-library'], 'Reports order — labour is 2nd');
+  assert.deepEqual(reports.items.map((i) => i.key), ['revenue', 'labour', 'costs', 'reservations', 'operations', 'inventory', 'customer-growth', 'kitchen-safety', 'report-library', 'files'], 'Reports order — labour is 2nd');
   const labItem = reports.items[1];
   assert.equal(labItem.label, 'Labour');
   assert.equal(labItem.route, '/coyote/labour', 'same route — no redirect needed');

@@ -37,7 +37,7 @@ test('nav: the standalone Rota Review item is RETIRED; the canonical Reports ord
   const reports = S.WORKSPACES.find((w) => w.key === 'coyote').groups.find((g) => g.group === 'Reports');
   const keys = reports.items.map((i) => i.key);
   assert.ok(!keys.includes('rota-review'), 'no standalone Rota Review nav item');
-  assert.deepEqual(keys, ['revenue', 'labour', 'costs', 'reservations', 'operations', 'inventory', 'customer-growth', 'kitchen-safety', 'report-library']);
+  assert.deepEqual(keys, ['revenue', 'labour', 'costs', 'reservations', 'operations', 'inventory', 'customer-growth', 'kitchen-safety', 'report-library', 'files']);
 });
 
 test('CAPABILITY PRESERVED: the Labour "Rota Review" tab renders the FULL report — verdicts + per-daypart items + run history', () => {

@@ -35,6 +35,7 @@ const RATES_PATH = path.join(ROOT, 'config', 'api-rates.json');
 const crypto = require('node:crypto');
 const UP = require('./ui/upload.js');
 const AUTH = require('./ui/auth.js');
+const EXPORTS = require('./ui/exports-lib.js');
 const CC_DIR = process.env.COYOTE_CLAW_DIR || path.join(homedir(), 'coyote-claw');
 const OPENTABLE_INBOX = process.env.OPENTABLE_INBOX || path.join(CC_DIR, 'data', 'opentable-inbox');
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;   // 25 MB — generous for the one-off 26-month backfill
@@ -207,6 +208,28 @@ function handleRequest(req, res) {
     return;
   }
 
+  // File download from ~/exports/ (the /coyote/files page). READ-ONLY, that dir ONLY, no traversal
+  // (the guard lives in ui/exports-lib.js). Auth-gated above (not a public path). Streams the file
+  // as an attachment; a bad/traversal name → 400, an absent/escaping name → 404 — never a byte from
+  // outside ~/exports.
+  if (url.pathname === '/coyote/files/download') {
+    const r = EXPORTS.fileDownloadResponse(url.searchParams.get('name'));
+    if (r.status !== 200) {
+      res.writeHead(r.status, { 'content-type': r.contentType, 'x-content-type-options': 'nosniff' });
+      res.end(r.body);
+      return;
+    }
+    res.writeHead(200, {
+      'content-type': r.contentType,
+      'content-disposition': r.disposition,
+      'content-length': r.size,
+      'x-content-type-options': 'nosniff',
+      'cache-control': 'no-store',
+    });
+    fs.createReadStream(r.filePath).on('error', () => { try { res.destroy(); } catch (_) { /* noop */ } }).pipe(res);
+    return;
+  }
+
   const redirect = LEGACY_REDIRECTS[url.pathname];
   if (redirect) {
     // query-safe: if the redirect TARGET already carries a query (e.g. a deep-link to a tab),
@@ -248,6 +271,7 @@ const PAGES = [
   require('./ui/pages/coyote/operations.js'),
   require('./ui/pages/coyote/customer-growth.js'),
   require('./ui/pages/coyote/report-library.js'),
+  require('./ui/pages/coyote/files.js'),
   // rota-review is NOT a standalone route any more (2026-07-22): retired into the Labour Centre's
   // Rota Review tab; /coyote/rota-review 308-redirects there. The module is still required by
   // labour.js, which hosts its renderer as that tab.
@@ -3730,6 +3754,8 @@ if (require.main === module) {
 
 module.exports = {
   reportRawResponse,
+  fileDownloadResponse: EXPORTS.fileDownloadResponse,
+  listExports: EXPORTS.listExports,
   buildDashboardModel,
   buildHaltModel,
   renderDashboard,
