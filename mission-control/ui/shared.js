@@ -188,6 +188,25 @@ function renderShell(opts) {
   <div class="page-head"><div><h1 class="page-title">${escapeHtml(title)}</h1><div class="page-sub">${escapeHtml(sub)}</div></div><div class="stamp">${stamp || ''}</div></div>
   ${body}
 </main></div>
+<button class="lc-fab" data-lc-fab title="Capture a task (Ctrl/Cmd+K)" aria-label="Capture a task">＋</button>
+<div class="lc-overlay" data-lc-overlay>
+  <div class="lc-card" role="dialog" aria-modal="true" aria-label="Capture a task">
+    <form class="lc-form">
+      <input class="lc-input" type="text" maxlength="500" placeholder="Capture a task — Enter files it to your Inbox" autocomplete="off" enterkeyhint="done">
+      <div class="lc-row">
+        <select class="lc-domain" aria-label="Domain">
+          <option value="general">general</option><option value="business">business</option>
+          <option value="health">health</option><option value="family">family</option>
+          <option value="admin">admin</option><option value="venture">venture</option>
+        </select>
+        <button type="submit" class="lc-btn">Capture</button>
+        <button type="button" class="lc-btn lc-ghost" data-lc-close>Close</button>
+      </div>
+      <div class="lc-result" data-lc-result></div>
+      <div class="lc-hint">Life OS → Inbox · OWNER_ONLY · via the gated command path — a failed capture says so, nothing queues silently</div>
+    </form>
+  </div>
+</div>
 <script>${clientScript()}${opts.clientScript || ''}</script>
 </body></html>`;
 }
@@ -228,7 +247,48 @@ function clientScript() {
     document.addEventListener('dragleave',function(e){var dz=e.target&&e.target.closest&&e.target.closest('[data-res-dropzone]');if(dz)dz.classList.remove('res-over');});
     document.addEventListener('drop',function(e){var dz=e.target&&e.target.closest&&e.target.closest('[data-res-dropzone]');if(dz){e.preventDefault();dz.classList.remove('res-over');var f=e.dataTransfer&&e.dataTransfer.files&&e.dataTransfer.files[0];if(f)ru(f);}});
   })();
-  if(!document.querySelector('[data-chat-page]')) setTimeout(()=>location.reload(),30000);`;
+  if(!document.querySelector('[data-chat-page]')) setTimeout(()=>{ if(!window.__lcOpen) location.reload(); },30000);
+  // LIFE OS global capture (A5): the FAB or Ctrl/Cmd+K opens; Enter files to the Inbox via the
+  // gated command path. The idempotency key is generated per attempt-series (getRandomValues —
+  // available on the http tailnet where crypto.randomUUID is not), so a retried submit can
+  // never double-create; the key renews only after a success.
+  (function(){
+    var ov=document.querySelector('[data-lc-overlay]'); if(!ov) return;
+    var inp=ov.querySelector('.lc-input'); var dom=ov.querySelector('.lc-domain');
+    var out=ov.querySelector('[data-lc-result]'); var busy=false; var key=null;
+    function hex(){var a=new Uint8Array(16);crypto.getRandomValues(a);var o='';for(var i=0;i<a.length;i++){o+=('0'+a[i].toString(16)).slice(-2);}return o;}
+    function open(){ov.classList.add('lc-open');window.__lcOpen=true;out.className='lc-result';out.textContent='';setTimeout(function(){inp.focus();},50);}
+    function close(){ov.classList.remove('lc-open');window.__lcOpen=false;}
+    document.addEventListener('click',function(e){var t=e.target;if(!t||!t.closest)return;
+      if(t.closest('[data-lc-fab]')){e.preventDefault();open();return;}
+      if(t===ov){close();return;}
+      if(t.closest('[data-lc-close]')){e.preventDefault();close();return;}
+      var cx=t.closest('[data-lc-cancel]');
+      if(cx){e.preventDefault();if(busy)return;busy=true;cx.disabled=true;
+        fetch('/api/life/cancel',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({taskId:cx.getAttribute('data-lc-cancel'),idempotencyKey:hex()})})
+        .then(function(r){return r.json();}).then(function(r){if(r&&r.ok){location.reload();}else{busy=false;cx.disabled=false;alert('cancel refused: '+((r&&r.error)||'unknown'));}})
+        .catch(function(){busy=false;cx.disabled=false;alert('network error — nothing changed');});
+        return;}
+    });
+    document.addEventListener('keydown',function(e){
+      if((e.ctrlKey||e.metaKey)&&(e.key==='k'||e.key==='K')){e.preventDefault();open();return;}
+      if(e.key==='Escape'&&ov.classList.contains('lc-open')){close();}
+    });
+    ov.querySelector('.lc-form').addEventListener('submit',function(e){
+      e.preventDefault(); if(busy)return;
+      var title=(inp.value||'').trim();
+      if(!title){out.className='lc-result lc-err';out.textContent='give it a title';return;}
+      if(!key)key=hex();
+      busy=true;out.className='lc-result lc-busy';out.textContent='capturing…';
+      fetch('/api/life/capture',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({title:title,domainKey:dom.value,idempotencyKey:key})})
+      .then(function(r){return r.json();}).then(function(r){busy=false;
+        if(r&&r.ok){key=null;inp.value='';out.className='lc-result lc-ok';
+          out.innerHTML='captured ✓ — in your Inbox · <a href="/life/today">open Today</a>';
+          if(location.pathname==='/life/today'){setTimeout(function(){location.reload();},700);}
+        } else {out.className='lc-result lc-err';out.textContent=(r&&r.error)||'refused';}
+      }).catch(function(){busy=false;out.className='lc-result lc-err';out.textContent='network error — NOT captured (your retry reuses the same key: no double-create)';});
+    });
+  })();`;
 }
 
 function css() {
@@ -441,7 +501,24 @@ function css() {
   .field{width:100%;background:var(--panel-2);border:1px solid var(--border);border-radius:7px;color:var(--text);font-family:var(--font-body);font-size:13px;padding:8px 10px}
   .field:focus{outline:none;border-color:var(--cyan)}
   select.field{font-family:var(--font-mono);font-size:12px}
-  footer{margin-top:22px;font-family:var(--font-mono);font-size:10px;color:var(--muted)}`;
+  footer{margin-top:22px;font-family:var(--font-mono);font-size:10px;color:var(--muted)}
+/* LIFE OS global capture (A5) — every workspace, desktop + mobile */
+.lc-fab{position:fixed;right:18px;bottom:18px;width:52px;height:52px;border-radius:50%;border:1px solid rgba(255,255,255,.18);background:rgba(34,211,238,.18);color:#CFF6FB;font-size:26px;line-height:1;cursor:pointer;z-index:60;box-shadow:0 4px 18px rgba(0,0,0,.45)}
+.lc-fab:hover{background:rgba(34,211,238,.3)}
+.lc-overlay{display:none;position:fixed;inset:0;background:rgba(2,8,14,.62);z-index:70;align-items:flex-start;justify-content:center;padding:10vh 16px 0}
+.lc-overlay.lc-open{display:flex}
+.lc-card{width:100%;max-width:560px;background:var(--panel,#0d1722);border:1px solid rgba(255,255,255,.14);border-radius:12px;padding:16px;box-shadow:0 12px 40px rgba(0,0,0,.5)}
+.lc-input{width:100%;box-sizing:border-box;font-size:17px;padding:12px 14px;border-radius:8px;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.06);color:inherit}
+.lc-row{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+.lc-domain{min-height:44px;padding:0 10px;border-radius:8px;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.06);color:inherit;font-size:14px}
+.lc-btn{min-height:44px;min-width:96px;padding:0 18px;border-radius:8px;border:1px solid rgba(34,211,238,.5);background:rgba(34,211,238,.16);color:#CFF6FB;font-size:14px;font-weight:600;cursor:pointer}
+.lc-ghost{border-color:rgba(255,255,255,.2);background:transparent;color:var(--muted,#8aa)}
+.lc-result{margin-top:10px;font-size:13px;min-height:18px}
+.lc-result a{color:#CFF6FB}
+.lc-ok{color:#7de3a0}.lc-err{color:#ff9b8a}.lc-busy{color:var(--muted,#8aa)}
+.lc-hint{margin-top:8px;font-size:11px;color:var(--muted,#7a8)}
+.lc-cxl{min-height:32px;padding:2px 10px;border-radius:6px;border:1px solid rgba(255,155,138,.4);background:transparent;color:#ff9b8a;font-size:12px;cursor:pointer}
+`;
 }
 
 // THE board-wide KPI tile (audit 2026-07-21 design change #3 — Reports' ATV tile is the template).
