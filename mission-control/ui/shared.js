@@ -770,6 +770,30 @@ const rcc = {
   emptyState({ title, blocker, unlock }) {
     return `<div class="r-empty"><b>${escapeHtml(title)}</b> — not wired.<br>${escapeHtml(blocker)}${unlock ? `<div class="r-unlock">Unlock: ${escapeHtml(unlock)}</div>` : ''}</div>`;
   },
+  /** LIFE OS additions to the RCC grammar (visual golden masters v1.1.0, operator amendments
+   *  2026-08-05). EMITTED ONLY BY LIFE PAGES — deliberately NOT folded into rccCss(): eight
+   *  Coyote pages embed rcc.css() in their BODIES, so extending it would move their
+   *  byte-identity golden masters. One shared definition, zero per-page forks. */
+  lifeCss() {
+    return `
+.rcc .r-eyebrow{font-family:var(--font-mono,monospace);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:${RCC_TOKENS.accent2};margin-bottom:6px}
+.rcc .r-eyebrow.hot{color:${RCC_TOKENS.accent}}
+.rcc .r-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:38px;padding:7px 16px;border-radius:9px;border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.05);color:var(--rtext);font-size:13px;font-weight:600;cursor:pointer;text-decoration:none;transition:all .15s}
+.rcc .r-btn:hover{background:rgba(255,255,255,.1)}
+.rcc .r-btn.primary{background:${RCC_TOKENS.accent};border-color:${RCC_TOKENS.accent};color:#fff}
+.rcc .r-btn.primary:hover{filter:brightness(1.1)}
+.rcc .r-btn.small{min-height:30px;padding:4px 12px;font-size:12px;border-radius:7px}
+.rcc .r-quote{font-size:14.5px;line-height:1.55;font-style:italic;color:var(--rtext);border-left:3px solid ${RCC_TOKENS.accent2};padding:2px 0 2px 12px;margin:10px 0}
+.rcc .r-defbox{background:rgba(255,255,255,.045);border:1px solid var(--rline);border-radius:10px;padding:10px 12px;margin:12px 0}
+.rcc .r-defbox small{display:block;font-family:var(--font-mono,monospace);font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--rmuted);margin-bottom:4px}
+.rcc .r-lrow{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 2px;border-bottom:1px solid rgba(255,255,255,.06)}
+.rcc .r-lrow:last-child{border-bottom:0}
+.rcc .r-check{width:20px;height:20px;border-radius:50%;border:2px solid ${RCC_TOKENS.good};flex:0 0 20px}
+.rcc .r-capline{display:flex;align-items:center;gap:10px;background:rgba(255,255,255,.04);border:1px solid var(--rline);border-radius:10px;padding:9px 13px;font-size:13px;color:var(--rmuted);cursor:pointer}
+.rcc .r-capline kbd{font-family:var(--font-mono,monospace);font-size:10px;border:1px solid var(--rline);border-radius:5px;padding:1px 6px;margin-left:auto}
+@media(max-width:760px){.rcc .r-lrow{flex-wrap:wrap}}
+`;
+  },
 };
 
 module.exports = {
