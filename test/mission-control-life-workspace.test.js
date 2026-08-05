@@ -30,7 +30,7 @@ const T = '2026-08-05T12:00:00.000Z';
 // live in the shared shell and post exclusively to the gated /api/life/* relay. Every
 // data-lc-cmd payload must parse as JSON naming a writer-allowlisted command.
 const WRITE_AFFORDANCE = /data-op|data-log-action|fetch\(|xhr|XMLHttpRequest|method="post"/i;
-const SANCTIONED_LC = new Set(['data-lc-cancel', 'data-lc-cmd', 'data-lc-complete', 'data-lc-wait', 'data-lc-edit']);
+const SANCTIONED_LC = new Set(['data-lc-cancel', 'data-lc-cmd', 'data-lc-complete', 'data-lc-wait', 'data-lc-edit', 'data-lc-fab']);
 const CMD_ALLOWLIST = new Set(['note', 'decide', 'transition', 'complete', 'set_waiting', 'wake', 'reopen', 'undo',
   'plan_today', 'approve_plan', 'compile_week', 'approve_week', 'compile_quarter', 'approve_quarter',
   'pause_capability', 'resume_capability']);
@@ -168,7 +168,7 @@ test('every life page renders an honest engine gate when life.db is absent — a
       assert.ok(out && typeof out.body === 'string', `${page.key} renders`);
       if (page.key === 'life-today') {
         assert.match(out.body, /Nothing has been captured yet/, 'today: owner-worded empty state');
-        assert.match(out.body, /Ctrl\/Cmd\+K/, 'today: empty state is action-oriented');
+        assert.match(out.body, /Capture your first task/, 'today: empty state is action-oriented');
       } else {
         assert.match(out.body, /life\.db not initialised/, `${page.key} names the gate (pre-restyle)`);
       }
@@ -187,12 +187,11 @@ test('with a real life.db: real counts, real rows, HTML-escaped, still zero writ
       assertOnlySanctionedLc(out.body, page.key);
     }
     const today = PAGES[0].render(PAGES[0].getSection(null, {}), {});
-    // A5 acceptance: the captured task is visible in Today/Inbox immediately, with the
-    // audited cancel affordance (the capture-mistake eraser) carrying its id.
-    assert.match(today.body, /Inbox \(1\)/);
-    assert.ok(today.body.includes('data-lc-cancel="t0"'), 'inbox row carries the cancel affordance');
-    assert.ok(today.body.includes('captured inbox task'), 'the captured title renders in Today');
-    assert.ok(/\w+day \d+ \w+/.test(today.stamp), 'the stamp is the owner-friendly date');
+    // A5 acceptance, GOLDEN-MASTER form: Today stays calm — a fresh capture surfaces as the
+    // triage line (one click to All tasks, where the Inbox lives); cancel lives in the drawer.
+    assert.match(today.body, /1 fresh capture to sort/);
+    assert.match(today.body, /triage in All tasks/);
+    assert.match(today.body, /Capture, ask or command/, 'the capture bar rides the page head');
     const outcomes = PAGES[2].render(PAGES[2].getSection(null, {}), {});
     assert.ok(outcomes.body.includes('&lt;script&gt;'), 'DB strings render escaped');
     assert.ok(!outcomes.body.includes('<script>alert'), 'never raw');
@@ -202,10 +201,13 @@ test('with a real life.db: real counts, real rows, HTML-escaped, still zero writ
     assert.match(tasks.body, /WAITING/);
     // planner surfaces render LIVE from the fixture
     const today2 = PAGES[0].render(PAGES[0].getSection(null, { now: Date.parse(T) }), {});
-    assert.match(today2.body, /Today's must-win/);
+    assert.match(today2.body, /Today's must-win/i);
     assert.match(today2.body, /approve_plan/, 'draft plan carries the approve action');
     assert.match(today2.body, /Quiet corner: nothing is moving on/, 'neglected aim named in owner words');
-    assert.match(today2.body, /Needs you \(1\)/, 'the open suggestion needs the owner');
+    assert.match(today2.body, /Needs you/, 'the decision area renders');
+    assert.match(today2.body, /Rex — 07:05 owner brief/, 'the golden brief card renders');
+    assert.match(today2.body, /Definition of done|Not written yet/, 'the must-win carries its definition-of-done block');
+    assert.match(today2.body, /Outlook is not connected/, 'My day is the honest not-connected state');
     assert.match(today2.body, /class="rcc"/, 'today rides the shared RCC component set');
     // Scrub the OWNER-VISIBLE text only: machine payloads inside data-lc-* attributes carry
     // IDs (e.g. proposal 'pr1') that are not language the owner reads.
