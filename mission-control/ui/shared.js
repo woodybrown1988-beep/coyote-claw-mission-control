@@ -98,14 +98,14 @@ const WORKSPACES = [
       { key: 'chat', label: 'Chat', route: '/claw/chat', ico: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>' },
     ] },
   ] },
-  // LIFE OS — the third workspace (pack v2.0.0; Phase-0 tap 2026-08-05). READ-ONLY scaffold: the
-  // flag flips ONLY in the PR that lands the documented + tested sole-writer command path
-  // (authenticated MC → engine life-writer; operator ruling 2026-08-05) — never before. Data
-  // comes from the SEPARATE life.db via ui/pages/life/life-lib.js (read-only handle; the ONE
-  // file allowed to touch it). v1 scope = Phases 0-3: Schedule/Agents/Settings (Graph-era
-  // surfaces) are deliberately absent — a separate go/no-go adds them, not this registry.
-  { key: 'life', label: 'Life OS', tag: 'Owner', home: '/life/today', readOnly: true,
-    roNote: 'read-only scaffold · writes arrive only via the gated command path · personal data lives in life.db, never the business board',
+  // LIFE OS — the third workspace (pack v2.0.0; Phase-0 tap 2026-08-05). The readOnly flag
+  // FLIPPED with the sole-writer command path (this PR + engine coyote-life-writer, operator
+  // ruling 2026-08-05): writes flow ONLY as authenticated POST /api/life/* relayed over the
+  // writer's Unix socket — MC still holds ZERO life.db write handles (test-pinned). Reads
+  // stay on ui/pages/life/life-lib.js (read-only handle; the ONE file allowed to touch
+  // life.db). v1 scope = Phases 0-3: Schedule/Agents/Settings (Graph-era surfaces) are
+  // deliberately absent — a separate go/no-go adds them, not this registry.
+  { key: 'life', label: 'Life OS', tag: 'Owner', home: '/life/today',
     groups: [
     { group: 'Focus', items: [
       { key: 'life-today', label: 'Today', route: '/life/today', ico: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.5"/>' },

@@ -68,8 +68,10 @@ test('registry: Life OS is the third workspace with the ruled shape', () => {
   const life = SHARED.WORKSPACES.find((w) => w.key === 'life');
   assert.ok(life, 'life workspace registered');
   assert.equal(life.home, '/life/today');
-  assert.equal(life.readOnly, true, 'read-only until the sole-writer command path lands');
-  assert.match(life.roNote, /gated command path/);
+  // The readOnly flag flipped WITH the sole-writer command path (operator ruling 2026-08-05):
+  // writes exist, but only as authenticated POSTs relayed to the engine writer.
+  assert.ok(!life.readOnly, 'command path landed — the flag flipped here, never before');
+  assert.equal(life.roNote, undefined, 'the scaffold note went with it');
   const items = life.groups.flatMap((g) => g.items);
   assert.deepEqual(items.map((i) => i.key), PAGES.map((p) => p.key), 'sidebar items = page modules, in order');
   assert.ok(items.every((i) => i.route.startsWith('/life/')));
@@ -77,12 +79,12 @@ test('registry: Life OS is the third workspace with the ruled shape', () => {
   assert.ok(!items.some((i) => /schedule|agents|settings/.test(i.key)), 'no Graph-era surfaces in v1');
 });
 
-test('workspace switcher: claw note byte-identical; life carries its own note', () => {
+test('workspace switcher: claw note byte-identical; life renders no read-only note', () => {
   const claw = SHARED.WORKSPACES.find((w) => w.key === 'claw');
   const clawHtml = SHARED.renderShell({ active: 'engine', title: 't', sub: '', stamp: '', body: '', badges: {}, foot: [] });
   assert.ok(clawHtml.includes('read-only · actions via Telegram · chat = the front door'), 'legacy claw note unchanged');
   const lifeHtml = SHARED.renderShell({ active: 'life-today', title: 't', sub: '', stamp: '', body: '', badges: {}, foot: [] });
-  assert.ok(lifeHtml.includes('writes arrive only via the gated command path'));
+  assert.ok(!lifeHtml.includes('read-only scaffold'), 'the scaffold note is gone with the flag');
   assert.ok(lifeHtml.includes('Life OS'), 'chip renders');
   assert.ok(claw.readOnly, 'claw stays read-only');
 });
