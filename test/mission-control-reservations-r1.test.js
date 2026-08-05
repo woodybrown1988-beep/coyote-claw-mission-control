@@ -363,7 +363,7 @@ test('registry: the Reports group order = revenue, report-library, rota-review, 
   const S = require('../mission-control/ui/shared.js');
   const coyote = S.WORKSPACES.find((w) => w.key === 'coyote');
   const reportsGroup = coyote.groups.find((g) => g.group === 'Reports');
-  assert.deepEqual(reportsGroup.items.map((i) => i.key), ['revenue', 'labour', 'costs', 'reservations', 'operations', 'inventory', 'customer-growth', 'kitchen-safety', 'report-library'], 'Reservations lands AFTER Rota Review (Labour joined the group — centre L1)');
+  assert.deepEqual(reportsGroup.items.map((i) => i.key), ['revenue', 'labour', 'costs', 'reservations', 'operations', 'inventory', 'customer-growth', 'kitchen-safety', 'report-library', 'files'], 'Reservations lands AFTER Rota Review (Labour joined the group — centre L1)');
   const item = reportsGroup.items[3];
   assert.equal(item.label, 'Reservations');
   assert.equal(item.route, '/coyote/reservations');

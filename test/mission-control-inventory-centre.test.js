@@ -53,7 +53,7 @@ test('shell: 8 tabs, executive default, ?tab= switches, unknown falls back, all 
 test('registry + nav: inventory in the Reports group AFTER costs; server requires the page; contract', () => {
   const coyote = S.WORKSPACES.find((w) => w.key === 'coyote');
   const reports = coyote.groups.find((g) => g.group === 'Reports');
-  assert.deepEqual(reports.items.map((i) => i.key), ['revenue', 'labour', 'costs', 'reservations', 'operations', 'inventory', 'customer-growth', 'kitchen-safety', 'report-library'], 'inventory lands after costs');
+  assert.deepEqual(reports.items.map((i) => i.key), ['revenue', 'labour', 'costs', 'reservations', 'operations', 'inventory', 'customer-growth', 'kitchen-safety', 'report-library', 'files'], 'inventory lands after costs');
   assert.equal(reports.items.find((i) => i.key === 'inventory').route, '/coyote/inventory');
   const srv = require('node:fs').readFileSync(require('node:path').join(__dirname, '../mission-control/server.js'), 'utf8');
   assert.match(srv, /require\('\.\/ui\/pages\/coyote\/inventory\.js'\)/, 'server requires inventory');

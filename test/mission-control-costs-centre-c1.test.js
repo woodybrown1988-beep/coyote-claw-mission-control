@@ -164,7 +164,7 @@ test('the centre is COMPLETE — NO tab renders a pending note (C2 + C3 shipped:
 test('registry: Reports nav order ends …reservations, labour, costs; the costs icon is the ruled path; server.js requires the page after reservations', () => {
   const coyote = S.WORKSPACES.find((w) => w.key === 'coyote');
   const reports = coyote.groups.find((g) => g.group === 'Reports');
-  assert.deepEqual(reports.items.map((i) => i.key), ['revenue', 'labour', 'costs', 'reservations', 'operations', 'inventory', 'customer-growth', 'kitchen-safety', 'report-library'], 'Reports order — costs after labour');
+  assert.deepEqual(reports.items.map((i) => i.key), ['revenue', 'labour', 'costs', 'reservations', 'operations', 'inventory', 'customer-growth', 'kitchen-safety', 'report-library', 'files'], 'Reports order — costs after labour');
   const costs = reports.items.find((i) => i.key === 'costs');
   assert.equal(costs.route, '/coyote/costs');
   assert.equal(costs.label, 'Costs');
