@@ -305,6 +305,10 @@ const PAGES = [
   require('./ui/pages/life/review.js'),
   require('./ui/pages/life/trust.js'),
   require('./ui/pages/life/task.js'),   // the drawer — reached by links, no sidebar slot
+  require('./ui/pages/life/schedule.js'),
+  require('./ui/pages/life/quarterly.js'),
+  require('./ui/pages/life/agents.js'),
+  require('./ui/pages/life/settings.js'),
 ];
 const PAGE_BY_ROUTE = {};
 for (const p of PAGES) PAGE_BY_ROUTE[p.route] = p;

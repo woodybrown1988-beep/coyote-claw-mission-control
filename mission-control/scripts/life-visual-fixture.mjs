@@ -70,6 +70,17 @@ wait('wt-1', 'a Como platform reply', 'HUMAN_UPDATE', NOW + 3 * 86_400_000);
 wait('wt-2', 'the accountant’s VAT ruling', 'HUMAN_UPDATE', NOW + 5 * 86_400_000);
 wait('wt-3', 'the manufacturer’s recipe-card revision', 'DATE', NOW + 2 * 86_400_000);
 
+// outcomes + projects so the slot hierarchy is assessable (still harness-only)
+db.prepare(`INSERT INTO life_outcomes (id, owner_id, domain_key, title, proof_definition, status, target_date, visibility, created_at, updated_at)
+  VALUES ('oc-1', 'woody', 'venture', 'Decide the second site with real evidence', 'A written go/no-go backed by the numbers, reviewed with the accountant.', 'ACTIVE', ?, 'OWNER_ONLY', ?, ?)`).run(iso(NOW + 60 * 86_400_000), t, t);
+db.prepare(`INSERT INTO life_outcomes (id, owner_id, domain_key, title, proof_definition, status, target_date, visibility, created_at, updated_at)
+  VALUES ('oc-2', 'woody', 'health', 'Finish the 6-week strength block without missing a week', 'Six logged weeks; no unresolved pain flags.', 'ACTIVE', ?, 'OWNER_ONLY', ?, ?)`).run(iso(NOW + 30 * 86_400_000), t, t);
+db.prepare(`INSERT INTO life_projects (id, owner_id, outcome_id, domain_key, title, definition_of_done, stage, status, risk_state, visibility, created_at, updated_at)
+  VALUES ('pj-1', 'woody', 'oc-1', 'business', 'Loyalty pilot', 'Pilot live with a weekly baseline report the team actually reads.', 'BUILD', 'ACTIVE', 'AMBER', 'OWNER_ONLY', ?, ?)`).run(t, t);
+db.prepare(`INSERT INTO life_projects (id, owner_id, domain_key, title, definition_of_done, stage, status, risk_state, visibility, created_at, updated_at)
+  VALUES ('pj-2', 'woody', 'family', 'October half-term, actually planned', 'Booked, paid, in the calendar, nothing left to decide that week.', 'DEFINE', 'ACTIVE', 'GREEN', 'OWNER_ONLY', ?, ?)`).run(t, t);
+db.prepare(`UPDATE life_tasks SET outcome_id = 'oc-1', project_id = 'pj-1' WHERE id IN ('mw-1','av-2')`).run();
+
 // one open suggestion so "Needs you" shows the decision grammar
 db.prepare(`INSERT INTO life_task_updates (id, owner_id, task_id, actor_type, actor_id, raw_text, input_type, record_only, visibility, created_at)
   VALUES ('up-001', 'woody', 'wt-1', 'HUMAN', 'woody', 'sent the deck, waiting on their product team to confirm the pilot cohort', 'TEXT', 0, 'OWNER_ONLY', ?)`).run(t);

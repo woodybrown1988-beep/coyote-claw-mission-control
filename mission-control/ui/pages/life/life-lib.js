@@ -48,18 +48,18 @@ function esc(value) {
     .replaceAll('"', '&quot;').replaceAll("'", '&#39;');
 }
 
-/** The designed build-ahead gate-state (Inventory-Centre pattern): the panel's real title +
- *  the honest blocker + the EXACT unlock step. Zero mock numbers ever render. */
-function gatePanel(title, unlock) {
-  return `<div class="panel"><h3>${esc(title)}</h3>`
-    + `<div style="padding:14px 4px;color:var(--muted,#8aa);font-size:13px">Not live yet — <b>unlock:</b> ${esc(unlock)}</div></div>`;
+/** OWNER-VOICE empty state (visual pack EMPTY_STATE_RULES): one truthful line + one useful
+ *  action. Never scaffold language, never a fake number, never an "unlock". */
+function emptyCard(title, sub, text, actionHtml) {
+  return `<div class="r-card r-panel"><div class="r-panel-head"><div><h3 class="r-panel-title">${esc(title)}</h3>${sub ? `<div class="r-panel-sub">${esc(sub)}</div>` : ''}</div></div>`
+    + `<div style="font-size:13.5px;line-height:1.6;color:var(--rmuted);padding:4px 0">${esc(text)}</div>`
+    + (actionHtml ? `<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">${actionHtml}</div>` : '') + `</div>`;
 }
 
-/** The whole-page gate when life.db itself is absent/unreadable. */
-function engineGate(reason) {
-  return `<div class="panel"><h3>Life OS engine</h3>`
-    + `<div style="padding:14px 4px;color:var(--muted,#8aa);font-size:13px">${esc(reason)}. `
-    + `This board reads the separate personal database (life.db) with a read-only handle — it renders real state the moment the engine writes it, and nothing before.</div></div>`;
+/** Whole-page owner state before anything has been captured (life.db not started yet). */
+function absentCard(what) {
+  return emptyCard(what, 'Nothing here yet', 'Nothing has been captured yet. Capture the first thing on your mind and this page takes shape from there.',
+    '<button class="r-btn primary" data-lc-fab>Capture your first task</button>');
 }
 
-module.exports = { lifeDbPath, openLifeReadonly, lifeSelect, esc, gatePanel, engineGate };
+module.exports = { lifeDbPath, openLifeReadonly, lifeSelect, esc, emptyCard, absentCard };

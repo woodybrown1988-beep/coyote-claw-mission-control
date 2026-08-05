@@ -1,50 +1,64 @@
 'use strict';
-// LIFE OS — ALL TASKS. Read-only status board (counts per state — real reads, never mocks).
 const LIFE = require('./life-lib.js');
+const S = require('../../shared.js');
+const wrap = (inner) => `<style>${S.rcc.css()}${S.rcc.lifeCss()}</style><div class="rcc">${inner}</div>`;
+const link = (id, title) => `<a href="/life/task?id=${encodeURIComponent(id)}" style="color:inherit">${LIFE.esc(title)}</a>`;
+const cmd = (label, command, payload, cls) => `<button class="r-btn ${cls || ''}" data-lc-cmd="${LIFE.esc(JSON.stringify({ command, payload: payload || {} }))}">${LIFE.esc(label)}</button>`;
 
-const STATUSES = ['INBOX', 'READY', 'SCHEDULED', 'IN_PROGRESS', 'WAITING', 'BLOCKED', 'AWAITING_APPROVAL', 'BATCH', 'DONE', 'CANCELLED'];
+const SECTIONS = [
+  ['Inbox — decide what these become', ['INBOX']],
+  ['In motion', ['IN_PROGRESS']],
+  ['Ready', ['READY', 'SCHEDULED']],
+  ['Needs your decision', ['AWAITING_APPROVAL']],
+  ['Blocked', ['BLOCKED']],
+  ['Batched small work', ['BATCH']],
+  ['Waiting', ['WAITING']],
+];
 
 module.exports = {
-  key: 'life-tasks', route: '/life/tasks', workspace: 'life', title: 'Tasks',
-  sub: 'Every task by state — the drawer (notes, evidence, proposals) lands with the evidence engine · read-only',
+  key: 'life-tasks', route: '/life/tasks', workspace: 'life', title: 'All tasks',
+  sub: 'Everything, by state — open any task for its history, updates and actions',
 
   getSection(_db, _ctx) {
     const o = LIFE.openLifeReadonly();
-    if (!o.ok) return { engine: { ok: false, reason: o.reason } };
+    if (!o.ok) return { absent: true };
     try {
-      const r = LIFE.lifeSelect(o.db, `SELECT status, COUNT(*) AS n FROM life_tasks GROUP BY status`);
-      const byStatus = {};
-      if (r.ok) for (const row of r.rows) byStatus[row.status] = Number(row.n);
-      const listing = LIFE.lifeSelect(o.db,
-        `SELECT id, title, status, domain_key, updated_at FROM life_tasks
-          WHERE status NOT IN ('DONE','CANCELLED') ORDER BY updated_at DESC LIMIT 30`);
-      const finished = LIFE.lifeSelect(o.db,
-        `SELECT id, title, status, updated_at FROM life_tasks
-          WHERE status IN ('DONE','CANCELLED') ORDER BY updated_at DESC LIMIT 10`);
-      return { engine: { ok: true }, byStatus, listing: listing.ok ? listing.rows : [], finished: finished.ok ? finished.rows : [], err: r.ok ? null : r.error };
+      const q = (sql, args) => { const r = LIFE.lifeSelect(o.db, sql, args); return r.ok ? r.rows : []; };
+      return {
+        open: q(`SELECT id, title, status, domain_key, due_kind, due_at FROM life_tasks WHERE status NOT IN ('DONE','CANCELLED') ORDER BY updated_at DESC LIMIT 100`),
+        waitingOf: q(`SELECT task_id, dependency_label, fallback_at FROM life_waiting_conditions WHERE state = 'ACTIVE'`),
+        finished: q(`SELECT id, title, status FROM life_tasks WHERE status IN ('DONE','CANCELLED') ORDER BY updated_at DESC LIMIT 12`),
+      };
     } finally { o.db.close(); }
   },
 
   render(section, _ctx) {
     const s = section || {};
-    if (!s.engine || !s.engine.ok) {
-      return { stamp: 'life-tasks · engine gate', body: LIFE.engineGate(s.engine ? s.engine.reason : 'no engine state') };
+    if (s.absent) return { stamp: '', body: wrap(LIFE.absentCard('All tasks')) };
+    const head = `<div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
+      <div class="r-capline" data-lc-fab role="button" tabindex="0" style="flex:1;min-width:240px">Capture, ask or command…<kbd>⌘K</kbd></div>
+      <input class="lc-input" id="lt-filter" placeholder="Filter by words…" style="max-width:260px" oninput="(function(v){for(const r of document.querySelectorAll('[data-task-row]')){r.style.display=r.textContent.toLowerCase().includes(v)?'':'none';}})(this.value.toLowerCase())"></div>`;
+    const wake = (id) => s.waitingOf.find((w) => w.task_id === id);
+    const row = (t) => {
+      const w = wake(t.id);
+      return `<div class="r-lrow" data-task-row><div style="min-width:0"><div style="font-weight:600">${link(t.id, t.title)}</div>
+        <div style="font-size:12px;color:var(--rmuted);margin-top:3px">${LIFE.esc(t.domain_key)}${t.due_at ? ` · due ${LIFE.esc(String(t.due_at).slice(0, 10))}${t.due_kind === 'HARD' ? ' (hard)' : ''}` : ''}${w ? ` · waiting on ${LIFE.esc(w.dependency_label)}${w.fallback_at ? ` · follow-up ${LIFE.esc(String(w.fallback_at).slice(0, 10))}` : ''}` : ''}</div></div>
+        <a class="r-btn small" href="/life/task?id=${encodeURIComponent(t.id)}">Open</a></div>`;
+    };
+    let body = head;
+    let shown = 0;
+    for (const [label, states] of SECTIONS) {
+      const rows = s.open.filter((t) => states.includes(t.status));
+      if (!rows.length) continue;
+      shown += rows.length;
+      body += S.rcc.panel({ title: `${label}`, headRight: `<span class="r-pill">${rows.length}</span>`, body: rows.map(row).join('') });
     }
-    let body;
-    if (s.err) body = LIFE.engineGate(`tasks unreadable: ${s.err}`);
-    else {
-      const total = Object.values(s.byStatus || {}).reduce((a, b) => a + b, 0);
-      const tr = STATUSES.map((st) => `<tr><td>${st}</td><td style="text-align:right">${(s.byStatus && s.byStatus[st]) || 0}</td></tr>`).join('');
-      body = `<div class="panel"><h3>Tasks by state (${total})</h3><table class="data"><thead>`
-        + `<tr><th>State</th><th style="text-align:right">Count</th></tr></thead><tbody>${tr}</tbody></table></div>`;
+    if (!shown) {
+      body += LIFE.emptyCard('Inbox', 'Nothing open', 'Nothing is open right now. Capture is one keystroke away, from any page.', '<button class="r-btn primary" data-lc-fab>Capture a task</button>');
     }
-    const row = (r) => `<tr><td><a href="/life/task?id=${encodeURIComponent(r.id)}">${LIFE.esc(r.title)}</a></td><td>${LIFE.esc(r.status)}</td><td>${LIFE.esc(r.domain_key || '')}</td></tr>`;
-    if (s.listing && s.listing.length) {
-      body += `<div class="panel"><h3>Open tasks (${s.listing.length})</h3><table class="data"><thead><tr><th>Task</th><th>State</th><th>Domain</th></tr></thead><tbody>${s.listing.map(row).join('')}</tbody></table></div>`;
+    if (s.finished.length) {
+      body += S.rcc.panel({ title: 'Recently finished', body: s.finished.map((t) => `<div class="r-lrow" data-task-row><div>${link(t.id, t.title)} <span style="margin-left:6px">${S.rcc.tag(t.status.toLowerCase())}</span></div></div>`).join('') });
     }
-    if (s.finished && s.finished.length) {
-      body += `<div class="panel"><h3>Recently finished</h3><table class="data"><tbody>${s.finished.map((r) => `<tr><td><a href="/life/task?id=${encodeURIComponent(r.id)}">${LIFE.esc(r.title)}</a></td><td>${LIFE.esc(r.status)}</td></tr>`).join('')}</tbody></table></div>`;
-    }
-    return { stamp: 'life-tasks · board', body };
+    return { stamp: '', body: wrap(body) };
   },
 };

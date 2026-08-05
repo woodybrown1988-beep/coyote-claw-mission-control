@@ -12,15 +12,19 @@ const sqlite = require('node:sqlite');
 const SHARED = require('../mission-control/ui/shared.js');
 const LIFE = require('../mission-control/ui/pages/life/life-lib.js');
 
-// Sidebar order: Focus (today, waiting) · Plan (outcomes, projects, tasks) · Review (review, trust).
+// Sidebar order (visual pack v1.1.0): Focus · Plan · Review · System — eleven surfaces.
 const PAGES = [
   require('../mission-control/ui/pages/life/today.js'),
   require('../mission-control/ui/pages/life/waiting.js'),
   require('../mission-control/ui/pages/life/outcomes.js'),
   require('../mission-control/ui/pages/life/projects.js'),
   require('../mission-control/ui/pages/life/tasks.js'),
+  require('../mission-control/ui/pages/life/schedule.js'),
   require('../mission-control/ui/pages/life/review.js'),
+  require('../mission-control/ui/pages/life/quarterly.js'),
   require('../mission-control/ui/pages/life/trust.js'),
+  require('../mission-control/ui/pages/life/agents.js'),
+  require('../mission-control/ui/pages/life/settings.js'),
 ];
 
 const T = '2026-08-05T12:00:00.000Z';
@@ -31,15 +35,15 @@ const T = '2026-08-05T12:00:00.000Z';
 // data-lc-cmd payload must parse as JSON naming a writer-allowlisted command.
 const WRITE_AFFORDANCE = /data-op|data-log-action|fetch\(|xhr|XMLHttpRequest|method="post"/i;
 const SANCTIONED_LC = new Set(['data-lc-cancel', 'data-lc-cmd', 'data-lc-complete', 'data-lc-wait', 'data-lc-edit', 'data-lc-fab']);
-const CMD_ALLOWLIST = new Set(['note', 'decide', 'transition', 'complete', 'set_waiting', 'wake', 'reopen', 'undo',
+const CMD_ALLOWLIST = new Set(['note', 'decide', 'transition', 'complete', 'set_waiting', 'wake', 'reopen', 'undo', 'cancel',
   'plan_today', 'approve_plan', 'compile_week', 'approve_week', 'compile_quarter', 'approve_quarter',
-  'pause_capability', 'resume_capability']);
+  'pause_capability', 'resume_capability', 'create_outcome', 'create_project']);
 function assertOnlySanctionedLc(body, key) {
   for (const m of body.matchAll(/data-lc-[a-z-]+/g)) {
     assert.ok(SANCTIONED_LC.has(m[0]), `${key}: unsanctioned life affordance ${m[0]}`);
   }
   for (const m of body.matchAll(/<form\b[^>]*/g)) {
-    assert.ok(/lc-note-form/.test(m[0]), `${key}: only the lc-note-form form is sanctioned`);
+    assert.ok(/lc-note-form|lc-create-form/.test(m[0]), `${key}: only the sanctioned form classes`);
   }
   for (const m of body.matchAll(/data-lc-cmd="([^"]*)"/g)) {
     const decoded = m[1].replaceAll('&quot;', '"').replaceAll('&amp;', '&').replaceAll('&#39;', "'");
@@ -146,8 +150,13 @@ test('registry: Life OS is the third workspace with the ruled shape', () => {
   const items = life.groups.flatMap((g) => g.items);
   assert.deepEqual(items.map((i) => i.key), PAGES.map((p) => p.key), 'sidebar items = page modules, in order');
   assert.ok(items.every((i) => i.route.startsWith('/life/')));
-  // Graph-era surfaces are deliberately absent (v1 scope = Phases 0-3 only).
-  assert.ok(!items.some((i) => /schedule|agents|settings/.test(i.key)), 'no Graph-era surfaces in v1');
+  // AMENDMENT 2 (2026-08-05): Schedule + Agent activity EXIST as honest not-connected empty
+  // states only — their populated versions stay gated at the separate go/no-go.
+  const sched = PAGES.find((pg) => pg.key === 'life-schedule').render({}, {});
+  assert.match(sched.body, /Outlook is not connected/);
+  assert.ok(!/\d{2}:\d{2}/.test(sched.body.replace(/<style>[\s\S]*?<\/style>/, '')), 'no times invented on an unconnected schedule');
+  const ag = PAGES.find((pg) => pg.key === 'life-agents').render({}, {});
+  assert.match(ag.body, /No agents are connected/);
 });
 
 test('workspace switcher: claw note byte-identical; life renders no read-only note', () => {
@@ -166,12 +175,11 @@ test('every life page renders an honest engine gate when life.db is absent — a
       const section = page.getSection(null, { now: Date.parse(T) });
       const out = page.render(section, { now: Date.parse(T) });
       assert.ok(out && typeof out.body === 'string', `${page.key} renders`);
-      if (page.key === 'life-today') {
-        assert.match(out.body, /Nothing has been captured yet/, 'today: owner-worded empty state');
-        assert.match(out.body, /Capture your first task/, 'today: empty state is action-oriented');
-      } else {
-        assert.match(out.body, /life\.db not initialised/, `${page.key} names the gate (pre-restyle)`);
-      }
+      // EVERY life page speaks owner in absence now (visual pack + amendments): a truthful
+      // line and a useful action — never an engineering gate line.
+      assert.match(out.body, /Nothing has been captured yet|Outlook is not connected|No agents are connected|Not enough evidence|The standing design charter/,
+        `${page.key}: owner-worded empty state`);
+      assert.ok(!/life\.db|unlock:|scaffold/i.test(out.body.replace(/data-lc-[a-z-]+="[^"]*"/g, '')), `${page.key}: no scaffold language in absence`);
       assert.ok(!WRITE_AFFORDANCE.test(out.body), `${page.key} emits no write affordance`);
     }
   });
@@ -198,7 +206,8 @@ test('with a real life.db: real counts, real rows, HTML-escaped, still zero writ
     const waiting = PAGES[1].render(PAGES[1].getSection(null, {}), {});
     assert.match(waiting.body, /Lightspeed engineer/);
     const tasks = PAGES[4].render(PAGES[4].getSection(null, {}), {});
-    assert.match(tasks.body, /WAITING/);
+    assert.match(tasks.body, /Waiting/, 'the waiting section renders in owner case');
+    assert.match(tasks.body, /Filter by words/, 'search/filter control present');
     // planner surfaces render LIVE from the fixture
     const today2 = PAGES[0].render(PAGES[0].getSection(null, { now: Date.parse(T) }), {});
     assert.match(today2.body, /Today's must-win/i);
@@ -214,12 +223,17 @@ test('with a real life.db: real counts, real rows, HTML-escaped, still zero writ
     const visible = today2.body.replace(/data-lc-[a-z-]+="[^"]*"/g, '');
     const OWNER_SCRUB = /(PR\s?#?\d+|\bschema\b|DB-enforced|engine PR|\bPhase\b|sole writer|life\.db)/i;
     assert.ok(!OWNER_SCRUB.test(visible), 'today speaks owner, never engineer');
-    const review = PAGES[5].render(PAGES[5].getSection(null, {}), {});
-    assert.match(review.body, /Week of 2026-08-03 — DRAFT/);
+    const review = PAGES[6].render(PAGES[6].getSection(null, {}), {});
+    assert.match(review.body, /week of 2026-08-03/);
     assert.match(review.body, /approve_week/);
-    const trust = PAGES[6].render(PAGES[6].getSection(null, {}), {});
+    const trust = PAGES[8].render(PAGES[8].getSection(null, {}), {});
     assert.match(trust.body, /Waiting-condition inference/);
     assert.match(trust.body, /pause_capability/);
+    assert.match(trust.body, /Not enough observations yet/, 'per-capability honesty, no synthetic score');
+    const outc = PAGES[2].render(PAGES[2].getSection(null, {}), {});
+    assert.match(outc.body, /Proof of completion/);
+    assert.match(outc.body, /open outcome slot/i, 'slots render, never six zero counters');
+    assert.match(outc.body, /lc-create-form/, 'the Add outcome action exists');
     const drawer = TASK.render(TASK.getSection(null, { query: { id: 't1' } }), {});
     assert.match(drawer.body, /Add update/);
     assert.match(drawer.body, /record only — do not act/);
@@ -229,6 +243,7 @@ test('with a real life.db: real counts, real rows, HTML-escaped, still zero writ
     assertOnlySanctionedLc(drawer.body, 'life-task');
     const waiting2 = PAGES[1].render(PAGES[1].getSection(null, {}), {});
     assert.match(waiting2.body, /data-lc-cmd/, 'wake button present');
+    assert.match(waiting2.body, /Waiting on Lightspeed engineer/, 'the dependency reads as a sentence');
   });
 
 test('workspaceOf: the drawer key (no sidebar slot) still resolves to the life workspace', () => {
