@@ -581,6 +581,19 @@ function css() {
 .lc-ok{color:#7de3a0}.lc-err{color:#ff9b8a}.lc-busy{color:var(--muted,#8aa)}
 .lc-hint{margin-top:8px;font-size:11px;color:var(--muted,#7a8)}
 .lc-cxl{min-height:32px;padding:2px 10px;border-radius:6px;border:1px solid rgba(255,155,138,.4);background:transparent;color:#ff9b8a;font-size:12px;cursor:pointer}
+
+/* PHONE SHELL (Life OS mobile acceptance, 2026-08-05 — shared, benefits every workspace):
+   below 760px the sidebar becomes a compact top strip and nav items flow as a wrap row.
+   Placed at the sheet's END so these override the desktop base rules at equal specificity. */
+@media(max-width:760px){
+  .app{grid-template-columns:1fr}
+  .sidebar{position:static;height:auto;border-right:0;border-bottom:1px solid var(--border)}
+  .brand{padding:10px 14px}
+  .nav{flex:0 0 auto;display:flex;flex-wrap:wrap;gap:4px;padding:8px 10px;align-items:center}
+  .nav-label{display:none}
+  .nav-item{margin:0;flex:0 0 auto;padding:8px 10px;font-size:13px}
+  .sidebar .foot,.sidebar .sfoot,.sidebar .side-foot{display:none}
+}
 `;
 }
 
@@ -603,8 +616,9 @@ function kpiTile({ tone = '', lab, val, sub = '', points = null, color = '#22D3E
 // RCC — the Revenue Command Centre design system (Stage 1A, operator mock
 // docs/revenue-command-centre/reference/Revenue mock tab.html, extracted
 // 2026-07-21 DIRECTLY from the mock's CSS — every token value is the mock's
-// own). SCOPE RULE: this canon applies to the REVENUE surface only (the
-// operator extends the ruling before any other page adopts it) — hence every
+// own). SCOPE RULE: this canon applied to the REVENUE surface only until the operator
+// EXTENDED it (ruling 2026-08-05): Life OS owner surfaces adopt the same component set —
+// one visual language, no per-workspace design system. Every
 // selector lives under the .rcc root class and the CSS is emitted only by
 // pages that call S.rcc.css(). ONE component set, no per-page forks.
 const RCC_TOKENS = {

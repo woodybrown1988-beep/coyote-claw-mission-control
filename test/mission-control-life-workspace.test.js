@@ -67,7 +67,7 @@ function makeFixture(dir) {
       definition_of_done TEXT, stage TEXT, status TEXT, risk_state TEXT, due_date TEXT,
       visibility TEXT, created_at TEXT, updated_at TEXT);
     CREATE TABLE life_tasks (id TEXT PRIMARY KEY, owner_id TEXT, outcome_id TEXT, domain_key TEXT,
-      title TEXT, status TEXT, due_kind TEXT DEFAULT 'NONE', due_at TEXT, estimate_minutes INTEGER,
+      title TEXT, status TEXT, definition_of_done TEXT DEFAULT '', due_kind TEXT DEFAULT 'NONE', due_at TEXT, estimate_minutes INTEGER,
       importance INTEGER DEFAULT 3, consequence INTEGER DEFAULT 3, risk_level TEXT, visibility TEXT,
       source_type TEXT, created_by TEXT, created_at TEXT, updated_at TEXT);
     CREATE TABLE life_waiting_conditions (id TEXT PRIMARY KEY, task_id TEXT, owner_id TEXT,
@@ -166,7 +166,12 @@ test('every life page renders an honest engine gate when life.db is absent — a
       const section = page.getSection(null, { now: Date.parse(T) });
       const out = page.render(section, { now: Date.parse(T) });
       assert.ok(out && typeof out.body === 'string', `${page.key} renders`);
-      assert.match(out.body, /life\.db not initialised/, `${page.key} names the gate`);
+      if (page.key === 'life-today') {
+        assert.match(out.body, /Nothing has been captured yet/, 'today: owner-worded empty state');
+        assert.match(out.body, /Ctrl\/Cmd\+K/, 'today: empty state is action-oriented');
+      } else {
+        assert.match(out.body, /life\.db not initialised/, `${page.key} names the gate (pre-restyle)`);
+      }
       assert.ok(!WRITE_AFFORDANCE.test(out.body), `${page.key} emits no write affordance`);
     }
   });
@@ -182,13 +187,12 @@ test('with a real life.db: real counts, real rows, HTML-escaped, still zero writ
       assertOnlySanctionedLc(out.body, page.key);
     }
     const today = PAGES[0].render(PAGES[0].getSection(null, {}), {});
-    assert.match(today.body, /Active outcomes/);
     // A5 acceptance: the captured task is visible in Today/Inbox immediately, with the
     // audited cancel affordance (the capture-mistake eraser) carrying its id.
     assert.match(today.body, /Inbox \(1\)/);
     assert.ok(today.body.includes('data-lc-cancel="t0"'), 'inbox row carries the cancel affordance');
     assert.ok(today.body.includes('captured inbox task'), 'the captured title renders in Today');
-    assert.match(today.stamp, /plan=PROPOSED decisions=1/, 'stamp carries the live plan + decision count');
+    assert.ok(/\w+day \d+ \w+/.test(today.stamp), 'the stamp is the owner-friendly date');
     const outcomes = PAGES[2].render(PAGES[2].getSection(null, {}), {});
     assert.ok(outcomes.body.includes('&lt;script&gt;'), 'DB strings render escaped');
     assert.ok(!outcomes.body.includes('<script>alert'), 'never raw');
@@ -198,10 +202,16 @@ test('with a real life.db: real counts, real rows, HTML-escaped, still zero writ
     assert.match(tasks.body, /WAITING/);
     // planner surfaces render LIVE from the fixture
     const today2 = PAGES[0].render(PAGES[0].getSection(null, { now: Date.parse(T) }), {});
-    assert.match(today2.body, /Today's plan — PROPOSED/);
-    assert.match(today2.body, /approve_plan/, 'approve button present on a proposed plan');
-    assert.match(today2.body, /Neglected active-outcome domain/, 'neglected domain named');
-    assert.match(today2.body, /Needs your decision \(1\)/, 'the open proposal queues a decision');
+    assert.match(today2.body, /Today's must-win/);
+    assert.match(today2.body, /approve_plan/, 'draft plan carries the approve action');
+    assert.match(today2.body, /Quiet corner: nothing is moving on/, 'neglected aim named in owner words');
+    assert.match(today2.body, /Needs you \(1\)/, 'the open suggestion needs the owner');
+    assert.match(today2.body, /class="rcc"/, 'today rides the shared RCC component set');
+    // Scrub the OWNER-VISIBLE text only: machine payloads inside data-lc-* attributes carry
+    // IDs (e.g. proposal 'pr1') that are not language the owner reads.
+    const visible = today2.body.replace(/data-lc-[a-z-]+="[^"]*"/g, '');
+    const OWNER_SCRUB = /(PR\s?#?\d+|\bschema\b|DB-enforced|engine PR|\bPhase\b|sole writer|life\.db)/i;
+    assert.ok(!OWNER_SCRUB.test(visible), 'today speaks owner, never engineer');
     const review = PAGES[5].render(PAGES[5].getSection(null, {}), {});
     assert.match(review.body, /Week of 2026-08-03 — DRAFT/);
     assert.match(review.body, /approve_week/);
