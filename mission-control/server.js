@@ -277,6 +277,16 @@ const PAGES = [
   // labour.js, which hosts its renderer as that tab.
   require('./ui/pages/coyote/labour.js'),
   require('./ui/pages/coyote/recipes.js'),
+  // LIFE OS workspace (Phase-0 tap 2026-08-05) — read-only scaffold over the SEPARATE life.db
+  // (ui/pages/life/life-lib.js is the one file that touches it, read-only handle). Writes stay
+  // absent until the sole-writer command path PR (operator ruling 2026-08-05).
+  require('./ui/pages/life/today.js'),
+  require('./ui/pages/life/outcomes.js'),
+  require('./ui/pages/life/projects.js'),
+  require('./ui/pages/life/tasks.js'),
+  require('./ui/pages/life/waiting.js'),
+  require('./ui/pages/life/review.js'),
+  require('./ui/pages/life/trust.js'),
 ];
 const PAGE_BY_ROUTE = {};
 for (const p of PAGES) PAGE_BY_ROUTE[p.route] = p;

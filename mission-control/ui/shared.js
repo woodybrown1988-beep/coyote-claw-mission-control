@@ -98,6 +98,29 @@ const WORKSPACES = [
       { key: 'chat', label: 'Chat', route: '/claw/chat', ico: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>' },
     ] },
   ] },
+  // LIFE OS — the third workspace (pack v2.0.0; Phase-0 tap 2026-08-05). READ-ONLY scaffold: the
+  // flag flips ONLY in the PR that lands the documented + tested sole-writer command path
+  // (authenticated MC → engine life-writer; operator ruling 2026-08-05) — never before. Data
+  // comes from the SEPARATE life.db via ui/pages/life/life-lib.js (read-only handle; the ONE
+  // file allowed to touch it). v1 scope = Phases 0-3: Schedule/Agents/Settings (Graph-era
+  // surfaces) are deliberately absent — a separate go/no-go adds them, not this registry.
+  { key: 'life', label: 'Life OS', tag: 'Owner', home: '/life/today', readOnly: true,
+    roNote: 'read-only scaffold · writes arrive only via the gated command path · personal data lives in life.db, never the business board',
+    groups: [
+    { group: 'Focus', items: [
+      { key: 'life-today', label: 'Today', route: '/life/today', ico: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.5"/>' },
+      { key: 'life-waiting', label: 'Waiting', route: '/life/waiting', ico: '<path d="M6 2h12M6 22h12M8 2v4l4 4 4-4V2M8 22v-4l4-4 4 4v4"/>' },
+    ] },
+    { group: 'Plan', items: [
+      { key: 'life-outcomes', label: 'Outcomes', route: '/life/outcomes', ico: '<path d="M4 22V3"/><path d="M4 4h13l-2.5 4L17 12H4"/>' },
+      { key: 'life-projects', label: 'Projects', route: '/life/projects', ico: '<path d="M12 2 2 7l10 5 10-5z"/><path d="M2 12l10 5 10-5M2 17l10 5 10-5"/>' },
+      { key: 'life-tasks', label: 'Tasks', route: '/life/tasks', ico: '<path d="M9 6h12M9 12h12M9 18h12"/><path d="M3.5 5.5 5 7l2.5-2.5M3.5 11.5 5 13l2.5-2.5M3.5 17.5 5 19l2.5-2.5"/>' },
+    ] },
+    { group: 'Review', items: [
+      { key: 'life-review', label: 'Weekly Review', route: '/life/review', ico: '<rect x="3" y="4" width="18" height="17" rx="2"/><path d="M8 2v4M16 2v4M3 9h18"/><path d="m9 15 2 2 4-4"/>' },
+      { key: 'life-trust', label: 'Trust & Automation', route: '/life/trust', ico: '<path d="M12 2l8 3v6c0 5-3.5 8.5-8 11-4.5-2.5-8-6-8-11V5z"/><path d="m8.5 11.5 2.5 2.5 4.5-4.5"/>' },
+    ] },
+  ] },
 ];
 
 // Resolve the active workspace from the active page key (falls back to the first workspace for '/').
@@ -115,7 +138,9 @@ function renderSwitch(activeWs) {
       + (on ? 'background:rgba(34,211,238,.16);color:#CFF6FB' : 'color:var(--muted,#8aa)');
     return `<a href="${w.home}" style="${st}" title="${escapeHtml(w.tag || '')}">${escapeHtml(w.label)}</a>`;
   }).join('');
-  const ro = activeWs.readOnly ? '<div style="margin:2px 15px 4px;font-size:10px;color:var(--muted,#7a8)">read-only · actions via Telegram · chat = the front door</div>' : '';
+  // Per-workspace read-only note: claw keeps its original line verbatim (the default); a
+  // workspace may carry its own `roNote` (Life OS explains its gated-writes posture).
+  const ro = activeWs.readOnly ? `<div style="margin:2px 15px 4px;font-size:10px;color:var(--muted,#7a8)">${activeWs.roNote || 'read-only · actions via Telegram · chat = the front door'}</div>` : '';
   return `<div style="${wrap}">${chips}</div>${ro}`;
 }
 
