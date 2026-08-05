@@ -452,7 +452,12 @@ function openDatabase() {
   }
 
   try {
-    return { ok: true, db: new sqlite.DatabaseSync(DB_PATH, { readOnly: true }) };
+    const db = new sqlite.DatabaseSync(DB_PATH, { readOnly: true });
+    // busy_timeout so a render read waits out a transient writer/checkpoint lock instead of failing
+    // with SQLITE_BUSY (matches the spine's openReadonly + the writable handle below). readOnly, so
+    // the dashboard can never contend as a writer.
+    db.exec('PRAGMA busy_timeout = 5000;');
+    return { ok: true, db };
   } catch (_) {
     return { ok: false, message: 'Librarian database could not be opened read-only.' };
   }
@@ -913,6 +918,7 @@ function readReservationsRun(fileSha) {
   let db;
   try {
     db = new sqlite.DatabaseSync(DB_PATH, { readOnly: true });
+    db.exec('PRAGMA busy_timeout = 5000;'); // wait out a transient writer lock, never fail the read
     const r = db.prepare(`SELECT file_name, source, status, rows_written, date_from, date_to, detail, ingested_at FROM reservations_ingest_runs WHERE file_sha = ?`).get(fileSha);
     if (!r) return null;
     let covers = null;
