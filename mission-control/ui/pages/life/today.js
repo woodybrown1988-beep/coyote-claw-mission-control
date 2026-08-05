@@ -146,9 +146,10 @@ module.exports = {
     });
 
     // ── two supporting wins ──
+    const supCard = (x) => `<div style="display:flex;gap:12px;align-items:center;justify-content:space-between;background:rgba(255,255,255,.04);border:1px solid var(--rline);border-radius:10px;padding:12px 14px"><div style="display:flex;gap:12px;align-items:center;min-width:0"><div class="r-check"></div><div style="min-width:0"><div style="font-weight:600">${link(x.id, x.title)}</div><div style="font-size:12px;color:var(--rmuted);margin-top:2px">${LIFE.esc(x.domain_key)}</div></div></div><a class="r-btn small" href="/life/task?id=${encodeURIComponent(x.id)}">Open</a></div>`;
     const supBody = sup.length
-      ? sup.map((x) => `<div class="r-lrow"><div style="display:flex;gap:12px;align-items:center"><div class="r-check"></div><div><div style="font-weight:600">${link(x.id, x.title)}</div><div style="font-size:12px;color:var(--rmuted);margin-top:2px">${LIFE.esc(x.domain_key)}</div></div></div><a class="r-btn small" href="/life/task?id=${encodeURIComponent(x.id)}">Open</a></div>`).join('')
-      : `<div class="r-lrow" style="color:var(--rmuted);font-size:13px">No supporting wins today — the must-win stands alone, and on a thin day that is the right answer.</div>`;
+      ? `<div style="display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(280px,1fr))">${sup.map(supCard).join('')}</div>`
+      : `<div style="color:var(--rmuted);font-size:13px;padding:6px 0">No supporting wins today — the must-win stands alone, and on a thin day that is the right answer.</div>`;
     const supportsBand = S.rcc.panel({ title: 'Two supporting wins', sub: 'Useful, bounded and subordinate to the must-win', body: supBody });
 
     // ── needs you + waiting quietly ──
@@ -167,7 +168,7 @@ module.exports = {
       headRight: s.waitingRows.length ? `<span class="r-pill">${s.waitingRows.length}</span>` : '',
       body: [
         ...overdue.map((w) => { const task = t(w.task_id); return `<div class="r-lrow" style="color:${'#f5c96b'}"><div><div style="font-weight:600">${task ? link(task.id, task.title) : 'A task'}</div><div style="font-size:12px;margin-top:2px">On ${LIFE.esc(w.dependency_label)} — follow-up date passed (${LIFE.esc(String(w.fallback_at).slice(0, 10))}).</div></div>${cmd('Wake it', 'wake', { taskId: w.task_id }, 'small primary')}</div>`; }),
-        ...quiet.slice(0, 4).map((w) => { const task = t(w.task_id); return `<div class="r-lrow"><div><div style="font-weight:600">${task ? link(task.id, task.title) : 'A task'}</div><div style="font-size:12px;color:var(--rmuted);margin-top:2px">On ${LIFE.esc(w.dependency_label)} · ${LIFE.esc(wakeLine(w))}</div></div></div>`; }),
+        ...quiet.slice(0, 6).map((w) => { const task = t(w.task_id); return `<div class="r-lrow"><div><div style="font-weight:600">${task ? link(task.id, task.title) : 'A task'}</div><div style="font-size:12px;color:var(--rmuted);margin-top:2px">On ${LIFE.esc(w.dependency_label)} · ${LIFE.esc(wakeLine(w))}</div></div></div>`; }),
         s.waitingRows.length === 0 ? `<div class="r-lrow" style="color:var(--rmuted);font-size:13px">Nothing is waiting on anyone. Park a task on a person or a date and it sits here without costing you attention.</div>` : '',
         s.waitingRows.length > 0 ? `<div class="r-note"><a href="/life/waiting">All waiting items</a></div>` : '',
       ].join(''),
@@ -193,14 +194,22 @@ module.exports = {
         + `</div>`,
     });
 
+    // LAYOUT (operator feedback 2026-08-05: cover the page, kill the dead space): the golden's
+    // grammar — hero gives the must-win the widest column; below, TWO wide columns whose card
+    // stacks balance (Needs+Available | Waiting+Handled) instead of three narrow ones.
     const body = head.replace('__HEADBTNS__', headBtns)
-      + `<div style="display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));margin-bottom:14px">${rexCard}${mustCard}${myDay}</div>`
-      + `<div style="margin-bottom:14px">${supportsBand}</div>`
-      + `<div style="display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(320px,1fr))">`
-      + `<div style="display:grid;gap:14px;align-content:start">${needsPanel}</div>`
-      + `<div style="display:grid;gap:14px;align-content:start">${availPanel}</div>`
-      + `<div style="display:grid;gap:14px;align-content:start">${waitingPanel}${handled}</div>`
-      + `</div></div>`;
+      + `<div class="lt-hero">${rexCard}${mustCard}${myDay}</div>`
+      + `<div style="margin-bottom:12px">${supportsBand}</div>`
+      + `<div class="lt-main">`
+      + `<div style="display:grid;gap:12px;align-content:start">${needsPanel}${availPanel}</div>`
+      + `<div style="display:grid;gap:12px;align-content:start">${waitingPanel}${handled}</div>`
+      + `</div>`
+      + `<style>
+        .lt-hero{display:grid;gap:12px;grid-template-columns:minmax(0,1.05fr) minmax(0,1.4fr) minmax(0,1fr);margin-bottom:12px}
+        .lt-main{display:grid;gap:12px;grid-template-columns:repeat(2,minmax(0,1fr))}
+        @media(max-width:1100px){.lt-hero{grid-template-columns:1fr}}
+        @media(max-width:900px){.lt-main{grid-template-columns:1fr}}
+      </style></div>`;
     return { stamp: '', body };
   },
 };
