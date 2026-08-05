@@ -109,16 +109,22 @@ const WORKSPACES = [
     groups: [
     { group: 'Focus', items: [
       { key: 'life-today', label: 'Today', route: '/life/today', ico: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.5"/>' },
-      { key: 'life-waiting', label: 'Waiting', route: '/life/waiting', ico: '<path d="M6 2h12M6 22h12M8 2v4l4 4 4-4V2M8 22v-4l4-4 4 4v4"/>' },
+      { key: 'life-waiting', label: 'Waiting for', route: '/life/waiting', ico: '<path d="M6 2h12M6 22h12M8 2v4l4 4 4-4V2M8 22v-4l4-4 4 4v4"/>' },
     ] },
     { group: 'Plan', items: [
-      { key: 'life-outcomes', label: 'Outcomes', route: '/life/outcomes', ico: '<path d="M4 22V3"/><path d="M4 4h13l-2.5 4L17 12H4"/>' },
+      { key: 'life-outcomes', label: '12-week outcomes', route: '/life/outcomes', ico: '<path d="M4 22V3"/><path d="M4 4h13l-2.5 4L17 12H4"/>' },
       { key: 'life-projects', label: 'Projects', route: '/life/projects', ico: '<path d="M12 2 2 7l10 5 10-5z"/><path d="M2 12l10 5 10-5M2 17l10 5 10-5"/>' },
-      { key: 'life-tasks', label: 'Tasks', route: '/life/tasks', ico: '<path d="M9 6h12M9 12h12M9 18h12"/><path d="M3.5 5.5 5 7l2.5-2.5M3.5 11.5 5 13l2.5-2.5M3.5 17.5 5 19l2.5-2.5"/>' },
+      { key: 'life-tasks', label: 'All tasks', route: '/life/tasks', ico: '<path d="M9 6h12M9 12h12M9 18h12"/><path d="M3.5 5.5 5 7l2.5-2.5M3.5 11.5 5 13l2.5-2.5M3.5 17.5 5 19l2.5-2.5"/>' },
+      { key: 'life-schedule', label: 'Schedule', route: '/life/schedule', ico: '<rect x="3" y="4" width="18" height="17" rx="2"/><path d="M8 2v4M16 2v4M3 9h18"/>' },
     ] },
     { group: 'Review', items: [
-      { key: 'life-review', label: 'Weekly Review', route: '/life/review', ico: '<rect x="3" y="4" width="18" height="17" rx="2"/><path d="M8 2v4M16 2v4M3 9h18"/><path d="m9 15 2 2 4-4"/>' },
-      { key: 'life-trust', label: 'Trust & Automation', route: '/life/trust', ico: '<path d="M12 2l8 3v6c0 5-3.5 8.5-8 11-4.5-2.5-8-6-8-11V5z"/><path d="m8.5 11.5 2.5 2.5 4.5-4.5"/>' },
+      { key: 'life-review', label: 'Weekly review', route: '/life/review', ico: '<rect x="3" y="4" width="18" height="17" rx="2"/><path d="M8 2v4M16 2v4M3 9h18"/><path d="m9 15 2 2 4-4"/>' },
+      { key: 'life-quarterly', label: 'Quarterly evolution', route: '/life/quarterly', ico: '<path d="M3 12a9 9 0 1 0 9-9"/><path d="M3 5v7h7"/>' },
+    ] },
+    { group: 'System', items: [
+      { key: 'life-trust', label: 'Trust & automation', route: '/life/trust', ico: '<path d="M12 2l8 3v6c0 5-3.5 8.5-8 11-4.5-2.5-8-6-8-11V5z"/><path d="m8.5 11.5 2.5 2.5 4.5-4.5"/>' },
+      { key: 'life-agents', label: 'Agent activity', route: '/life/agents', ico: '<circle cx="12" cy="7" r="3"/><circle cx="5" cy="17" r="2.5"/><circle cx="19" cy="17" r="2.5"/><path d="M12 10v3M9 15l-2 1M15 15l2 1"/>' },
+      { key: 'life-settings', label: 'Settings', route: '/life/settings', ico: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/>' },
     ] },
   ] },
 ];
@@ -337,6 +343,20 @@ function clientScript() {
         .then(function(r){return r.json();}).then(function(r){if(r&&r.ok){location.reload();}else{busy=false;ed.disabled=false;alert('refused: '+((r&&r.error)||'unknown'));}})
         .catch(function(){busy=false;ed.disabled=false;alert('network error — nothing changed');});
         return;}
+    });
+    // Add-outcome / add-project forms (golden Add actions): named inputs → the create command.
+    document.addEventListener('submit',function(e){var f=e.target;
+      if(!f||!f.classList||!f.classList.contains('lc-create-form'))return;
+      e.preventDefault();if(busy)return;
+      var kind=f.getAttribute('data-kind');var d={};new FormData(f).forEach(function(v,k){d[k]=v;});
+      var payload,command;
+      if(kind==='outcome'){command='create_outcome';payload={title:(d.title||'').trim(),proofDefinition:(d.proof||'').trim(),domainKey:(d.domain||'general'),activate:true};}
+      else{command='create_project';payload={title:(d.title||'').trim(),definitionOfDone:(d.dod||'').trim(),domainKey:(d.domain||'general')};}
+      if(!payload.title){alert('give it a title');return;}
+      busy=true;
+      fetch('/api/life/command',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({command:command,idempotencyKey:hex(),payload:payload})})
+      .then(function(r){return r.json();}).then(function(r){busy=false;if(r&&r.ok){location.reload();}else{alert('refused: '+((r&&r.error)||'unknown'));}})
+      .catch(function(){busy=false;alert('network error — nothing created');});
     });
     // Add-note form (task drawer): textarea + record-only checkbox → the note command.
     document.addEventListener('submit',function(e){var f=e.target;

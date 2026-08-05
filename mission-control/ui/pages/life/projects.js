@@ -1,40 +1,51 @@
 'use strict';
-// LIFE OS — PROJECTS. Read-only listing (max four active, DB-enforced in the engine).
 const LIFE = require('./life-lib.js');
+const S = require('../../shared.js');
+const wrap = (inner) => `<style>${S.rcc.css()}${S.rcc.lifeCss()}</style><div class="rcc">${inner}</div>`;
+const link = (id, title) => `<a href="/life/task?id=${encodeURIComponent(id)}" style="color:inherit">${LIFE.esc(title)}</a>`;
+const cmd = (label, command, payload, cls) => `<button class="r-btn ${cls || ''}" data-lc-cmd="${LIFE.esc(JSON.stringify({ command, payload: payload || {} }))}">${LIFE.esc(label)}</button>`;
 
 module.exports = {
   key: 'life-projects', route: '/life/projects', workspace: 'life', title: 'Projects',
-  sub: 'Maximum four active — stage, risk and due date · read-only',
+  sub: 'Four active at most — each with a definition of done and a next executable action',
 
   getSection(_db, _ctx) {
     const o = LIFE.openLifeReadonly();
-    if (!o.ok) return { engine: { ok: false, reason: o.reason } };
+    if (!o.ok) return { absent: true };
     try {
-      const rows = LIFE.lifeSelect(o.db,
-        `SELECT title, domain_key, stage, status, risk_state, due_date FROM life_projects
-          ORDER BY CASE status WHEN 'ACTIVE' THEN 0 WHEN 'WAITING' THEN 1 ELSE 2 END, created_at LIMIT 50`);
-      return { engine: { ok: true }, rows: rows.ok ? rows.rows : [], err: rows.ok ? null : rows.error };
+      const q = (sql, args) => { const r = LIFE.lifeSelect(o.db, sql, args); return r.ok ? r.rows : []; };
+      return {
+        projects: q(`SELECT id, title, domain_key, stage, status, risk_state, definition_of_done, due_date FROM life_projects ORDER BY CASE status WHEN 'ACTIVE' THEN 0 WHEN 'WAITING' THEN 1 ELSE 2 END, created_at LIMIT 20`),
+        nexts: q(`SELECT project_id, id, title FROM v_life_available_work WHERE project_id IS NOT NULL ORDER BY calculated_priority DESC`),
+      };
     } finally { o.db.close(); }
   },
 
   render(section, _ctx) {
     const s = section || {};
-    if (!s.engine || !s.engine.ok) {
-      return { stamp: 'life-projects · engine gate', body: LIFE.engineGate(s.engine ? s.engine.reason : 'no engine state') };
-    }
-    let body;
-    if (s.err) body = LIFE.engineGate(`projects unreadable: ${s.err}`);
-    else if (!s.rows.length) {
-      body = `<div class="panel"><h3>Projects</h3><div style="padding:14px 4px;color:var(--muted,#8aa);font-size:13px">`
-        + `No projects yet — honest empty state, nothing simulated.</div></div>`;
-    } else {
-      const tr = s.rows.map((r) =>
-        `<tr><td>${LIFE.esc(r.title)}</td><td>${LIFE.esc(r.domain_key)}</td><td>${LIFE.esc(r.stage)}</td>`
-        + `<td>${LIFE.esc(r.status)}</td><td>${LIFE.esc(r.risk_state)}</td><td>${LIFE.esc(r.due_date || '—')}</td></tr>`).join('');
-      body = `<div class="panel"><h3>Projects (${s.rows.length})</h3><table class="data"><thead>`
-        + `<tr><th>Project</th><th>Domain</th><th>Stage</th><th>Status</th><th>Risk</th><th>Due</th></tr></thead><tbody>${tr}</tbody></table></div>`;
-    }
-    body += LIFE.gatePanel('Stalled-project detector', 'the attention manager (engine PR 7) — flags projects with no executable next action');
-    return { stamp: `life-projects · ${s.rows ? s.rows.length : 0} rows`, body };
+    if (s.absent) return { stamp: '', body: wrap(LIFE.absentCard('Projects')) };
+    const active = s.projects.filter((p) => p.status === 'ACTIVE');
+    const rest = s.projects.filter((p) => p.status !== 'ACTIVE');
+    const riskTone = { GREEN: 'good', AMBER: 'warn', RED: 'bad' };
+    const card = (p) => {
+      const next = s.nexts.find((n) => n.project_id === p.id);
+      return `<div class="r-card r-panel"><div class="r-eyebrow">${LIFE.esc(p.stage.toLowerCase())}</div>
+        <div style="font-size:16px;font-weight:650;line-height:1.3;margin-bottom:8px">${LIFE.esc(p.title)}</div>
+        <div>${S.rcc.tag(p.domain_key)} ${S.rcc.tag('risk ' + p.risk_state.toLowerCase(), riskTone[p.risk_state] || '')} ${p.due_date ? S.rcc.tag('due ' + String(p.due_date).slice(0, 10)) : ''}</div>
+        <div class="r-defbox"><small>Definition of done</small><div style="font-size:13px;line-height:1.45">${LIFE.esc(p.definition_of_done)}</div></div>
+        <div style="font-size:12.5px;color:var(--rmuted)">${next ? `Next: ${link(next.id, next.title)}` : '<span style="color:#f5c96b">No executable next action — a stalled project until one exists.</span>'}</div></div>`;
+    };
+    const openSlot = `<div class="r-card r-panel" style="border-style:dashed;display:flex;flex-direction:column;justify-content:center;text-align:center;color:var(--rmuted)"><div style="font-size:13.5px;line-height:1.6;padding:8px 4px">An open project slot.<br>Four at most, by design.</div></div>`;
+    const slots = [...active.map(card)];
+    while (slots.length < 4) slots.push(openSlot);
+    const form = `<div class="r-card r-panel"><h3 class="r-panel-title" style="margin-bottom:8px">Add a project</h3>
+      <form class="lc-create-form" data-kind="project" style="display:grid;gap:8px">
+        <input class="lc-input" name="title" maxlength="200" placeholder="The project, plainly named">
+        <input class="lc-input" name="dod" maxlength="500" placeholder="Definition of done — how will you know it is finished?">
+        <div style="display:flex;gap:8px;align-items:center"><select class="lc-domain" name="domain"><option value="general">general</option><option value="business">business</option><option value="health">health</option><option value="family">family</option><option value="admin">admin</option><option value="venture">venture</option></select>
+        <button type="submit" class="r-btn primary">Add project</button></div>
+      </form></div>`;
+    const restRows = rest.length ? S.rcc.panel({ title: 'Waiting, parked and finished', body: rest.map((p) => `<div class="r-lrow"><div><div style="font-weight:600">${LIFE.esc(p.title)}</div><div style="margin-top:3px">${S.rcc.tag(p.status.toLowerCase())} ${S.rcc.tag(p.domain_key)}</div></div></div>`).join('') }) : '';
+    return { stamp: '', body: wrap(`<div style="display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));margin-bottom:12px">${slots.join('')}</div>${active.length < 4 ? form : ''}${restRows}`) };
   },
 };

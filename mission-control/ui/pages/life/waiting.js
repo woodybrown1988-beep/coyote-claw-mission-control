@@ -1,46 +1,46 @@
 'use strict';
-// LIFE OS — WAITING FOR. Every waiting item carries exactly one ACTIVE wake condition
-// (DB-enforced in the engine); this board shows them quietly, never as execution slots.
 const LIFE = require('./life-lib.js');
+const S = require('../../shared.js');
+const wrap = (inner) => `<style>${S.rcc.css()}${S.rcc.lifeCss()}</style><div class="rcc">${inner}</div>`;
+const link = (id, title) => `<a href="/life/task?id=${encodeURIComponent(id)}" style="color:inherit">${LIFE.esc(title)}</a>`;
+const cmd = (label, command, payload, cls) => `<button class="r-btn ${cls || ''}" data-lc-cmd="${LIFE.esc(JSON.stringify({ command, payload: payload || {} }))}">${LIFE.esc(label)}</button>`;
 
 module.exports = {
-  key: 'life-waiting', route: '/life/waiting', workspace: 'life', title: 'Waiting',
-  sub: 'Held work with a wake path — never occupying an execution slot · read-only',
+  key: 'life-waiting', route: '/life/waiting', workspace: 'life', title: 'Waiting for',
+  sub: 'Visible, never occupying an execution slot — every item has a wake path',
 
   getSection(_db, _ctx) {
     const o = LIFE.openLifeReadonly();
-    if (!o.ok) return { engine: { ok: false, reason: o.reason } };
+    if (!o.ok) return { absent: true };
     try {
-      const rows = LIFE.lifeSelect(o.db,
-        `SELECT t.id AS task_id, t.title, w.dependency_label, w.wake_type, w.fallback_at
-           FROM life_waiting_conditions w JOIN life_tasks t ON t.id = w.task_id
-          WHERE w.state = 'ACTIVE' ORDER BY w.fallback_at IS NULL, w.fallback_at LIMIT 100`);
-      return { engine: { ok: true }, rows: rows.ok ? rows.rows : [], err: rows.ok ? null : rows.error };
+      const q = (sql, args) => { const r = LIFE.lifeSelect(o.db, sql, args); return r.ok ? r.rows : []; };
+      return {
+        rows: q(`SELECT t.id AS task_id, t.title, w.dependency_label, w.wake_type, w.fallback_at
+                   FROM life_waiting_conditions w JOIN life_tasks t ON t.id = w.task_id
+                  WHERE w.state = 'ACTIVE' ORDER BY w.fallback_at IS NULL, w.fallback_at LIMIT 100`),
+      };
     } finally { o.db.close(); }
   },
 
   render(section, _ctx) {
     const s = section || {};
-    if (!s.engine || !s.engine.ok) {
-      return { stamp: 'life-waiting · engine gate', body: LIFE.engineGate(s.engine ? s.engine.reason : 'no engine state') };
+    if (s.absent) return { stamp: '', body: wrap(LIFE.absentCard('Waiting for')) };
+    const nowIso = new Date().toISOString();
+    const rule = `<div class="r-note" style="margin-bottom:12px">The rule: nothing waits without a wake path — a follow-up date at minimum, so no dependency can rot silently. Park any task from its own page ("Park waiting…").</div>`;
+    if (!s.rows.length) {
+      return { stamp: '', body: wrap(rule + LIFE.emptyCard('Waiting for', 'Nothing parked', 'Nothing is waiting on anyone. When you park a task on a person or a date, it sits here — visible, costing you nothing.', '<button class="r-btn primary" data-lc-fab>Capture a task</button>')) };
     }
-    let body;
-    if (s.err) body = LIFE.engineGate(`waiting conditions unreadable: ${s.err}`);
-    else if (!s.rows.length) {
-      body = `<div class="panel"><h3>Waiting for</h3><div style="padding:14px 4px;color:var(--muted,#8aa);font-size:13px">`
-        + `Nothing waiting — or nothing captured yet. Every future waiting item carries one active wake condition by DB constraint.</div></div>`;
-    } else {
-      const nowIso = new Date().toISOString();
-      const tr = s.rows.map((r) => {
-        const overdue = r.fallback_at && String(r.fallback_at) < nowIso;
-        const wakeBtn = `<button class="lc-btn lc-ghost" style="min-width:0" data-lc-cmd="${LIFE.esc(JSON.stringify({ command: 'wake', payload: { taskId: r.task_id } }))}">Wake</button>`;
-        return `<tr${overdue ? ' style="color:#f5c96b"' : ''}><td><a href="/life/task?id=${encodeURIComponent(r.task_id)}">${LIFE.esc(r.title)}</a></td><td>${LIFE.esc(r.dependency_label)}</td>`
-          + `<td>${LIFE.esc(r.wake_type)}</td><td>${LIFE.esc(r.fallback_at || 'no fallback')}${overdue ? ' — PASSED' : ''}</td><td>${wakeBtn}</td></tr>`;
-      }).join('');
-      body = `<div class="panel"><h3>Waiting for (${s.rows.length})</h3><table class="data"><thead>`
-        + `<tr><th>Task</th><th>Waiting on</th><th>Wakes on</th><th>Fallback</th><th></th></tr></thead><tbody>${tr}</tbody></table></div>`;
-    }
-    body += LIFE.gatePanel('Reply-match wake-ups (EMAIL_REPLY)', 'the Microsoft Graph phase — a SEPARATE go/no-go after the 30-day pilot; DATE/HUMAN_UPDATE wakes work without it');
-    return { stamp: `life-waiting · ${s.rows ? s.rows.length : 0} active`, body };
+    const row = (r) => {
+      const overdue = r.fallback_at && String(r.fallback_at) < nowIso;
+      return `<div class="r-lrow"${overdue ? ' style="color:#f5c96b"' : ''}><div style="min-width:0"><div style="font-weight:600">${link(r.task_id, r.title)}</div>
+        <div style="font-size:12px;margin-top:3px;color:${overdue ? '#f5c96b' : 'var(--rmuted)'}">Waiting on ${LIFE.esc(r.dependency_label)} · ${r.wake_type === 'DATE' ? 'wakes on its date' : 'wakes when you note an update'}${r.fallback_at ? ` · follow-up ${LIFE.esc(String(r.fallback_at).slice(0, 10))}${overdue ? ' — PASSED' : ''}` : ''}</div></div>
+        ${cmd(overdue ? 'Wake it' : 'Wake', 'wake', { taskId: r.task_id }, overdue ? 'small primary' : 'small')}</div>`;
+    };
+    const overdueRows = s.rows.filter((r) => r.fallback_at && String(r.fallback_at) < nowIso);
+    const quietRows = s.rows.filter((r) => !overdueRows.includes(r));
+    let body = rule;
+    if (overdueRows.length) body += S.rcc.panel({ title: 'Past their follow-up date', sub: 'Chase, wake or re-park — silence is the one wrong answer', headRight: `<span class="r-pill">${overdueRows.length}</span>`, body: overdueRows.map(row).join('') });
+    if (quietRows.length) body += S.rcc.panel({ title: 'Tracked quietly', headRight: `<span class="r-pill">${quietRows.length}</span>`, body: quietRows.map(row).join('') });
+    return { stamp: '', body: wrap(body) };
   },
 };

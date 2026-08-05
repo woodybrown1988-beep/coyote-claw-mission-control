@@ -5,6 +5,8 @@
 // product). Every button posts an allowlisted command; the writer re-validates; refusals
 // alert by name. Reached by links (no sidebar slot — workspaceOf prefix fallback).
 const LIFE = require('./life-lib.js');
+const S = require('../../shared.js');
+const wrap = (inner) => `<style>${S.rcc.css()}${S.rcc.lifeCss()}</style><div class="rcc">${inner}</div>`;
 
 // The buttons each status legitimately offers (mirrors the engine's transition table — the
 // writer re-validates, so a stale page can refuse loudly but never corrupt).
@@ -22,7 +24,7 @@ const ACTIONS = {
 
 function btnCmd(label, command, payload) {
   const cmd = LIFE.esc(JSON.stringify({ command, payload }));
-  return `<button class="lc-btn" style="min-width:0" data-lc-cmd="${cmd}">${LIFE.esc(label)}</button>`;
+  return `<button class="r-btn small" data-lc-cmd="${cmd}">${LIFE.esc(label)}</button>`;
 }
 
 module.exports = {
@@ -52,8 +54,8 @@ module.exports = {
 
   render(section, _ctx) {
     const s = section || {};
-    if (s.err) return { stamp: 'life-task', body: `<div class="panel"><h3>Task</h3><div style="padding:14px 4px;color:var(--muted,#8aa)">${LIFE.esc(s.err)}</div></div>` };
-    if (!s.engine || !s.engine.ok) return { stamp: 'life-task · engine gate', body: LIFE.engineGate(s.engine ? s.engine.reason : 'no engine state') };
+    if (s.err) return { stamp: '', body: wrap(LIFE.emptyCard('Task', 'Not found', s.err, '<a class="r-btn" href="/life/tasks">All tasks</a>')) };
+    if (!s.engine || !s.engine.ok) return { stamp: '', body: wrap(LIFE.absentCard('This task')) };
     const t = s.task;
     const id = String(t.id);
 
@@ -61,8 +63,8 @@ module.exports = {
     const acts = (ACTIONS[t.status] || []).map(([label, cmd, to]) => btnCmd(label, cmd, { taskId: id, to })).join(' ');
     const specials = [
       ['INBOX', 'READY', 'SCHEDULED', 'IN_PROGRESS', 'BLOCKED', 'AWAITING_APPROVAL', 'BATCH'].includes(String(t.status))
-        ? `<button class="lc-btn" style="min-width:0" data-lc-complete="${LIFE.esc(id)}">Mark done…</button>`
-          + `<button class="lc-btn" style="min-width:0" data-lc-wait="${LIFE.esc(id)}">Park waiting…</button>`
+        ? `<button class="r-btn small" data-lc-complete="${LIFE.esc(id)}">Mark done…</button>`
+          + `<button class="r-btn small" data-lc-wait="${LIFE.esc(id)}">Park waiting…</button>`
           + `<button class="lc-cxl" data-lc-cancel="${LIFE.esc(id)}">✕ cancel</button>`
         : '',
       String(t.status) === 'WAITING' ? btnCmd('Wake now', 'wake', { taskId: id }) : '',
@@ -70,7 +72,7 @@ module.exports = {
       btnCmd('Undo last move', 'undo', { taskId: id }),
     ].join(' ');
     const wait = s.waiting.find((w) => w.state === 'ACTIVE');
-    const head = `<div class="panel"><h3>${LIFE.esc(t.title)}</h3>
+    const head = `<div class="r-card r-panel"><h3>${LIFE.esc(t.title)}</h3>
       <div style="font-size:13px;color:var(--muted,#8aa);margin:4px 0 10px">
         ${LIFE.esc(t.status)} · ${LIFE.esc(t.domain_key)} · ${LIFE.esc(t.visibility)} · risk ${LIFE.esc(t.risk_level)}
         ${t.due_at ? ` · due ${LIFE.esc(String(t.due_at))} (${LIFE.esc(String(t.due_kind))})` : ''}
@@ -80,7 +82,7 @@ module.exports = {
       <div class="lc-row">${acts} ${specials}</div></div>`;
 
     // add update (A6): record-only honoured — context the AI must never act on
-    const noteForm = `<div class="panel"><h3>Add update</h3>
+    const noteForm = `<div class="r-card r-panel"><h3>Add update</h3>
       <form class="lc-note-form" data-task="${LIFE.esc(id)}">
         <textarea name="text" maxlength="4000" rows="3" class="lc-input" style="resize:vertical" placeholder="What happened? Plain words — facts and proposals extract deterministically; you decide each one."></textarea>
         <div class="lc-row" style="align-items:center">
@@ -95,7 +97,7 @@ module.exports = {
     const propCard = (p) => {
       const cmd = JSON.parse(String(p.command_json || '{}'));
       const editable = p.command_type === 'set_waiting'
-        ? `<button class="lc-btn lc-ghost" style="min-width:0" data-lc-edit="${LIFE.esc(JSON.stringify({ proposalId: p.id, dependencyLabel: cmd.dependencyLabel, wakeType: cmd.wakeType, fallbackAt: cmd.fallbackAt }))}">Edit…</button>` : '';
+        ? `<button class="r-btn small" data-lc-edit="${LIFE.esc(JSON.stringify({ proposalId: p.id, dependencyLabel: cmd.dependencyLabel, wakeType: cmd.wakeType, fallbackAt: cmd.fallbackAt }))}">Edit…</button>` : '';
       return `<div style="border:1px solid rgba(255,255,255,.12);border-radius:8px;padding:10px;margin:8px 0">
         <div style="font-size:13px"><b>${LIFE.esc(p.capability_key)}</b> proposes <b>${LIFE.esc(p.command_type)}</b> · confidence ${Number(p.confidence).toFixed(2)}</div>
         <div style="font-size:12px;color:var(--muted,#8aa);margin:4px 0">${LIFE.esc(p.reason)}</div>
@@ -107,14 +109,14 @@ module.exports = {
         </div></div>`;
     };
     const decidedRow = (p) => `<tr><td>${LIFE.esc(p.capability_key)}</td><td>${LIFE.esc(p.command_type)}</td><td>${LIFE.esc(p.state)}</td><td>${LIFE.esc(p.decided_by || '')}${p.decision_note ? ` — ${LIFE.esc(p.decision_note)}` : ''}</td></tr>`;
-    const proposals = `<div class="panel"><h3>Proposals${open.length ? ` — ${open.length} need you` : ''}</h3>
+    const proposals = `<div class="r-card r-panel"><h3>Proposals${open.length ? ` — ${open.length} need you` : ''}</h3>
       ${open.length ? open.map(propCard).join('') : '<div style="font-size:13px;color:var(--muted,#8aa);padding:6px 0">Nothing proposed and undecided.</div>'}
-      ${decided.length ? `<table class="data"><thead><tr><th>Capability</th><th>Proposed</th><th>Decision</th><th>By</th></tr></thead><tbody>${decided.map(decidedRow).join('')}</tbody></table>` : ''}
+      ${decided.length ? `<table class="data" style="width:100%"><thead><tr><th>Capability</th><th>Proposed</th><th>Decision</th><th>By</th></tr></thead><tbody>${decided.map(decidedRow).join('')}</tbody></table>` : ''}
     </div>`;
 
     // facts + timeline: human statements and machine interpretation SEPARATE, always
     const factRows = s.facts.map((f) => `<tr><td>${LIFE.esc(f.fact_type)}</td><td>${LIFE.esc(String(f.value_json))}${f.unit ? ` ${LIFE.esc(f.unit)}` : ''}</td><td>${Number(f.confidence).toFixed(2)}</td></tr>`).join('');
-    const facts = s.facts.length ? `<div class="panel"><h3>Extracted facts (machine interpretation — the note below stays authoritative)</h3><table class="data"><thead><tr><th>Fact</th><th>Value</th><th>Confidence</th></tr></thead><tbody>${factRows}</tbody></table></div>` : '';
+    const facts = s.facts.length ? `<div class="r-card r-panel"><h3>Extracted facts (machine interpretation — the note below stays authoritative)</h3><table class="data" style="width:100%"><thead><tr><th>Fact</th><th>Value</th><th>Confidence</th></tr></thead><tbody>${factRows}</tbody></table></div>` : '';
     const updates = s.updates.map((u) => {
       const ms = Date.parse(String(u.created_at));
       return `<div style="border-left:3px solid rgba(34,211,238,.4);padding:6px 10px;margin:8px 0">
@@ -125,9 +127,9 @@ module.exports = {
       const ms = Date.parse(String(ev.created_at));
       return `<tr><td><time data-ms="${Number.isFinite(ms) ? ms : 0}">${LIFE.esc(String(ev.created_at))}</time></td><td>${LIFE.esc(ev.event_type)}</td><td>${LIFE.esc(ev.from_state || '')}${ev.to_state ? ` → ${LIFE.esc(ev.to_state)}` : ''}</td><td>${LIFE.esc(ev.actor_type)}:${LIFE.esc(ev.actor_id)}</td></tr>`;
     }).join('');
-    const timeline = `<div class="panel"><h3>Updates (your words, byte-preserved)</h3>${updates || '<div style="font-size:13px;color:var(--muted,#8aa)">No updates yet.</div>'}</div>
-      <div class="panel"><h3>Audit trail</h3><table class="data"><thead><tr><th>When</th><th>Event</th><th>Change</th><th>Actor</th></tr></thead><tbody>${evRows}</tbody></table></div>`;
+    const timeline = `<div class="r-card r-panel"><h3>Updates (your words, byte-preserved)</h3>${updates || '<div style="font-size:13px;color:var(--muted,#8aa)">No updates yet.</div>'}</div>
+      <div class="r-card r-panel"><h3>Audit trail</h3><table class="data" style="width:100%"><thead><tr><th>When</th><th>Event</th><th>Change</th><th>Actor</th></tr></thead><tbody>${evRows}</tbody></table></div>`;
 
-    return { stamp: `life-task · ${t.status}`, body: head + noteForm + proposals + facts + timeline };
+    return { stamp: '', body: wrap(head + noteForm + proposals + facts + timeline) };
   },
 };

@@ -94,6 +94,8 @@ const COMMAND_SHAPES = {
   approve_week: () => true,
   compile_quarter: () => true,
   approve_quarter: () => true,
+  create_outcome: (p) => typeof p.title === 'string' && typeof p.proofDefinition === 'string',
+  create_project: (p) => typeof p.title === 'string' && typeof p.definitionOfDone === 'string',
   pause_capability: (p) => typeof p.capabilityKey === 'string',
   resume_capability: (p) => typeof p.capabilityKey === 'string',
 };
