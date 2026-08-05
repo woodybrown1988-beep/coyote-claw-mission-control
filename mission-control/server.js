@@ -133,6 +133,10 @@ function handleRequest(req, res) {
     handleLifeCapture(req, res);
     return;
   }
+  if (req.method === 'POST' && url.pathname === '/api/life/cancel') {
+    handleLifeCancel(req, res);
+    return;
+  }
   if (req.method === 'POST' && url.pathname === '/api/chat-message') {
     handleChatMessage(req, res);
     return;
@@ -3385,6 +3389,15 @@ function readTextBody(req, res, maxLen, cb) {
 function handleLifeCapture(req, res) {
   readJsonBody(req, res, 8192, (body) => {
     const v = LIFECMD.validateCapture(body);
+    if (!v.ok) { sendJson(res, v.status, { ok: false, error: v.error }); return; }
+    LIFECMD.sendCommand(v.cmd, (status, reply) => sendJson(res, status, reply));
+  });
+}
+
+// Cancel relay — same shape as capture: validate fail-closed, forward, verdict passthrough.
+function handleLifeCancel(req, res) {
+  readJsonBody(req, res, 2048, (body) => {
+    const v = LIFECMD.validateCancel(body);
     if (!v.ok) { sendJson(res, v.status, { ok: false, error: v.error }); return; }
     LIFECMD.sendCommand(v.cmd, (status, reply) => sendJson(res, status, reply));
   });

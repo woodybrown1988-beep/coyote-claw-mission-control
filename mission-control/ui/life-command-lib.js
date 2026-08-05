@@ -64,4 +64,16 @@ function sendCommand(cmd, cb) {
   req.end(JSON.stringify(cmd));
 }
 
-module.exports = { sockPath, validateCapture, sendCommand };
+/** Validate a browser cancel body into a writer command (same discipline as capture). */
+function validateCancel(body) {
+  const b = body || {};
+  const taskId = typeof b.taskId === 'string' ? b.taskId.trim() : '';
+  if (!taskId || taskId.length > 64) return { ok: false, status: 400, error: 'taskId required' };
+  const key = typeof b.idempotencyKey === 'string' ? b.idempotencyKey : '';
+  if (key.length < 8 || key.length > 128) {
+    return { ok: false, status: 400, error: 'idempotencyKey required (8–128 chars) — retries must be safe end-to-end' };
+  }
+  return { ok: true, cmd: { command: 'cancel', payload: { taskId }, idempotencyKey: key } };
+}
+
+module.exports = { sockPath, validateCapture, validateCancel, sendCommand };

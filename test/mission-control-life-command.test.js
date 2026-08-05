@@ -130,12 +130,30 @@ test('RED validation: missing title / missing key refused at MC before any relay
   assert.equal(v.ok, false);
 });
 
+test('cancel relay: authenticated cancel forwards the exact command; validation red paths', async () => {
+  const stub = await startStubWriter({ status: 200, body: { ok: true, status: 200, result: { id: 't-9', status: 'CANCELLED', changed: true } } });
+  const res = await run('POST', '/api/life/cancel', authedHeaders(),
+    JSON.stringify({ taskId: 't-9', idempotencyKey: 'cxl-relay-0001', junk: 'dropped' }));
+  assert.equal(res.statusCode, 200, res.body);
+  assert.deepEqual(stub.seen[0].body, { command: 'cancel', payload: { taskId: 't-9' }, idempotencyKey: 'cxl-relay-0001' });
+  await stub.close();
+  const unauth = await run('POST', '/api/life/cancel', { 'content-type': 'application/json' },
+    JSON.stringify({ taskId: 't-9', idempotencyKey: 'cxl-relay-0002' }));
+  assert.equal(unauth.statusCode, 401, 'cancel sits behind the same wall');
+  const noKey = await run('POST', '/api/life/cancel', authedHeaders(), JSON.stringify({ taskId: 't-9' }));
+  assert.equal(noKey.statusCode, 400);
+  const LIFEC = require('../mission-control/ui/life-command-lib.js');
+  assert.equal(LIFEC.validateCancel({ idempotencyKey: 'cxl-relay-0003' }).ok, false, 'taskId required');
+});
+
 test('CHECKLIST structural: the capture dispatch sits AFTER the auth gate; MC still opens no life.db write handle', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'mission-control', 'server.js'), 'utf8');
   const gate = src.indexOf('AUTH.isAuthed(req');
   const dispatch = src.indexOf("url.pathname === '/api/life/capture'");
-  assert.ok(gate > 0 && dispatch > 0);
+  const dispatchCancel = src.indexOf("url.pathname === '/api/life/cancel'");
+  assert.ok(gate > 0 && dispatch > 0 && dispatchCancel > 0);
   assert.ok(dispatch > gate, 'capture dispatch is BELOW the wall in handleRequest');
+  assert.ok(dispatchCancel > gate, 'cancel dispatch is BELOW the wall too');
   // The relay lib speaks HTTP-over-UDS only — it must never require the sqlite driver.
   const lib = fs.readFileSync(path.join(__dirname, '..', 'mission-control', 'ui', 'life-command-lib.js'), 'utf8');
   assert.ok(!/node:sqlite|DatabaseSync/.test(lib), 'the relay holds no database handle at all');

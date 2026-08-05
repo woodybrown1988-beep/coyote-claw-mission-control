@@ -24,7 +24,17 @@ const PAGES = [
 ];
 
 const T = '2026-08-05T12:00:00.000Z';
+// The tripwire EVOLVED with the command path (A5): life page bodies still may not carry raw
+// write mechanisms (forms, fetches, data-op) — the ONLY sanctioned affordance is the
+// data-lc-* family, whose handlers live in the shared shell and post exclusively to the
+// gated /api/life/* relay. Anything else is still a red build.
 const WRITE_AFFORDANCE = /data-op|data-log-action|<form\b|fetch\(|xhr|XMLHttpRequest|method="post"/i;
+const SANCTIONED_LC = new Set(['data-lc-cancel']);
+function assertOnlySanctionedLc(body, key) {
+  for (const m of body.matchAll(/data-lc-[a-z-]+/g)) {
+    assert.ok(SANCTIONED_LC.has(m[0]), `${key}: unsanctioned life affordance ${m[0]}`);
+  }
+}
 
 function withEnv(dbPath, fn) {
   const prev = process.env.COYOTE_LIFE_DB;
@@ -56,7 +66,8 @@ function makeFixture(dir) {
          AND NOT EXISTS (SELECT 1 FROM life_waiting_conditions w WHERE w.task_id = t.id AND w.state = 'ACTIVE');
     INSERT INTO life_outcomes VALUES ('o1','woody','health','<script>alert(1)</script> stronger','p','ACTIVE',NULL,1,'OWNER_ONLY','${T}','${T}');
     INSERT INTO life_tasks (id, owner_id, domain_key, title, status, risk_level, visibility, source_type, created_by, created_at, updated_at)
-      VALUES ('t1','woody','health','ready task','READY','LOW','OWNER_ONLY','MANUAL','h','${T}','${T}'),
+      VALUES ('t0','woody','admin','captured inbox task','INBOX','LOW','OWNER_ONLY','MANUAL','h','${T}','${T}'),
+             ('t1','woody','health','ready task','READY','LOW','OWNER_ONLY','MANUAL','h','${T}','${T}'),
              ('t2','woody','health','waiting task','WAITING','LOW','OWNER_ONLY','MANUAL','h','${T}','${T}');
     INSERT INTO life_waiting_conditions VALUES ('w1','t2','woody','Lightspeed engineer','EMAIL_REPLY','2026-08-12','ACTIVE','${T}','${T}');
   `);
@@ -107,10 +118,16 @@ test('with a real life.db: real counts, real rows, HTML-escaped, still zero writ
   withEnv(dbPath, () => {
     for (const page of PAGES) {
       const out = page.render(page.getSection(null, { now: Date.parse(T) }), { now: Date.parse(T) });
-      assert.ok(!WRITE_AFFORDANCE.test(out.body), `${page.key} emits no write affordance`);
+      assert.ok(!WRITE_AFFORDANCE.test(out.body), `${page.key} emits no raw write mechanism`);
+      assertOnlySanctionedLc(out.body, page.key);
     }
     const today = PAGES[0].render(PAGES[0].getSection(null, {}), {});
     assert.match(today.body, /Active outcomes/);
+    // A5 acceptance: the captured task is visible in Today/Inbox immediately, with the
+    // audited cancel affordance (the capture-mistake eraser) carrying its id.
+    assert.match(today.body, /Inbox \(1\)/);
+    assert.ok(today.body.includes('data-lc-cancel="t0"'), 'inbox row carries the cancel affordance');
+    assert.ok(today.body.includes('captured inbox task'), 'the captured title renders in Today');
     assert.match(today.stamp, /outcomes=1 available=1/, 'real counts: 1 active outcome, 1 available task');
     const outcomes = PAGES[2].render(PAGES[2].getSection(null, {}), {});
     assert.ok(outcomes.body.includes('&lt;script&gt;'), 'DB strings render escaped');
@@ -161,6 +178,22 @@ test('read-only wall: the life.db handle cannot write; only life-lib touches the
     }
   })(uiDir);
   assert.deepEqual(offenders, [], `life.db opened outside ui/pages/life: ${offenders.join(', ')}`);
+});
+
+test('A5: the capture affordance ships in the shell of ALL THREE workspaces', () => {
+  for (const active of ['overview', 'engine', 'life-today']) {
+    const html = SHARED.renderShell({ active, title: 't', sub: '', stamp: '', body: '', badges: {}, foot: [] });
+    assert.ok(html.includes('data-lc-fab'), `${active}: FAB present`);
+    assert.ok(html.includes('data-lc-overlay'), `${active}: overlay present`);
+    assert.ok(html.includes('/api/life/capture'), `${active}: script posts to the gated path`);
+    assert.ok(html.includes('/api/life/cancel'), `${active}: cancel handler present`);
+    assert.ok(html.includes('__lcOpen'), `${active}: the 30s soft-reload respects an open overlay`);
+  }
+  // Mobile-relevant: touch targets are >= 44px and the input is >= 16px (no iOS zoom-jump).
+  const css = SHARED.css();
+  assert.match(css, /\.lc-btn\{min-height:44px/);
+  assert.match(css, /\.lc-fab\{[^}]*width:52px/);
+  assert.match(css, /\.lc-input\{[^}]*font-size:17px/);
 });
 
 test('negative control: the write-affordance tripwire catches a mutant', () => {

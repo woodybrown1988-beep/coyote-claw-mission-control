@@ -29,6 +29,9 @@ module.exports = {
           decisions: count(o.db, `SELECT COUNT(*) FROM life_tasks WHERE status = 'AWAITING_APPROVAL'`),
           inbox: count(o.db, `SELECT COUNT(*) FROM life_tasks WHERE status = 'INBOX'`),
         },
+        inboxRows: (LIFE.lifeSelect(o.db,
+          `SELECT id, title, domain_key, created_at FROM life_tasks WHERE status = 'INBOX' ORDER BY created_at DESC LIMIT 10`,
+        ).rows) || [],
       };
     } finally { o.db.close(); }
   },
@@ -51,11 +54,29 @@ module.exports = {
       + tile('Owner decisions', c.decisions, 'awaiting approval')
       + tile('Inbox', c.inbox, 'uncaptured triage')
       + `</div>`;
+    // Inbox: the capture landing zone — a captured task is visible HERE immediately (A5
+    // acceptance). ✕ cancels via the gated command path (the capture-mistake eraser), audited.
+    let inboxPanel;
+    const rows = s.inboxRows || [];
+    if (rows.length) {
+      const tr = rows.map((r) => {
+        const ms = Date.parse(r.created_at);
+        const when = Number.isFinite(ms) ? `<time data-ms="${ms}">${LIFE.esc(r.created_at)}</time>` : LIFE.esc(r.created_at);
+        return `<tr><td>${LIFE.esc(r.title)}</td><td>${LIFE.esc(r.domain_key)}</td><td>${when}</td>`
+          + `<td><button class="lc-cxl" data-lc-cancel="${LIFE.esc(r.id)}" title="Cancel this task (audited)">✕ cancel</button></td></tr>`;
+      }).join('');
+      inboxPanel = `<div class="panel"><h3>Inbox (${rows.length}${rows.length === 10 ? '+' : ''})</h3><table class="data"><thead>`
+        + `<tr><th>Captured</th><th>Domain</th><th>When</th><th></th></tr></thead><tbody>${tr}</tbody></table></div>`;
+    } else {
+      inboxPanel = `<div class="panel"><h3>Inbox</h3><div style="padding:14px 4px;color:var(--muted,#8aa);font-size:13px">`
+        + `Empty — capture with the ＋ button or Ctrl/Cmd+K from any workspace; it lands here immediately.</div></div>`;
+    }
     const body = hero
+      + inboxPanel
       + LIFE.gatePanel('Must-win + two supports', 'the attention manager (engine PR 7) compiles the daily plan before the 07:05 brief')
       + LIFE.gatePanel('Rex’s read-only brief line', 'Rex read models (Phase-3 acceptance: read-only life.db handle, no command route)')
       + LIFE.gatePanel('Owner decision queue', 'the decision-queue surface (Phase-3 acceptance) — capped, owner-authority items only')
-      + LIFE.gatePanel('Global capture (Ctrl/Cmd+K)', 'the sole-writer command path — documented + tested before ANY interactive write (operator ruling 2026-08-05)')
+
       + LIFE.gatePanel('What the system handled', 'the automation disclosure ledger (confidence engine, PR 6)');
     return { stamp: `life-today · outcomes=${c.activeOutcomes ?? '—'} available=${c.availableNow ?? '—'}`, body };
   },
