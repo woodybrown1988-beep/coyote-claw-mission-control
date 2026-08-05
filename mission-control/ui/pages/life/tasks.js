@@ -15,7 +15,13 @@ module.exports = {
       const r = LIFE.lifeSelect(o.db, `SELECT status, COUNT(*) AS n FROM life_tasks GROUP BY status`);
       const byStatus = {};
       if (r.ok) for (const row of r.rows) byStatus[row.status] = Number(row.n);
-      return { engine: { ok: true }, byStatus, err: r.ok ? null : r.error };
+      const listing = LIFE.lifeSelect(o.db,
+        `SELECT id, title, status, domain_key, updated_at FROM life_tasks
+          WHERE status NOT IN ('DONE','CANCELLED') ORDER BY updated_at DESC LIMIT 30`);
+      const finished = LIFE.lifeSelect(o.db,
+        `SELECT id, title, status, updated_at FROM life_tasks
+          WHERE status IN ('DONE','CANCELLED') ORDER BY updated_at DESC LIMIT 10`);
+      return { engine: { ok: true }, byStatus, listing: listing.ok ? listing.rows : [], finished: finished.ok ? finished.rows : [], err: r.ok ? null : r.error };
     } finally { o.db.close(); }
   },
 
@@ -32,8 +38,13 @@ module.exports = {
       body = `<div class="panel"><h3>Tasks by state (${total})</h3><table class="data"><thead>`
         + `<tr><th>State</th><th style="text-align:right">Count</th></tr></thead><tbody>${tr}</tbody></table></div>`;
     }
-    body += LIFE.gatePanel('Task drawer — notes, extracted facts, proposals, accept/edit/reject, audited Undo/Reopen',
-      'the task-update evidence engine + the sole-writer command path (Phase-3 acceptance; writes stay gated until that path is documented + tested)');
+    const row = (r) => `<tr><td><a href="/life/task?id=${encodeURIComponent(r.id)}">${LIFE.esc(r.title)}</a></td><td>${LIFE.esc(r.status)}</td><td>${LIFE.esc(r.domain_key || '')}</td></tr>`;
+    if (s.listing && s.listing.length) {
+      body += `<div class="panel"><h3>Open tasks (${s.listing.length})</h3><table class="data"><thead><tr><th>Task</th><th>State</th><th>Domain</th></tr></thead><tbody>${s.listing.map(row).join('')}</tbody></table></div>`;
+    }
+    if (s.finished && s.finished.length) {
+      body += `<div class="panel"><h3>Recently finished</h3><table class="data"><tbody>${s.finished.map((r) => `<tr><td><a href="/life/task?id=${encodeURIComponent(r.id)}">${LIFE.esc(r.title)}</a></td><td>${LIFE.esc(r.status)}</td></tr>`).join('')}</tbody></table></div>`;
+    }
     return { stamp: 'life-tasks · board', body };
   },
 };
