@@ -217,6 +217,18 @@ function renderShell(opts) {
     </form>
   </div>
 </div>
+<div class="lc-focus-overlay" data-lc-focus-overlay>
+  <div class="lc-focus-card rcc" role="dialog" aria-modal="true" aria-label="Protected focus block">
+    <div class="r-eyebrow hot">Protected focus block</div>
+    <div style="font-size:22px;font-weight:650;line-height:1.25;margin:2px 0 8px" data-focus-title></div>
+    <div style="font-size:13px;color:var(--rmuted,#9ea7b2);line-height:1.5;margin-bottom:10px">Messages stay closed. Work only on this until the definition of done below is met, or you exit.</div>
+    <div class="r-defbox"><small>Definition of done</small><div style="font-size:13px;line-height:1.45" data-focus-dod></div></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+      <button class="r-btn" data-focus-exit>Exit focus</button>
+      <button class="r-btn primary" data-focus-complete>Complete block</button>
+    </div>
+  </div>
+</div>
 <script>${clientScript()}${opts.clientScript || ''}</script>
 </body></html>`;
 }
@@ -371,6 +383,44 @@ function clientScript() {
       .then(function(r){return r.json();}).then(function(r){busy=false;if(r&&r.ok){location.reload();}else{alert('refused: '+((r&&r.error)||'unknown'));}})
       .catch(function(){busy=false;alert('network error — note NOT recorded');});
     });
+    // A3: execution-route control — a [data-lc-route] <select> posts set_route on change.
+    document.addEventListener('change',function(e){var el=e.target;
+      if(!el||!el.classList||!el.classList.contains('lc-route-sel'))return;
+      if(busy)return;busy=true;
+      fetch('/api/life/command',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({
+        command:'set_route',idempotencyKey:hex(),payload:{taskId:el.getAttribute('data-task'),mode:el.value}})})
+      .then(function(r){return r.json();}).then(function(r){busy=false;if(r&&r.ok){location.reload();}else{alert('refused: '+((r&&r.error)||'unknown'));}})
+      .catch(function(){busy=false;alert('network error — route unchanged');});
+    });
+    // A3: quiet-support toggle in Settings — a [data-lc-quiet] control posts set_setting.
+    document.addEventListener('click',function(e){var el=e.target&&e.target.closest&&e.target.closest('[data-lc-quiet]');
+      if(!el)return;e.preventDefault();if(busy)return;busy=true;
+      var next=el.getAttribute('data-lc-quiet')==='on'?'off':'on';
+      fetch('/api/life/command',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({
+        command:'set_setting',idempotencyKey:hex(),payload:{key:'quiet_support',value:next}})})
+      .then(function(r){return r.json();}).then(function(r){busy=false;if(r&&r.ok){location.reload();}else{alert('refused: '+((r&&r.error)||'unknown'));}})
+      .catch(function(){busy=false;alert('network error — setting unchanged');});
+    });
+    // A3: FOCUS MODE — a protected deep-work overlay. [data-lc-focus] carries {taskId,title,dod}.
+    // Client-only until Complete, which posts the existing complete command. Esc / backdrop exits.
+    var fo=document.querySelector('[data-lc-focus-overlay]');
+    function openFocus(info){if(!fo)return;
+      fo.querySelector('[data-focus-title]').textContent=info.title||'Focus';
+      fo.querySelector('[data-focus-dod]').textContent=info.dod||'No definition of done yet — decide what “won” looks like.';
+      var cb=fo.querySelector('[data-focus-complete]');cb.setAttribute('data-task',info.taskId||'');
+      fo.classList.add('open');window.__lcOpen=true;}
+    function closeFocus(){if(fo){fo.classList.remove('open');window.__lcOpen=false;}}
+    document.addEventListener('click',function(e){var t=e.target;if(!t||!t.closest)return;
+      var f=t.closest('[data-lc-focus]');
+      if(f){e.preventDefault();try{openFocus(JSON.parse(f.getAttribute('data-lc-focus')));}catch(_){}return;}
+      if(t.closest('[data-focus-exit]')||t===fo){e.preventDefault();closeFocus();return;}
+      var fc=t.closest('[data-focus-complete]');
+      if(fc){e.preventDefault();if(busy)return;var id=fc.getAttribute('data-task');if(!id){closeFocus();return;}busy=true;
+        fetch('/api/life/command',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({command:'complete',idempotencyKey:hex(),payload:{taskId:id}})})
+        .then(function(r){return r.json();}).then(function(r){busy=false;if(r&&r.ok){location.reload();}else{alert('refused: '+((r&&r.error)||'unknown'));}})
+        .catch(function(){busy=false;alert('network error — nothing changed');});return;}
+    });
+    document.addEventListener('keydown',function(e){if(e.key==='Escape'&&fo&&fo.classList.contains('open'))closeFocus();});
   })();`;
 }
 
@@ -591,6 +641,11 @@ function css() {
 .lc-overlay{display:none;position:fixed;inset:0;background:rgba(2,8,14,.62);z-index:70;align-items:flex-start;justify-content:center;padding:10vh 16px 0}
 .lc-overlay.lc-open{display:flex}
 .lc-card{width:100%;max-width:560px;background:var(--panel,#0d1722);border:1px solid rgba(255,255,255,.14);border-radius:12px;padding:16px;box-shadow:0 12px 40px rgba(0,0,0,.5)}
+/* Focus mode overlay base (A3) — always-emitted shell CSS so a hidden overlay never flashes
+   unstyled on a Coyote/Claw page; the inner r-* treatment renders on life pages that emit lifeCss. */
+.lc-focus-overlay{display:none;position:fixed;inset:0;background:rgba(2,6,10,.8);z-index:80;align-items:center;justify-content:center;padding:16px}
+.lc-focus-overlay.open{display:flex}
+.lc-focus-card{width:100%;max-width:560px;background:#14181d;border:1px solid #2a3139;border-radius:16px;padding:22px;box-shadow:0 20px 60px rgba(0,0,0,.6)}
 .lc-input{width:100%;box-sizing:border-box;font-size:17px;padding:12px 14px;border-radius:8px;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.06);color:inherit}
 .lc-row{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
 .lc-domain{min-height:44px;padding:0 10px;border-radius:8px;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.06);color:inherit;font-size:14px}
@@ -811,8 +866,41 @@ const rcc = {
 .rcc .r-check{width:20px;height:20px;border-radius:50%;border:2px solid ${RCC_TOKENS.good};flex:0 0 20px}
 .rcc .r-capline{display:flex;align-items:center;gap:10px;background:rgba(255,255,255,.04);border:1px solid var(--rline);border-radius:10px;padding:9px 13px;font-size:13px;color:var(--rmuted);cursor:pointer}
 .rcc .r-capline kbd{font-family:var(--font-mono,monospace);font-size:10px;border:1px solid var(--rline);border-radius:5px;padding:1px 6px;margin-left:auto}
+/* A3 closures (operator ruling 2026-08-05): execution route, contextual confidence, focus
+   mode, quiet-support toggle. modePill colour map is the golden's own (SELF orange / AI blue
+   / DELEGATE green / HYBRID purple). */
+.rcc .r-route{display:inline-flex;align-items:center;font-size:11px;font-weight:700;letter-spacing:.04em;padding:2px 9px;border-radius:20px;border:1px solid}
+.rcc .r-route.SELF{color:#ffc08a;border-color:rgba(255,155,77,.5);background:rgba(255,155,77,.12)}
+.rcc .r-route.AI{color:#8ec2ff;border-color:rgba(103,167,255,.5);background:rgba(103,167,255,.12)}
+.rcc .r-route.DELEGATE{color:#7de3a0;border-color:rgba(69,196,134,.5);background:rgba(69,196,134,.12)}
+.rcc .r-route.HYBRID{color:#c3a6ff;border-color:rgba(173,140,255,.5);background:rgba(173,140,255,.12)}
+.rcc .r-conf{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;color:var(--rmuted)}
+.rcc .r-conf .dot{width:7px;height:7px;border-radius:50%;background:var(--rmuted)}
+.rcc .r-conf.high .dot{background:${RCC_TOKENS.good}}.rcc .r-conf.high{color:#9fe3bd}
+.rcc .r-conf.med .dot{background:${RCC_TOKENS.warn}}.rcc .r-conf.med{color:#f0cf8f}
+.rcc .r-routesel{background:rgba(255,255,255,.05);border:1px solid var(--rline);border-radius:8px;color:var(--rtext);font-size:12px;padding:5px 8px;min-height:32px}
+.rcc .r-toggle{display:inline-flex;align-items:center;gap:10px;cursor:pointer;font-size:13px;user-select:none}
+.rcc .r-toggle .sw{width:40px;height:22px;border-radius:22px;background:rgba(255,255,255,.14);position:relative;transition:background .15s;flex:0 0 40px}
+.rcc .r-toggle .sw::after{content:'';position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;background:#fff;transition:left .15s}
+.rcc .r-toggle.on .sw{background:${RCC_TOKENS.good}}.rcc .r-toggle.on .sw::after{left:20px}
 @media(max-width:760px){.rcc .r-lrow{flex-wrap:wrap}}
 `;
+  },
+  /** Execution-route pill (A3). mode ∈ SELF|AI|DELEGATE|HYBRID. */
+  route(mode) {
+    const m = String(mode || 'SELF').toUpperCase();
+    const label = { SELF: 'You', AI: 'AI', DELEGATE: 'Delegate', HYBRID: 'Hybrid' }[m] || 'You';
+    return `<span class="r-route ${escapeHtml(m)}">${escapeHtml(label)}</span>`;
+  },
+  /** Contextual confidence chip (A3, ADR-007: shown only where a REAL confidence exists;
+   *  never a global trust score). value is 0..1; returns '' for missing/non-numeric. */
+  conf(value) {
+    const v = Number(value);
+    if (!Number.isFinite(v)) return '';
+    const pct = Math.round(v * 100);
+    const band = pct >= 80 ? 'high' : pct >= 60 ? 'med' : 'low';
+    const word = pct >= 80 ? 'high' : pct >= 60 ? 'medium' : 'low';
+    return `<span class="r-conf ${band}" title="how likely this reading is correct — never permission to act on its own"><span class="dot"></span>${pct}% · ${word}</span>`;
   },
 };
 
