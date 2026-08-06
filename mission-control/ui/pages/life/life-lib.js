@@ -20,15 +20,17 @@ function lifeDbPath() {
  *  fails SQLITE_BUSY on a writer's brief exclusive window instead of waiting it out). */
 function openLifeReadonly() {
   const p = lifeDbPath();
+  // Owner-voice reasons (defence-in-depth): these can only surface to the owner, so no
+  // engineering vocabulary or raw error text even though pages currently render absentCard.
   if (!fs.existsSync(p)) {
-    return { ok: false, reason: 'life.db not initialised — the engine creates it on the Life OS writer’s first run' };
+    return { ok: false, reason: 'Life OS isn’t set up yet — it starts the first time you capture something.' };
   }
   try {
     const db = new sqlite.DatabaseSync(p, { readOnly: true });
     db.exec('PRAGMA busy_timeout = 5000;');
     return { ok: true, db };
-  } catch (e) {
-    return { ok: false, reason: `life.db unreadable: ${e.message}` };
+  } catch (_) {
+    return { ok: false, reason: 'Life OS data couldn’t be read right now — try again in a moment.' };
   }
 }
 

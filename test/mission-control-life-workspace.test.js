@@ -295,6 +295,23 @@ test('read-only wall: the life.db handle cannot write; only life-lib touches the
   assert.deepEqual(offenders, [], `life.db opened outside ui/pages/life: ${offenders.join(', ')}`);
 });
 
+test('owner-language: no engineering vocabulary in ANY life page title or subtitle (the page-head strings the body scan misses — regression guard from the A3 review 2026-08-06)', () => {
+  const OWNER_SCRUB = /(PR\s?#?\d+|\bschema\b|DB-enforced|engine PR|\bphase\b|sole writer|life\.db|\bmigration\b|unlock:|scaffold)/i;
+  const TASK = require('../mission-control/ui/pages/life/task.js');
+  for (const page of [...PAGES, TASK]) {
+    assert.ok(!OWNER_SCRUB.test(String(page.title || '')), `${page.key}: forbidden term in title "${page.title}"`);
+    assert.ok(!OWNER_SCRUB.test(String(page.sub || '')), `${page.key}: forbidden term in subtitle "${page.sub}"`);
+  }
+  // the life-lib owner-facing fallback reasons must be owner-voice too (defence-in-depth)
+  const LIFELIB = require('../mission-control/ui/pages/life/life-lib.js');
+  const prev = process.env.COYOTE_LIFE_DB;
+  process.env.COYOTE_LIFE_DB = require('node:path').join(require('node:os').tmpdir(), 'nonexistent-life-xyz', 'life.db');
+  const r = LIFELIB.openLifeReadonly();
+  if (prev === undefined) delete process.env.COYOTE_LIFE_DB; else process.env.COYOTE_LIFE_DB = prev;
+  assert.equal(r.ok, false);
+  assert.ok(!OWNER_SCRUB.test(String(r.reason || '')), `life-lib absent reason leaks engineering vocab: "${r.reason}"`);
+});
+
 test('A5: the capture affordance ships in the shell of ALL THREE workspaces', () => {
   for (const active of ['overview', 'engine', 'life-today']) {
     const html = SHARED.renderShell({ active, title: 't', sub: '', stamp: '', body: '', badges: {}, foot: [] });
