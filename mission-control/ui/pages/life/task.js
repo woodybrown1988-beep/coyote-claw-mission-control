@@ -72,14 +72,26 @@ module.exports = {
       btnCmd('Undo last move', 'undo', { taskId: id }),
     ].join(' ');
     const wait = s.waiting.find((w) => w.state === 'ACTIVE');
-    const head = `<div class="r-card r-panel"><h3>${LIFE.esc(t.title)}</h3>
-      <div style="font-size:13px;color:var(--muted,#8aa);margin:4px 0 10px">
-        ${LIFE.esc(t.status)} · ${LIFE.esc(t.domain_key)} · ${LIFE.esc(t.visibility)} · risk ${LIFE.esc(t.risk_level)}
-        ${t.due_at ? ` · due ${LIFE.esc(String(t.due_at))} (${LIFE.esc(String(t.due_kind))})` : ''}
-        ${wait ? ` · waiting on <b>${LIFE.esc(wait.dependency_label)}</b> (fallback ${LIFE.esc(wait.fallback_at || 'none')})` : ''}
+    // Contextual confidence (A3): the strongest open proposal's real confidence, in the header.
+    const topConf = s.proposals.filter((p) => p.state === 'PROPOSED').sort((a, b) => Number(b.confidence) - Number(a.confidence))[0];
+    // Execution route (A3): who does this — a set_route control, SELF the honest default.
+    const mode = String(t.execution_mode || 'SELF').toUpperCase();
+    const opt = (v, label) => `<option value="${v}"${mode === v ? ' selected' : ''}>${label}</option>`;
+    const routeControl = `<label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--rmuted)">Route
+      <select class="r-routesel lc-route-sel" data-task="${LIFE.esc(id)}">
+        ${opt('SELF', 'You do it')}${opt('AI', 'AI drafts / does')}${opt('DELEGATE', 'Delegate')}${opt('HYBRID', 'Hybrid')}
+      </select></label>`;
+    const focusBtn = ['READY', 'SCHEDULED', 'IN_PROGRESS'].includes(String(t.status))
+      ? `<button class="r-btn small primary" data-lc-focus="${LIFE.esc(JSON.stringify({ taskId: id, title: t.title, dod: (t.definition_of_done && String(t.definition_of_done).trim()) || '' }))}">▶ Focus</button>` : '';
+    const head = `<div class="r-card r-panel"><h3 style="margin-bottom:6px">${LIFE.esc(t.title)}</h3>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:4px 0 10px">
+        ${S.rcc.tag(String(t.status).toLowerCase().replace('_', ' '))}${S.rcc.route(mode)}${S.rcc.tag(t.domain_key)}${S.rcc.tag(t.visibility === 'OWNER_ONLY' ? 'private' : String(t.visibility).toLowerCase())}
+        ${topConf ? S.rcc.conf(topConf.confidence) : ''}
+        ${t.due_at ? S.rcc.tag(`due ${String(t.due_at).slice(0, 10)}${t.due_kind === 'HARD' ? ' · hard' : ''}`) : ''}
       </div>
+      ${wait ? `<div style="font-size:12.5px;color:#f5c96b;margin-bottom:8px">Waiting on <b>${LIFE.esc(wait.dependency_label)}</b>${wait.fallback_at ? ` · follow-up ${LIFE.esc(String(wait.fallback_at).slice(0, 10))}` : ''}</div>` : ''}
       ${t.description ? `<div style="font-size:13px;margin-bottom:10px">${LIFE.esc(t.description)}</div>` : ''}
-      <div class="lc-row">${acts} ${specials}</div></div>`;
+      <div class="lc-row" style="align-items:center">${focusBtn} ${acts} ${specials} ${routeControl}</div></div>`;
 
     // add update (A6): record-only honoured — context the AI must never act on
     const noteForm = `<div class="r-card r-panel"><h3>Add update</h3>
@@ -99,7 +111,7 @@ module.exports = {
       const editable = p.command_type === 'set_waiting'
         ? `<button class="r-btn small" data-lc-edit="${LIFE.esc(JSON.stringify({ proposalId: p.id, dependencyLabel: cmd.dependencyLabel, wakeType: cmd.wakeType, fallbackAt: cmd.fallbackAt }))}">Edit…</button>` : '';
       return `<div style="border:1px solid rgba(255,255,255,.12);border-radius:8px;padding:10px;margin:8px 0">
-        <div style="font-size:13px"><b>${LIFE.esc(p.capability_key)}</b> proposes <b>${LIFE.esc(p.command_type)}</b> · confidence ${Number(p.confidence).toFixed(2)}</div>
+        <div style="font-size:13px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><b>${LIFE.esc(String(p.capability_key).replace(/_/g, ' '))}</b> suggests <b>${LIFE.esc(p.command_type === 'set_waiting' ? 'parking this waiting' : p.command_type)}</b> ${S.rcc.conf(p.confidence)}</div>
         <div style="font-size:12px;color:var(--muted,#8aa);margin:4px 0">${LIFE.esc(p.reason)}</div>
         <div style="font-size:12px;font-family:monospace;margin:4px 0">${LIFE.esc(JSON.stringify(cmd))}</div>
         <div class="lc-row">
@@ -127,8 +139,12 @@ module.exports = {
       const ms = Date.parse(String(ev.created_at));
       return `<tr><td><time data-ms="${Number.isFinite(ms) ? ms : 0}">${LIFE.esc(String(ev.created_at))}</time></td><td>${LIFE.esc(ev.event_type)}</td><td>${LIFE.esc(ev.from_state || '')}${ev.to_state ? ` → ${LIFE.esc(ev.to_state)}` : ''}</td><td>${LIFE.esc(ev.actor_type)}:${LIFE.esc(ev.actor_id)}</td></tr>`;
     }).join('');
+    // Handoff detail (A3 placement ruling 2026-08-05: in the drawer, not a Today footer). Each
+    // row records who held the task and what they did — the actor column IS the handoff record.
     const timeline = `<div class="r-card r-panel"><h3>Updates (your words, byte-preserved)</h3>${updates || '<div style="font-size:13px;color:var(--muted,#8aa)">No updates yet.</div>'}</div>
-      <div class="r-card r-panel"><h3>Audit trail</h3><table class="data" style="width:100%"><thead><tr><th>When</th><th>Event</th><th>Change</th><th>Actor</th></tr></thead><tbody>${evRows}</tbody></table></div>`;
+      <div class="r-card r-panel"><h3>Handoffs &amp; history</h3>
+        <div style="font-size:12px;color:var(--rmuted);margin:2px 0 8px">Every change on this task, and who held it — you, a service, or (later) an agent. Nothing acts here without leaving a line.</div>
+        <table class="data" style="width:100%"><thead><tr><th>When</th><th>What happened</th><th>Change</th><th>Handled by</th></tr></thead><tbody>${evRows}</tbody></table></div>`;
 
     return { stamp: '', body: wrap(head + noteForm + proposals + facts + timeline) };
   },

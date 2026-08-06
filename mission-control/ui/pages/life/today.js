@@ -39,13 +39,18 @@ module.exports = {
       const plan = q('SELECT * FROM life_daily_plans WHERE plan_date = ?', [today])[0] || null;
       const taskOf = {};
       for (const r of q('SELECT id, title, status, domain_key, definition_of_done FROM life_tasks')) taskOf[r.id] = r;
+      const setting = (k, dflt) => { const r = q('SELECT value FROM life_settings WHERE key = ?', [k]); return r.length ? String(r[0].value) : dflt; };
       return {
         engine: { ok: true }, now, today, plan, taskOf,
-        openProposals: q(`SELECT id, task_id, capability_key, command_type, reason FROM life_update_proposals WHERE state = 'PROPOSED' ORDER BY created_at ASC LIMIT 10`),
+        // quiet-support DEFAULT-ON (operator ruling 2026-08-05): absent row = on.
+        quiet: setting('quiet_support', 'on') === 'on',
+        openProposals: q(`SELECT id, task_id, capability_key, command_type, reason, confidence, risk_level FROM life_update_proposals WHERE state = 'PROPOSED' ORDER BY created_at ASC LIMIT 10`),
         approvalRows: q(`SELECT id, title FROM life_tasks WHERE status = 'AWAITING_APPROVAL' ORDER BY updated_at ASC LIMIT 10`),
-        available: q(`SELECT id, title, domain_key FROM v_life_available_work ORDER BY calculated_priority DESC, created_at ASC LIMIT 8`),
+        available: q(`SELECT id, title, domain_key, execution_mode FROM v_life_available_work ORDER BY calculated_priority DESC, created_at ASC LIMIT 8`),
         inboxCount: q(`SELECT COUNT(*) c FROM life_tasks WHERE status = 'INBOX'`)[0]?.c ?? 0,
         waitingRows: q(`SELECT w.task_id, w.dependency_label, w.wake_type, w.fallback_at FROM life_waiting_conditions w WHERE w.state = 'ACTIVE' ORDER BY w.fallback_at IS NULL, w.fallback_at LIMIT 12`),
+        activeOutcomes: q(`SELECT DISTINCT domain_key FROM life_outcomes WHERE status = 'ACTIVE'`).map((r) => r.domain_key),
+        neglectedFromWork: q(`SELECT DISTINCT domain_key FROM v_life_available_work`).map((r) => r.domain_key),
         decidedToday: q(`SELECT COUNT(*) c FROM life_update_proposals WHERE decided_at >= ?`, [`${today}T00:00:00.000Z`])[0]?.c ?? 0,
         doneToday: q(`SELECT COUNT(*) c FROM life_task_events WHERE event_type = 'STATUS_CHANGED' AND to_state = 'DONE' AND created_at >= ?`, [`${today}T00:00:00.000Z`])[0]?.c ?? 0,
         captured24h: q(`SELECT COUNT(*) c FROM life_task_events WHERE event_type = 'CREATED' AND created_at >= ?`, [new Date(now - 86_400_000).toISOString()])[0]?.c ?? 0,
@@ -81,10 +86,13 @@ module.exports = {
     const sup = plan ? [t(plan.support_task_1_id), t(plan.support_task_2_id)].filter(Boolean) : [];
     const ev = plan ? JSON.parse(String(plan.compilation_evidence_json || '{}')) : {};
 
-    // ── decisions ("Needs you") ──
-    const needs = [];
+    // ── decisions ("Needs you"). MATERIAL = owner-authority items that always interrupt
+    // (approvals). Suggestions carry their REAL confidence chip; under quiet-support (A3,
+    // default-on) low-risk suggestions fold into a quiet line — only material items interrupt. ──
+    const material = [];
+    const suggestions = [];
     for (const r of s.approvalRows) {
-      needs.push({
+      material.push({
         title: link(r.id, r.title),
         sub: 'Parked for your call — open it, then approve, park it waiting, or let it go.',
         actions: `<a class="r-btn small" href="/life/task?id=${encodeURIComponent(r.id)}">Inspect</a> ${cmd('Approve', 'transition', { taskId: r.id, to: 'READY' }, 'small primary')}`,
@@ -92,17 +100,29 @@ module.exports = {
     }
     for (const p of s.openProposals) {
       const task = t(p.task_id);
-      needs.push({
+      const conf = S.rcc.conf(p.confidence);
+      const highStakes = p.risk_level === 'HIGH' || p.risk_level === 'CRITICAL';
+      const row = {
         title: task ? link(task.id, task.title) : 'A task',
         sub: `${String(p.reason).slice(0, 110)} — it suggests ${p.command_type === 'set_waiting' ? 'parking this as waiting' : 'a next step'}.`,
+        conf,
         actions: `${task ? `<a class="r-btn small" href="/life/task?id=${encodeURIComponent(task.id)}">Inspect</a>` : ''} ${cmd('Approve', 'decide', { proposalId: p.id, decision: 'accept' }, 'small primary')} ${cmd('No', 'decide', { proposalId: p.id, decision: 'reject' }, 'small')}`,
-      });
+      };
+      (highStakes ? material : suggestions).push(row);
     }
+    // quiet-support on → suggestions fold; off → they sit inline with the material items.
+    const needs = s.quiet ? material : [...material, ...suggestions];
+    const foldedCount = s.quiet ? suggestions.length : 0;
 
-    // ── header actions (restyle-only: Replan exists; focus mode awaits ruling) ──
+    // ── header actions: Start focus (A3, opens the protected-block overlay on the must-win),
+    // Replan, Approve plan. ──
+    const focusBtn = mw
+      ? `<button class="r-btn primary" data-lc-focus="${LIFE.esc(JSON.stringify({ taskId: mw.id, title: mw.title, dod: (mw.definition_of_done && String(mw.definition_of_done).trim()) || '' }))}">▶ Start focus</button>`
+      : '';
     const headBtns = [
+      focusBtn,
       plan ? cmd('Replan', 'plan_today', {}, '') : cmd('Plan my day', 'plan_today', {}, 'primary'),
-      planIsDraft ? cmd('Approve plan', 'approve_plan', { planDate: s.today }, 'primary') : '',
+      planIsDraft ? cmd('Approve plan', 'approve_plan', { planDate: s.today }, '') : '',
     ].join(' ');
 
     // ── hero row: brief · must-win · my day ──
@@ -153,12 +173,39 @@ module.exports = {
     const supportsBand = S.rcc.panel({ title: 'Two supporting wins', sub: 'Useful, bounded and subordinate to the must-win', body: supBody });
 
     // ── needs you + waiting quietly ──
+    const needRow = (n) => `<div class="r-lrow"><div style="min-width:0"><div style="font-weight:600">${n.title}</div>`
+      + `<div style="font-size:12.5px;color:var(--rmuted);margin-top:3px;line-height:1.45">${LIFE.esc(n.sub)}</div>`
+      + `${n.conf ? `<div style="margin-top:5px">${n.conf}</div>` : ''}</div>`
+      + `<div style="display:flex;gap:6px;flex-shrink:0">${n.actions}</div></div>`;
+    const foldLine = foldedCount
+      ? `<div class="r-note">Quiet support is on — ${foldedCount} lower-stakes suggestion${foldedCount === 1 ? '' : 's'} folded so only material calls interrupt you. <a href="/life/tasks">Review them in All tasks</a>, or turn quiet support off in <a href="/life/settings">Settings</a>.</div>`
+      : '';
     const needsPanel = S.rcc.panel({
       title: `Needs you`, sub: 'Only irreversible calls and genuine owner judgement',
       headRight: needs.length ? `<span class="r-pill">${needs.length}</span>` : '',
-      body: needs.length
-        ? needs.map((n) => `<div class="r-lrow"><div style="min-width:0"><div style="font-weight:600">${n.title}</div><div style="font-size:12.5px;color:var(--rmuted);margin-top:3px;line-height:1.45">${LIFE.esc(n.sub)}</div></div><div style="display:flex;gap:6px;flex-shrink:0">${n.actions}</div></div>`).join('')
-        : `<div class="r-lrow" style="color:var(--rmuted);font-size:13px">Nothing needs you. That is the design working.</div>`,
+      body: (needs.length
+        ? needs.map(needRow).join('')
+        : `<div class="r-lrow" style="color:var(--rmuted);font-size:13px">Nothing needs you${foldedCount ? ' right now' : '. That is the design working'}.</div>`)
+        + foldLine,
+    });
+
+    // ── CAPACITY GUARDRAILS (A3): per stated-aim domain, protected vs review-due — derived from
+    // real signals (active outcomes, available work, overdue follow-ups), never a mock score. ──
+    const overdueDomains = new Set(overdue.map((w) => (t(w.task_id) || {}).domain_key).filter(Boolean));
+    const workedDomains = new Set(s.neglectedFromWork || []);
+    const guardBody = (s.activeOutcomes && s.activeOutcomes.length)
+      ? s.activeOutcomes.map((d) => {
+          const reviewDue = overdueDomains.has(d) || !workedDomains.has(d);
+          const state = reviewDue ? S.rcc.tag('review due', 'warn') : S.rcc.tag('protected', 'good');
+          const why = reviewDue
+            ? (overdueDomains.has(d) ? 'a follow-up here has slipped' : 'nothing moving on it today')
+            : 'work is in scope and progressing';
+          return `<div class="r-lrow"><div><div style="font-weight:600;text-transform:capitalize">${LIFE.esc(d)}</div><div style="font-size:12px;color:var(--rmuted);margin-top:2px">${why}</div></div>${state}</div>`;
+        }).join('')
+      : `<div style="color:var(--rmuted);font-size:13px;padding:6px 0">No 12-week outcomes set, so there is nothing to protect capacity for yet. <a href="/life/outcomes">Name what matters this quarter</a> and each domain shows here.</div>`;
+    const guardrails = S.rcc.panel({
+      title: 'Capacity guardrails', sub: 'Your stated aims — protected, or asking for attention',
+      body: guardBody,
     });
 
     const quiet = (s.waitingRows || []).filter((w) => !overdue.includes(w));
@@ -202,7 +249,7 @@ module.exports = {
       + `<div style="margin-bottom:12px">${supportsBand}</div>`
       + `<div class="lt-main">`
       + `<div style="display:grid;gap:12px;align-content:start">${needsPanel}${availPanel}</div>`
-      + `<div style="display:grid;gap:12px;align-content:start">${waitingPanel}${handled}</div>`
+      + `<div style="display:grid;gap:12px;align-content:start">${waitingPanel}${guardrails}${handled}</div>`
       + `</div>`
       + `<style>
         .lt-hero{display:grid;gap:12px;grid-template-columns:minmax(0,1.05fr) minmax(0,1.4fr) minmax(0,1fr);margin-bottom:12px}

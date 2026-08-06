@@ -14,12 +14,37 @@ module.exports = {
     if (!o.ok) return { absent: true };
     try {
       const q = (sql, args) => { const r = LIFE.lifeSelect(o.db, sql, args); return r.ok ? r.rows : []; };
-      return { paused: q(`SELECT capability_key FROM life_automation_capabilities WHERE emergency_paused = 1`) };
+      const setting = (k, dflt) => { const r = q('SELECT value FROM life_settings WHERE key = ?', [k]); return r.length ? String(r[0].value) : dflt; };
+      return {
+        paused: q(`SELECT capability_key FROM life_automation_capabilities WHERE emergency_paused = 1`),
+        quiet: setting('quiet_support', 'on') === 'on', // DEFAULT-ON (operator ruling 2026-08-05)
+      };
     } finally { o.db.close(); }
   },
 
   render(section, _ctx) {
     const s = section || {};
+    if (s.absent) return { stamp: '', body: wrap(LIFE.absentCard('Settings')) };
+    // BEHAVIOUR (A3): quiet-support toggle, default-on. A real control — when on, lower-stakes
+    // suggestions fold on Today so only material calls interrupt; off, they sit inline.
+    const quietOn = s.quiet !== false;
+    const behaviour = S.rcc.panel({
+      title: 'Behaviour', sub: 'How much the system interrupts you',
+      body: `<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:6px 0">
+          <div><div style="font-weight:600;font-size:13.5px">Quiet support mode</div>
+          <div style="font-size:12.5px;color:var(--rmuted);margin-top:3px;line-height:1.5">${quietOn
+            ? 'On — only material calls (approvals, high-stakes suggestions, overdue follow-ups) interrupt you on Today. Lower-stakes suggestions fold quietly into All tasks.'
+            : 'Off — every open suggestion sits inline on Today. Turn on for a calmer surface.'}</div></div>
+          <div class="r-toggle ${quietOn ? 'on' : ''}" data-lc-quiet="${quietOn ? 'on' : 'off'}" role="switch" aria-checked="${quietOn}"><span class="sw"></span></div>
+        </div>`,
+    });
+    // EXECUTION AND GATES (A3): how routing works + the permanent ceilings, informational.
+    const gates = S.rcc.panel({
+      title: 'Execution and gates', sub: 'Who does the work, and what always needs your yes',
+      body: `<div style="font-size:13px;line-height:1.8">
+        Every task carries an execution route you set on its own page — ${S.rcc.route('SELF')} you, ${S.rcc.route('AI')} AI drafts or does, ${S.rcc.route('DELEGATE')} someone else, ${S.rcc.route('HYBRID')} a mix.<br>
+        Routing to AI or delegation never removes a gate: sending a message, moving money, changing a credential, a people or legal action, and anything with an outside attendee are <b>permanently</b> your call, whatever the route or the confidence.</div>`,
+    });
     const charter = S.rcc.panel({
       title: 'The standing design charter', sub: 'What this system promises you, permanently',
       body: `<div style="font-size:13px;line-height:1.8">
@@ -44,6 +69,6 @@ module.exports = {
         · <b>Cancel / reopen / undo</b> — on each task's own page, always audited.<br>
         · Calendar and mail connections are separate future decisions; nothing here asks for them.</div>`,
     });
-    return { stamp: '', body: wrap(`<div style="display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(340px,1fr))">${charter}${privacy}${controls}</div>`) };
+    return { stamp: '', body: wrap(`<div style="display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(340px,1fr))">${behaviour}${gates}${charter}${privacy}${controls}</div>`) };
   },
 };

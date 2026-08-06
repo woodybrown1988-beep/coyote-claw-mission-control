@@ -96,6 +96,8 @@ const COMMAND_SHAPES = {
   approve_quarter: () => true,
   create_outcome: (p) => typeof p.title === 'string' && typeof p.proofDefinition === 'string',
   create_project: (p) => typeof p.title === 'string' && typeof p.definitionOfDone === 'string',
+  set_route: (p) => typeof p.taskId === 'string' && ['SELF', 'AI', 'DELEGATE', 'HYBRID'].includes(p.mode),
+  set_setting: (p) => typeof p.key === 'string' && typeof p.value === 'string',
   pause_capability: (p) => typeof p.capabilityKey === 'string',
   resume_capability: (p) => typeof p.capabilityKey === 'string',
 };

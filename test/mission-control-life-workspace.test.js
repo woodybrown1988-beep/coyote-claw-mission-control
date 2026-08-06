@@ -34,10 +34,10 @@ const T = '2026-08-05T12:00:00.000Z';
 // live in the shared shell and post exclusively to the gated /api/life/* relay. Every
 // data-lc-cmd payload must parse as JSON naming a writer-allowlisted command.
 const WRITE_AFFORDANCE = /data-op|data-log-action|fetch\(|xhr|XMLHttpRequest|method="post"/i;
-const SANCTIONED_LC = new Set(['data-lc-cancel', 'data-lc-cmd', 'data-lc-complete', 'data-lc-wait', 'data-lc-edit', 'data-lc-fab']);
+const SANCTIONED_LC = new Set(['data-lc-cancel', 'data-lc-cmd', 'data-lc-complete', 'data-lc-wait', 'data-lc-edit', 'data-lc-fab', 'data-lc-focus', 'data-lc-quiet', 'data-lc-route']);
 const CMD_ALLOWLIST = new Set(['note', 'decide', 'transition', 'complete', 'set_waiting', 'wake', 'reopen', 'undo', 'cancel',
   'plan_today', 'approve_plan', 'compile_week', 'approve_week', 'compile_quarter', 'approve_quarter',
-  'pause_capability', 'resume_capability', 'create_outcome', 'create_project']);
+  'pause_capability', 'resume_capability', 'create_outcome', 'create_project', 'set_route', 'set_setting']);
 function assertOnlySanctionedLc(body, key) {
   for (const m of body.matchAll(/data-lc-[a-z-]+/g)) {
     assert.ok(SANCTIONED_LC.has(m[0]), `${key}: unsanctioned life affordance ${m[0]}`);
@@ -71,7 +71,7 @@ function makeFixture(dir) {
       definition_of_done TEXT, stage TEXT, status TEXT, risk_state TEXT, due_date TEXT,
       visibility TEXT, created_at TEXT, updated_at TEXT);
     CREATE TABLE life_tasks (id TEXT PRIMARY KEY, owner_id TEXT, outcome_id TEXT, domain_key TEXT,
-      title TEXT, status TEXT, definition_of_done TEXT DEFAULT '', due_kind TEXT DEFAULT 'NONE', due_at TEXT, estimate_minutes INTEGER,
+      title TEXT, status TEXT, execution_mode TEXT, definition_of_done TEXT DEFAULT '', due_kind TEXT DEFAULT 'NONE', due_at TEXT, estimate_minutes INTEGER,
       importance INTEGER DEFAULT 3, consequence INTEGER DEFAULT 3, risk_level TEXT, visibility TEXT,
       source_type TEXT, created_by TEXT, created_at TEXT, updated_at TEXT);
     CREATE TABLE life_waiting_conditions (id TEXT PRIMARY KEY, task_id TEXT, owner_id TEXT,
@@ -112,6 +112,7 @@ function makeFixture(dir) {
       actor_id TEXT, from_state TEXT, to_state TEXT, payload_json TEXT DEFAULT '{}', idempotency_key TEXT, created_at TEXT);
     INSERT INTO life_task_events (id,owner_id,task_id,event_type,actor_type,actor_id,to_state,created_at)
       VALUES ('e1','woody','t1','CREATED','HUMAN','woody','READY','${T}');
+    CREATE TABLE life_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT);
     CREATE TABLE life_automation_capabilities (id TEXT PRIMARY KEY, owner_id TEXT, capability_key TEXT, display_name TEXT,
       maturity TEXT, authority_ceiling TEXT, contract_json TEXT, minimum_sample INTEGER DEFAULT 30,
       required_accuracy REAL DEFAULT 0.9, maximum_calibration_gap REAL DEFAULT 0.08, emergency_paused INTEGER DEFAULT 0,
@@ -237,9 +238,12 @@ test('with a real life.db: real counts, real rows, HTML-escaped, still zero writ
     const drawer = TASK.render(TASK.getSection(null, { query: { id: 't1' } }), {});
     assert.match(drawer.body, /Add update/);
     assert.match(drawer.body, /record only — do not act/);
-    assert.match(drawer.body, /waiting_inference/, 'open proposal card renders');
+    assert.match(drawer.body, /waiting inference/, 'open proposal card renders (capability humanised)');
+    assert.match(drawer.body, /r-conf/, 'proposal carries a contextual confidence chip (A3)');
+    assert.match(drawer.body, /lc-route-sel/, 'the execution-route control renders in the drawer (A3)');
+    assert.match(drawer.body, /Handoffs &amp; history/, 'handoff detail lives in the drawer (A3 placement)');
     assert.ok(drawer.body.includes('waiting on the &lt;engineer&gt;'), 'note text escaped byte-for-byte');
-    assert.match(drawer.body, /Audit trail/);
+    assert.match(drawer.body, /Handoffs &amp; history/, "audit trail reframed as handoffs (A3)");
     assertOnlySanctionedLc(drawer.body, 'life-task');
     const waiting2 = PAGES[1].render(PAGES[1].getSection(null, {}), {});
     assert.match(waiting2.body, /data-lc-cmd/, 'wake button present');
