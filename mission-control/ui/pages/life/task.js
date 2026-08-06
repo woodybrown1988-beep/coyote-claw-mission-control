@@ -29,7 +29,7 @@ function btnCmd(label, command, payload) {
 
 module.exports = {
   key: 'life-task', route: '/life/task', workspace: 'life', title: 'Task',
-  sub: 'One task — actions, evidence timeline, proposals · every change audited via the sole writer',
+  sub: 'One task — its actions, its updates in your words, and every change kept on the record',
 
   getSection(_db, ctx) {
     const id = ctx && ctx.query && typeof ctx.query.id === 'string' ? ctx.query.id : '';
