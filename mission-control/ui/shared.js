@@ -233,11 +233,113 @@ function renderShell(opts) {
 </body></html>`;
 }
 
+// ============================================================================
+// INPUT PROTECTION + OWNER-LANGUAGE REFUSALS (first-real-use defects, 2026-08-08)
+//
+// Defect 1 — the 30s shell refresh must never eat typing. TRUE = a field is in use:
+// focused, or holding text/choices that differ from what the server rendered (defaultValue
+// / defaultSelected / defaultChecked are the server-rendered baseline, so prefilled forms
+// never wedge the refresh). Exported for behaviour tests AND serialized into the shell
+// client script FROM THIS DEFINITION via toString() — one source, the test pins the bytes.
+function formInUse(doc) {
+  var ae = doc.activeElement;
+  if (ae) {
+    var at = String(ae.tagName || '').toUpperCase();
+    if (at === 'INPUT' || at === 'TEXTAREA' || at === 'SELECT') return true;
+  }
+  var els = doc.querySelectorAll('input,textarea,select');
+  for (var i = 0; i < els.length; i++) {
+    var el = els[i];
+    var tag = String(el.tagName || '').toUpperCase();
+    if (tag === 'TEXTAREA') {
+      if (String(el.value || '') !== String(el.defaultValue || '')) return true;
+    } else if (tag === 'SELECT') {
+      var def = -1;
+      for (var j = 0; j < el.options.length; j++) { if (el.options[j].defaultSelected) { def = j; break; } }
+      if (def === -1 && el.options.length) def = 0;
+      if (el.selectedIndex !== def) return true;
+    } else {
+      var ty = String(el.type || 'text').toLowerCase();
+      if (ty === 'checkbox' || ty === 'radio') {
+        if (Boolean(el.checked) !== Boolean(el.defaultChecked)) return true;
+      } else if (ty !== 'hidden' && ty !== 'button' && ty !== 'submit' && ty !== 'reset' && ty !== 'file' && ty !== 'range' && ty !== 'color') {
+        if (String(el.value || '') !== String(el.defaultValue || '')) return true;
+      }
+    }
+  }
+  return false;
+}
+
+// Defect 2 — the writer speaks command vocabulary by design ('create_project:
+// definitionOfDone required' is engineering truth); the OWNER surface translates before
+// rendering. ONE table, two consumers: exported for the tripwire tests AND serialized
+// verbatim into the shell client script (a test pins the serialization, so the shipped
+// copy can never drift from the tested copy). Keys are lowercase fragments of the
+// writer/trigger message, first match wins — order specific before generic. Values are
+// the designed owner sentences: no command names, no field names, ever.
+const LIFE_REFUSAL_COPY = [
+  ['definitionofdone required', 'Every project needs a definition of done — how will you know it is finished?'],
+  ['proofdefinition required', 'Every outcome needs its proof of completion — what evidence will exist when it is done?'],
+  ['maximum three active outcomes', 'Three active outcomes is the ceiling — finish or park one to open the slot.'],
+  ['maximum four active projects', 'Four active projects is the ceiling — finish or park one to open the slot.'],
+  ['title too long', 'That name is too long — keep it under 200 characters.'],
+  ['title required', 'Give it a name first.'],
+  ['text too long', 'That update is too long — keep it under 4,000 characters.'],
+  ['text required', 'Write the update first — plain words are enough.'],
+  ['dependencylabel required', 'Say who or what you are waiting on.'],
+  ['fallbackat required', 'A follow-up date is needed — waiting work must never rot silently.'],
+  ['wake condition', 'Parking work as waiting needs who it waits on and a follow-up date.'],
+  ['halt engaged', 'Everything is paused right now — nothing was changed. Try again once things resume.'],
+  ['no such task', 'That task is not here any more — the page may be out of date; it refreshes itself shortly.'],
+  ['task is done', 'Finished work stays finished — reopen it from its page if it truly is not done.'],
+  ['not finished', 'Only finished work can be reopened.'],
+  ['too long', 'That text is over the length limit — trim it and try again.'],
+];
+const LIFE_REFUSAL_FALLBACK = 'That did not go through — nothing was changed. Adjust and try again.';
+function ownerRefusalCopy(raw) {
+  const s = String(raw == null ? '' : raw).toLowerCase();
+  const hit = LIFE_REFUSAL_COPY.find(([k]) => s.includes(k));
+  return hit ? hit[1] : LIFE_REFUSAL_FALLBACK;
+}
+// The client-side twin: same table (serialized), same first-match-wins walk. The raw
+// writer message still goes to console.warn at the call sites — engineering truth stays
+// available to a debugger, it just never renders as owner copy.
+function ownerRefusalCopyClient() {
+  return `function(raw){var M=${JSON.stringify(LIFE_REFUSAL_COPY)};raw=String(raw==null?'':raw).toLowerCase();for(var i=0;i<M.length;i++){if(raw.indexOf(M[i][0])!==-1)return M[i][1];}return ${JSON.stringify(LIFE_REFUSAL_FALLBACK)};}`;
+}
+
 // Shared client script: localise <time data-ms>, the action-queue interactions (copy/filter/safe-write
 // POST — see reviews/issues pages), and a soft 30s refresh.
 function clientScript() {
   return `
   for (const el of document.querySelectorAll('time[data-ms]')) { const ms=Number(el.dataset.ms); if(Number.isFinite(ms)&&ms>0) el.textContent=new Date(ms).toLocaleString(); }
+  // INPUT PROTECTION (defect 1, 2026-08-08): the 30s refresh WAITS while any field is in
+  // use, and in-form fields keep a per-tab draft so F5 or navigation mid-type loses
+  // nothing. PRIVACY CALL: drafts live ONLY in this tab's sessionStorage — this browser,
+  // this tab, erased when the tab closes; typed-but-unsaved text is never written to
+  // life.db or any server store. A successful submit clears the draft; a refusal keeps
+  // it (the owner is still editing).
+  window.__lcFormBusy=(${formInUse.toString()});
+  window.__lcOwnerCopy=(${ownerRefusalCopyClient()});
+  window.__lcNet='Connection lost — nothing was changed. Try again in a moment.';
+  window.__lcSay=function(near,msg,ok){try{var host=near&&near.closest?(near.closest('form')||near.closest('.r-card')||near.closest('.lc-focus-card')||near.closest('.lc-card')||near.parentNode):null;if(!host)return;var el=host.querySelector('[data-lc-msg]');if(!el){el=document.createElement('div');el.setAttribute('data-lc-msg','');host.appendChild(el);}el.className='lc-result '+(ok?'lc-ok':'lc-err');el.textContent=msg;}catch(_){}};
+  window.__lcRefuse=function(near,raw){if(window.console&&console.warn)console.warn('life write refused:',raw);window.__lcSay(near,window.__lcOwnerCopy(raw));};
+  (function(){
+    function base(el){var t=String(el.tagName||'').toUpperCase();if(t==='SELECT'){for(var j=0;j<el.options.length;j++){if(el.options[j].defaultSelected)return el.options[j].value;}return el.options.length?el.options[0].value:'';}return String(el.defaultValue||'');}
+    function draftable(el){if(!el||!el.tagName||!el.closest||!el.closest('form'))return false;var t=el.tagName.toUpperCase();if(t==='TEXTAREA'||t==='SELECT')return true;if(t!=='INPUT')return false;var ty=String(el.type||'text').toLowerCase();return ['text','search','email','url','tel','number','date'].indexOf(ty)!==-1;}
+    function keyOf(el){var f=el.closest('form');var fk=f.getAttribute('data-kind')||f.getAttribute('data-task')||f.className||'form';return 'lcDraft:'+location.pathname+':'+fk+':'+(el.name||el.id||el.className||'field');}
+    window.__lcDraftClear=function(scope){try{var els=scope&&scope.querySelectorAll?scope.querySelectorAll('input,textarea,select'):[];for(var i=0;i<els.length;i++){if(draftable(els[i]))sessionStorage.removeItem(keyOf(els[i]));}}catch(_){}};
+    function save(e){var el=e.target;if(!draftable(el))return;try{var k=keyOf(el);var v=String(el.value||'');if(v===base(el))sessionStorage.removeItem(k);else sessionStorage.setItem(k,v);}catch(_){}}
+    document.addEventListener('input',save,true);
+    document.addEventListener('change',save,true);
+    try{
+      var els=document.querySelectorAll('input,textarea,select');
+      for(var i=0;i<els.length;i++){var el=els[i];if(!draftable(el))continue;var k=keyOf(el);var d=sessionStorage.getItem(k);if(d===null)continue;
+        if(d===base(el)){sessionStorage.removeItem(k);continue;}
+        if(String(el.value||'')!==base(el))continue;
+        el.value=d;try{el.dispatchEvent(new Event('input',{bubbles:true}));}catch(_){}}
+    }catch(_){}
+  })();
   let aqBusy=false;
   document.addEventListener('click',(e)=>{const t=e.target; if(!t||!t.closest)return;
     if(t.hasAttribute('data-copy')){const card=t.closest('[data-card]'); const body=card&&card.querySelector('[data-draft]'); if(body&&navigator.clipboard){navigator.clipboard.writeText(body.textContent).then(()=>{const p=t.textContent;t.textContent='Copied ✓';setTimeout(()=>{t.textContent=p;},1500);}).catch(()=>{});} return;}
@@ -247,7 +349,7 @@ function clientScript() {
     if(t.classList&&t.classList.contains('rc-import-btn')){const box=t.closest('[data-kind]'); const file=box&&box.querySelector('input[type=file]'); const out=box.querySelector('.rc-result'); if(!file||!file.files||!file.files[0]){if(out)out.textContent='choose a CSV first';return;} const kind=box.getAttribute('data-kind'); const rd=new FileReader(); rd.onload=function(){ if(out)out.textContent='importing…'; fetch('/api/recipe-import?kind='+encodeURIComponent(kind),{method:'POST',headers:{'content-type':'text/csv'},body:rd.result}).then(r=>r.json()).then(r=>{ if(r&&r.ok){ if(out)out.textContent='imported '+r.imported+(r.rejected&&r.rejected.length?(' · '+r.rejected.length+' rejected'):''); setTimeout(()=>location.reload(),900);} else { if(out)out.textContent='failed: '+((r&&r.error)||'unknown'); } }).catch(()=>{if(out)out.textContent='network error';}); }; rd.readAsText(file.files[0]); return;}
   });
   // BOM (Recipes & Costs) — gated edits: submit an rc-form to POST /api/recipe-action (the closed allowlist).
-  document.addEventListener('submit',(e)=>{const f=e.target; if(!f||!f.classList||!f.classList.contains('rc-form'))return; e.preventDefault(); if(aqBusy)return; const kind=f.getAttribute('data-rc'); const d={}; new FormData(f).forEach((v,k)=>{d[k]=v;}); let body; if(kind==='sub_item'){body={op:'upsert_sub_item',id:d.id,name:d.name,supplier:d.supplier,pack_description:d.pack_description,pack_cost_pence:(d.pack_cost===''||d.pack_cost==null)?null:Math.round(parseFloat(d.pack_cost)*100),pack_qty:(d.pack_qty===''?null:d.pack_qty),unit_of_measure:d.unit_of_measure};}else{body={op:'set_recipe_line',product_id:d.product_id,sub_item_id:d.sub_item_id,quantity:d.quantity};} aqBusy=true; fetch('/api/recipe-action',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}).then(r=>r.json()).then(r=>{aqBusy=false; if(r&&r.ok){location.reload();}else{alert('Rejected: '+((r&&r.error)||'unknown'));}}).catch(()=>{aqBusy=false;}); });
+  document.addEventListener('submit',(e)=>{const f=e.target; if(!f||!f.classList||!f.classList.contains('rc-form'))return; e.preventDefault(); if(aqBusy)return; const kind=f.getAttribute('data-rc'); const d={}; new FormData(f).forEach((v,k)=>{d[k]=v;}); let body; if(kind==='sub_item'){body={op:'upsert_sub_item',id:d.id,name:d.name,supplier:d.supplier,pack_description:d.pack_description,pack_cost_pence:(d.pack_cost===''||d.pack_cost==null)?null:Math.round(parseFloat(d.pack_cost)*100),pack_qty:(d.pack_qty===''?null:d.pack_qty),unit_of_measure:d.unit_of_measure};}else{body={op:'set_recipe_line',product_id:d.product_id,sub_item_id:d.sub_item_id,quantity:d.quantity};} aqBusy=true; fetch('/api/recipe-action',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}).then(r=>r.json()).then(r=>{aqBusy=false; if(r&&r.ok){location.reload();}else{window.__lcSay(f,'Rejected: '+((r&&r.error)||'unknown'));}}).catch(()=>{aqBusy=false;window.__lcSay(f,window.__lcNet);}); });
   (function(){
     function ru(file){var out=document.querySelector('[data-res-result]');if(!file)return;
       if(!/\\.csv$/i.test(file.name)){if(out)out.innerHTML='<span class="res-bad">only .csv files are accepted</span>';return;}
@@ -269,7 +371,11 @@ function clientScript() {
     document.addEventListener('dragleave',function(e){var dz=e.target&&e.target.closest&&e.target.closest('[data-res-dropzone]');if(dz)dz.classList.remove('res-over');});
     document.addEventListener('drop',function(e){var dz=e.target&&e.target.closest&&e.target.closest('[data-res-dropzone]');if(dz){e.preventDefault();dz.classList.remove('res-over');var f=e.dataTransfer&&e.dataTransfer.files&&e.dataTransfer.files[0];if(f)ru(f);}});
   })();
-  if(!document.querySelector('[data-chat-page]')) setTimeout(()=>{ if(!window.__lcOpen) location.reload(); },30000);
+  // Soft refresh (defect-1 fix 2026-08-08): re-arms and re-checks every 30s; reloads ONLY
+  // when no overlay is open and no field is in use (focused or holding unsaved text —
+  // window.__lcFormBusy above, test-pinned). Blur an emptied/submitted field and the next
+  // tick resumes refreshing; typing is never eaten.
+  if(!document.querySelector('[data-chat-page]')) (function(){var arm=function(){setTimeout(function(){if(window.__lcOpen||window.__lcFormBusy(document)){arm();return;}location.reload();},30000);};arm();})();
   // LIFE OS global capture (A5): the FAB or Ctrl/Cmd+K opens; Enter files to the Inbox via the
   // gated command path. The idempotency key is generated per attempt-series (getRandomValues —
   // available on the http tailnet where crypto.randomUUID is not), so a retried submit can
@@ -288,8 +394,8 @@ function clientScript() {
       var cx=t.closest('[data-lc-cancel]');
       if(cx){e.preventDefault();if(busy)return;busy=true;cx.disabled=true;
         fetch('/api/life/cancel',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({taskId:cx.getAttribute('data-lc-cancel'),idempotencyKey:hex()})})
-        .then(function(r){return r.json();}).then(function(r){if(r&&r.ok){location.reload();}else{busy=false;cx.disabled=false;alert('cancel refused: '+((r&&r.error)||'unknown'));}})
-        .catch(function(){busy=false;cx.disabled=false;alert('network error — nothing changed');});
+        .then(function(r){return r.json();}).then(function(r){if(r&&r.ok){location.reload();}else{busy=false;cx.disabled=false;window.__lcRefuse(cx,r&&r.error);}})
+        .catch(function(){busy=false;cx.disabled=false;window.__lcSay(cx,window.__lcNet);});
         return;}
     });
     document.addEventListener('keydown',function(e){
@@ -299,16 +405,16 @@ function clientScript() {
     ov.querySelector('.lc-form').addEventListener('submit',function(e){
       e.preventDefault(); if(busy)return;
       var title=(inp.value||'').trim();
-      if(!title){out.className='lc-result lc-err';out.textContent='give it a title';return;}
+      if(!title){out.className='lc-result lc-err';out.textContent='Give it a name first.';return;}
       if(!key)key=hex();
       busy=true;out.className='lc-result lc-busy';out.textContent='capturing…';
       fetch('/api/life/capture',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({title:title,domainKey:dom.value,idempotencyKey:key})})
       .then(function(r){return r.json();}).then(function(r){busy=false;
-        if(r&&r.ok){key=null;inp.value='';out.className='lc-result lc-ok';
+        if(r&&r.ok){key=null;inp.value='';window.__lcDraftClear(e.target);out.className='lc-result lc-ok';
           out.innerHTML='captured ✓ — in your Inbox · <a href="/life/today">open Today</a>';
           if(location.pathname==='/life/today'){setTimeout(function(){location.reload();},700);}
-        } else {out.className='lc-result lc-err';out.textContent=(r&&r.error)||'refused';}
-      }).catch(function(){busy=false;out.className='lc-result lc-err';out.textContent='network error — NOT captured (your retry reuses the same key: no double-create)';});
+        } else {if(window.console&&console.warn)console.warn('life write refused:',r&&r.error);out.className='lc-result lc-err';out.textContent=window.__lcOwnerCopy(r&&r.error);}
+      }).catch(function(){busy=false;out.className='lc-result lc-err';out.textContent='Connection lost — NOT captured. Safe to try again: a retry can never create a duplicate.';});
     });
     // PLANNER ACTIONS (A6-A13): any [data-lc-cmd] button carries its full command as JSON;
     // the handler adds a fresh idempotency key, posts to the allowlisted relay, reloads on
@@ -319,8 +425,8 @@ function clientScript() {
         var cmd;try{cmd=JSON.parse(b.getAttribute('data-lc-cmd'));}catch(_){busy=false;b.disabled=false;return;}
         cmd.idempotencyKey=hex();
         fetch('/api/life/command',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(cmd)})
-        .then(function(r){return r.json();}).then(function(r){if(r&&r.ok){location.reload();}else{busy=false;b.disabled=false;alert('refused: '+((r&&r.error)||'unknown'));}})
-        .catch(function(){busy=false;b.disabled=false;alert('network error — nothing changed');});
+        .then(function(r){return r.json();}).then(function(r){if(r&&r.ok){location.reload();}else{busy=false;b.disabled=false;window.__lcRefuse(b,r&&r.error);}})
+        .catch(function(){busy=false;b.disabled=false;window.__lcSay(b,window.__lcNet);});
         return;}
       var dn=t.closest('[data-lc-complete]');
       if(dn){e.preventDefault();if(busy)return;
@@ -329,31 +435,31 @@ function clientScript() {
         busy=true;dn.disabled=true;
         var pay={taskId:dn.getAttribute('data-lc-complete')};if(ev.trim())pay.evidenceNote=ev.trim();
         fetch('/api/life/command',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({command:'complete',idempotencyKey:hex(),payload:pay})})
-        .then(function(r){return r.json();}).then(function(r){if(r&&r.ok){location.reload();}else{busy=false;dn.disabled=false;alert('refused: '+((r&&r.error)||'unknown'));}})
-        .catch(function(){busy=false;dn.disabled=false;alert('network error — nothing changed');});
+        .then(function(r){return r.json();}).then(function(r){if(r&&r.ok){location.reload();}else{busy=false;dn.disabled=false;window.__lcRefuse(dn,r&&r.error);}})
+        .catch(function(){busy=false;dn.disabled=false;window.__lcSay(dn,window.__lcNet);});
         return;}
       var wt=t.closest('[data-lc-wait]');
       if(wt){e.preventDefault();if(busy)return;
         var dep=prompt('Waiting on (who/what):','');if(dep===null||!dep.trim())return;
         var fb2=prompt('Fallback date (YYYY-MM-DD) — required:','');if(fb2===null)return;
-        if(!/^\d{4}-\d{2}-\d{2}$/.test(fb2)){alert('fallback must be YYYY-MM-DD — waiting work must never rot silently');return;}
+        if(!/^\d{4}-\d{2}-\d{2}$/.test(fb2)){window.__lcSay(wt,'A follow-up date like 2026-09-01 is needed — waiting work must never rot silently.');return;}
         busy=true;wt.disabled=true;
         fetch('/api/life/command',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({command:'set_waiting',idempotencyKey:hex(),payload:{taskId:wt.getAttribute('data-lc-wait'),dependencyLabel:dep.trim(),wakeType:'HUMAN_UPDATE',fallbackAt:fb2+'T09:00:00.000Z'}})})
-        .then(function(r){return r.json();}).then(function(r){if(r&&r.ok){location.reload();}else{busy=false;wt.disabled=false;alert('refused: '+((r&&r.error)||'unknown'));}})
-        .catch(function(){busy=false;wt.disabled=false;alert('network error — nothing changed');});
+        .then(function(r){return r.json();}).then(function(r){if(r&&r.ok){location.reload();}else{busy=false;wt.disabled=false;window.__lcRefuse(wt,r&&r.error);}})
+        .catch(function(){busy=false;wt.disabled=false;window.__lcSay(wt,window.__lcNet);});
         return;}
       var ed=t.closest('[data-lc-edit]');
       if(ed){e.preventDefault();if(busy)return;
         var info;try{info=JSON.parse(ed.getAttribute('data-lc-edit'));}catch(_){return;}
         var label=prompt('Waiting on (dependency label):',info.dependencyLabel||'');if(label===null)return;
         var fb=prompt('Fallback date (YYYY-MM-DD) — required:',(info.fallbackAt||'').slice(0,10));if(fb===null)return;
-        if(!fb){alert('a fallback date is required — waiting work must never rot silently');return;}
+        if(!fb){window.__lcSay(ed,'A follow-up date is needed — waiting work must never rot silently.');return;}
         busy=true;ed.disabled=true;
         fetch('/api/life/command',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({
           command:'decide',idempotencyKey:hex(),
           payload:{proposalId:info.proposalId,decision:'edit',editedCommand:{dependencyLabel:label,wakeType:info.wakeType||'HUMAN_UPDATE',fallbackAt:fb}}})})
-        .then(function(r){return r.json();}).then(function(r){if(r&&r.ok){location.reload();}else{busy=false;ed.disabled=false;alert('refused: '+((r&&r.error)||'unknown'));}})
-        .catch(function(){busy=false;ed.disabled=false;alert('network error — nothing changed');});
+        .then(function(r){return r.json();}).then(function(r){if(r&&r.ok){location.reload();}else{busy=false;ed.disabled=false;window.__lcRefuse(ed,r&&r.error);}})
+        .catch(function(){busy=false;ed.disabled=false;window.__lcSay(ed,window.__lcNet);});
         return;}
     });
     // Add-outcome / add-project forms (golden Add actions): named inputs → the create command.
@@ -364,24 +470,24 @@ function clientScript() {
       var payload,command;
       if(kind==='outcome'){command='create_outcome';payload={title:(d.title||'').trim(),proofDefinition:(d.proof||'').trim(),domainKey:(d.domain||'general'),activate:true};}
       else{command='create_project';payload={title:(d.title||'').trim(),definitionOfDone:(d.dod||'').trim(),domainKey:(d.domain||'general')};}
-      if(!payload.title){alert('give it a title');return;}
+      if(!payload.title){window.__lcSay(f,'Give it a name first.');return;}
       busy=true;
       fetch('/api/life/command',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({command:command,idempotencyKey:hex(),payload:payload})})
-      .then(function(r){return r.json();}).then(function(r){busy=false;if(r&&r.ok){location.reload();}else{alert('refused: '+((r&&r.error)||'unknown'));}})
-      .catch(function(){busy=false;alert('network error — nothing created');});
+      .then(function(r){return r.json();}).then(function(r){busy=false;if(r&&r.ok){window.__lcDraftClear(f);location.reload();}else{window.__lcRefuse(f,r&&r.error);}})
+      .catch(function(){busy=false;window.__lcSay(f,'Connection lost — nothing was created. Try again in a moment.');});
     });
     // Add-note form (task drawer): textarea + record-only checkbox → the note command.
     document.addEventListener('submit',function(e){var f=e.target;
       if(!f||!f.classList||!f.classList.contains('lc-note-form'))return;
       e.preventDefault();if(busy)return;
       var txt=(f.querySelector('[name=text]').value||'').trim();
-      if(!txt){alert('write the note first');return;}
+      if(!txt){window.__lcSay(f,'Write the update first — plain words are enough.');return;}
       busy=true;
       fetch('/api/life/command',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({
         command:'note',idempotencyKey:hex(),
         payload:{taskId:f.getAttribute('data-task'),text:txt,recordOnly:!!(f.querySelector('[name=record_only]')||{}).checked}})})
-      .then(function(r){return r.json();}).then(function(r){busy=false;if(r&&r.ok){location.reload();}else{alert('refused: '+((r&&r.error)||'unknown'));}})
-      .catch(function(){busy=false;alert('network error — note NOT recorded');});
+      .then(function(r){return r.json();}).then(function(r){busy=false;if(r&&r.ok){window.__lcDraftClear(f);location.reload();}else{window.__lcRefuse(f,r&&r.error);}})
+      .catch(function(){busy=false;window.__lcSay(f,'Connection lost — the update was not saved. Try again in a moment.');});
     });
     // A3: execution-route control — a [data-lc-route] <select> posts set_route on change.
     document.addEventListener('change',function(e){var el=e.target;
@@ -389,8 +495,8 @@ function clientScript() {
       if(busy)return;busy=true;
       fetch('/api/life/command',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({
         command:'set_route',idempotencyKey:hex(),payload:{taskId:el.getAttribute('data-task'),mode:el.value}})})
-      .then(function(r){return r.json();}).then(function(r){busy=false;if(r&&r.ok){location.reload();}else{alert('refused: '+((r&&r.error)||'unknown'));}})
-      .catch(function(){busy=false;alert('network error — route unchanged');});
+      .then(function(r){return r.json();}).then(function(r){busy=false;if(r&&r.ok){location.reload();}else{window.__lcRefuse(el,r&&r.error);}})
+      .catch(function(){busy=false;window.__lcSay(el,window.__lcNet);});
     });
     // A3: quiet-support toggle in Settings — a [data-lc-quiet] control posts set_setting.
     document.addEventListener('click',function(e){var el=e.target&&e.target.closest&&e.target.closest('[data-lc-quiet]');
@@ -398,8 +504,8 @@ function clientScript() {
       var next=el.getAttribute('data-lc-quiet')==='on'?'off':'on';
       fetch('/api/life/command',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({
         command:'set_setting',idempotencyKey:hex(),payload:{key:'quiet_support',value:next}})})
-      .then(function(r){return r.json();}).then(function(r){busy=false;if(r&&r.ok){location.reload();}else{alert('refused: '+((r&&r.error)||'unknown'));}})
-      .catch(function(){busy=false;alert('network error — setting unchanged');});
+      .then(function(r){return r.json();}).then(function(r){busy=false;if(r&&r.ok){location.reload();}else{window.__lcRefuse(el,r&&r.error);}})
+      .catch(function(){busy=false;window.__lcSay(el,window.__lcNet);});
     });
     // A3: FOCUS MODE — a protected deep-work overlay. [data-lc-focus] carries {taskId,title,dod}.
     // Client-only until Complete, which posts the existing complete command. Esc / backdrop exits.
@@ -417,8 +523,8 @@ function clientScript() {
       var fc=t.closest('[data-focus-complete]');
       if(fc){e.preventDefault();if(busy)return;var id=fc.getAttribute('data-task');if(!id){closeFocus();return;}busy=true;
         fetch('/api/life/command',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({command:'complete',idempotencyKey:hex(),payload:{taskId:id}})})
-        .then(function(r){return r.json();}).then(function(r){busy=false;if(r&&r.ok){location.reload();}else{alert('refused: '+((r&&r.error)||'unknown'));}})
-        .catch(function(){busy=false;alert('network error — nothing changed');});return;}
+        .then(function(r){return r.json();}).then(function(r){busy=false;if(r&&r.ok){location.reload();}else{window.__lcRefuse(fc,r&&r.error);}})
+        .catch(function(){busy=false;window.__lcSay(fc,window.__lcNet);});return;}
     });
     document.addEventListener('keydown',function(e){if(e.key==='Escape'&&fo&&fo.classList.contains('open'))closeFocus();});
   })();`;
@@ -919,4 +1025,8 @@ module.exports = {
   css,
   WORKSPACES,
   workspaceOf,
+  formInUse,
+  ownerRefusalCopy,
+  LIFE_REFUSAL_COPY,
+  LIFE_REFUSAL_FALLBACK,
 };

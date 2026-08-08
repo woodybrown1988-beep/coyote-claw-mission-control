@@ -333,3 +333,66 @@ test('negative control: the write-affordance tripwire catches a mutant', () => {
   assert.ok(WRITE_AFFORDANCE.test('<form method="POST" action="/api/life/capture">'), 'form caught');
   assert.ok(!WRITE_AFFORDANCE.test('<a href="/life/tasks">tasks</a>'), 'plain links pass');
 });
+
+// ============================================================================
+// OWNER-LANGUAGE TRIPWIRE, EXTENDED TO CLIENT-SIDE ERROR PATHS (first-real-use defect 2,
+// 2026-08-08): the page-copy/title scans above never saw the JS error paths, and a raw
+// alert('refused: create_project: definitionOfDone required…') leaked browser chrome with
+// command vocabulary at the owner. Refusals now render INLINE in owner language; the raw
+// writer message goes to console.warn only.
+
+test('client error paths: NO browser alert() anywhere in the shell script, and none in any life page module', () => {
+  // The shell client script ships on EVERY page — life included — so one alert anywhere
+  // in it is an alert reachable on a life surface.
+  for (const active of ['life-today', 'overview', 'engine']) {
+    const html = SHARED.renderShell({ active, title: 't', sub: '', stamp: '', body: '', badges: {}, foot: [] });
+    const script = html.slice(html.indexOf('<script>'));
+    assert.ok(!/\balert\s*\(/.test(script), `${active}: the shell client script must never alert() — refusals render inline`);
+    assert.ok(script.includes('window.__lcSay='), `${active}: the inline-message renderer ships`);
+    assert.ok(script.includes('window.__lcOwnerCopy='), `${active}: the owner-copy translator ships`);
+    assert.ok(script.includes("console.warn('life write refused:'"), `${active}: the raw writer message stays available to a debugger`);
+  }
+  // And no life page module smuggles its own alert()/prompt-based error rendering in.
+  const lifeDir = path.join(__dirname, '..', 'mission-control', 'ui', 'pages', 'life');
+  for (const f of fs.readdirSync(lifeDir)) {
+    const src = fs.readFileSync(path.join(lifeDir, f), 'utf8');
+    assert.ok(!/\balert\s*\(/.test(src), `${f}: no browser alert in life page modules`);
+  }
+});
+
+test('writer refusals map to DESIGNED OWNER COPY: the named first-use leaks, capacity refusals, and the honest fallback', () => {
+  // The exact refusals that leaked (or nearly did) on first real use, translated:
+  assert.equal(SHARED.ownerRefusalCopy('create_project: definitionOfDone required (≤500 chars)'),
+    'Every project needs a definition of done — how will you know it is finished?');
+  assert.equal(SHARED.ownerRefusalCopy('create_outcome: proofDefinition required (≤500 chars) — an outcome without proof of completion is a wish'),
+    'Every outcome needs its proof of completion — what evidence will exist when it is done?');
+  assert.equal(SHARED.ownerRefusalCopy('maximum three active outcomes'),
+    'Three active outcomes is the ceiling — finish or park one to open the slot.');
+  assert.equal(SHARED.ownerRefusalCopy('maximum four active projects'),
+    'Four active projects is the ceiling — finish or park one to open the slot.');
+  assert.equal(SHARED.ownerRefusalCopy('set_waiting: fallbackAt required — waiting work must never rot silently'),
+    'A follow-up date is needed — waiting work must never rot silently.');
+  assert.equal(SHARED.ownerRefusalCopy('HALT engaged (drill) — life commands refused, nothing applied'),
+    'Everything is paused right now — nothing was changed. Try again once things resume.');
+  assert.equal(SHARED.ownerRefusalCopy('cancel: task is DONE (terminal) — completed work is not erased'),
+    'Finished work stays finished — reopen it from its page if it truly is not done.');
+  // Unknown writer messages fall back to honest owner copy that names the no-change guarantee:
+  assert.match(SHARED.ownerRefusalCopy('capture: idempotencyKey must be 8–128 chars when given'), /nothing was changed/i);
+  assert.match(SHARED.ownerRefusalCopy(undefined), /nothing was changed/i);
+});
+
+test('owner copy is owner-clean: no command vocabulary, no engineering terms, in ANY mapped sentence or the fallback', () => {
+  const OWNER_SCRUB = /(PR\s?#?\d+|\bschema\b|DB-enforced|engine PR|\bphase\b|sole writer|life\.db|\bmigration\b|unlock:|scaffold)/i;
+  const CMD_VOCAB = /[a-z]+_[a-z]+|\b[a-z]+[A-Z][a-zA-Z]*|idempoten|payload|writer|\bjson\b|\bhttp\b|\bapi\b/;
+  for (const [key, copy] of SHARED.LIFE_REFUSAL_COPY) {
+    assert.ok(typeof key === 'string' && key === key.toLowerCase(), `match key must be lowercase: ${key}`);
+    assert.ok(!OWNER_SCRUB.test(copy), `engineering vocab in owner copy: "${copy}"`);
+    assert.ok(!CMD_VOCAB.test(copy), `command vocabulary leaked into owner copy: "${copy}"`);
+  }
+  assert.ok(!CMD_VOCAB.test(SHARED.LIFE_REFUSAL_FALLBACK), 'fallback is owner-clean');
+  // The client ships the SAME table — serialized verbatim, so shipped copy cannot drift
+  // from the copy these tests just approved.
+  const html = SHARED.renderShell({ active: 'life-today', title: 't', sub: '', stamp: '', body: '', badges: {}, foot: [] });
+  assert.ok(html.includes(JSON.stringify(SHARED.LIFE_REFUSAL_COPY)), 'client mapping table drifted from the exported one');
+  assert.ok(html.includes(JSON.stringify(SHARED.LIFE_REFUSAL_FALLBACK)), 'client fallback drifted from the exported one');
+});
