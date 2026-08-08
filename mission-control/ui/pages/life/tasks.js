@@ -1,6 +1,24 @@
 'use strict';
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const LIFE = require('./life-lib.js');
 const S = require('../../shared.js');
+
+// BULK IMPORT inbox (operator brief 2026-08-08): the drop pattern is the reservations
+// inbox's — a file in ~/life-os-imports appears here; Preview shows exactly what would be
+// created (mappings, refusals, recurring rows split out for per-row rulings); NOTHING
+// commits without the operator's tap on the preview. Listing only — reads no file content.
+function listImportInbox() {
+  const dir = process.env.COYOTE_LIFE_IMPORT_DIR || path.join(os.homedir(), 'life-os-imports');
+  try {
+    return fs.readdirSync(dir)
+      .filter((f) => /\.(csv|xlsx)$/i.test(f))
+      .map((f) => { const st = fs.statSync(path.join(dir, f)); return { name: f, size: st.size, mtime: st.mtimeMs }; })
+      .sort((a, b) => b.mtime - a.mtime)
+      .slice(0, 20);
+  } catch (_) { return []; }
+}
 const wrap = (inner) => `<style>${S.rcc.css()}${S.rcc.lifeCss()}</style><div class="rcc">${inner}</div>`;
 const link = (id, title) => `<a href="/life/task?id=${encodeURIComponent(id)}" style="color:inherit">${LIFE.esc(title)}</a>`;
 const cmd = (label, command, payload, cls) => `<button class="r-btn ${cls || ''}" data-lc-cmd="${LIFE.esc(JSON.stringify({ command, payload: payload || {} }))}">${LIFE.esc(label)}</button>`;
@@ -30,6 +48,7 @@ module.exports = {
         // real per-task confidence: the strongest open proposal on that task (never a fabricated score).
         confOf: q(`SELECT task_id, MAX(confidence) conf FROM life_update_proposals WHERE state = 'PROPOSED' GROUP BY task_id`),
         finished: q(`SELECT id, title, status FROM life_tasks WHERE status IN ('DONE','CANCELLED') ORDER BY updated_at DESC LIMIT 12`),
+        importFiles: listImportInbox(),
       };
     } finally { o.db.close(); }
   },
@@ -63,6 +82,17 @@ module.exports = {
     if (s.finished.length) {
       body += S.rcc.panel({ title: 'Recently finished', body: s.finished.map((t) => `<div class="r-lrow" data-task-row><div>${link(t.id, t.title)} <span style="margin-left:6px">${S.rcc.tag(t.status.toLowerCase())}</span></div></div>`).join('') });
     }
+    const files = s.importFiles || [];
+    const fileRow = (f) => `<div class="r-lrow"><div style="min-width:0"><div style="font-weight:600">${LIFE.esc(f.name)}</div>
+      <div style="font-size:12px;color:var(--rmuted);margin-top:3px">${Math.max(1, Math.round(f.size / 1024))} KB · ${S.fmtTime(f.mtime)}</div></div>
+      <div style="flex-shrink:0"><button class="r-btn small primary" data-lc-import="${LIFE.esc(f.name)}">Preview…</button></div></div>`;
+    body += S.rcc.panel({
+      title: 'Import', sub: 'Preview first — nothing is created until you commit the preview',
+      body: (files.length
+        ? files.map(fileRow).join('')
+        : '<div style="font-size:13px;color:var(--rmuted);padding:6px 0">The import inbox is empty. Drop a .csv or .xlsx export into <span style="font-family:var(--font-mono,monospace)">~/life-os-imports</span> and it appears here.</div>')
+        + '<div data-import-out style="margin-top:10px"></div>',
+    });
     return { stamp: '', body: wrap(body) };
   },
 };

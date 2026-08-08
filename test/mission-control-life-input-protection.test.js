@@ -73,10 +73,10 @@ function shellHtml() {
   return SHARED.renderShell({ active: 'life-today', title: 't', sub: '', stamp: '', body: '', badges: {}, foot: [] });
 }
 
-test('shell wiring: the 30s reload is a RE-ARMING loop guarded by the overlay flag AND the form guard', () => {
+test('shell wiring: the 30s reload is a RE-ARMING loop guarded by the overlay flag, the hold pin AND the form guard', () => {
   const html = shellHtml();
-  assert.ok(html.includes('if(window.__lcOpen||window.__lcFormBusy(document)){arm();return;}location.reload();'),
-    'the reload happens only behind the overlay + form-in-use guard, and a paused tick re-arms');
+  assert.ok(html.includes('if(window.__lcOpen||window.__lcHoldRefresh||window.__lcFormBusy(document)){arm();return;}location.reload();'),
+    'the reload happens only behind the overlay + hold-pin + form-in-use guard, and a paused tick re-arms (hold pin added with the import preview, 2026-08-08)');
   assert.ok(!html.includes('if(!window.__lcOpen) location.reload()'),
     'the old one-shot reload (overlay-only guard — the defect) must be gone');
   assert.ok(html.includes("document.querySelector('[data-chat-page]')"), 'chat still opts out of auto-refresh entirely');

@@ -102,6 +102,13 @@ const COMMAND_SHAPES = {
   rename_task: (p) => typeof p.taskId === 'string' && typeof p.title === 'string' && !!p.title.trim() && p.title.length <= 500,
   rename_project: (p) => typeof p.projectId === 'string' && typeof p.title === 'string' && !!p.title.trim() && p.title.length <= 200,
   cancel_project: (p) => typeof p.projectId === 'string' && !!p.projectId,
+  // Bulk import (operator brief 2026-08-08): commands carry a file NAME in the import
+  // inbox plus the operator's per-row rulings — never file content (the writer reads the
+  // file itself and re-validates everything; preview writes nothing).
+  import_preview: (p) => typeof p.fileName === 'string' && !!p.fileName.trim() && p.fileName.length <= 200,
+  import_batch: (p) => typeof p.fileName === 'string' && !!p.fileName.trim() && p.fileName.length <= 200
+    && (p.dispositions === undefined || (Array.isArray(p.dispositions) && p.dispositions.length <= 500))
+    && (p.project === undefined || p.project === null || (typeof p.project === 'object' && typeof p.project.title === 'string')),
   set_route: (p) => typeof p.taskId === 'string' && ['SELF', 'AI', 'DELEGATE', 'HYBRID'].includes(p.mode),
   set_setting: (p) => typeof p.key === 'string' && typeof p.value === 'string',
   pause_capability: (p) => typeof p.capabilityKey === 'string',

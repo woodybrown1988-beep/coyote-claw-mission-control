@@ -289,6 +289,9 @@ const LIFE_REFUSAL_COPY = [
   ['dependencylabel required', 'Say who or what you are waiting on.'],
   ['fallbackat required', 'A follow-up date is needed — waiting work must never rot silently.'],
   ['wake condition', 'Parking work as waiting needs who it waits on and a follow-up date.'],
+  ['in the import inbox', 'That file is not in the import inbox — drop it into ~/life-os-imports and try again.'],
+  ['over the 5 mb cap', 'That file is too big — keep imports under 5 MB.'],
+  ['could not read', 'That file could not be read — is it a real .csv or .xlsx export?'],
   ['halt engaged', 'Everything is paused right now — nothing was changed. Try again once things resume.'],
   ['no such task', 'That task is not here any more — the page may be out of date; it refreshes itself shortly.'],
   ['no such project', 'That project is not here any more — the page may be out of date; it refreshes itself shortly.'],
@@ -375,10 +378,10 @@ function clientScript() {
     document.addEventListener('drop',function(e){var dz=e.target&&e.target.closest&&e.target.closest('[data-res-dropzone]');if(dz){e.preventDefault();dz.classList.remove('res-over');var f=e.dataTransfer&&e.dataTransfer.files&&e.dataTransfer.files[0];if(f)ru(f);}});
   })();
   // Soft refresh (defect-1 fix 2026-08-08): re-arms and re-checks every 30s; reloads ONLY
-  // when no overlay is open and no field is in use (focused or holding unsaved text —
-  // window.__lcFormBusy above, test-pinned). Blur an emptied/submitted field and the next
-  // tick resumes refreshing; typing is never eaten.
-  if(!document.querySelector('[data-chat-page]')) (function(){var arm=function(){setTimeout(function(){if(window.__lcOpen||window.__lcFormBusy(document)){arm();return;}location.reload();},30000);};arm();})();
+  // when no overlay is open, no field is in use (focused or holding unsaved text —
+  // window.__lcFormBusy above, test-pinned) and nothing has pinned the page open
+  // (__lcHoldRefresh: an import preview/report the operator is still reading).
+  if(!document.querySelector('[data-chat-page]')) (function(){var arm=function(){setTimeout(function(){if(window.__lcOpen||window.__lcHoldRefresh||window.__lcFormBusy(document)){arm();return;}location.reload();},30000);};arm();})();
   // LIFE OS global capture (A5): the FAB or Ctrl/Cmd+K opens; Enter files to the Inbox via the
   // gated command path. The idempotency key is generated per attempt-series (getRandomValues —
   // available on the http tailnet where crypto.randomUUID is not), so a retried submit can
@@ -535,6 +538,100 @@ function clientScript() {
         command:'set_setting',idempotencyKey:hex(),payload:{key:'quiet_support',value:next}})})
       .then(function(r){return r.json();}).then(function(r){busy=false;if(r&&r.ok){location.reload();}else{window.__lcRefuse(el,r&&r.error);}})
       .catch(function(){busy=false;window.__lcSay(el,window.__lcNet);});
+    });
+    // BULK IMPORT (operator brief 2026-08-08): Preview → per-row rulings → Commit, all on
+    // the gated relay; the writer re-parses the file and re-validates, preview writes
+    // NOTHING. Every file-derived string renders via textContent — an imported title can
+    // never inject markup. __lcHoldRefresh pins the page while a preview/report is up.
+    function iEl(tag,style,text){var el=document.createElement(tag);if(style)el.setAttribute('style',style);if(text!=null)el.textContent=text;return el;}
+    function impPost(payload,onOk,anchor){busy=true;
+      fetch('/api/life/command',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(payload)})
+      .then(function(r){return r.json();}).then(function(r){busy=false;if(r&&r.ok){onOk(r.result);}else{window.__lcRefuse(anchor,r&&r.error);}})
+      .catch(function(){busy=false;window.__lcSay(anchor,window.__lcNet);});}
+    function impPreviewRender(file,plan){
+      var out=document.querySelector('[data-import-out]');if(!out)return;
+      window.__lcHoldRefresh=true;window.__impPlan=plan;out.textContent='';
+      var box=iEl('div','border:1px solid rgba(255,255,255,.14);border-radius:10px;padding:12px;');
+      box.appendChild(iEl('div','font-weight:650;font-size:14px;margin-bottom:6px','Preview — '+file+' (nothing is created yet)'));
+      var pj=plan.project;
+      var full=plan.capacity&&plan.capacity.activeProjects>=plan.capacity.ceiling;
+      box.appendChild(iEl('div','font-size:13px;margin-bottom:2px','Project: '+(pj?(pj.title+(pj.existingId?' — existing, tasks attach to it':(full?' — new, will land PARKED (four active is the ceiling; activate it later by parking another)':' — new, will be created ACTIVE'))):'none in this file — tasks land in your Inbox (you can name one at commit)')));
+      box.appendChild(iEl('div','font-size:12px;color:var(--rmuted,#9ea7b2);margin-bottom:8px','Active projects now: '+(plan.capacity?plan.capacity.activeProjects+' of '+plan.capacity.ceiling:'—')));
+      var create=[],rec=[],done=[];
+      for(var i=0;i<plan.tasks.length;i++){var t=plan.tasks[i];if(t.alreadyImported)done.push(t);else if(t.recurring)rec.push(t);else create.push(t);}
+      function rowLine(t,extra){var d=iEl('div','padding:6px 0;border-bottom:1px solid rgba(255,255,255,.06);font-size:13px');
+        d.appendChild(iEl('span',null,t.title));
+        var meta=' — '+(t.owner||'no owner')+' → '+t.route+(t.vendor?(' · waits on '+t.vendor+' (follow-up in 14 days)'):'')+(t.unmappedOwner?' · owner not recognized, defaults to you':'')+(t.cadence&&!t.recurring?(' · '+t.cadence):'')+(t.priority?(' · '+t.priority):'');
+        d.appendChild(iEl('span','color:var(--rmuted,#9ea7b2)',meta));
+        if(extra)d.appendChild(extra);
+        return d;}
+      if(create.length){box.appendChild(iEl('div','font-weight:600;font-size:13px;margin:8px 0 2px','Will be created — '+create.length));
+        for(var c=0;c<create.length;c++)box.appendChild(rowLine(create[c]));}
+      if(rec.length){box.appendChild(iEl('div','font-weight:600;font-size:13px;margin:12px 0 2px','Recurring — not supported yet ('+rec.length+'): rule each one'));
+        box.appendChild(iEl('div','font-size:12px;color:var(--rmuted,#9ea7b2);margin-bottom:4px','A cadence is never flattened into a pile of one-offs. Skip keeps it where it lives today; once creates a single task with a surface date; timer means it is really an agent/Rex job — reported, nothing created.'));
+        for(var rj=0;rj<rec.length;rj++){(function(t){
+          var wrap2=iEl('div','display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:4px 0');
+          wrap2.setAttribute('data-imp-rec',t.source);
+          var sel=document.createElement('select');sel.className='imp-disp r-routesel';
+          [['skip','Skip — stays where it is'],['once','Create once, surface on a date'],['agent','Really a timer/agent job — report only']].forEach(function(o2){var op=document.createElement('option');op.value=o2[0];op.textContent=o2[1];sel.appendChild(op);});
+          var dt=document.createElement('input');dt.type='date';dt.className='imp-date r-routesel';
+          var line=rowLine(t);line.style.borderBottom='none';line.style.flex='1 1 260px';line.appendChild(iEl('span','color:#f5c96b',' · '+t.cadence));
+          wrap2.appendChild(line);wrap2.appendChild(sel);wrap2.appendChild(dt);
+          box.appendChild(wrap2);})(rec[rj]);}}
+      if(done.length)box.appendChild(iEl('div','font-size:12px;color:var(--rmuted,#9ea7b2);margin-top:10px','Already imported (untouched on re-import): '+done.length));
+      if(plan.refusals&&plan.refusals.length){box.appendChild(iEl('div','font-weight:600;font-size:13px;margin:10px 0 2px;color:#f4a09f','Refused — '+plan.refusals.length));
+        for(var rf=0;rf<plan.refusals.length;rf++)box.appendChild(iEl('div','font-size:12.5px;color:#f4a09f',plan.refusals[rf].title+' — '+plan.refusals[rf].reason));}
+      if(plan.ignoredSheets&&plan.ignoredSheets.length)box.appendChild(iEl('div','font-size:12px;color:var(--rmuted,#9ea7b2);margin-top:6px','Sheets without the import columns (ignored): '+plan.ignoredSheets.join(', ')));
+      var bar=iEl('div','display:flex;gap:8px;align-items:center;margin-top:12px;flex-wrap:wrap');
+      var dom2=document.createElement('select');dom2.className='r-routesel';dom2.setAttribute('data-import-domain','');
+      ['business','general','health','family','admin','venture'].forEach(function(dk){var op=document.createElement('option');op.value=dk;op.textContent=dk;dom2.appendChild(op);});
+      var lab=iEl('label','font-size:12px;color:var(--rmuted,#9ea7b2)','Domain: ');lab.appendChild(dom2);
+      var go=document.createElement('button');go.className='r-btn primary';go.setAttribute('data-import-commit',file);go.textContent='Commit import';
+      var cxl=document.createElement('button');cxl.className='r-btn';cxl.setAttribute('data-import-close','');cxl.textContent='Close preview';
+      bar.appendChild(lab);bar.appendChild(go);bar.appendChild(cxl);box.appendChild(bar);
+      out.appendChild(box);}
+    function impReportRender(file,rep){
+      var out=document.querySelector('[data-import-out]');if(!out)return;out.textContent='';
+      var box=iEl('div','border:1px solid rgba(69,196,134,.4);border-radius:10px;padding:12px;');
+      box.appendChild(iEl('div','font-weight:650;font-size:14px;margin-bottom:6px','Imported — '+file));
+      if(rep.project)box.appendChild(iEl('div','font-size:13px','Project: '+rep.project.title+' — '+(rep.project.outcome==='existing'?'existing, tasks attached':(rep.project.status==='PARKED'?'created PARKED (four active is the ceiling)':'created ACTIVE'))));
+      box.appendChild(iEl('div','font-size:13px;margin-top:4px','Created: '+rep.created+' · already there: '+rep.existing+' · parked waiting on a vendor: '+rep.waiting));
+      if(rep.agentCadence&&rep.agentCadence.length){box.appendChild(iEl('div','font-weight:600;font-size:13px;margin-top:8px','Timer/agent jobs — reported only, nothing created:'));
+        for(var i=0;i<rep.agentCadence.length;i++)box.appendChild(iEl('div','font-size:12.5px;color:var(--rmuted,#9ea7b2)',rep.agentCadence[i].title+' ('+rep.agentCadence[i].cadence+') — commission as a timer when ready'));}
+      if(rep.skipped&&rep.skipped.length){box.appendChild(iEl('div','font-weight:600;font-size:13px;margin-top:8px','Left out:'));
+        for(var s3=0;s3<rep.skipped.length;s3++)box.appendChild(iEl('div','font-size:12.5px;color:var(--rmuted,#9ea7b2)',rep.skipped[s3].title+' — '+rep.skipped[s3].why));}
+      if(rep.refused&&rep.refused.length){box.appendChild(iEl('div','font-weight:600;font-size:13px;margin-top:8px;color:#f4a09f','Refused:'));
+        for(var s4=0;s4<rep.refused.length;s4++)box.appendChild(iEl('div','font-size:12.5px;color:#f4a09f',rep.refused[s4].title+' — '+rep.refused[s4].reason));}
+      box.appendChild(iEl('div','font-size:12px;color:var(--rmuted,#9ea7b2);margin-top:8px','Each imported task carries its provenance on its own record. This summary lives here until you leave the page.'));
+      var done=document.createElement('button');done.className='r-btn primary';done.setAttribute('data-import-close','');done.textContent='Done — refresh the page';done.setAttribute('style','margin-top:10px');
+      box.appendChild(done);out.appendChild(box);}
+    document.addEventListener('click',function(e){var t=e.target;if(!t||!t.closest)return;
+      var ib=t.closest('[data-lc-import]');
+      if(ib){e.preventDefault();if(busy)return;ib.disabled=true;
+        impPost({command:'import_preview',idempotencyKey:hex(),payload:{fileName:ib.getAttribute('data-lc-import')}},
+          function(plan){ib.disabled=false;impPreviewRender(ib.getAttribute('data-lc-import'),plan);},ib);
+        return;}
+      var cb2=t.closest('[data-import-commit]');
+      if(cb2){e.preventDefault();if(busy)return;
+        var file=cb2.getAttribute('data-import-commit');
+        var payload={fileName:file};
+        var dom3=document.querySelector('[data-import-domain]');if(dom3)payload.domainKey=dom3.value;
+        var pjPrev=window.__impPlan&&window.__impPlan.project;
+        if(!pjPrev){var ti=prompt('Attach these to a project? Name it (blank = no project):','');if(ti===null)return;ti=ti.trim();
+          if(ti){var dd=prompt('Its definition of done — how will you know it is finished?','');if(dd===null)return;dd=(dd||'').trim();
+            if(!dd){window.__lcSay(cb2,'Every project needs a definition of done — how will you know it is finished?');return;}
+            payload.project={title:ti,definitionOfDone:dd};}}
+        var disp=[];var recs=document.querySelectorAll('[data-imp-rec]');
+        for(var i2=0;i2<recs.length;i2++){var bx=recs[i2];var sel2=bx.querySelector('.imp-disp');if(!sel2)continue;
+          var d4={source:bx.getAttribute('data-imp-rec'),choice:sel2.value};
+          if(sel2.value==='once'){var dt2=bx.querySelector('.imp-date');if(dt2&&dt2.value)d4.wakeDate=dt2.value;}
+          disp.push(d4);}
+        if(disp.length)payload.dispositions=disp;
+        cb2.disabled=true;
+        impPost({command:'import_batch',idempotencyKey:hex(),payload:payload},
+          function(rep){impReportRender(file,rep);},cb2);
+        return;}
+      if(t.closest('[data-import-close]')){e.preventDefault();window.__lcHoldRefresh=false;location.reload();return;}
     });
     // A3: FOCUS MODE — a protected deep-work overlay. [data-lc-focus] carries {taskId,title,dod}.
     // Client-only until Complete, which posts the existing complete command. Esc / backdrop exits.
