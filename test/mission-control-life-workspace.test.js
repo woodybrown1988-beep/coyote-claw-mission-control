@@ -35,11 +35,11 @@ const T = '2026-08-05T12:00:00.000Z';
 // data-lc-cmd payload must parse as JSON naming a writer-allowlisted command.
 const WRITE_AFFORDANCE = /data-op|data-log-action|fetch\(|xhr|XMLHttpRequest|method="post"/i;
 const SANCTIONED_LC = new Set(['data-lc-cancel', 'data-lc-cmd', 'data-lc-complete', 'data-lc-wait', 'data-lc-edit', 'data-lc-fab', 'data-lc-focus', 'data-lc-quiet', 'data-lc-route',
-  'data-lc-rename', 'data-lc-cancel-project']);
+  'data-lc-rename', 'data-lc-cancel-project', 'data-lc-import']);
 const CMD_ALLOWLIST = new Set(['note', 'decide', 'transition', 'complete', 'set_waiting', 'wake', 'reopen', 'undo', 'cancel',
   'plan_today', 'approve_plan', 'compile_week', 'approve_week', 'compile_quarter', 'approve_quarter',
   'pause_capability', 'resume_capability', 'create_outcome', 'create_project', 'set_route', 'set_setting',
-  'rename_task', 'rename_project', 'cancel_project']);
+  'rename_task', 'rename_project', 'cancel_project', 'import_preview', 'import_batch']);
 function assertOnlySanctionedLc(body, key) {
   for (const m of body.matchAll(/data-lc-[a-z-]+/g)) {
     assert.ok(SANCTIONED_LC.has(m[0]), `${key}: unsanctioned life affordance ${m[0]}`);
@@ -429,6 +429,47 @@ test('rename & delete (operator ask 2026-08-08): every living task/project offer
   assert.ok(!LIFECMD.validateCommand({ command: 'rename_task', idempotencyKey: key, payload: { taskId: 't1', title: '   ' } }).ok, 'blank name refused at the relay');
   assert.ok(!LIFECMD.validateCommand({ command: 'rename_project', idempotencyKey: key, payload: { projectId: 'p1', title: 'x'.repeat(201) } }).ok, 'over-cap name refused at the relay');
   assert.ok(!LIFECMD.validateCommand({ command: 'cancel_project', idempotencyKey: key, payload: {} }).ok, 'missing id refused at the relay');
+});
+
+test('bulk import (operator brief 2026-08-08): the inbox panel lists files with a Preview affordance; empty state honest; shell ships the staged handlers', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-life-imp-'));
+  const dbPath = makeFixture(dir);
+  const inbox = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-life-inbox-'));
+  const prevInbox = process.env.COYOTE_LIFE_IMPORT_DIR;
+  process.env.COYOTE_LIFE_IMPORT_DIR = inbox;
+  try {
+    const TASKS = PAGES.find((p) => p.key === 'life-tasks');
+    withEnv(dbPath, () => {
+      const empty = TASKS.render(TASKS.getSection(null, {}), {});
+      assert.match(empty.body, /The import inbox is empty/, 'empty inbox says so, names the folder');
+      assert.match(empty.body, /life-os-imports/);
+      assert.match(empty.body, /data-import-out/, 'the preview target exists');
+      fs.writeFileSync(path.join(inbox, 'loyalty.csv'), 'Task,Owner\nx,Woody\n');
+      fs.writeFileSync(path.join(inbox, 'notes.txt'), 'not importable');
+      const withFile = TASKS.render(TASKS.getSection(null, {}), {});
+      assert.match(withFile.body, /data-lc-import="loyalty\.csv"/, 'the dropped file offers Preview');
+      assert.ok(!withFile.body.includes('notes.txt'), 'only .csv/.xlsx are listed');
+      assert.match(withFile.body, /Preview first — nothing is created until you commit/, 'the staged promise is on the panel');
+      assertOnlySanctionedLc(withFile.body, 'life-tasks');
+    });
+    // The shell ships the staged handlers and the relay accepts exactly the sane shapes.
+    const html = SHARED.renderShell({ active: 'life-tasks', title: 't', sub: '', stamp: '', body: '', badges: {}, foot: [] });
+    assert.ok(html.includes("'import_preview'") || html.includes('"import_preview"'), 'shell posts import_preview');
+    assert.ok(html.includes("'import_batch'") || html.includes('"import_batch"'), 'shell posts import_batch');
+    assert.ok(html.includes('__lcHoldRefresh'), 'a rendered preview/report pins the soft refresh open');
+    assert.ok(/textContent/.test(html) && !/impPreviewRender[\s\S]{0,3000}innerHTML/.test(html.slice(html.indexOf('impPreviewRender'))),
+      'preview renders file-derived text via textContent, never markup');
+    const LIFECMD = require('../mission-control/ui/life-command-lib.js');
+    const key = 'k'.repeat(16);
+    assert.ok(LIFECMD.validateCommand({ command: 'import_preview', idempotencyKey: key, payload: { fileName: 'loyalty.csv' } }).ok);
+    assert.ok(LIFECMD.validateCommand({ command: 'import_batch', idempotencyKey: key, payload: { fileName: 'loyalty.csv', dispositions: [{ source: 'x', choice: 'skip' }], project: { title: 'Como Loyalty Launch', definitionOfDone: 'd' } } }).ok);
+    assert.ok(!LIFECMD.validateCommand({ command: 'import_preview', idempotencyKey: key, payload: {} }).ok, 'a nameless preview refused at the relay');
+    assert.ok(!LIFECMD.validateCommand({ command: 'import_batch', idempotencyKey: key, payload: { fileName: 'x.csv', dispositions: 'all' } }).ok, 'non-array rulings refused at the relay');
+  } finally {
+    if (prevInbox === undefined) delete process.env.COYOTE_LIFE_IMPORT_DIR; else process.env.COYOTE_LIFE_IMPORT_DIR = prevInbox;
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(inbox, { recursive: true, force: true });
+  }
 });
 
 test('owner copy is owner-clean: no command vocabulary, no engineering terms, in ANY mapped sentence or the fallback', () => {
