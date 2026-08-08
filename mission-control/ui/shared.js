@@ -291,6 +291,9 @@ const LIFE_REFUSAL_COPY = [
   ['wake condition', 'Parking work as waiting needs who it waits on and a follow-up date.'],
   ['halt engaged', 'Everything is paused right now — nothing was changed. Try again once things resume.'],
   ['no such task', 'That task is not here any more — the page may be out of date; it refreshes itself shortly.'],
+  ['no such project', 'That project is not here any more — the page may be out of date; it refreshes itself shortly.'],
+  ['keeps its name', 'Finished work keeps its name — it is part of the record now.'],
+  ['project is done', 'A finished project stays finished — completed work is not erased.'],
   ['task is done', 'Finished work stays finished — reopen it from its page if it truly is not done.'],
   ['not finished', 'Only finished work can be reopened.'],
   ['too long', 'That text is over the length limit — trim it and try again.'],
@@ -447,6 +450,32 @@ function clientScript() {
         fetch('/api/life/command',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({command:'set_waiting',idempotencyKey:hex(),payload:{taskId:wt.getAttribute('data-lc-wait'),dependencyLabel:dep.trim(),wakeType:'HUMAN_UPDATE',fallbackAt:fb2+'T09:00:00.000Z'}})})
         .then(function(r){return r.json();}).then(function(r){if(r&&r.ok){location.reload();}else{busy=false;wt.disabled=false;window.__lcRefuse(wt,r&&r.error);}})
         .catch(function(){busy=false;wt.disabled=false;window.__lcSay(wt,window.__lcNet);});
+        return;}
+      // RENAME (operator ask 2026-08-08): one control edits a task's or project's name in
+      // place — prompt prefilled with the current name, writer re-validates, refusals
+      // render inline in owner language like every other path.
+      var rn=t.closest('[data-lc-rename]');
+      if(rn){e.preventDefault();if(busy)return;
+        var ri;try{ri=JSON.parse(rn.getAttribute('data-lc-rename'));}catch(_){return;}
+        var nt=prompt('New name:',ri.title||'');if(nt===null)return;nt=nt.trim();
+        if(!nt){window.__lcSay(rn,'Give it a name first.');return;}
+        busy=true;rn.disabled=true;
+        var rc=ri.kind==='project'
+          ?{command:'rename_project',idempotencyKey:hex(),payload:{projectId:ri.id,title:nt}}
+          :{command:'rename_task',idempotencyKey:hex(),payload:{taskId:ri.id,title:nt}};
+        fetch('/api/life/command',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(rc)})
+        .then(function(r){return r.json();}).then(function(r){if(r&&r.ok){location.reload();}else{busy=false;rn.disabled=false;window.__lcRefuse(rn,r&&r.error);}})
+        .catch(function(){busy=false;rn.disabled=false;window.__lcSay(rn,window.__lcNet);});
+        return;}
+      // DELETE a project = cancel_project (mirrors task cancel): one confirm names what
+      // happens to its tasks, then the gated command path. DONE projects refuse by name.
+      var cp=t.closest('[data-lc-cancel-project]');
+      if(cp){e.preventDefault();if(busy)return;
+        if(!confirm('Cancel this project? Its tasks stay in All tasks — cancel any of those separately.'))return;
+        busy=true;cp.disabled=true;
+        fetch('/api/life/command',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({command:'cancel_project',idempotencyKey:hex(),payload:{projectId:cp.getAttribute('data-lc-cancel-project')}})})
+        .then(function(r){return r.json();}).then(function(r){if(r&&r.ok){location.reload();}else{busy=false;cp.disabled=false;window.__lcRefuse(cp,r&&r.error);}})
+        .catch(function(){busy=false;cp.disabled=false;window.__lcSay(cp,window.__lcNet);});
         return;}
       var ed=t.closest('[data-lc-edit]');
       if(ed){e.preventDefault();if(busy)return;

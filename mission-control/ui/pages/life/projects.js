@@ -33,8 +33,14 @@ module.exports = {
         <div style="font-size:16px;font-weight:650;line-height:1.3;margin-bottom:8px">${LIFE.esc(p.title)}</div>
         <div>${S.rcc.tag(p.domain_key)} ${S.rcc.tag('risk ' + p.risk_state.toLowerCase(), riskTone[p.risk_state] || '')} ${p.due_date ? S.rcc.tag('due ' + String(p.due_date).slice(0, 10)) : ''}</div>
         <div class="r-defbox"><small>Definition of done</small><div style="font-size:13px;line-height:1.45">${LIFE.esc(p.definition_of_done)}</div></div>
-        <div style="font-size:12.5px;color:var(--rmuted)">${next ? `Next: ${link(next.id, next.title)}` : '<span style="color:#f5c96b">No executable next action — a stalled project until one exists.</span>'}</div></div>`;
+        <div style="font-size:12.5px;color:var(--rmuted)">${next ? `Next: ${link(next.id, next.title)}` : '<span style="color:#f5c96b">No executable next action — a stalled project until one exists.</span>'}</div>
+        <div class="lc-row" style="margin-top:10px">${ctl(p)}</div></div>`;
     };
+    // Rename / cancel — on every LIVING project (finished work keeps its name and is
+    // never erased; the writer refuses those by name, so terminal rows offer nothing).
+    const ctl = (p) => (['DONE', 'CANCELLED'].includes(String(p.status)) ? '' :
+      `<button class="r-btn small" data-lc-rename="${LIFE.esc(JSON.stringify({ kind: 'project', id: p.id, title: p.title }))}">Rename…</button>`
+      + `<button class="lc-cxl" data-lc-cancel-project="${LIFE.esc(p.id)}">✕ cancel</button>`);
     const openSlot = `<div class="r-card r-panel" style="border-style:dashed;display:flex;flex-direction:column;justify-content:center;text-align:center;color:var(--rmuted)"><div style="font-size:13.5px;line-height:1.6;padding:8px 4px">An open project slot.<br>Four at most, by design.</div></div>`;
     const slots = [...active.map(card)];
     while (slots.length < 4) slots.push(openSlot);
@@ -45,7 +51,7 @@ module.exports = {
         <div style="display:flex;gap:8px;align-items:center"><select class="lc-domain" name="domain"><option value="general">general</option><option value="business">business</option><option value="health">health</option><option value="family">family</option><option value="admin">admin</option><option value="venture">venture</option></select>
         <button type="submit" class="r-btn primary">Add project</button></div>
       </form></div>`;
-    const restRows = rest.length ? S.rcc.panel({ title: 'Waiting, parked and finished', body: rest.map((p) => `<div class="r-lrow"><div><div style="font-weight:600">${LIFE.esc(p.title)}</div><div style="margin-top:3px">${S.rcc.tag(p.status.toLowerCase())} ${S.rcc.tag(p.domain_key)}</div></div></div>`).join('') }) : '';
+    const restRows = rest.length ? S.rcc.panel({ title: 'Waiting, parked and finished', body: rest.map((p) => `<div class="r-lrow"><div><div style="font-weight:600">${LIFE.esc(p.title)}</div><div style="margin-top:3px">${S.rcc.tag(p.status.toLowerCase())} ${S.rcc.tag(p.domain_key)}</div></div><div style="display:flex;gap:8px;align-items:center;flex-shrink:0">${ctl(p)}</div></div>`).join('') }) : '';
     return { stamp: '', body: wrap(`<div style="display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));margin-bottom:12px">${slots.join('')}</div>${active.length < 4 ? form : ''}${restRows}`) };
   },
 };
