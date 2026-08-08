@@ -62,6 +62,10 @@ module.exports = {
     // header + actions
     const acts = (ACTIONS[t.status] || []).map(([label, cmd, to]) => btnCmd(label, cmd, { taskId: id, to })).join(' ');
     const specials = [
+      // Rename lives on every LIVING task (WAITING included) — finished work keeps its
+      // name, so DONE/CANCELLED never offer it (the writer refuses anyway; no dead buttons).
+      !['DONE', 'CANCELLED'].includes(String(t.status))
+        ? `<button class="r-btn small" data-lc-rename="${LIFE.esc(JSON.stringify({ kind: 'task', id, title: t.title }))}">Rename…</button>` : '',
       ['INBOX', 'READY', 'SCHEDULED', 'IN_PROGRESS', 'BLOCKED', 'AWAITING_APPROVAL', 'BATCH'].includes(String(t.status))
         ? `<button class="r-btn small" data-lc-complete="${LIFE.esc(id)}">Mark done…</button>`
           + `<button class="r-btn small" data-lc-wait="${LIFE.esc(id)}">Park waiting…</button>`

@@ -96,6 +96,12 @@ const COMMAND_SHAPES = {
   approve_quarter: () => true,
   create_outcome: (p) => typeof p.title === 'string' && typeof p.proofDefinition === 'string',
   create_project: (p) => typeof p.title === 'string' && typeof p.definitionOfDone === 'string',
+  // Rename / delete (operator ask 2026-08-08): edit a task or project NAME in place;
+  // cancel a project the way tasks cancel. The writer re-validates (terminal work keeps
+  // its name; DONE is never erased) — these shapes just refuse garbage early.
+  rename_task: (p) => typeof p.taskId === 'string' && typeof p.title === 'string' && !!p.title.trim() && p.title.length <= 500,
+  rename_project: (p) => typeof p.projectId === 'string' && typeof p.title === 'string' && !!p.title.trim() && p.title.length <= 200,
+  cancel_project: (p) => typeof p.projectId === 'string' && !!p.projectId,
   set_route: (p) => typeof p.taskId === 'string' && ['SELF', 'AI', 'DELEGATE', 'HYBRID'].includes(p.mode),
   set_setting: (p) => typeof p.key === 'string' && typeof p.value === 'string',
   pause_capability: (p) => typeof p.capabilityKey === 'string',

@@ -34,10 +34,12 @@ const T = '2026-08-05T12:00:00.000Z';
 // live in the shared shell and post exclusively to the gated /api/life/* relay. Every
 // data-lc-cmd payload must parse as JSON naming a writer-allowlisted command.
 const WRITE_AFFORDANCE = /data-op|data-log-action|fetch\(|xhr|XMLHttpRequest|method="post"/i;
-const SANCTIONED_LC = new Set(['data-lc-cancel', 'data-lc-cmd', 'data-lc-complete', 'data-lc-wait', 'data-lc-edit', 'data-lc-fab', 'data-lc-focus', 'data-lc-quiet', 'data-lc-route']);
+const SANCTIONED_LC = new Set(['data-lc-cancel', 'data-lc-cmd', 'data-lc-complete', 'data-lc-wait', 'data-lc-edit', 'data-lc-fab', 'data-lc-focus', 'data-lc-quiet', 'data-lc-route',
+  'data-lc-rename', 'data-lc-cancel-project']);
 const CMD_ALLOWLIST = new Set(['note', 'decide', 'transition', 'complete', 'set_waiting', 'wake', 'reopen', 'undo', 'cancel',
   'plan_today', 'approve_plan', 'compile_week', 'approve_week', 'compile_quarter', 'approve_quarter',
-  'pause_capability', 'resume_capability', 'create_outcome', 'create_project', 'set_route', 'set_setting']);
+  'pause_capability', 'resume_capability', 'create_outcome', 'create_project', 'set_route', 'set_setting',
+  'rename_task', 'rename_project', 'cancel_project']);
 function assertOnlySanctionedLc(body, key) {
   for (const m of body.matchAll(/data-lc-[a-z-]+/g)) {
     assert.ok(SANCTIONED_LC.has(m[0]), `${key}: unsanctioned life affordance ${m[0]}`);
@@ -379,6 +381,54 @@ test('writer refusals map to DESIGNED OWNER COPY: the named first-use leaks, cap
   // Unknown writer messages fall back to honest owner copy that names the no-change guarantee:
   assert.match(SHARED.ownerRefusalCopy('capture: idempotencyKey must be 8–128 chars when given'), /nothing was changed/i);
   assert.match(SHARED.ownerRefusalCopy(undefined), /nothing was changed/i);
+});
+
+test('rename & delete (operator ask 2026-08-08): every living task/project offers rename + cancel in place; finished work offers neither', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-life-'));
+  const dbPath = makeFixture(dir);
+  const db = new sqlite.DatabaseSync(dbPath);
+  db.exec(`INSERT INTO life_projects (id, owner_id, domain_key, title, definition_of_done, stage, status, risk_state, due_date, visibility, created_at, updated_at) VALUES
+    ('pj1','woody','business','Loyalty pilot','Pilot live.','BUILD','ACTIVE','GREEN',NULL,'OWNER_ONLY','2026-08-01T00:00:00Z','2026-08-01T00:00:00Z'),
+    ('pj2','woody','family','Parked thing','d','PARKED','PARKED','GREEN',NULL,'OWNER_ONLY','2026-08-01T00:00:00Z','2026-08-01T00:00:00Z'),
+    ('pj3','woody','admin','Shipped thing','d','DONE','DONE','GREEN',NULL,'OWNER_ONLY','2026-08-01T00:00:00Z','2026-08-01T00:00:00Z')`);
+  db.close();
+  const decodeAttr = (s) => JSON.parse(s.replaceAll('&quot;', '"').replaceAll('&amp;', '&').replaceAll('&#39;', "'"));
+  withEnv(dbPath, () => {
+    const PROJECTS = PAGES.find((p) => p.key === 'life-projects');
+    const out = PROJECTS.render(PROJECTS.getSection(null, {}), {});
+    assert.match(out.body, /data-lc-cancel-project="pj1"/, 'active project card offers cancel');
+    assert.match(out.body, /data-lc-cancel-project="pj2"/, 'parked project row offers cancel too');
+    assert.ok(!out.body.includes('data-lc-cancel-project="pj3"'), 'DONE project offers NO delete — completed work is not erased');
+    const renames = [...out.body.matchAll(/data-lc-rename="([^"]*)"/g)].map((m) => decodeAttr(m[1]));
+    assert.ok(renames.some((r) => r.kind === 'project' && r.id === 'pj1' && r.title === 'Loyalty pilot'),
+      'rename carries the CURRENT name so the prompt opens prefilled');
+    assert.ok(!renames.some((r) => r.id === 'pj3'), 'DONE project offers no rename — finished work keeps its name');
+    assertOnlySanctionedLc(out.body, 'life-projects');
+    const TASKS = PAGES.find((p) => p.key === 'life-tasks');
+    const tout = TASKS.render(TASKS.getSection(null, {}), {});
+    assert.match(tout.body, /data-lc-rename/, 'task rows offer rename without opening the drawer');
+    assert.match(tout.body, /data-lc-cancel="t1"/, 'task rows offer cancel without opening the drawer');
+    const trow = [...tout.body.matchAll(/data-lc-rename="([^"]*)"/g)].map((m) => decodeAttr(m[1]));
+    assert.ok(trow.every((r) => r.kind === 'task' && r.id && typeof r.title === 'string'), 'row rename payloads are complete');
+    assertOnlySanctionedLc(tout.body, 'life-tasks');
+    const dout = TASK.render(TASK.getSection(null, { query: { id: 't1' } }), {});
+    assert.match(dout.body, /data-lc-rename/, 'the drawer offers rename');
+    assertOnlySanctionedLc(dout.body, 'life-task');
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+  // The shell ships the handlers, and the relay accepts exactly the sane shapes.
+  const html = SHARED.renderShell({ active: 'life-today', title: 't', sub: '', stamp: '', body: '', badges: {}, foot: [] });
+  for (const name of ['rename_task', 'rename_project', 'cancel_project']) {
+    assert.ok(html.includes(`'${name}'`) || html.includes(`"${name}"`), `shell client script posts ${name}`);
+  }
+  const LIFECMD = require('../mission-control/ui/life-command-lib.js');
+  const key = 'k'.repeat(16);
+  assert.ok(LIFECMD.validateCommand({ command: 'rename_task', idempotencyKey: key, payload: { taskId: 't1', title: 'New name' } }).ok);
+  assert.ok(LIFECMD.validateCommand({ command: 'rename_project', idempotencyKey: key, payload: { projectId: 'p1', title: 'New name' } }).ok);
+  assert.ok(LIFECMD.validateCommand({ command: 'cancel_project', idempotencyKey: key, payload: { projectId: 'p1' } }).ok);
+  assert.ok(!LIFECMD.validateCommand({ command: 'rename_task', idempotencyKey: key, payload: { taskId: 't1', title: '   ' } }).ok, 'blank name refused at the relay');
+  assert.ok(!LIFECMD.validateCommand({ command: 'rename_project', idempotencyKey: key, payload: { projectId: 'p1', title: 'x'.repeat(201) } }).ok, 'over-cap name refused at the relay');
+  assert.ok(!LIFECMD.validateCommand({ command: 'cancel_project', idempotencyKey: key, payload: {} }).ok, 'missing id refused at the relay');
 });
 
 test('owner copy is owner-clean: no command vocabulary, no engineering terms, in ANY mapped sentence or the fallback', () => {
