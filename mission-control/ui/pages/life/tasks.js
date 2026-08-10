@@ -43,12 +43,13 @@ module.exports = {
     try {
       const q = (sql, args) => { const r = LIFE.lifeSelect(o.db, sql, args); return r.ok ? r.rows : []; };
       return {
-        open: q(`SELECT id, title, status, domain_key, execution_mode, due_kind, due_at FROM life_tasks WHERE status NOT IN ('DONE','CANCELLED') ORDER BY updated_at DESC LIMIT 100`),
+        open: q(`SELECT id, title, status, domain_key, execution_mode, due_kind, due_at, project_id FROM life_tasks WHERE status NOT IN ('DONE','CANCELLED') ORDER BY updated_at DESC LIMIT 100`),
         waitingOf: q(`SELECT task_id, dependency_label, fallback_at FROM life_waiting_conditions WHERE state = 'ACTIVE'`),
         // real per-task confidence: the strongest open proposal on that task (never a fabricated score).
         confOf: q(`SELECT task_id, MAX(confidence) conf FROM life_update_proposals WHERE state = 'PROPOSED' GROUP BY task_id`),
         finished: q(`SELECT id, title, status FROM life_tasks WHERE status IN ('DONE','CANCELLED') ORDER BY updated_at DESC LIMIT 12`),
         importFiles: listImportInbox(),
+        projects: q("SELECT id, title, status FROM life_projects WHERE status NOT IN ('CANCELLED','DONE') ORDER BY CASE status WHEN 'ACTIVE' THEN 0 ELSE 1 END, title"),
       };
     } finally { o.db.close(); }
   },
@@ -58,15 +59,21 @@ module.exports = {
     if (s.absent) return { stamp: '', body: wrap(LIFE.absentCard('All tasks')) };
     const head = `<div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
       <div class="r-capline" data-lc-fab role="button" tabindex="0" style="flex:1;min-width:240px">Capture, ask or command…<kbd>⌘K</kbd></div>
-      <input class="lc-input" id="lt-filter" placeholder="Filter by words…" style="max-width:260px" oninput="(function(v){for(const r of document.querySelectorAll('[data-task-row]')){r.style.display=r.textContent.toLowerCase().includes(v)?'':'none';}})(this.value.toLowerCase())"></div>`;
+      <input class="lc-input" id="lt-filter" placeholder="Filter by words…" style="max-width:260px" oninput="(function(v){for(const r of document.querySelectorAll('[data-task-row]')){const t=(r.firstElementChild?r.firstElementChild.textContent:r.textContent);r.style.display=t.toLowerCase().includes(v)?'':'none';}})(this.value.toLowerCase())">
+      <select class="r-routesel" data-assign-bulk-sel style="max-width:170px"><option value="">— bulk: pick a project —</option>${(s.projects || []).map((pj) => `<option value="${LIFE.esc(pj.id)}">${LIFE.esc(pj.title)}${pj.status === 'ACTIVE' ? '' : ` (${LIFE.esc(String(pj.status).toLowerCase())})`}</option>`).join('')}</select>
+      <button class="r-btn small" data-lc-assign-bulk title="Assign every VISIBLE row — each task gets its own audited record">Assign visible…</button></div>`;
     const wake = (id) => s.waitingOf.find((w) => w.task_id === id);
     const confOf = (id) => { const r = (s.confOf || []).find((c) => c.task_id === id); return r ? Number(r.conf) : null; };
+    const pjSel = (t) => `<select class="r-routesel lc-assign-sel" data-task="${LIFE.esc(t.id)}" title="Project home — parked = not this quarter's fight" style="max-width:170px">
+      <option value=""${t.project_id ? '' : ' selected'}>— no project —</option>
+      ${(s.projects || []).map((pj) => `<option value="${LIFE.esc(pj.id)}"${t.project_id === pj.id ? ' selected' : ''}>${LIFE.esc(pj.title)}${pj.status === 'ACTIVE' ? '' : ` (${LIFE.esc(String(pj.status).toLowerCase())})`}</option>`).join('')}
+    </select>`;
     const row = (t) => {
       const w = wake(t.id);
       const c = confOf(t.id);
-      return `<div class="r-lrow" data-task-row><div style="min-width:0"><div style="font-weight:600">${link(t.id, t.title)}</div>
+      return `<div class="r-lrow" data-task-row data-task-id="${LIFE.esc(t.id)}"><div style="min-width:0"><div style="font-weight:600">${link(t.id, t.title)}</div>
         <div style="font-size:12px;color:var(--rmuted);margin-top:3px">${LIFE.esc(t.domain_key)}${t.due_at ? ` · due ${LIFE.esc(String(t.due_at).slice(0, 10))}${t.due_kind === 'HARD' ? ' (hard)' : ''}` : ''}${w ? ` · waiting on ${LIFE.esc(w.dependency_label)}${w.fallback_at ? ` · follow-up ${LIFE.esc(String(w.fallback_at).slice(0, 10))}` : ''}` : ''}</div></div>
-        <div style="display:flex;gap:8px;align-items:center;flex-shrink:0">${S.rcc.route(t.execution_mode)}${c != null ? S.rcc.conf(c) : ''}<a class="r-btn small" href="/life/task?id=${encodeURIComponent(t.id)}">Open</a><button class="r-btn small" title="Rename" aria-label="Rename" data-lc-rename="${LIFE.esc(JSON.stringify({ kind: 'task', id: t.id, title: t.title }))}">✎</button><button class="lc-cxl" title="Cancel — reopenable from its page" aria-label="Cancel" data-lc-cancel="${LIFE.esc(t.id)}">✕</button></div></div>`;
+        <div style="display:flex;gap:8px;align-items:center;flex-shrink:0">${pjSel(t)}${S.rcc.route(t.execution_mode)}${c != null ? S.rcc.conf(c) : ''}<a class="r-btn small" href="/life/task?id=${encodeURIComponent(t.id)}">Open</a><button class="r-btn small" title="Rename" aria-label="Rename" data-lc-rename="${LIFE.esc(JSON.stringify({ kind: 'task', id: t.id, title: t.title }))}">✎</button><button class="lc-cxl" title="Cancel — reopenable from its page" aria-label="Cancel" data-lc-cancel="${LIFE.esc(t.id)}">✕</button></div></div>`;
     };
     let body = head;
     let shown = 0;

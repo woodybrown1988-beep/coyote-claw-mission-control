@@ -320,6 +320,9 @@ const LIFE_REFUSAL_COPY = [
   ['dependencylabel required', 'Say who or what you are waiting on.'],
   ['fallbackat required', 'A follow-up date is needed — waiting work must never rot silently.'],
   ['wake condition', 'Parking work as waiting needs who it waits on and a follow-up date.'],
+  ['pick a living one', 'That project was cancelled — pick a living one.'],
+  ['does not take new tasks', 'That project is finished — completed work does not take new tasks.'],
+  ['only inbox work needs accepting', 'Already decided — only Inbox work needs accepting.'],
   ['recurring obligation', 'This one repeats — give it its next date, or decline it so the drop is on the record.'],
   ['nothing to recapture', 'That task does not repeat — complete it plainly.'],
   ['in the import inbox', 'That file is not in the import inbox — drop it into ~/life-os-imports and try again.'],
@@ -579,6 +582,42 @@ function clientScript() {
         command:'set_route',idempotencyKey:hex(),payload:{taskId:el.getAttribute('data-task'),mode:el.value}})})
       .then(function(r){return r.json();}).then(function(r){busy=false;if(r&&r.ok){location.reload();}else{window.__lcRefuse(el,r&&r.error);}})
       .catch(function(){busy=false;window.__lcSay(el,window.__lcNet);});
+    });
+    // TASK → PROJECT ASSIGNMENT (triage ruling 2026-08-10): .lc-assign-sel posts
+    // assign_project on change ('' clears). The bulk button is SUGAR over per-task audited
+    // commands — every visible row gets its own command, key and events; the writer knows
+    // nothing of "bulk".
+    document.addEventListener('change',function(e){var el=e.target;
+      if(!el||!el.classList||!el.classList.contains('lc-assign-sel'))return;
+      if(busy)return;busy=true;
+      fetch('/api/life/command',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({
+        command:'assign_project',idempotencyKey:hex(),payload:{taskId:el.getAttribute('data-task'),projectId:el.value||null}})})
+      .then(function(r){return r.json();}).then(function(r){busy=false;if(r&&r.ok){location.reload();}else{window.__lcRefuse(el,r&&r.error);}})
+      .catch(function(){busy=false;window.__lcSay(el,window.__lcNet);});
+    });
+    document.addEventListener('click',function(e){var t2=e.target;if(!t2||!t2.closest)return;
+      var bk=t2.closest('[data-lc-assign-bulk]');
+      if(!bk)return;e.preventDefault();if(busy)return;
+      var sel=document.querySelector('[data-assign-bulk-sel]');
+      var pid=sel?sel.value:'';
+      if(!pid){window.__lcSay(bk,'Pick the project first — the bulk button assigns every visible row to it.');return;}
+      var pname=sel.options[sel.selectedIndex].textContent;
+      var rows=[];var all=document.querySelectorAll('[data-task-row][data-task-id]');
+      for(var i=0;i<all.length;i++){if(all[i].style.display!=='none')rows.push(all[i].getAttribute('data-task-id'));}
+      if(!rows.length){window.__lcSay(bk,'No visible rows — clear or change the filter.');return;}
+      if(!confirm('Assign '+rows.length+' visible task'+(rows.length===1?'':'s')+' to '+pname+'? Each gets its own record.'))return;
+      busy=true;bk.disabled=true;
+      var done2=0,failed=0;
+      (function next(idx){
+        if(idx>=rows.length){busy=false;window.__lcHoldRefresh=false;location.reload();return;}
+        fetch('/api/life/command',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({
+          command:'assign_project',idempotencyKey:hex(),payload:{taskId:rows[idx],projectId:pid}})})
+        .then(function(r){return r.json();}).then(function(r){if(r&&r.ok)done2++;else{failed++;if(window.console)console.warn('bulk assign refused:',r&&r.error);}
+          window.__lcHoldRefresh=true;window.__lcSay(bk,'Assigning… '+(done2+failed)+' of '+rows.length+(failed?(' ('+failed+' refused)'):''),!failed);
+          next(idx+1);})
+        .catch(function(){failed++;next(idx+1);});
+      })(0);
+      return;
     });
     // A3: quiet-support toggle in Settings — a [data-lc-quiet] control posts set_setting.
     document.addEventListener('click',function(e){var el=e.target&&e.target.closest&&e.target.closest('[data-lc-quiet]');
