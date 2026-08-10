@@ -35,11 +35,11 @@ const T = '2026-08-05T12:00:00.000Z';
 // data-lc-cmd payload must parse as JSON naming a writer-allowlisted command.
 const WRITE_AFFORDANCE = /data-op|data-log-action|fetch\(|xhr|XMLHttpRequest|method="post"/i;
 const SANCTIONED_LC = new Set(['data-lc-cancel', 'data-lc-cmd', 'data-lc-complete', 'data-lc-wait', 'data-lc-edit', 'data-lc-fab', 'data-lc-focus', 'data-lc-quiet', 'data-lc-route',
-  'data-lc-rename', 'data-lc-cancel-project', 'data-lc-import', 'data-lc-recap']);
+  'data-lc-rename', 'data-lc-cancel-project', 'data-lc-import', 'data-lc-recap', 'data-lc-assign-bulk']);
 const CMD_ALLOWLIST = new Set(['note', 'decide', 'transition', 'complete', 'set_waiting', 'wake', 'reopen', 'undo', 'cancel',
   'plan_today', 'approve_plan', 'compile_week', 'approve_week', 'compile_quarter', 'approve_quarter',
   'pause_capability', 'resume_capability', 'create_outcome', 'create_project', 'set_route', 'set_setting',
-  'rename_task', 'rename_project', 'cancel_project', 'import_preview', 'import_batch']);
+  'rename_task', 'rename_project', 'cancel_project', 'import_preview', 'import_batch', 'assign_project', 'accept_standalone']);
 function assertOnlySanctionedLc(body, key) {
   for (const m of body.matchAll(/data-lc-[a-z-]+/g)) {
     assert.ok(SANCTIONED_LC.has(m[0]), `${key}: unsanctioned life affordance ${m[0]}`);
@@ -72,7 +72,7 @@ function makeFixture(dir) {
     CREATE TABLE life_projects (id TEXT PRIMARY KEY, owner_id TEXT, domain_key TEXT, title TEXT,
       definition_of_done TEXT, stage TEXT, status TEXT, risk_state TEXT, due_date TEXT,
       visibility TEXT, created_at TEXT, updated_at TEXT);
-    CREATE TABLE life_tasks (id TEXT PRIMARY KEY, owner_id TEXT, outcome_id TEXT, domain_key TEXT,
+    CREATE TABLE life_tasks (id TEXT PRIMARY KEY, owner_id TEXT, outcome_id TEXT, project_id TEXT, domain_key TEXT,
       title TEXT, status TEXT, execution_mode TEXT, definition_of_done TEXT DEFAULT '', due_kind TEXT DEFAULT 'NONE', due_at TEXT, estimate_minutes INTEGER,
       importance INTEGER DEFAULT 3, consequence INTEGER DEFAULT 3, risk_level TEXT, visibility TEXT,
       source_type TEXT, created_by TEXT, created_at TEXT, updated_at TEXT);
@@ -538,6 +538,50 @@ test('agent deliverables (dispatch rung 2026-08-10): ALWAYS material on Today, A
     assertOnlySanctionedLc(out.body, 'life-today');
   });
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('task-to-project assignment (triage ruling 2026-08-10): the decision verb on drawer + rows + bulk, parked labelled, Inbox offers Accept standalone', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-life-as-'));
+  const dbPath = makeFixture(dir);
+  const db = new sqlite.DatabaseSync(dbPath);
+  db.exec(`INSERT INTO life_projects (id, owner_id, domain_key, title, definition_of_done, stage, status, risk_state, due_date, visibility, created_at, updated_at) VALUES
+    ('pjA','woody','business','Como Loyalty Launch','d','BUILD','ACTIVE','GREEN',NULL,'OWNER_ONLY','2026-08-01T00:00:00Z','2026-08-01T00:00:00Z'),
+    ('pjP','woody','venture','Burger Van','d','DEFINE','PARKED','GREEN',NULL,'OWNER_ONLY','2026-08-01T00:00:00Z','2026-08-01T00:00:00Z'),
+    ('pjX','woody','admin','Dead','d','DEFINE','CANCELLED','GREEN',NULL,'OWNER_ONLY','2026-08-01T00:00:00Z','2026-08-01T00:00:00Z')`);
+  db.exec("UPDATE life_tasks SET project_id='pjA' WHERE id='t1'");
+  db.close();
+  withEnv(dbPath, () => {
+    const TASK2 = require('../mission-control/ui/pages/life/task.js');
+    const drawer = TASK2.render(TASK2.getSection(null, { query: { id: 't1' } }), {});
+    assert.match(drawer.body, /lc-assign-sel/, 'the drawer carries the project select');
+    assert.match(drawer.body, /Burger Van \(parked\)/, 'parked projects are labelled — assigning in is choosing the park');
+    assert.ok(!drawer.body.includes('Dead'), 'cancelled projects never offered');
+    assert.match(drawer.body, /value="pjA" selected/, 'current assignment selected');
+    assert.match(drawer.body, /project: Como Loyalty Launch/, 'the home is visible on the drawer head');
+    assertOnlySanctionedLc(drawer.body, 'life-task');
+    const inbox = TASK2.render(TASK2.getSection(null, { query: { id: 't0' } }), {});
+    const cmds = [...inbox.body.matchAll(/data-lc-cmd="([^"]*)"/g)].map((m) => JSON.parse(m[1].replaceAll('&quot;', '"').replaceAll('&amp;', '&')));
+    assert.ok(cmds.some((c) => c.command === 'accept_standalone'), 'Inbox offers the explicit standalone acceptance');
+    assert.ok(!cmds.some((c) => c.command === 'transition' && c.payload && c.payload.to === 'READY'), 'the anonymous Ready transition left the Inbox drawer');
+    const TASKS2 = PAGES.find((p2) => p2.key === 'life-tasks');
+    const rows = TASKS2.render(TASKS2.getSection(null, {}), {});
+    assert.match(rows.body, /data-task-id="t1"/, 'rows carry ids for the bulk sugar');
+    assert.ok((rows.body.match(/lc-assign-sel/g) || []).length >= 2, 'inline selects on rows — no drawer round-trips');
+    assert.match(rows.body, /data-lc-assign-bulk/, 'bulk apply affordance present');
+    assert.match(rows.body, /data-assign-bulk-sel/, 'bulk project picker present');
+    assertOnlySanctionedLc(rows.body, 'life-tasks');
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+  // Shell + relay wiring.
+  const html = SHARED.renderShell({ active: 'life-tasks', title: 't', sub: '', stamp: '', body: '', badges: {}, foot: [] });
+  assert.ok(html.includes("'assign_project'"), 'shell posts assign_project');
+  assert.ok(html.includes('Each gets its own record.'), 'bulk is sugar over per-task audited commands, and says so');
+  const LIFECMD = require('../mission-control/ui/life-command-lib.js');
+  const key = 'k'.repeat(16);
+  assert.ok(LIFECMD.validateCommand({ command: 'assign_project', idempotencyKey: key, payload: { taskId: 't1', projectId: 'p1' } }).ok);
+  assert.ok(LIFECMD.validateCommand({ command: 'assign_project', idempotencyKey: key, payload: { taskId: 't1', projectId: null } }).ok, 'explicit null clears');
+  assert.ok(!LIFECMD.validateCommand({ command: 'assign_project', idempotencyKey: key, payload: { taskId: 't1', projectId: '' } }).ok, 'empty-string project refused at the relay');
+  assert.ok(LIFECMD.validateCommand({ command: 'accept_standalone', idempotencyKey: key, payload: { taskId: 't1' } }).ok);
 });
 
 test('owner copy is owner-clean: no command vocabulary, no engineering terms, in ANY mapped sentence or the fallback', () => {
