@@ -105,6 +105,9 @@ const COMMAND_SHAPES = {
   // Bulk import (operator brief 2026-08-08): commands carry a file NAME in the import
   // inbox plus the operator's per-row rulings — never file content (the writer reads the
   // file itself and re-validates everything; preview writes nothing).
+  // Triage verbs (operator ruling 2026-08-10): give a task its home, or accept it standalone.
+  assign_project: (p) => typeof p.taskId === 'string' && (p.projectId === null || (typeof p.projectId === 'string' && !!p.projectId)),
+  accept_standalone: (p) => typeof p.taskId === 'string',
   import_preview: (p) => typeof p.fileName === 'string' && !!p.fileName.trim() && p.fileName.length <= 200,
   import_batch: (p) => typeof p.fileName === 'string' && !!p.fileName.trim() && p.fileName.length <= 200
     && (p.dispositions === undefined || (Array.isArray(p.dispositions) && p.dispositions.length <= 500))

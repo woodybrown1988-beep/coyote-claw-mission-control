@@ -11,7 +11,9 @@ const wrap = (inner) => `<style>${S.rcc.css()}${S.rcc.lifeCss()}</style><div cla
 // The buttons each status legitimately offers (mirrors the engine's transition table — the
 // writer re-validates, so a stale page can refuse loudly but never corrupt).
 const ACTIONS = {
-  INBOX: [['Ready', 'transition', 'READY'], ['Batch', 'transition', 'BATCH']],
+  // INBOX 'Ready' is the explicit ACCEPTED-STANDALONE disposition (triage ruling
+  // 2026-08-10) — audited by name, so the Inbox reaches zero honestly.
+  INBOX: [['Accept standalone', 'accept_standalone', null], ['Batch', 'transition', 'BATCH']],
   READY: [['Start', 'transition', 'IN_PROGRESS'], ['Needs my decision', 'transition', 'AWAITING_APPROVAL'], ['Block', 'transition', 'BLOCKED'], ['Batch', 'transition', 'BATCH']],
   SCHEDULED: [['Start', 'transition', 'IN_PROGRESS'], ['Back to ready', 'transition', 'READY']],
   IN_PROGRESS: [['Pause', 'transition', 'READY'], ['Block', 'transition', 'BLOCKED']],
@@ -48,6 +50,9 @@ module.exports = {
         facts: q('SELECT fact_type, value_json, unit, confidence, created_at FROM life_update_facts WHERE task_id = ? ORDER BY created_at DESC LIMIT 30', [id]),
         proposals: q('SELECT id, capability_key, command_type, command_json, reason, confidence, state, decided_by, decision_note FROM life_update_proposals WHERE task_id = ? ORDER BY created_at DESC LIMIT 20', [id]),
         waiting: q("SELECT dependency_label, wake_type, fallback_at, state FROM life_waiting_conditions WHERE task_id = ? ORDER BY created_at DESC LIMIT 5", [id]),
+        // Living projects for the assignment select (triage ruling 2026-08-10) — parked
+        // ones included ON PURPOSE: assigning into a park is a valid triage outcome.
+        projects: q("SELECT id, title, status FROM life_projects WHERE status NOT IN ('CANCELLED','DONE') ORDER BY CASE status WHEN 'ACTIVE' THEN 0 ELSE 1 END, title"),
       };
     } finally { o.db.close(); }
   },
@@ -60,7 +65,7 @@ module.exports = {
     const id = String(t.id);
 
     // header + actions
-    const acts = (ACTIONS[t.status] || []).map(([label, cmd, to]) => btnCmd(label, cmd, { taskId: id, to })).join(' ');
+    const acts = (ACTIONS[t.status] || []).map(([label, cmd, to]) => btnCmd(label, cmd, to === null ? { taskId: id } : { taskId: id, to })).join(' ');
     const specials = [
       // Rename lives on every LIVING task (WAITING included) — finished work keeps its
       // name, so DONE/CANCELLED never offer it (the writer refuses anyway; no dead buttons).
@@ -85,17 +90,27 @@ module.exports = {
       <select class="r-routesel lc-route-sel" data-task="${LIFE.esc(id)}">
         ${opt('SELF', 'You do it')}${opt('AI', 'AI drafts / does')}${opt('DELEGATE', 'Delegate')}${opt('HYBRID', 'Hybrid')}
       </select></label>`;
+    // The Inbox's decision verb (triage ruling 2026-08-10): assign a project home right
+    // here. Parked projects are labelled — assigning into one is choosing "not this
+    // quarter's fight" for the task too.
+    const pjOpt = (pj) => `<option value="${LIFE.esc(pj.id)}"${t.project_id === pj.id ? ' selected' : ''}>${LIFE.esc(pj.title)}${pj.status === 'ACTIVE' ? '' : ` (${LIFE.esc(String(pj.status).toLowerCase())})`}</option>`;
+    const projectControl = ['DONE', 'CANCELLED'].includes(String(t.status)) ? '' : `<label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--rmuted)">Project
+      <select class="r-routesel lc-assign-sel" data-task="${LIFE.esc(id)}">
+        <option value=""${t.project_id ? '' : ' selected'}>— none —</option>
+        ${(s.projects || []).map(pjOpt).join('')}
+      </select></label>`;
     const focusBtn = ['READY', 'SCHEDULED', 'IN_PROGRESS'].includes(String(t.status))
       ? `<button class="r-btn small primary" data-lc-focus="${LIFE.esc(JSON.stringify({ taskId: id, title: t.title, dod: (t.definition_of_done && String(t.definition_of_done).trim()) || '' }))}">▶ Focus</button>` : '';
     const head = `<div class="r-card r-panel"><h3 style="margin-bottom:6px">${LIFE.esc(t.title)}</h3>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:4px 0 10px">
         ${S.rcc.tag(String(t.status).toLowerCase().replace('_', ' '))}${S.rcc.route(mode)}${S.rcc.tag(t.domain_key)}${S.rcc.tag(t.visibility === 'OWNER_ONLY' ? 'private' : String(t.visibility).toLowerCase())}${t.recurs ? S.rcc.tag(`repeats · ${String(t.recurs).toLowerCase()}`, 'warn') : ''}
+        ${t.project_id ? S.rcc.tag('project: ' + (((s.projects || []).find((pj) => pj.id === t.project_id) || {}).title || 'unknown'), 'info') : ''}
         ${topConf ? S.rcc.conf(topConf.confidence) : ''}
         ${t.due_at ? S.rcc.tag(`due ${String(t.due_at).slice(0, 10)}${t.due_kind === 'HARD' ? ' · hard' : ''}`) : ''}
       </div>
       ${wait ? `<div style="font-size:12.5px;color:#f5c96b;margin-bottom:8px">Waiting on <b>${LIFE.esc(wait.dependency_label)}</b>${wait.fallback_at ? ` · follow-up ${LIFE.esc(String(wait.fallback_at).slice(0, 10))}` : ''}</div>` : ''}
       ${t.description ? `<div style="font-size:13px;margin-bottom:10px">${LIFE.esc(t.description)}</div>` : ''}
-      <div class="lc-row" style="align-items:center">${focusBtn} ${acts} ${specials} ${routeControl}</div></div>`;
+      <div class="lc-row" style="align-items:center">${focusBtn} ${acts} ${specials} ${routeControl} ${projectControl}</div></div>`;
 
     // add update (A6): record-only honoured — context the AI must never act on
     const noteForm = `<div class="r-card r-panel"><h3>Add update</h3>
