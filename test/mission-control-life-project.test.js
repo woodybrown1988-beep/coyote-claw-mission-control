@@ -25,7 +25,7 @@ const CMD_ALLOWLIST = new Set(['note', 'decide', 'transition', 'complete', 'set_
   'plan_today', 'approve_plan', 'compile_week', 'approve_week', 'compile_quarter', 'approve_quarter',
   'pause_capability', 'resume_capability', 'create_outcome', 'create_project', 'set_route', 'set_setting',
   'rename_task', 'rename_project', 'cancel_project', 'import_preview', 'import_batch', 'assign_project', 'accept_standalone',
-  'calendar_sync']);
+  'calendar_sync', 'park_project', 'activate_project']);
 function assertOnlySanctionedLc(body, key) {
   for (const m of body.matchAll(/data-lc-[a-z-]+/g)) assert.ok(SANCTIONED_LC.has(m[0]), `${key}: unsanctioned affordance ${m[0]}`);
   for (const m of body.matchAll(/data-lc-cmd="([^"]*)"/g)) {
@@ -162,27 +162,40 @@ test('add-a-task lives IN the project: capture+home form on living projects only
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test('Projects page: + means add-a-project — form marked; four active slots → the honest four-at-most note carries the marker', () => {
+test('Projects page: + means add-a-project — the form is ALWAYS there; four active → it creates PARKED, named; Park/Activate manage the slots', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-pj-'));
   const dbPath = makeFixture(dir);
+  const cmdsIn = (body) => [...body.matchAll(/data-lc-cmd="([^"]*)"/g)]
+    .map((m) => JSON.parse(m[1].replaceAll('&quot;', '"').replaceAll('&amp;', '&').replaceAll('&#39;', "'")));
   withEnv(dbPath, () => {
     const body = PROJECTS.render(PROJECTS.getSection(null, {}), {}).body;
     assert.match(body, /data-fab-target="Add a project"/, 'the add-project form is what + opens here');
     assert.match(body, /data-kind="project"/, 'and it creates a PROJECT, not a task');
+    assert.ok(!/name="parked"/.test(body), 'with room, projects are born active — no parked flag');
+    assert.ok(cmdsIn(body).some((c) => c.command === 'park_project' && c.payload.projectId === 'pj1'), 'an active card offers Park');
   });
-  // fill the four slots → the form goes, the marker moves to the honest note
+  // fill the four slots → the form STAYS (operator report: full slots left no way to add):
+  // it creates parked, says so; parked rows offer Activate.
   const db = new sqlite.DatabaseSync(dbPath);
   for (let i = 2; i <= 4; i++) {
     db.prepare(`INSERT INTO life_projects VALUES ('pf${i}','woody','business','Filler ${i}','d','DELIVERY','ACTIVE','GREEN',NULL,'OWNER_ONLY','${T}','${T}')`).run();
   }
+  db.prepare(`INSERT INTO life_projects VALUES ('pk1','woody','admin','Parked idea','d','DEFINE','PARKED','GREEN',NULL,'OWNER_ONLY','${T}','${T}')`).run();
   db.close();
   withEnv(dbPath, () => {
     const full = PROJECTS.render(PROJECTS.getSection(null, {}), {}).body;
-    assert.ok(!/data-kind="project"/.test(full), 'no create form at four active — the cap is design, not accident');
-    assert.match(full, /data-fab-target="Projects are full — four at most"/, '+ still lands on the honest answer');
-    assert.match(full, /Finish, park or cancel one/, 'and the way to open a slot is named');
+    assert.match(full, /data-kind="project"/, 'the form NEVER disappears');
+    assert.match(full, /name="parked" value="1"/, 'at the cap the new project is flagged parked');
+    assert.match(full, /Add project \(parked\)/, 'the button says what will happen');
+    assert.match(full, /Four active is the cap, by design/, 'the cap is named, with the way to swap');
+    assert.ok(cmdsIn(full).some((c) => c.command === 'activate_project' && c.payload.projectId === 'pk1'), 'a parked row offers Activate');
   });
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('shell: the create handler forwards the parked flag', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'mission-control', 'ui', 'shared.js'), 'utf8');
+  assert.match(src, /if\(d\.parked\)payload\.parked=true/, 'a parked form lands as a parked create');
 });
 
 test('shell wiring: the fab honours a page marker, and the project-task chain captures then homes', () => {

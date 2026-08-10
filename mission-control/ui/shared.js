@@ -587,7 +587,7 @@ function clientScript() {
         return;}
       var payload,command;
       if(kind==='outcome'){command='create_outcome';payload={title:(d.title||'').trim(),proofDefinition:(d.proof||'').trim(),domainKey:(d.domain||'general'),activate:true};}
-      else{command='create_project';payload={title:(d.title||'').trim(),definitionOfDone:(d.dod||'').trim(),domainKey:(d.domain||'general')};}
+      else{command='create_project';payload={title:(d.title||'').trim(),definitionOfDone:(d.dod||'').trim(),domainKey:(d.domain||'general')};if(d.parked)payload.parked=true;}
       if(!payload.title){window.__lcSay(f,'Give it a name first.');return;}
       busy=true;
       fetch('/api/life/command',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({command:command,idempotencyKey:hex(),payload:payload})})

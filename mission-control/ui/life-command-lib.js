@@ -102,6 +102,10 @@ const COMMAND_SHAPES = {
   rename_task: (p) => typeof p.taskId === 'string' && typeof p.title === 'string' && !!p.title.trim() && p.title.length <= 500,
   rename_project: (p) => typeof p.projectId === 'string' && typeof p.title === 'string' && !!p.title.trim() && p.title.length <= 200,
   cancel_project: (p) => typeof p.projectId === 'string' && !!p.projectId,
+  // Slot swap (operator ask 2026-08-10): four active is the design cap — the owner parks
+  // and activates to manage the slots; the writer refuses the fifth activation by name.
+  park_project: (p) => typeof p.projectId === 'string' && !!p.projectId,
+  activate_project: (p) => typeof p.projectId === 'string' && !!p.projectId,
   // Bulk import (operator brief 2026-08-08): commands carry a file NAME in the import
   // inbox plus the operator's per-row rulings — never file content (the writer reads the
   // file itself and re-validates everything; preview writes nothing).

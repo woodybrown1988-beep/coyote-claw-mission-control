@@ -15,7 +15,7 @@ module.exports = {
     try {
       const q = (sql, args) => { const r = LIFE.lifeSelect(o.db, sql, args); return r.ok ? r.rows : []; };
       return {
-        projects: q(`SELECT id, title, domain_key, stage, status, risk_state, definition_of_done, due_date FROM life_projects ORDER BY CASE status WHEN 'ACTIVE' THEN 0 WHEN 'WAITING' THEN 1 ELSE 2 END, created_at LIMIT 20`),
+        projects: q(`SELECT id, title, domain_key, stage, status, risk_state, definition_of_done, due_date FROM life_projects ORDER BY CASE status WHEN 'ACTIVE' THEN 0 WHEN 'PARKED' THEN 1 WHEN 'WAITING' THEN 1 ELSE 2 END, created_at LIMIT 20`),
         nexts: q(`SELECT project_id, id, title FROM v_life_available_work WHERE project_id IS NOT NULL ORDER BY calculated_priority DESC`),
       };
     } finally { o.db.close(); }
@@ -38,24 +38,32 @@ module.exports = {
     };
     // Rename / cancel — on every LIVING project (finished work keeps its name and is
     // never erased; the writer refuses those by name, so terminal rows offer nothing).
+    // Park / Activate (operator ask 2026-08-10): the four-slot cap is managed HERE — park
+    // an active project, activate a parked one; the writer names the fifth-slot refusal.
+    const swap = (p) => (p.status === 'ACTIVE' ? cmd('Park', 'park_project', { projectId: p.id }, 'small')
+      : ['PARKED', 'WAITING'].includes(String(p.status)) ? cmd('Activate', 'activate_project', { projectId: p.id }, 'small') : '');
     const ctl = (p) => (['DONE', 'CANCELLED'].includes(String(p.status)) ? '' :
       `<button class="r-btn small" data-lc-rename="${LIFE.esc(JSON.stringify({ kind: 'project', id: p.id, title: p.title }))}">Rename…</button>`
+      + swap(p)
       + `<button class="lc-cxl" data-lc-cancel-project="${LIFE.esc(p.id)}">✕ cancel</button>`);
     const openSlot = `<div class="r-card r-panel" style="border-style:dashed;display:flex;flex-direction:column;justify-content:center;text-align:center;color:var(--rmuted)"><div style="font-size:13.5px;line-height:1.6;padding:8px 4px">An open project slot.<br>Four at most, by design.</div></div>`;
     const slots = [...active.map(card)];
     while (slots.length < 4) slots.push(openSlot);
     // data-fab-target: on THIS page the floating + means "Add a project" (operator report
-    // 2026-08-10 — it opened the task capture). Slots full → the marker moves to the note
-    // below so + still lands on the honest answer instead of silently capturing a task.
+    // 2026-08-10 — it opened the task capture). The form is ALWAYS here (second report
+    // same day: full slots left no way to add at all): at four active the new project
+    // lands PARKED — named on the form, echoed by the writer — never a dead end.
+    const atCap = active.length >= 4;
     const form = `<div class="r-card r-panel" data-fab-target="Add a project"><h3 class="r-panel-title" style="margin-bottom:8px">Add a project</h3>
       <form class="lc-create-form" data-kind="project" style="display:grid;gap:8px">
+        ${atCap ? '<input type="hidden" name="parked" value="1">' : ''}
         <input class="lc-input" name="title" maxlength="200" placeholder="The project, plainly named">
         <input class="lc-input" name="dod" maxlength="500" placeholder="Definition of done — how will you know it is finished?">
         <div style="display:flex;gap:8px;align-items:center"><select class="lc-domain" name="domain"><option value="general">general</option><option value="business">business</option><option value="health">health</option><option value="family">family</option><option value="admin">admin</option><option value="venture">venture</option></select>
-        <button type="submit" class="r-btn primary">Add project</button></div>
+        <button type="submit" class="r-btn primary">${atCap ? 'Add project (parked)' : 'Add project'}</button></div>
+        ${atCap ? '<div class="r-note">Four active is the cap, by design — this one lands parked below. Park or finish an active project, then Activate it into the freed slot.</div>' : ''}
       </form></div>`;
     const restRows = rest.length ? S.rcc.panel({ title: 'Waiting, parked and finished', body: rest.map((p) => `<div class="r-lrow"><div><div style="font-weight:600"><a href="/life/project?id=${encodeURIComponent(p.id)}" style="color:inherit">${LIFE.esc(p.title)}</a></div><div style="margin-top:3px">${S.rcc.tag(p.status.toLowerCase())} ${S.rcc.tag(p.domain_key)}</div></div><div style="display:flex;gap:8px;align-items:center;flex-shrink:0">${ctl(p)}</div></div>`).join('') }) : '';
-    const fullNote = `<div class="r-card r-panel" data-fab-target="Projects are full — four at most" style="color:var(--rmuted);font-size:13px">Four active projects at most, by design. Finish, park or cancel one to open a slot for the next.</div>`;
-    return { stamp: '', body: wrap(`<div style="display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));margin-bottom:12px">${slots.join('')}</div>${active.length < 4 ? form : fullNote}${restRows}`) };
+    return { stamp: '', body: wrap(`<div style="display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));margin-bottom:12px">${slots.join('')}</div>${form}${restRows}`) };
   },
 };
