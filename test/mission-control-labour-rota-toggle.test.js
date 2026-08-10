@@ -40,6 +40,15 @@ function makeDb() {
     CREATE TABLE rota_review_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, mode TEXT, week_monday TEXT, ran_at INTEGER, status TEXT, trigger TEXT, rota_fingerprint TEXT, report_json TEXT, report_text TEXT, error TEXT);
     CREATE TABLE labour_intraday (business_date TEXT, department TEXT, as_of_ms INTEGER, sched_minutes_full INTEGER, sched_cost_rc_full INTEGER, worked_minutes_so_far INTEGER, cost_rc_so_far INTEGER, uncosted_minutes INTEGER, clocked_in_now TEXT, no_shows TEXT, ref_date TEXT, ref_worked_minutes INTEGER, ref_net_pence INTEGER, ref_to_hour INTEGER, updated_at INTEGER, PRIMARY KEY (business_date, department));
   `);
+  // The ruled constants — canon_constants fixture (the labour page READS these from the DB;
+  // the engine's schema.sql seeds the live table — ruling 2026-08-10, one home).
+  db.exec(`CREATE TABLE IF NOT EXISTS canon_constants (key TEXT PRIMARY KEY, value TEXT NOT NULL, as_of TEXT NOT NULL, note TEXT);
+    INSERT INTO canon_constants (key, value, as_of, note) VALUES
+      ('labour.employer_burden_multiplier','1.159','2026-07-02',NULL),
+      ('labour.var_rate_kitchen','0.143','2026-07-18',NULL),
+      ('labour.var_rate_foh','0.081','2026-07-18',NULL),
+      ('labour.combined_anchor','0.30','2026-07-18',NULL),
+      ('labour.materiality_pence','4500','2026-07-18',NULL);`);
   return db;
 }
 

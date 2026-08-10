@@ -4,9 +4,11 @@
 // this module holds the projection maths + chart-string builders so they are testable against
 // hand-computed expectations.
 //
-// SOURCE RULING (operator tap, Reporting v2 Stage 2): the projection renders from the BACKFILLED
-// PER-RECEIPT TRUTH (sales_receipts_api), month-complete = every calendar day has an 'ok' ledger
-// row (sales_api_ingest_runs — closed days get rows too, proven live). Months without complete
+// SOURCE RULING (operator tap, Reporting v2 Stage 2; SUPERSEDED IN PART 2026-08-10, duplication
+// wave): monthly net VALUES come from the canonical day-net view v_sales_day_all — the engine's
+// revenue-of-record — never re-summed from receipt headers (the two bases disagreed 36/37
+// months). Month-complete STILL = every calendar day has an 'ok' API ledger row
+// (sales_api_ingest_runs — closed days get rows too, proven live). Months without complete
 // coverage render as GAPS, never estimates. Premises guard: months before the first full
 // current-premises month (move 2023-04-01) are never used as actuals or prior-year bases.
 //
@@ -54,8 +56,9 @@ function firstPremisesYm(boundaryDate) {
 }
 
 /**
- * Fold the API monthly rollup + ingest ledger into a per-month record.
- *   apiMonths:    [{ ym, net, txn }]   (Σ net_without_tax_pence / COUNT over sale receipts)
+ * Fold the monthly revenue-of-record + ingest ledger into a per-month record.
+ *   apiMonths:    [{ ym, net, txn }]   (Σ net_sales_pence / Σ transactions from v_sales_day_all —
+ *                                       the day-net canon, ruling 2026-08-10)
  *   ledgerMonths: [{ ym, days }]       (COUNT(DISTINCT business_date) of 'ok' ledger rows)
  *   nowYm:        the wall-clock month — that month is MTD, never 'complete'
  * Returns { ym → { netPence, txn, okDays, calDays, complete, mtd } }.

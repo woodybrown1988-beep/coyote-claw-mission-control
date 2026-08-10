@@ -51,7 +51,20 @@ function makeDb() {
     CREATE TABLE rota_ahead_shifts (business_date TEXT, rc_shift_id INTEGER, user_id INTEGER, user_name TEXT, role_id INTEGER, role_name TEXT, department TEXT, sched_start INTEGER, sched_end INTEGER, sched_break_min INTEGER, sched_minutes INTEGER, cost_basis TEXT, rate_pence INTEGER, sched_cost_true_pence INTEGER, sched_cost_rc_pence INTEGER, as_of INTEGER);
     CREATE TABLE sales_receipts_api (receipt_id TEXT, business_date TEXT, type TEXT, cancelled INTEGER, net_without_tax_pence INTEGER);
     CREATE TABLE sales_api_ingest_runs (business_date TEXT, source TEXT, status TEXT);
+    CREATE VIEW v_sales_day_all AS
+      SELECT business_date, net_sales_pence, NULL AS transactions,
+             CASE WHEN business_date >= '2023-04-01' THEN 'current' ELSE 'previous' END AS premises
+        FROM sales_day;
   `);
+  // The ruled constants — canon_constants fixture (the labour page READS these from the DB;
+  // the engine's schema.sql seeds the live table — ruling 2026-08-10, one home).
+  db.exec(`CREATE TABLE IF NOT EXISTS canon_constants (key TEXT PRIMARY KEY, value TEXT NOT NULL, as_of TEXT NOT NULL, note TEXT);
+    INSERT INTO canon_constants (key, value, as_of, note) VALUES
+      ('labour.employer_burden_multiplier','1.159','2026-07-02',NULL),
+      ('labour.var_rate_kitchen','0.143','2026-07-18',NULL),
+      ('labour.var_rate_foh','0.081','2026-07-18',NULL),
+      ('labour.combined_anchor','0.30','2026-07-18',NULL),
+      ('labour.materiality_pence','4500','2026-07-18',NULL);`);
   return db;
 }
 
@@ -88,11 +101,12 @@ function seedAheadShift(db, { date, dept, role, name, mins, basis, truePence }) 
     .run(date, name || null, role || null, dept, mins, basis || 'hourly', truePence == null ? null : truePence);
 }
 
-// One month of the per-receipt projection record: one SALE receipt carrying the month's net +
-// one ok ledger day per calendar day (ledger-complete).
+// One month of the day-net canon record (revenue-of-record ruling 2026-08-10): one sales_day
+// row carrying the month's net (read via v_sales_day_all) + one ok ledger day per calendar
+// day (ledger-complete). Receipts are NOT the projection's value source any more.
 function seedMonth(db, ym, netPence) {
-  db.prepare(`INSERT INTO sales_receipts_api (receipt_id, business_date, type, cancelled, net_without_tax_pence) VALUES (?, ?, 'SALE', 0, ?)`)
-    .run(`R-${ym}`, `${ym}-15`, netPence);
+  db.prepare(`INSERT INTO sales_day (business_date, net_sales_pence) VALUES (?, ?)`)
+    .run(`${ym}-15`, netPence);
   const days = new Date(Date.UTC(Number(ym.slice(0, 4)), Number(ym.slice(5, 7)), 0)).getUTCDate();
   const ins = db.prepare(`INSERT INTO sales_api_ingest_runs (business_date, source, status) VALUES (?, 'kseries-sales-daily', 'ok')`);
   for (let d = 1; d <= days; d++) ins.run(`${ym}-${String(d).padStart(2, '0')}`);

@@ -36,7 +36,15 @@ test('labour 13-week trend %: CROSS-RULER INTERSECTION — a day without net>0 s
              actual_paid_minutes INTEGER, scheduled_cost_pence INTEGER, actual_cost_pence INTEGER, salaried_cost_pence INTEGER,
              unmapped_scheduled_minutes INTEGER, unmapped_actual_minutes INTEGER, unmapped_names TEXT, anomalies TEXT,
              staff_scheduled INTEGER, staff_worked INTEGER, updated_at INTEGER);
-           CREATE TABLE sales_day (business_date TEXT PRIMARY KEY, net_sales_pence INTEGER);`);
+           CREATE TABLE sales_day (business_date TEXT PRIMARY KEY, net_sales_pence INTEGER);
+           -- the ruled constants: the labour page READS canon_constants (ruling 2026-08-10)
+           CREATE TABLE canon_constants (key TEXT PRIMARY KEY, value TEXT NOT NULL, as_of TEXT NOT NULL, note TEXT);
+           INSERT INTO canon_constants (key, value, as_of, note) VALUES
+             ('labour.employer_burden_multiplier','1.159','2026-07-02',NULL),
+             ('labour.var_rate_kitchen','0.143','2026-07-18',NULL),
+             ('labour.var_rate_foh','0.081','2026-07-18',NULL),
+             ('labour.combined_anchor','0.30','2026-07-18',NULL),
+             ('labour.materiality_pence','4500','2026-07-18',NULL);`);
   // one Mon–Sun week (w/c 2026-07-13, max = Sunday 07-19): the Monday holds labour AND sales
   // (10000p TRUE on 100000p net = 10%); Tue + Sun hold labour with NO sales row → they must be
   // EXCLUDED from the week's %, not counted as 0% or ∞

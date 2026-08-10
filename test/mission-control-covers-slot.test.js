@@ -26,6 +26,15 @@ function slotDb(withSlots = true) {
     s.run('2026-07-18', 12, 30, 20, 10, 12);  // Sat lunch
     s.run('2026-07-20', 19, 40, 30, 10, 16);  // Mon dinner
   }
+  // The ruled constants — canon_constants fixture (the labour page READS these from the DB;
+  // the engine's schema.sql seeds the live table — ruling 2026-08-10, one home).
+  db.exec(`CREATE TABLE IF NOT EXISTS canon_constants (key TEXT PRIMARY KEY, value TEXT NOT NULL, as_of TEXT NOT NULL, note TEXT);
+    INSERT INTO canon_constants (key, value, as_of, note) VALUES
+      ('labour.employer_burden_multiplier','1.159','2026-07-02',NULL),
+      ('labour.var_rate_kitchen','0.143','2026-07-18',NULL),
+      ('labour.var_rate_foh','0.081','2026-07-18',NULL),
+      ('labour.combined_anchor','0.30','2026-07-18',NULL),
+      ('labour.materiality_pence','4500','2026-07-18',NULL);`);
   return db;
 }
 

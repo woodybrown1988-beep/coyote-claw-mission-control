@@ -154,6 +154,10 @@ CREATE TABLE sales_api_ingest_runs (business_date TEXT NOT NULL, source TEXT NOT
 CREATE TABLE sales_channel_map_api (account_profile_code TEXT PRIMARY KEY, profile_name TEXT, delivery_mode TEXT, channel_label TEXT, first_seen INTEGER, updated_at INTEGER, label_source TEXT);
 CREATE TABLE premises_regime (name TEXT PRIMARY KEY, start_date TEXT NOT NULL, end_date TEXT, note TEXT);
 CREATE TABLE sales_day (business_date TEXT PRIMARY KEY, net_sales_pence INTEGER, gross_sales_pence INTEGER, pos_guest_count INTEGER, transactions INTEGER, taxes_pence INTEGER, refunds_pence INTEGER, voids_pence INTEGER, discounts_pence INTEGER, comps_pence INTEGER, service_charges_pence INTEGER, tips_pence INTEGER, labor_hours REAL, updated_at INTEGER);
+CREATE VIEW v_sales_day_all AS
+  SELECT business_date, net_sales_pence, transactions,
+         CASE WHEN business_date >= (SELECT start_date FROM premises_regime WHERE name='current') THEN 'current' ELSE 'previous' END AS premises
+    FROM sales_day;
 `;
 
 function isoDaysOf(ym) {
@@ -168,6 +172,7 @@ function makeDb({ gapMonth = null } = {}) {
   db.prepare(`INSERT INTO sales_channel_map_api VALUES ('LOCAL','Local','NONE','EAT IN',1,1,'operator'), ('storekit_orderpay','Storekit','NONE','STOREKIT ORDER & PAY',1,1,'operator')`).run();
   const insR = db.prepare(`INSERT INTO sales_receipts_api (receipt_id, business_date, type, cancelled, account_profile_code, net_without_tax_pence, net_with_tax_pence, tax_pence, updated_at) VALUES (?,?,?,?,?,?,?,?,1)`);
   const insL = db.prepare(`INSERT INTO sales_api_ingest_runs VALUES (?,?,?,?,?,1)`);
+  const insD = db.prepare(`INSERT INTO sales_day (business_date, net_sales_pence, transactions, updated_at) VALUES (?,?,2,1)`);
   const addMonth = (ym, net, ledgerDays) => {
     const eat = Math.round(net * 0.6);
     const qr = net - eat;
@@ -175,6 +180,9 @@ function makeDb({ gapMonth = null } = {}) {
     insR.run(`R-${ym}-B`, `${ym}-15`, 'SALE', 0, 'storekit_orderpay', qr, Math.round(qr * 1.2), Math.round(qr * 0.2));
     // a VOID must never count anywhere
     insR.run(`R-${ym}-V`, `${ym}-16`, 'VOID', 0, 'LOCAL', 99999, 119999, 20000);
+    // the day-net canon row (v_sales_day_all — the month's revenue-of-record value, ruling
+    // 2026-08-10); the receipts above stay the channel/line-level side
+    insD.run(`${ym}-15`, net);
     const days = ledgerDays == null ? isoDaysOf(ym) : isoDaysOf(ym).slice(0, ledgerDays);
     for (const d of days) insL.run(d, 'kseries-sales-daily', 'ok', 2, 'net=x');
   };
