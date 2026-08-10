@@ -116,6 +116,11 @@ const COMMAND_SHAPES = {
   set_setting: (p) => typeof p.key === 'string' && typeof p.value === 'string',
   pause_capability: (p) => typeof p.capabilityKey === 'string',
   resume_capability: (p) => typeof p.capabilityKey === 'string',
+  // Calendar refresh (Graph go 2026-08-10): the Schedule page's "Sync now". Read-side only —
+  // the writer polls Outlook and updates its OWN mirror; nothing is ever written to the
+  // calendar. The writer refuses this from any agent-actor payload; MC relays no actor at
+  // all (it IS the authenticated owner surface).
+  calendar_sync: () => true,
 };
 
 function validateCommand(body) {
