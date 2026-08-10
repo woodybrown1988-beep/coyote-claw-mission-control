@@ -970,7 +970,13 @@ function css() {
 .lc-focus-card{width:100%;max-width:560px;background:#14181d;border:1px solid #2a3139;border-radius:16px;padding:22px;box-shadow:0 20px 60px rgba(0,0,0,.6)}
 .lc-input{width:100%;box-sizing:border-box;font-size:17px;padding:12px 14px;border-radius:8px;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.06);color:inherit}
 .lc-row{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
-.lc-domain{min-height:44px;padding:0 10px;border-radius:8px;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.06);color:inherit;font-size:14px}
+.lc-domain{min-height:44px;padding:0 10px;border-radius:8px;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.06);color:inherit;font-size:14px;color-scheme:dark}
+/* Native select POPUPS ignore the control's colours: without color-scheme:dark the option
+   list renders on the UA's light background with our inherited light text — white-on-white,
+   and the hover highlight erases it entirely (operator report 2026-08-10). The option rules
+   are the explicit fallback for engines that style options directly. */
+.lc-domain option{background:#14181d;color:#e9eef4}
+.lc-domain option:checked{background:#26374a;color:#fff}
 .lc-btn{min-height:44px;min-width:96px;padding:0 18px;border-radius:8px;border:1px solid rgba(34,211,238,.5);background:rgba(34,211,238,.16);color:#CFF6FB;font-size:14px;font-weight:600;cursor:pointer}
 .lc-ghost{border-color:rgba(255,255,255,.2);background:transparent;color:var(--muted,#8aa)}
 .lc-result{margin-top:10px;font-size:13px;min-height:18px}
@@ -1200,7 +1206,9 @@ const rcc = {
 .rcc .r-conf .dot{width:7px;height:7px;border-radius:50%;background:var(--rmuted)}
 .rcc .r-conf.high .dot{background:${RCC_TOKENS.good}}.rcc .r-conf.high{color:#9fe3bd}
 .rcc .r-conf.med .dot{background:${RCC_TOKENS.warn}}.rcc .r-conf.med{color:#f0cf8f}
-.rcc .r-routesel{background:rgba(255,255,255,.05);border:1px solid var(--rline);border-radius:8px;color:var(--rtext);font-size:12px;padding:5px 8px;min-height:32px}
+.rcc .r-routesel{background:rgba(255,255,255,.05);border:1px solid var(--rline);border-radius:8px;color:var(--rtext);font-size:12px;padding:5px 8px;min-height:32px;color-scheme:dark}
+.rcc .r-routesel option{background:#14181d;color:var(--rtext)}
+.rcc .r-routesel option:checked{background:#26374a;color:#fff}
 .rcc .r-toggle{display:inline-flex;align-items:center;gap:10px;cursor:pointer;font-size:13px;user-select:none}
 .rcc .r-toggle .sw{width:40px;height:22px;border-radius:22px;background:rgba(255,255,255,.14);position:relative;transition:background .15s;flex:0 0 40px}
 .rcc .r-toggle .sw::after{content:'';position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;background:#fff;transition:left .15s}
