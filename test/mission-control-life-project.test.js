@@ -147,6 +147,52 @@ test('every project touchpoint links here: Projects page cards + rest rows, task
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('add-a-task lives IN the project: capture+home form on living projects only, fab retargeted (operator ask 2026-08-10)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-pj-'));
+  const dbPath = makeFixture(dir);
+  withEnv(dbPath, () => {
+    const body = PROJECT.render(PROJECT.getSection(null, { query: { id: 'pj1' } }), {}).body;
+    assert.match(body, /data-fab-target="Add a task to this project"/, 'the floating + means add-task-here on this page');
+    assert.match(body, /lc-create-form" data-kind="project-task" data-project="pj1"/, 'the capture+home chain form, keyed to THIS project');
+    assert.match(body, /<option value="business" selected>/, "domain defaults to the project's own");
+    assert.match(body, /never in the Inbox/, 'the promise is written on the form');
+    const done = PROJECT.render(PROJECT.getSection(null, { query: { id: 'pj2' } }), {}).body;
+    assert.ok(!/project-task/.test(done), 'a finished project takes no new tasks');
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('Projects page: + means add-a-project — form marked; four active slots → the honest four-at-most note carries the marker', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-pj-'));
+  const dbPath = makeFixture(dir);
+  withEnv(dbPath, () => {
+    const body = PROJECTS.render(PROJECTS.getSection(null, {}), {}).body;
+    assert.match(body, /data-fab-target="Add a project"/, 'the add-project form is what + opens here');
+    assert.match(body, /data-kind="project"/, 'and it creates a PROJECT, not a task');
+  });
+  // fill the four slots → the form goes, the marker moves to the honest note
+  const db = new sqlite.DatabaseSync(dbPath);
+  for (let i = 2; i <= 4; i++) {
+    db.prepare(`INSERT INTO life_projects VALUES ('pf${i}','woody','business','Filler ${i}','d','DELIVERY','ACTIVE','GREEN',NULL,'OWNER_ONLY','${T}','${T}')`).run();
+  }
+  db.close();
+  withEnv(dbPath, () => {
+    const full = PROJECTS.render(PROJECTS.getSection(null, {}), {}).body;
+    assert.ok(!/data-kind="project"/.test(full), 'no create form at four active — the cap is design, not accident');
+    assert.match(full, /data-fab-target="Projects are full — four at most"/, '+ still lands on the honest answer');
+    assert.match(full, /Finish, park or cancel one/, 'and the way to open a slot is named');
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('shell wiring: the fab honours a page marker, and the project-task chain captures then homes', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'mission-control', 'ui', 'shared.js'), 'utf8');
+  assert.ok(src.includes("querySelector('[data-fab-target]')"), 'the fab looks for a page marker');
+  assert.match(src, /kind==='project-task'/, 'the create-form handler knows the chain');
+  assert.ok(/project-task[\s\S]{0,900}\/api\/life\/capture[\s\S]{0,900}assign_project/.test(src), 'chain order: capture first, then assign_project on the returned id');
+  assert.match(src, /the task is in your Inbox/, 'a half-landed chain tells the truth');
+});
+
 test('wiring: server registers the route; workspaceOf resolves the drawer to the life workspace', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'mission-control', 'server.js'), 'utf8');
   assert.ok(src.includes("require('./ui/pages/life/project.js')"), 'server.js serves /life/project');
