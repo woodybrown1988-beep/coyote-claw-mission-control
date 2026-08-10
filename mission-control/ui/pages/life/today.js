@@ -47,6 +47,12 @@ module.exports = {
         openProposals: q(`SELECT id, task_id, capability_key, command_type, reason, confidence, risk_level FROM life_update_proposals WHERE state = 'PROPOSED' ORDER BY created_at ASC LIMIT 10`),
         approvalRows: q(`SELECT id, title FROM life_tasks WHERE status = 'AWAITING_APPROVAL' ORDER BY updated_at ASC LIMIT 10`),
         available: q(`SELECT id, title, domain_key, execution_mode FROM v_life_available_work ORDER BY calculated_priority DESC, created_at ASC LIMIT 8`),
+        // DUE-SOON SAFETY NET (audit 2026-08 G-05): any live task with a deadline inside 72h (or already
+        // overdue) surfaces on Today REGARDLESS of what the plan compiled — statutory dues were TARGET
+        // (not HARD), so the priority view never lifted them and they were invisible two days out.
+        dueSoon: q(`SELECT id, title, due_at, due_kind, execution_mode, status, domain_key FROM life_tasks
+                     WHERE status NOT IN ('DONE','CANCELLED') AND due_at IS NOT NULL AND due_at <= ?
+                     ORDER BY due_at ASC LIMIT 12`, [new Date(now + 72 * 3_600_000).toISOString()]),
         inboxCount: q(`SELECT COUNT(*) c FROM life_tasks WHERE status = 'INBOX'`)[0]?.c ?? 0,
         waitingRows: q(`SELECT w.task_id, w.dependency_label, w.wake_type, w.fallback_at FROM life_waiting_conditions w WHERE w.state = 'ACTIVE' ORDER BY w.fallback_at IS NULL, w.fallback_at LIMIT 12`),
         activeOutcomes: q(`SELECT DISTINCT domain_key FROM life_outcomes WHERE status = 'ACTIVE'`).map((r) => r.domain_key),
@@ -278,11 +284,33 @@ module.exports = {
         + `</div>`,
     });
 
+    // ── DUE SOON (G-05): deadlines inside 72h / overdue, shown WHATEVER the plan picked. Sits directly
+    // under the hero so a statutory due can never hide below the fold. Rendered only when non-empty. ──
+    const dueSoonRows = s.dueSoon || [];
+    const dueRow = (d) => {
+      const hrs = (Date.parse(d.due_at) - now) / 3_600_000;
+      const overdue = hrs < 0;
+      const chip = overdue ? S.rcc.tag('overdue', 'bad') : hrs < 24 ? S.rcc.tag('due today', 'bad') : S.rcc.tag(`in ${Math.round(hrs / 24)}d`, 'warn');
+      const act = d.status === 'IN_PROGRESS'
+        ? `<a class="r-btn small" href="/life/task?id=${encodeURIComponent(d.id)}">Open</a>`
+        : cmd('Start', 'transition', { taskId: d.id, to: 'IN_PROGRESS' }, 'small primary');
+      return `<div class="r-lrow"${overdue ? ' style="border-left:3px solid var(--rbad);padding-left:9px"' : ''}><div style="min-width:0">`
+        + `<div style="font-weight:600">${link(d.id, d.title)}</div>`
+        + `<div style="font-size:12px;color:var(--rmuted);margin-top:3px">Due ${LIFE.esc(String(d.due_at).slice(0, 10))} · ${d.due_kind === 'HARD' ? 'hard deadline' : 'target date'}${d.domain_key ? ' · ' + LIFE.esc(d.domain_key) : ''}</div></div>`
+        + `<div style="display:flex;gap:6px;align-items:center;flex-shrink:0">${chip}${act}</div></div>`;
+    };
+    const dueSoonPanel = dueSoonRows.length ? S.rcc.panel({
+      title: 'Due soon', sub: 'Deadlines inside 72 hours — shown whatever today’s plan picked',
+      headRight: `<span class="r-pill">${dueSoonRows.length}</span>`,
+      body: dueSoonRows.map(dueRow).join(''),
+    }) : '';
+
     // LAYOUT (operator feedback 2026-08-05: cover the page, kill the dead space): the golden's
     // grammar — hero gives the must-win the widest column; below, TWO wide columns whose card
     // stacks balance (Needs+Available | Waiting+Handled) instead of three narrow ones.
     const body = head.replace('__HEADBTNS__', headBtns)
       + `<div class="lt-hero">${rexCard}${mustCard}${myDay}</div>`
+      + (dueSoonPanel ? `<div style="margin-bottom:12px">${dueSoonPanel}</div>` : '')
       + `<div style="margin-bottom:12px">${supportsBand}</div>`
       + `<div class="lt-main">`
       + `<div style="display:grid;gap:12px;align-content:start">${needsPanel}${availPanel}</div>`
