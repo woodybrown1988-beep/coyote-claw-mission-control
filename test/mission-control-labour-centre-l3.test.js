@@ -45,6 +45,15 @@ function makeDb() {
     CREATE TABLE sales_channel_map_api (account_profile_code TEXT PRIMARY KEY, profile_name TEXT, delivery_mode TEXT, channel_label TEXT, first_seen INTEGER, updated_at INTEGER, label_source TEXT);
     CREATE TABLE sales_api_ingest_runs (business_date TEXT, source TEXT, status TEXT);
   `);
+  // The ruled constants — canon_constants fixture (the labour page READS these from the DB;
+  // the engine's schema.sql seeds the live table — ruling 2026-08-10, one home).
+  db.exec(`CREATE TABLE IF NOT EXISTS canon_constants (key TEXT PRIMARY KEY, value TEXT NOT NULL, as_of TEXT NOT NULL, note TEXT);
+    INSERT INTO canon_constants (key, value, as_of, note) VALUES
+      ('labour.employer_burden_multiplier','1.159','2026-07-02',NULL),
+      ('labour.var_rate_kitchen','0.143','2026-07-18',NULL),
+      ('labour.var_rate_foh','0.081','2026-07-18',NULL),
+      ('labour.combined_anchor','0.30','2026-07-18',NULL),
+      ('labour.materiality_pence','4500','2026-07-18',NULL);`);
   return db;
 }
 

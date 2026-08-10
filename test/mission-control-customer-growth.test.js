@@ -33,6 +33,11 @@ function reviewsDb() {
     CREATE TABLE review_drafts(draft_status TEXT);
     CREATE TABLE review_issues(extracted_at TEXT);
     CREATE TABLE sales_by_channel(channel TEXT);
+    -- the engine-stored PLATFORM-REPORTED ratings (rating-path unification 2026-08-10):
+    -- values deliberately DIFFER from the corpus averages (google corpus avg = 4.2) so the
+    -- assertions prove the page reads the snapshot, never recomputes
+    CREATE TABLE review_snapshot(overall_rating REAL, google_rating REAL, tripadvisor_rating REAL, opentable_rating REAL, fetched_at INTEGER);
+    INSERT INTO review_snapshot VALUES (4.7, 4.77, 4.5, 4.8, 1000);
     INSERT INTO review_corpus VALUES ('google',4.4,'2026-07-06T10:00:00Z',1),('google',4.0,'2026-07-02',0),
       ('tripadvisor',4.6,'2026-07-13',0),('opentable',4.7,'2026-07-19',0);
     INSERT INTO review_drafts VALUES ('draft'),('draft'),('posted');
@@ -87,10 +92,15 @@ test('four-way verdict: all four tags appear; no-source/integration panels name 
   assert.match(all, /BUSINESS DECISION to start capturing customer identity/);
 });
 
-test('LIVE reputation heart: real corpus numbers, one-home to Reviews, degradation banner from the data', () => {
+test('LIVE reputation heart: PLATFORM-REPORTED ratings (review_snapshot) + corpus counts, one-home to Reviews, degradation banner from the data', () => {
   const body = render(reviewsDb(), 'executive').body;
   assert.match(body, /Reputation .{0,6}reach/); // '&' is HTML-escaped to &amp;
-  assert.match(body, /★ 4\.\d/, 'a real average rating renders');
+  // rating-path unification (ruling 2026-08-10): stars = the engine-stored platform ratings,
+  // NEVER a corpus recompute (the A5.3 audit finding — snapshot 4.77 vs corpus-avg 4.2)
+  assert.match(body, /★ 4\.77/, 'the google star is the SNAPSHOT value');
+  assert.ok(!body.includes('★ 4.2'), 'the corpus-average google rating never renders');
+  assert.match(body, /overall ★ 4\.7/, 'the overall star is the snapshot aggregate');
+  assert.match(body, /no rating is recomputed here/, 'the (now true) one-home caption');
   assert.match(body, /4 reviews across platforms/, 'real corpus total (4 seeded)');
   assert.match(body, /2 unposted reply drafts/, 'real reply backlog (2 drafts)');
   assert.match(body, /\/coyote\/reviews/, 'one-home link to the Reviews page');
@@ -98,6 +108,14 @@ test('LIVE reputation heart: real corpus numbers, one-home to Reviews, degradati
   assert.match(body, /Google OAuth/); assert.match(body, /Anthropic credit/);
   assert.match(body, /stale since 2026-07-06/, 'Google stale date from the seeded latest google review');
   assert.match(body, /stale since 2026-07-05/, 'extractor stale date from the seeded latest issue');
+  // NEGATIVE CONTROL: corpus present but NO review_snapshot → ratings '—' + the explicit
+  // unavailability line; the corpus average must NOT stand in
+  const noSnap = new sqlite.DatabaseSync(':memory:');
+  noSnap.exec(`CREATE TABLE review_corpus(platform TEXT, overall REAL, reviewed_date TEXT, has_reply INTEGER);
+    INSERT INTO review_corpus VALUES ('google',4.4,'2026-07-06',0),('google',4.0,'2026-07-02',0);`);
+  const nsBody = render(noSnap, 'executive').body;
+  assert.match(nsBody, /platform ratings unavailable, never recomputed from the corpus/, 'missing snapshot says so');
+  assert.ok(!/★ 4\.\d/.test(nsBody), 'no star figure is fabricated from the corpus');
   // empty DB → no fabricated reputation, honest not-present
   assert.match(render(new sqlite.DatabaseSync(':memory:'), 'executive').body, /not present on this box|—/);
 });

@@ -214,7 +214,7 @@ test('control formulas: the six canonical rulings VERBATIM', () => {
   seedRecon(db);
   const body = render(db);
   for (const line of [
-    'day net (ex-VAT) = SUM(net_without_tax_pence) over non-cancelled SALE receipts',
+    'day net revenue-of-record = v_sales_day_all (day-net canon, ruled 2026-08-10); the battery cross-checks it against SUM(net_without_tax_pence) over non-cancelled SALE receipts',
     'ATV = net ÷ receipts · ex-VAT · per-receipt record basis',
     'QR = STOREKIT ORDER &amp; PAY · sitting = table/QR-slot per day, split bills grouped; per-order ATV understates QR spend (fragmentation ruling 2026-07-31)',
     'gross = net + VAT; day_gross deltas vs the scraper eras = DOCUMENTED VAT-basis class (ruled 2026-07-20)',

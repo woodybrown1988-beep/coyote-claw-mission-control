@@ -178,12 +178,21 @@ module.exports = {
 
   getSection(db, ctx) {
     const q = ctx.q;
-    // LIVE reputation read (the one real slice) — surfaced from the reviews corpus, home = /coyote/reviews.
+    // LIVE reputation read (the one real slice) — counts/dates from the reviews corpus; STAR
+    // RATINGS from review_snapshot (the engine-stored, PLATFORM-REPORTED ratings). Rating-path
+    // unification, operator ruling 2026-08-10: the engine computes/stores, MC reads — the 07-31
+    // autonomy audit (A5.3) caught this page recomputing avg(overall) over the ingested subset
+    // (google 4.44 vs platform 4.77) while its caption claimed it didn't recompute. The corpus
+    // recompute is REMOVED; a missing snapshot renders '—', never a corpus average.
     const rep = { wired: tableExists(q, 'review_corpus') };
     if (rep.wired) {
       rep.total = (one(q, `SELECT count(*) n FROM review_corpus`) || {}).n || 0;
-      rep.byPlatform = rowsOf(q(`SELECT platform, count(*) n, round(avg(overall),2) avg, max(reviewed_date) latest, sum(coalesce(has_reply,0)) replied FROM review_corpus GROUP BY platform ORDER BY n DESC`));
-      rep.overall = (one(q, `SELECT round(avg(overall),2) a FROM review_corpus WHERE overall IS NOT NULL`) || {}).a;
+      rep.byPlatform = rowsOf(q(`SELECT platform, count(*) n, max(reviewed_date) latest, sum(coalesce(has_reply,0)) replied FROM review_corpus GROUP BY platform ORDER BY n DESC`));
+      const snap = one(q, `SELECT overall_rating, google_rating, tripadvisor_rating, opentable_rating, fetched_at
+        FROM review_snapshot ORDER BY fetched_at DESC LIMIT 1`);
+      const rating = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
+      rep.snapRatings = snap ? { google: rating(snap.google_rating), tripadvisor: rating(snap.tripadvisor_rating), opentable: rating(snap.opentable_rating) } : null;
+      rep.overall = snap ? rating(snap.overall_rating) : null;
       rep.backlog = tableExists(q, 'review_drafts') ? ((one(q, `SELECT count(*) n FROM review_drafts WHERE draft_status='draft'`) || {}).n || 0) : null;
       rep.googleLatest = dateOnly((one(q, `SELECT max(reviewed_date) d FROM review_corpus WHERE platform='google'`) || {}).d);
       rep.extractorLatest = tableExists(q, 'review_issues') ? dateOnly((one(q, `SELECT max(extracted_at) d FROM review_issues`) || {}).d) : null;
@@ -268,11 +277,18 @@ module.exports = {
     // degradation banner (used on any tab surfacing reviews)
     const degradeBanner = `<div class="cg-degrade"><b>Two review engines are down (standing operator items):</b> ingestion — Google OAuth expired (Google reviews stale since ${esc(rep.googleLatest || '—')}); issue/sentiment extractor — Anthropic credit dead (tags stale since ${esc(rep.extractorLatest || '—')}). Reputation figures below are real but frozen at those dates until both are restored.</div>`;
 
-    // LIVE reputation panel (the heart) — surfaced from the corpus, one-home to Reviews.
-    const repBody = rep.wired ? `<div class="cg-rep">${(rep.byPlatform || []).map((p) => `<div class="p"><h4>${esc(p.platform)}</h4><strong>${p.avg != null ? '★ ' + p.avg : '—'}</strong><p>${p.n} reviews · latest ${esc(dateOnly(p.latest) || '—')}${p.replied ? ` · ${p.replied} replied` : ''}</p></div>`).join('')}</div>
-      <div class="r-mini-note">${rep.total} reviews across platforms · overall ★ ${rep.overall != null ? rep.overall : '—'} · ${rep.backlog != null ? rep.backlog + ' unposted reply drafts (brand-voice backlog)' : 'reply drafts n/a'}. Surfaced from the <a href="/coyote/reviews" style="color:${T.blue}">Reviews page</a> — not recomputed here.</div>${degradeBanner}`
+    // LIVE reputation panel (the heart) — one home for ratings: stars = the engine-stored
+    // PLATFORM-REPORTED ratings (review_snapshot); counts/dates = corpus facts. No corpus
+    // rating recompute here (the 07-31 audit A5.3 finding — fixed 2026-08-10).
+    const snapStar = (platform) => {
+      const sr = rep.snapRatings || null;
+      const v = sr ? sr[String(platform).toLowerCase()] : null;
+      return v != null ? '★ ' + v : '—';
+    };
+    const repBody = rep.wired ? `<div class="cg-rep">${(rep.byPlatform || []).map((p) => `<div class="p"><h4>${esc(p.platform)}</h4><strong>${esc(snapStar(p.platform))}</strong><p>${p.n} reviews · latest ${esc(dateOnly(p.latest) || '—')}${p.replied ? ` · ${p.replied} replied` : ''}</p></div>`).join('')}</div>
+      <div class="r-mini-note">${rep.total} reviews across platforms · overall ★ ${rep.overall != null ? rep.overall : '— (no review_snapshot fetch — platform ratings unavailable, never recomputed from the corpus)'} · ${rep.backlog != null ? rep.backlog + ' unposted reply drafts (brand-voice backlog)' : 'reply drafts n/a'}. Star ratings = platform-reported (review_snapshot, engine-ingested); counts/dates = review_corpus. One home with the <a href="/coyote/reviews" style="color:${T.blue}">Reviews page</a> — no rating is recomputed here.</div>${degradeBanner}`
       : S.rcc.emptyState({ title: 'Reputation', blocker: 'the reviews corpus is not present on this box.', unlock: 'run the reviews ingest' });
-    const repPanel = S.rcc.panel({ title: 'Reputation & reach', sub: 'The one genuinely-live slice — surfaced from the reviews corpus', headRight: S.rcc.tag('live · degraded', 'warn'), body: repBody });
+    const repPanel = S.rcc.panel({ title: 'Reputation & reach', sub: 'The one genuinely-live slice — ratings from review_snapshot, counts from the corpus', headRight: S.rcc.tag('live · degraded', 'warn'), body: repBody });
 
     // source register (the mock's "recommended growth data architecture", made honest)
     const regBody = `<div class="cg-src">${sec.sources.map((s) => `<div class="s ${s.state}"><h4>${esc(s.label)}</h4><p>${esc(s.role)}</p><div class="st">${{ live: '● LIVE', degraded: '◐ WIRED · DEGRADED', integration: '○ NEEDS INTEGRATION', nosource: '○ NO SOURCE' }[s.state]}</div></div>`).join('')}</div>
@@ -282,7 +298,7 @@ module.exports = {
     let body;
     if (tab === 'executive') {
       const kpis = [
-        realKpi('Overall rating', rep.overall != null ? '★ ' + rep.overall : '—', `${rep.total || 0} reviews · degraded`, tint(rep.overall)),
+        realKpi('Overall rating', rep.overall != null ? '★ ' + rep.overall : '—', rep.overall != null ? 'platform-reported (review_snapshot) · degraded' : 'no review_snapshot fetch — never recomputed from the corpus', tint(rep.overall)),
         dashKpi('New identified customers', 'no source — no customer identity captured'),
         dashKpi('Local second-visit rate', 'no source — needs identity capture'),
         realKpi('Reply backlog', rep.backlog != null ? String(rep.backlog) : '—', 'unposted brand-voice drafts'),

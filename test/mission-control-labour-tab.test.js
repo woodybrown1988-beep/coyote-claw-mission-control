@@ -31,6 +31,15 @@ function makeDb() {
     CREATE TABLE labour_shifts (business_date TEXT, user_id INTEGER, user_name TEXT, sched_minutes INTEGER, act_minutes INTEGER, variance_minutes INTEGER, rate_pence INTEGER, cost_basis TEXT, updated_at INTEGER);
     CREATE TABLE labour_hourly (business_date TEXT, hour INTEGER, scheduled_minutes INTEGER, actual_minutes INTEGER, scheduled_cost_pence INTEGER, actual_cost_pence INTEGER, updated_at INTEGER);
   `);
+  // The ruled constants — canon_constants fixture (the labour page READS these from the DB;
+  // the engine's schema.sql seeds the live table — ruling 2026-08-10, one home).
+  db.exec(`CREATE TABLE IF NOT EXISTS canon_constants (key TEXT PRIMARY KEY, value TEXT NOT NULL, as_of TEXT NOT NULL, note TEXT);
+    INSERT INTO canon_constants (key, value, as_of, note) VALUES
+      ('labour.employer_burden_multiplier','1.159','2026-07-02',NULL),
+      ('labour.var_rate_kitchen','0.143','2026-07-18',NULL),
+      ('labour.var_rate_foh','0.081','2026-07-18',NULL),
+      ('labour.combined_anchor','0.30','2026-07-18',NULL),
+      ('labour.materiality_pence','4500','2026-07-18',NULL);`);
   return db;
 }
 
@@ -39,14 +48,19 @@ function renderTab(db, query) {
   return labour.render(labour.getSection(db, ctx), ctx).body;
 }
 
-test('empty DB (no tables at all): every tab renders an honest state, never throws', () => {
+test('empty DB (no tables at all): every tab renders an honest state, never throws — RED-PROOF: no canon_constants → the EXPLICIT constants-unavailable state, zero formula figures', () => {
   const db = new sqlite.DatabaseSync(':memory:');
   for (const tab of ['executive', 'forecast', 'rota', 'kitchen', 'foh', 'coverage']) {
     const body = renderTab(db, { tab });
     assert.ok(body.length > 0, `${tab} renders`);
     assert.ok(!/NaN|Infinity|undefined/.test(body), `${tab} carries no fabricated value`);
+    // the ruled constants come from canon_constants (2026-08-10 ruling); on a DB without the
+    // table every constants-dependent tab must SAY so — never silent hardcoded numbers
+    assert.ok(body.includes('Ruled constants unavailable'), `${tab} names the missing canon_constants`);
+    assert.ok(body.includes('canon_constants'), `${tab} names the unlock`);
+    assert.ok(!/formula budget/.test(body), `${tab} renders no formula-budget figure without the DB constants`);
   }
-  assert.ok(renderTab(db).includes('No settled labour-day record yet'), 'executive names the missing wire');
+  assert.ok(renderTab(db).includes('Ruled constants unavailable'), 'the default tab gates loudly too');
 });
 
 test('coverage: rate parity — discrepancies named with the unfair banner; clean state says so', () => {

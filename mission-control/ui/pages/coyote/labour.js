@@ -39,8 +39,10 @@
 //     rates, pre-burden, salaried £0. Renders ONLY in the cost-definition reconciliation card,
 //     labelled. Standing ruling: RC screens are recomputed from LIVE rates, never cached.
 // THE RULED FORMULA (rota-review spec): dept TRUE budget = dept salaried burdened + var% × net
-// (kitchen 14.3%, FOH 8.1%; combined 22.4% — ~30% at the High-band anchor); OVER only beyond
-// the ruled £45 materiality.
+// (as of 2026-08-10: kitchen 14.3%, FOH 8.1%; combined 22.4% — ~30% at the High-band anchor);
+// OVER only beyond the ruled £45 materiality. THE VALUES COME FROM THE DB: canon_constants
+// (engine schema; single-home ruling 2026-08-10) via loadRuledConstants — this comment quotes
+// them as a dated snapshot only; the numbers rendered are ALWAYS the DB's.
 // CROSS-RULER HONESTY (load-bearing, inherited): labour % of net and SPLH divide matching
 // numerator and denominator over ONLY the sales∩labour intersection days, day-count labelled.
 // JUNE HOLE: labour_day has NO June 2026 rows (the backfill is blocked on the Leon Mackay
@@ -79,12 +81,33 @@ const TABS = [
 ];
 const TAB_KEYS = TABS.map((t) => t.key);
 
-// The ruled constants (rota-review spec — rulings, not data): variable splits, materiality,
-// employer burden. The formula budget derives at read time; nothing here is a stored value.
-const VAR_RATE = 0.224;           // kitchen 14.3% + FOH 8.1% combined
-const VAR_RATE_DEPT = { kitchen: 0.143, foh: 0.081 };
-const MATERIALITY_PENCE = 4500;   // the ruled £45 — OVER only beyond it
-const BURDEN = 1.159;             // employer burden multiplier on hourly TRUE
+// The ruled constants (rota-review spec rulings) are READ FROM THE DB — the engine's
+// canon_constants table (operator ruling 2026-08-10, duplication wave: ONE writing store;
+// MC is a READER, never a second home for a ruled number). loadRuledConstants returns null
+// when the table/keys are absent (e.g. the engine schema PR hasn't merged yet on this DB) —
+// the page then renders an EXPLICIT "ruled constants unavailable" state; there is no silent
+// hardcoded default by design. Combined var rate = kitchen + foh (DERIVED, matching the
+// engine's formula arithmetic — never stored as its own row).
+const CANON_KEYS = {
+  burden: 'labour.employer_burden_multiplier',
+  varKitchen: 'labour.var_rate_kitchen',
+  varFoh: 'labour.var_rate_foh',
+  materialityPence: 'labour.materiality_pence',
+};
+function loadRuledConstants(q) {
+  const rows = rowsOf(q(`SELECT key, value FROM canon_constants WHERE key IN (?, ?, ?, ?)`,
+    [CANON_KEYS.burden, CANON_KEYS.varKitchen, CANON_KEYS.varFoh, CANON_KEYS.materialityPence]));
+  const byKey = new Map(rows.map((r) => [String(r.key), Number(r.value)]));
+  for (const k of Object.values(CANON_KEYS)) if (!Number.isFinite(byKey.get(k))) return null;
+  const kitchen = byKey.get(CANON_KEYS.varKitchen);
+  const foh = byKey.get(CANON_KEYS.varFoh);
+  return {
+    burden: byKey.get(CANON_KEYS.burden),
+    varDept: { kitchen, foh },
+    varRate: kitchen + foh,
+    materialityPence: byKey.get(CANON_KEYS.materialityPence),
+  };
+}
 
 // The per-receipt SALE filter + LOCAL London hour conversion (the reports-page idiom,
 // verbatim — the coverage heatmap's demand side runs on the same line-grain rules).
@@ -110,10 +133,10 @@ function juneNote(missingDates) {
 }
 
 // The ruled status classes vs a formula/plan budget delta (mirrors the Drivers scorecard):
-// OVER only beyond the £45 materiality; on/under both render good.
-function ruledChip(deltaPence, overWord, underWord, onWord) {
+// OVER only beyond the ruled materiality (canon_constants); on/under both render good.
+function ruledChip(C, deltaPence, overWord, underWord, onWord) {
   if (deltaPence == null) return S.rcc.tag('no labour');
-  return deltaPence > MATERIALITY_PENCE ? S.rcc.tag(`${overWord} ${S.fmtGbpPence(deltaPence)}`, 'bad')
+  return deltaPence > C.materialityPence ? S.rcc.tag(`${overWord} ${S.fmtGbpPence(deltaPence)}`, 'bad')
     : deltaPence <= 0 ? S.rcc.tag(underWord, 'good')
       : S.rcc.tag(onWord, 'good');
 }
@@ -124,7 +147,7 @@ function ruledChip(deltaPence, overWord, underWord, onWord) {
 
 // EXECUTIVE — last-full-week KPIs, 13-week control trend, attention queue, variance bridge,
 // department control, daily control strip. TRUE ruler throughout (RC never renders here).
-function buildExecutive(q, maxDate) {
+function buildExecutive(q, maxDate, C) {
   if (!maxDate) return null;
   const e = { maxDate };
   const wk = K.lastFullWeek(maxDate);
@@ -145,7 +168,8 @@ function buildExecutive(q, maxDate) {
       WHERE business_date BETWEEN ? AND ? AND variance_minutes > 0`, [wk.from, wk.to]))[0] || null;
 
   // ---- 13-week control trend: weekly TRUE labour % over intersection days + the formula
-  // budget % ((Σsalaried + 22.4% × net) ÷ net). A week with no labour_day rows is a GAP. ----
+  // budget % ((Σsalaried + varRate × net) ÷ net, splits from canon_constants). A week with
+  // no labour_day rows is a GAP. ----
   const from13 = K.shiftDays(wk.from, -84);
   const weeks = [];
   const byFrom = new Map();
@@ -172,7 +196,7 @@ function buildExecutive(q, maxDate) {
     weeks: weeks.map((w) => ({
       from: w.from, labourDays: w.labourDays, interDays: w.interDays,
       pct: w.interDays > 0 && w.net > 0 ? (w.cost / w.net) * 100 : null,
-      budPct: w.interDays > 0 && w.net > 0 ? ((w.sal + VAR_RATE * w.net) / w.net) * 100 : null,
+      budPct: w.interDays > 0 && w.net > 0 ? ((w.sal + C.varRate * w.net) / w.net) * 100 : null,
     })),
   };
 
@@ -232,12 +256,12 @@ function buildExecutive(q, maxDate) {
   }
   e.bridge = {
     sched: e.agg ? num(e.agg.sc) : null, actual: e.agg ? num(e.agg.ac) : null,
-    rateMix: rateMix != null ? Math.round(rateMix * BURDEN) : null,
-    hoursVar: hoursVar && num(hoursVar.p) != null ? Math.round(num(hoursVar.p) * BURDEN) : null,
+    rateMix: rateMix != null ? Math.round(rateMix * C.burden) : null,
+    hoursVar: hoursVar && num(hoursVar.p) != null ? Math.round(num(hoursVar.p) * C.burden) : null,
     hoursVarMins: hoursVar ? num(hoursVar.mins) : null,
-    unrota: unrota && num(unrota.p) != null ? Math.round(num(unrota.p) * BURDEN) : null,
+    unrota: unrota && num(unrota.p) != null ? Math.round(num(unrota.p) * C.burden) : null,
     unrotaN: unrota ? num(unrota.n) || 0 : 0,
-    unworked: unworked && num(unworked.p) != null ? -Math.round(num(unworked.p) * BURDEN) : null,
+    unworked: unworked && num(unworked.p) != null ? -Math.round(num(unworked.p) * C.burden) : null,
     unworkedN: unworked ? num(unworked.n) || 0 : 0,
   };
 
@@ -251,8 +275,8 @@ function buildExecutive(q, maxDate) {
       WHERE ld.business_date BETWEEN ? AND ? GROUP BY ld.department`, [wk.from, wk.to]));
   for (const d of ['kitchen', 'foh']) {
     const row = deptCost.find((r) => String(r.department) === d) || null;
-    const trueVar = row && num(row.ac) != null ? Math.round(num(row.ac) * BURDEN) : null;
-    const budget = e.deptCtl.interNet != null ? Math.round(VAR_RATE_DEPT[d] * e.deptCtl.interNet) : null;
+    const trueVar = row && num(row.ac) != null ? Math.round(num(row.ac) * C.burden) : null;
+    const budget = e.deptCtl.interNet != null ? Math.round(C.varDept[d] * e.deptCtl.interNet) : null;
     e.deptCtl.depts.push({
       dept: d, trueVar, budget,
       delta: trueVar != null && budget != null ? trueVar - budget : null,
@@ -370,16 +394,16 @@ function buildForecast(q, maxDate, now) {
     if (r && num(r.days) > 0 && num(r.sal) != null) f.sal = { pence: num(r.sal), from: wk.from, to: wk.to };
   }
 
-  // ---- the revenue projection (the P4 assembly verbatim; labour READS it — never a copy) ----
+  // ---- the revenue projection (the P4 assembly verbatim; labour READS it — never a copy).
+  // Monthly net = the day-net canon v_sales_day_all (revenue-of-record ruling 2026-08-10) —
+  // never re-summed from receipt headers; completeness still gates on the API ingest ledger. ----
   const nowYm = f.today.slice(0, 7);
   const year = Number(nowYm.slice(0, 4));
   const boundaryRow = rowsOf(q(`SELECT start_date FROM premises_regime WHERE name='current'`))[0];
   const boundaryDate = boundaryRow && boundaryRow.start_date ? String(boundaryRow.start_date) : '2023-04-01';
   const apiMonths = rowsOf(q(
-    `SELECT substr(r.business_date,1,7) AS ym, SUM(r.net_without_tax_pence) AS net, COUNT(*) AS txn
-       FROM sales_receipts_api r
-      WHERE r.cancelled = 0 AND (r.type IS NULL OR r.type NOT IN ('VOID','CANCEL','RECALL'))
-      GROUP BY ym ORDER BY ym`));
+    `SELECT substr(business_date,1,7) AS ym, SUM(net_sales_pence) AS net, SUM(transactions) AS txn
+       FROM v_sales_day_all GROUP BY ym ORDER BY ym`));
   const ledgerMonths = rowsOf(q(
     `SELECT substr(business_date,1,7) AS ym, COUNT(DISTINCT business_date) AS days
        FROM sales_api_ingest_runs WHERE source='kseries-sales-daily' AND status='ok' GROUP BY ym`));
@@ -560,7 +584,7 @@ function buildDept(q, maxDate, dept, now) {
 // the mock's People exception queue is EXCLUDED-BY-RULING), aggregate ratios, and the canon +
 // architecture cards. The old page's held panels are ALL absorbed here: staffing shape → the
 // heatmap; today-live → the strip; WTR guard + rate parity → the compliance panel.
-function buildCoverage(q, maxDate) {
+function buildCoverage(q, maxDate, C) {
   const c = { maxDate };
   c.intraday = rowsOf(q(`SELECT business_date, department, as_of_ms, sched_minutes_full, sched_cost_rc_full, worked_minutes_so_far, cost_rc_so_far, uncosted_minutes, clocked_in_now, no_shows, ref_date, ref_worked_minutes, ref_net_pence, ref_to_hour FROM labour_intraday ORDER BY department`));
 
@@ -663,7 +687,7 @@ function buildCoverage(q, maxDate) {
     }
     if (c.week && c.inter && num(c.inter.net) > 0 && num(c.inter.sal) != null) {
       c.heat.budget = {
-        pence: Math.round(num(c.inter.sal) + VAR_RATE * num(c.inter.net)),
+        pence: Math.round(num(c.inter.sal) + C.varRate * num(c.inter.net)),
         days: num(c.inter.days) || 0, from: c.week.from, to: c.week.to,
       };
     }
@@ -714,16 +738,22 @@ module.exports = {
     const now = (ctx && ctx.now) || Date.now();
     const query = (ctx && ctx.query) || {};
     const tab = TAB_KEYS.includes(String(query.tab || '')) ? String(query.tab) : 'executive';
-    const m = { now, tab, maxDate: null };
+    const m = { now, tab, maxDate: null, canon: null };
     if (typeof q !== 'function') return m;
+    // The ruled constants come from the DB (canon_constants — the engine's schema owns it).
+    // Absent → m.canon stays null and render shows the EXPLICIT constants-unavailable state
+    // (merge order across the two repos is not guaranteed); never a silent hardcoded default.
+    m.canon = loadRuledConstants(q);
+    const C = m.canon;
     const mx = rowsOf(q(`SELECT MAX(business_date) d FROM labour_day`))[0];
     m.maxDate = mx && mx.d ? String(mx.d) : null;
-    if (tab === 'executive') m.exec = buildExecutive(q, m.maxDate);
+    if (tab === 'rota-review') { m.rr = ROTA_REVIEW.getSection(db, ctx); return m; } // delegate — no ruled-constant math
+    if (!C) return m; // every other tab's math depends on the ruled constants — gate, loudly
+    if (tab === 'executive') m.exec = buildExecutive(q, m.maxDate, C);
     if (tab === 'rota') m.rota = buildRota(q, m.maxDate);
-    if (tab === 'rota-review') m.rr = ROTA_REVIEW.getSection(db, ctx); // delegate — same renderer, hosted as a tab
     if (tab === 'forecast') m.fc = buildForecast(q, m.maxDate, now);
     if (tab === 'kitchen' || tab === 'foh') m.dept = buildDept(q, m.maxDate, tab, now);
-    if (tab === 'coverage') m.cov = buildCoverage(q, m.maxDate);
+    if (tab === 'coverage') m.cov = buildCoverage(q, m.maxDate, C);
     return m;
   },
 
@@ -737,6 +767,17 @@ module.exports = {
     const hrs = (mn) => (num(mn) != null ? (num(mn) / 60).toFixed(1) + 'h' : '—');
     const pct1 = (v) => (v != null ? `${v.toFixed(1)}%` : '—');
     const signGbp = (p) => `${p >= 0 ? '+' : '−'}${gbp(Math.abs(p))}`;
+
+    // The ruled constants — DB-read (canon_constants) in getSection; null = unavailable →
+    // the EXPLICIT gate below (never silent numbers). Caption fragments derive from C so a
+    // future ruling edits ONE DB row, and every rendered figure AND caption follows.
+    const C = m.canon || null;
+    const vTxt = C ? `${(C.varRate * 100).toFixed(1)}%` : null;         // combined var, e.g. '22.4%'
+    const kTxt = C ? `${(C.varDept.kitchen * 100).toFixed(1)}%` : null; // kitchen split, e.g. '14.3%'
+    const fTxt = C ? `${(C.varDept.foh * 100).toFixed(1)}%` : null;     // FOH split, e.g. '8.1%'
+    const bTxt = C ? String(C.burden) : null;                           // burden multiplier, e.g. '1.159'
+    const matTxt = C ? `£${Math.round(C.materialityPence / 100)}` : null; // materiality, e.g. '£45'
+    const constantsUnavailable = `<div class="banner bad"><b>Ruled constants unavailable.</b> This centre's budget/burden arithmetic reads the operator-ruled constants from the engine's <span class="mono">canon_constants</span> table (single-home ruling 2026-08-10) — that table is missing or incomplete on this database, so NO formula figures render (a silent hardcoded default is forbidden). Unlock: deploy the engine schema that seeds <span class="mono">canon_constants</span> (the canon-constants PR), then reload.</div>`;
 
     // Page styles: the RCC canon + the shell grammar (the reports/reservations idiom) + the
     // page-local chart grammars + the lb-* subset the held coverage panels arrived in.
@@ -809,7 +850,7 @@ module.exports = {
     const tabsNav = `<div class="r-tabs">${TABS.map((t) =>
       `<a class="r-tab${t.key === tab ? ' active' : ''}" href="/coyote/labour?tab=${t.key}">${esc(t.label)}</a>`).join('')}</div>`;
 
-    const noWire = (what) => `<div class="banner muted">No settled labour-day record yet — ${what} light(s) up as the RotaCloud ingest fills <span class="mono">labour_day</span> (TRUE ruler: locked rates × 1.159 burden + salaried/365). Nothing here is ever estimated.</div>`;
+    const noWire = (what) => `<div class="banner muted">No settled labour-day record yet — ${what} light(s) up as the RotaCloud ingest fills <span class="mono">labour_day</span> (TRUE ruler: locked rates × ${bTxt} burden + salaried/365). Nothing here is ever estimated.</div>`;
 
     // ============================ EXECUTIVE ============================
     const renderExecutiveTab = () => {
@@ -821,7 +862,7 @@ module.exports = {
 
       // ---- (1) KPI strip: six tiles, every one captions its ruler ----
       const labPct = inter ? (num(inter.ac) / num(inter.net)) * 100 : null;
-      const budPct = inter ? ((num(inter.sal) + VAR_RATE * num(inter.net)) / num(inter.net)) * 100 : null;
+      const budPct = inter ? ((num(inter.sal) + C.varRate * num(inter.net)) / num(inter.net)) * 100 : null;
       const splh = inter && num(inter.am) > 0 ? Math.round(num(inter.net) / (num(inter.am) / 60)) : null;
       const otMins = e.ot && num(e.ot.mins) != null ? num(e.ot.mins) : null;
       const schedVar = agg && num(agg.sc) != null && num(agg.ac) != null ? num(agg.ac) - num(agg.sc) : null;
@@ -855,7 +896,7 @@ module.exports = {
           sub: 'salaried/365 ÷ TRUE actual · labour_day',
         }),
       ].join('');
-      const kpiCaption = `<div class="lbc-caption">window = the last full Mon–Sun week ${esc(wk.from)} → ${esc(wk.to)} · ruler: TRUE all-in (labour_day — locked rates × 1.159 burden + salaried/365); RC-screen figures never render on this tab · % and SPLH divide over the sales∩labour intersection only (${inter ? int(num(inter.days)) : 0} day(s)) · formula budget = (Σ salaried + 22.4% × net) ÷ net — kitchen 14.3% + FOH 8.1%, the ruled variable splits · worked hours (SPLH denominator) include rota-as-worked for no-clock salaried.</div>`;
+      const kpiCaption = `<div class="lbc-caption">window = the last full Mon–Sun week ${esc(wk.from)} → ${esc(wk.to)} · ruler: TRUE all-in (labour_day — locked rates × ${bTxt} burden + salaried/365); RC-screen figures never render on this tab · % and SPLH divide over the sales∩labour intersection only (${inter ? int(num(inter.days)) : 0} day(s)) · formula budget = (Σ salaried + ${vTxt} × net) ÷ net — kitchen ${kTxt} + FOH ${fTxt}, the ruled variable splits · worked hours (SPLH denominator) include rota-as-worked for no-clock salaried.</div>`;
 
       // ---- (2) 13-week labour control trend (absorbs the old page's 8-week hero spark) ----
       const weeks = e.trend.weeks;
@@ -884,7 +925,7 @@ module.exports = {
       const trendPanel = S.rcc.panel({
         title: '13-week labour control trend', sub: 'weekly TRUE labour % of net vs the formula budget % · sales∩labour intersection days',
         headRight: `<div class="r-legend"><span><i style="background:${S.rcc.tokens.accent}"></i>Labour % (TRUE)</span><span><i style="background:${S.rcc.tokens.warn}"></i>Formula budget %</span></div>`,
-        body: trendBody + `<div class="r-mini-note">weekly labour % = Σ TRUE cost ÷ Σ net over each week's intersection days · budget % = (Σ salaried + 22.4% × net) ÷ net${gapCaption}. This trend ABSORBED the old labour hero spark — one home.</div>`,
+        body: trendBody + `<div class="r-mini-note">weekly labour % = Σ TRUE cost ÷ Σ net over each week's intersection days · budget % = (Σ salaried + ${vTxt} × net) ÷ net${gapCaption}. This trend ABSORBED the old labour hero spark — one home.</div>`,
       });
 
       // ---- (3) owner attention queue ----
@@ -894,7 +935,7 @@ module.exports = {
           title: `${v.dept.toUpperCase()} — ${v.mode.toUpperCase()} w/c ${v.week}`,
           text: `rota-review verdict vs the formula budget${v.budgetPence != null ? ` ${gbp(v.budgetPence)}` : ''}${v.salariedPence != null ? ` (salaried ${gbp(v.salariedPence)} inside)` : ''}`,
           impact: v.deltaPence > 0 ? `${gbp(v.deltaPence)} OVER` : `${gbp(-v.deltaPence)} under`,
-          tone: v.deltaPence > MATERIALITY_PENCE ? 'bad' : v.deltaPence > 0 ? undefined : 'good',
+          tone: v.deltaPence > C.materialityPence ? 'bad' : v.deltaPence > 0 ? undefined : 'good',
         }));
       }
       const wtrN = e.wtrCount ? num(e.wtrCount.n) || 0 : 0;
@@ -948,7 +989,7 @@ module.exports = {
         }).join('');
         bridgeBody = `<div class="chart-wrap" style="height:220px"><svg viewBox="0 0 ${W} ${H + 24}" role="img" aria-label="Labour variance bridge — scheduled to actual">${bars}</svg></div>
           <div class="r-mini-note">${comps.map((c) => `${esc(c.lab)}: <b>${c.v != null ? esc(signGbp(c.v)) : '—'}</b> — ${esc(c.note)}`).join(' · ')}.</div>
-          <div class="r-mini-note">endpoints = labour_day scheduled → actual TRUE £ for ${esc(wk.from)} → ${esc(wk.to)} · shift effects at the shift's locked rate × 1.159 burden (salaried/365 sits identically in both endpoints, so it cancels) · AGGREGATE only — no person keys, ever.</div>`;
+          <div class="r-mini-note">endpoints = labour_day scheduled → actual TRUE £ for ${esc(wk.from)} → ${esc(wk.to)} · shift effects at the shift's locked rate × ${bTxt} burden (salaried/365 sits identically in both endpoints, so it cancels) · AGGREGATE only — no person keys, ever.</div>`;
       } else {
         bridgeBody = S.rcc.emptyState({ title: 'Labour variance bridge', blocker: 'no labour_day scheduled + actual cost pair in the last full week.', unlock: 'the daily RotaCloud ingest' });
       }
@@ -961,7 +1002,7 @@ module.exports = {
       const dc = e.deptCtl;
       const deptCard = (d) => {
         const name = d.dept === 'kitchen' ? 'Kitchen' : 'Front of House';
-        const rate = `${(VAR_RATE_DEPT[d.dept] * 100).toFixed(1)}%`;
+        const rate = `${(C.varDept[d.dept] * 100).toFixed(1)}%`;
         if (d.trueVar == null || d.budget == null) {
           return S.rcc.panel({
             title: `Department control — ${name}`, sub: `variable TRUE vs ${rate} × net`,
@@ -970,14 +1011,14 @@ module.exports = {
         }
         return S.rcc.panel({
           title: `Department control — ${name}`, sub: `variable TRUE vs the ruled ${rate} × net · ${int(dc.interDays)} intersection day(s)`,
-          headRight: ruledChip(d.delta, 'OVER', 'UNDER budget', 'On budget'),
+          headRight: ruledChip(C, d.delta, 'OVER', 'UNDER budget', 'On budget'),
           body: `<table><tbody>
               <tr><td>Variable TRUE cost</td><td class="r-num mono">${gbp(d.trueVar)}</td></tr>
               <tr><td>Variable budget (${esc(rate)} × ${gbp(dc.interNet)} net)</td><td class="r-num mono">${gbp(d.budget)}</td></tr>
               <tr><td>Delta</td><td class="r-num mono">${signGbp(d.delta)}</td></tr>
               <tr><td>Worked hours (intersection days)</td><td class="r-num mono">${hrs(d.mins)}</td></tr>
             </tbody></table>
-            <div class="r-mini-note">variable TRUE = dept hourly cost × 1.159 burden; the salaried term sits identically in the ruled budget (salaried burdened + var% × net) and in TRUE cost, so it cancels and the delta is exact · OVER only beyond the ruled £45 materiality · senior-mix vs the ruled &gt;40% MIX threshold is omitted — labour_shifts carries no department key (the rota-review verdicts carry the ruled MIX notes).</div>`,
+            <div class="r-mini-note">variable TRUE = dept hourly cost × ${bTxt} burden; the salaried term sits identically in the ruled budget (salaried burdened + var% × net) and in TRUE cost, so it cancels and the delta is exact · OVER only beyond the ruled ${matTxt} materiality · senior-mix vs the ruled &gt;40% MIX threshold is omitted — labour_shifts carries no department key (the rota-review verdicts carry the ruled MIX notes).</div>`,
         });
       };
       const deptRow = `<div class="r-grid r-three-col">${bridgePanel}${dc.depts.map(deptCard).join('')}</div>`;
@@ -991,21 +1032,21 @@ module.exports = {
         }
         const netOk = r.net != null && r.net > 0;
         const pctV = netOk && r.lab.ac != null ? (r.lab.ac / r.net) * 100 : null;
-        const budV = netOk ? (((r.lab.sal || 0) + Math.round(VAR_RATE * r.net)) / r.net) * 100 : null;
-        const delta = netOk && r.lab.ac != null ? r.lab.ac - ((r.lab.sal || 0) + Math.round(VAR_RATE * r.net)) : null;
+        const budV = netOk ? (((r.lab.sal || 0) + Math.round(C.varRate * r.net)) / r.net) * 100 : null;
+        const delta = netOk && r.lab.ac != null ? r.lab.ac - ((r.lab.sal || 0) + Math.round(C.varRate * r.net)) : null;
         const daySplh = netOk && num(r.lab.am) > 0 ? Math.round(r.net / (num(r.lab.am) / 60)) : null;
         return `<tr><td>${esc(dowLabel(r.date))} ${esc(r.date)}</td>
           <td class="r-num mono">${r.net != null ? gbp(r.net) : '<span class="ash">no sales record</span>'}</td>
           <td class="r-num mono">${gbp(r.lab.ac)}</td>
           <td class="r-num mono">${pct1(pctV)}</td>
           <td class="r-num mono">${pct1(budV)}</td>
-          <td>${netOk ? ruledChip(delta, 'Over', 'Under formula', 'On formula') : S.rcc.tag('no net')}</td>
+          <td>${netOk ? ruledChip(C, delta, 'Over', 'Under formula', 'On formula') : S.rcc.tag('no net')}</td>
           <td class="r-num mono">${daySplh != null ? gbp(daySplh) : '—'}</td></tr>`;
       }).join('');
       const stripPanel = S.rcc.panel({
         title: 'Daily control strip', sub: `last 7 days to ${e.maxDate} · TRUE labour vs the daily formula budget`,
         body: `<div style="overflow:auto"><table><thead><tr><th>Day</th><th class="r-num">Net</th><th class="r-num">TRUE labour £</th><th class="r-num">Labour %</th><th class="r-num">Budget %</th><th>Status</th><th class="r-num">SPLH</th></tr></thead><tbody>${stripRows}</tbody></table></div>
-          <div class="r-mini-note">daily budget = salaried + 22.4% × net (the ruled splits) · STATUS: OVER only beyond the £45 materiality · an absent labour day says so${stripMissing.length ? esc(juneNote(stripMissing)) : ''} — never a zero · the labour DETAIL home is here; the Revenue Drivers scorecard keeps its cross-domain columns and points here.</div>`,
+          <div class="r-mini-note">daily budget = salaried + ${vTxt} × net (the ruled splits) · STATUS: OVER only beyond the ${matTxt} materiality · an absent labour day says so${stripMissing.length ? esc(juneNote(stripMissing)) : ''} — never a zero · the labour DETAIL home is here; the Revenue Drivers scorecard keeps its cross-domain columns and points here.</div>`,
       });
 
       return `<div class="r-grid r-kpi-grid">${kpis}</div>${kpiCaption}
@@ -1068,7 +1109,7 @@ module.exports = {
         const acDays = days.filter((d) => d.ac != null);
         const sumAc = acDays.reduce((s, d) => s + d.ac, 0);
         costChartBody = `<div class="lbc-pairs">${cols}</div>
-          <div class="r-mini-note">TRUE all-in ruler (locked rates × 1.159 + salaried/365; deemed staff rota-priced from 2026-07-21) — matches the surrounding Labour Centre panels${missing.length ? ` · <b>${int(missing.length)} day(s) have no labour_day record</b> — absent${esc(juneNote(missing))}, never zero` : ''}.</div>
+          <div class="r-mini-note">TRUE all-in ruler (locked rates × ${bTxt} + salaried/365; deemed staff rota-priced from 2026-07-21) — matches the surrounding Labour Centre panels${missing.length ? ` · <b>${int(missing.length)} day(s) have no labour_day record</b> — absent${esc(juneNote(missing))}, never zero` : ''}.</div>
           ${acDays.length ? `<div class="r-mini-note">Σ daily actual TRUE = ${gbp(sumAc)} — reconciles to labour_day (it IS labour_day — the source identity, stated; no second computation).</div>` : ''}`;
       } else {
         costChartBody = S.rcc.emptyState({ title: 'Daily cost — scheduled vs actual', blocker: 'no labour_day costs in the 14-day window.', unlock: 'the daily RotaCloud ingest' });
@@ -1109,7 +1150,7 @@ module.exports = {
       // the hours figures and price £0 here — captioned, never estimated.
       let costDecompBody;
       if (anyShift) {
-        const pricedPence = (row) => Math.round((row && num(row.p) != null ? num(row.p) : 0) * BURDEN);
+        const pricedPence = (row) => Math.round((row && num(row.p) != null ? num(row.p) : 0) * C.burden);
         const cRows = [
           { lab: `Over-rota'd shifts`, n: dOver ? num(dOver.n) || 0 : 0, mins: dOver ? num(dOver.mins) || 0 : 0, pence: pricedPence(dOver), color: S.rcc.tokens.bad },
           { lab: `Unrota'd worked shifts`, n: dUn ? num(dUn.n) || 0 : 0, mins: dUn ? num(dUn.mins) || 0 : 0, pence: pricedPence(dUn), color: S.rcc.tokens.warn },
@@ -1119,12 +1160,12 @@ module.exports = {
         costDecompBody = `<div class="r-meters">${cRows.map((x) => S.rcc.meterRow({
           label: x.lab, pct: (x.pence / maxP) * 100, color: x.color, value: `${gbp(x.pence)} · ${int(x.n)} · ${hrs(x.mins)}`,
         })).join('')}</div>
-        <div class="r-mini-note">minutes priced at each shift's OWN locked rate_pence × 1.159 burden (shift grain) · salaried minutes carry no shift rate — priced £0 here; their cost is annual/365 at day grain · deemed staff: rota = actual by rule — zero variance on both axes by construction · £ + counts + hours together: the rate mix stays readable · SITE-level aggregate (labour_shifts carries no department key — checked) · NO names — the surveillance boundary ruling.</div>`;
+        <div class="r-mini-note">minutes priced at each shift's OWN locked rate_pence × ${bTxt} burden (shift grain) · salaried minutes carry no shift rate — priced £0 here; their cost is annual/365 at day grain · deemed staff: rota = actual by rule — zero variance on both axes by construction · £ + counts + hours together: the rate mix stays readable · SITE-level aggregate (labour_shifts carries no department key — checked) · NO names — the surveillance boundary ruling.</div>`;
       } else {
         costDecompBody = S.rcc.emptyState({ title: 'Where the extra cost came from', blocker: 'no labour_shifts rows in the 14-day window.', unlock: 'the daily RotaCloud ingest (shift grain)' });
       }
       const costDecompPanel = S.rcc.panel({
-        title: 'Where the extra cost came from', sub: `shift-variance decomposition, priced at shift rates × 1.159 · 14 days to ${r.maxDate}`,
+        title: 'Where the extra cost came from', sub: `shift-variance decomposition, priced at shift rates × ${bTxt} · 14 days to ${r.maxDate}`,
         body: costDecompBody,
       });
 
@@ -1138,10 +1179,10 @@ module.exports = {
             <td class="r-num mono">${hrs(d.am)}</td><td class="r-num mono">${gbp(d.ac)}</td>
             <td class="r-num mono">${hrs(d.apm)}</td>
             <td class="r-num mono">${delta != null ? signGbp(delta) : '—'}</td>
-            <td>${ruledChip(delta, 'Over sched', 'Under sched', 'On sched')}</td></tr>`;
+            <td>${ruledChip(C, delta, 'Over sched', 'Under sched', 'On sched')}</td></tr>`;
         }).join('');
         reconBody = `<div style="overflow:auto"><table><thead><tr><th>Day</th><th class="r-num">Sched hrs</th><th class="r-num">Sched £</th><th class="r-num">Actual hrs</th><th class="r-num">Actual £</th><th class="r-num">Paid hrs</th><th class="r-num">Δ £</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table></div>
-          <div class="r-mini-note">£ = TRUE ruler (labour_day, burdened + salaried/365) · paid hrs = actual_paid_minutes (RotaCloud's paid figure) · a missing day is an ABSENT row, never zeros · STATUS vs schedule: over only beyond the ruled £45 materiality.</div>`;
+          <div class="r-mini-note">£ = TRUE ruler (labour_day, burdened + salaried/365) · paid hrs = actual_paid_minutes (RotaCloud's paid figure) · a missing day is an ABSENT row, never zeros · STATUS vs schedule: over only beyond the ruled ${matTxt} materiality.</div>`;
       } else {
         reconBody = S.rcc.emptyState({ title: 'Daily labour reconciliation', blocker: 'no labour_day rows in the 14-day window.', unlock: 'the daily RotaCloud ingest' });
       }
@@ -1180,8 +1221,8 @@ module.exports = {
             ${row('Actual £', rc ? num(rc.ac) : null, tw ? num(tw.ac) : null)}
             ${row('Salaried inside', rc ? 0 : null, tw ? num(tw.sal) : null)}
           </tbody></table>
-          ${delta != null ? `<div class="r-callout" style="margin-top:10px">actual delta <strong>${signGbp(delta)}</strong> = ×1.159 employer burden on hourly + salaried/365 apportionment (RC shows salaried at £0${rc && num(rc.um) > 0 ? ` — ${hrs(num(rc.um))} uncosted in RC this week` : ''}) + locked-vs-RC rate differences (see Rate parity, Coverage &amp; People).</div>` : ''}
-          <div class="r-mini-note">RC-screen = labour_dept (RotaCloud's own per-user rates, pre-burden — what Calum and Jordan manage against in-app) · TRUE = labour_day (locked rates × 1.159 + salaried/365) · <b>RC screens recomputed from LIVE rates, never cached</b> — the standing ruling · the two rulers are never compared as like-for-like; this card exists to translate, not to blend.</div>`;
+          ${delta != null ? `<div class="r-callout" style="margin-top:10px">actual delta <strong>${signGbp(delta)}</strong> = ×${bTxt} employer burden on hourly + salaried/365 apportionment (RC shows salaried at £0${rc && num(rc.um) > 0 ? ` — ${hrs(num(rc.um))} uncosted in RC this week` : ''}) + locked-vs-RC rate differences (see Rate parity, Coverage &amp; People).</div>` : ''}
+          <div class="r-mini-note">RC-screen = labour_dept (RotaCloud's own per-user rates, pre-burden — what Calum and Jordan manage against in-app) · TRUE = labour_day (locked rates × ${bTxt} + salaried/365) · <b>RC screens recomputed from LIVE rates, never cached</b> — the standing ruling · the two rulers are never compared as like-for-like; this card exists to translate, not to blend.</div>`;
       } else {
         costBody = S.rcc.emptyState({ title: 'Cost-definition reconciliation', blocker: 'no labour rows in the last full week on either ruler.', unlock: 'the daily RotaCloud ingest' });
       }
@@ -1232,9 +1273,9 @@ module.exports = {
           : null;
 
       // formula budget from the basis (derived at read; the salaried term is an observed fact)
-      const kVar = basisNet != null ? Math.round(VAR_RATE_DEPT.kitchen * basisNet) : null;
-      const fVar = basisNet != null ? Math.round(VAR_RATE_DEPT.foh * basisNet) : null;
-      const budget = basisNet != null ? Math.round(VAR_RATE * basisNet) + (sal ? sal.pence : 0) : null;
+      const kVar = basisNet != null ? Math.round(C.varDept.kitchen * basisNet) : null;
+      const fVar = basisNet != null ? Math.round(C.varDept.foh * basisNet) : null;
+      const budget = basisNet != null ? Math.round(C.varRate * basisNet) + (sal ? sal.pence : 0) : null;
       // promise: the FORWARD verdict (incl. salaried apportionment) preferred, else hourly TRUE
       let promise = null, promiseSrc = null;
       if (f.fwd) { promise = f.fwd.total; promiseSrc = 'verdict'; }
@@ -1249,13 +1290,13 @@ module.exports = {
             : `<span class="ash">no published rota (rota_ahead_shifts empty for the week)</span>`)
           : `${gbp(promise)} <span class="ash">${promiseSrc === 'verdict'
             ? `FORWARD verdict incl. salaried apportionment${f.fwd && f.fwd.byDept.kitchen != null ? ` (K ${gbp(f.fwd.byDept.kitchen)}${f.fwd.byDept.foh != null ? ` · F ${gbp(f.fwd.byDept.foh)}` : ''})` : ''}`
-            : `Σ published hourly shifts at locked rate × 1.159${wf.shifts && (wf.shifts.salMins > 0 || wf.shifts.unmapMins > 0) ? ` — PARTIAL: ${hrs(wf.shifts.salMins)} salaried + ${hrs(wf.shifts.unmapMins)} unmapped rota hours carry no £ here` : ''}`}</span>`;
+            : `Σ published hourly shifts at locked rate × ${bTxt}${wf.shifts && (wf.shifts.salMins > 0 || wf.shifts.unmapMins > 0) ? ` — PARTIAL: ${hrs(wf.shifts.salMins)} salaried + ${hrs(wf.shifts.unmapMins)} unmapped rota hours carry no £ here` : ''}`}</span>`;
         interactiveBody = `<table><tbody>
             <tr><td>Forecast net — w/c ${esc(wk.from)}</td><td class="r-num mono" id="wf-net">${gbp(basisNet)}</td></tr>
-            <tr><td>Kitchen variable (14.3% × net)</td><td class="r-num mono" id="wf-k">${gbp(kVar)}</td></tr>
-            <tr><td>FOH variable (8.1% × net)</td><td class="r-num mono" id="wf-f">${gbp(fVar)}</td></tr>
+            <tr><td>Kitchen variable (${kTxt} × net)</td><td class="r-num mono" id="wf-k">${gbp(kVar)}</td></tr>
+            <tr><td>FOH variable (${fTxt} × net)</td><td class="r-num mono" id="wf-f">${gbp(fVar)}</td></tr>
             <tr><td>Salaried (site, burdened day-grain)</td><td class="r-num mono">${sal ? gbp(sal.pence) : '<span class="ash">no settled week to source it — variable-only budget, stated</span>'}</td></tr>
-            <tr><td>Formula budget (salaried + 22.4% × net)</td><td class="r-num mono" id="wf-bud">${gbp(budget)}</td></tr>
+            <tr><td>Formula budget (salaried + ${vTxt} × net)</td><td class="r-num mono" id="wf-bud">${gbp(budget)}</td></tr>
             <tr><td>Published rota promise</td><td class="r-num mono">${promiseCell}</td></tr>
             <tr><td>Promise vs budget</td><td class="r-num mono">${delta != null ? signGbp(delta) : '—'}</td></tr>
           </tbody></table>
@@ -1264,7 +1305,7 @@ module.exports = {
             <input id="wf-range" type="range" min="-15" max="15" step="0.5" value="0" data-net="${basisNet}" data-sal="${sal ? sal.pence : 0}">
             <div class="r-mini-note">the slider rescales the net basis and re-derives the formula lines (textContent only); the promise and the verdict chip stay on the published basis. The journaled management override lives on the Revenue forecast — one home.</div>
           </div>
-          <div class="r-mini-note">net basis = ${esc(basisLabel)} · budget = the ruled formula (salaried burdened + K 14.3% / F 8.1% × net)${sal ? ` — salaried from the last settled week ${esc(sal.from)} → ${esc(sal.to)} (day-grain constant by construction)` : ''} · promise ${promiseSrc === 'verdict' ? '= the FORWARD rota-review verdict (the canonical promise)' : promiseSrc === 'shifts' ? '= rota_ahead_shifts hourly TRUE only — salaried is day-apportioned in the engine, never estimated here' : 'awaits a published rota'} · OVER only beyond the ruled £45 materiality.</div>`;
+          <div class="r-mini-note">net basis = ${esc(basisLabel)} · budget = the ruled formula (salaried burdened + K ${kTxt} / F ${fTxt} × net)${sal ? ` — salaried from the last settled week ${esc(sal.from)} → ${esc(sal.to)} (day-grain constant by construction)` : ''} · promise ${promiseSrc === 'verdict' ? '= the FORWARD rota-review verdict (the canonical promise)' : promiseSrc === 'shifts' ? '= rota_ahead_shifts hourly TRUE only — salaried is day-apportioned in the engine, never estimated here' : 'awaits a published rota'} · OVER only beyond the ruled ${matTxt} materiality.</div>`;
         script = `<script>(function(){
           var s=document.getElementById('wf-range'),v=document.getElementById('wf-val');
           if(!s||!v)return;
@@ -1288,7 +1329,7 @@ module.exports = {
       }
       const interactivePanel = S.rcc.panel({
         title: 'Interactive weekly forecast', sub: `next week ${wk.from} → ${wk.to} · formula budget vs the published rota's promise · TRUE ruler`,
-        headRight: delta != null ? ruledChip(delta, 'OVER', 'UNDER budget', 'On budget') : S.rcc.tag(basisNet == null ? 'no forecast basis' : 'no published promise'),
+        headRight: delta != null ? ruledChip(C, delta, 'OVER', 'UNDER budget', 'On budget') : S.rcc.tag(basisNet == null ? 'no forecast basis' : 'no published promise'),
         body: interactiveBody,
       });
 
@@ -1296,14 +1337,14 @@ module.exports = {
       let bandsBody;
       if (f.bands && f.bands.levels) {
         const rows = f.bands.levels.map((L) => {
-          const bud = Math.round(VAR_RATE * L.net) + (sal ? sal.pence : 0);
+          const bud = Math.round(C.varRate * L.net) + (sal ? sal.pence : 0);
           const pct = (bud / L.net) * 100;
           return `<tr><td>${esc(L.name)} <span class="ash">${esc(L.p)}</span></td>
             <td class="r-num mono">${gbp(L.net)}</td><td class="r-num mono">${gbp(bud)}</td>
             <td class="r-num mono">${pct.toFixed(1)}%</td></tr>`;
         }).join('');
         bandsBody = `<table><thead><tr><th>Band</th><th class="r-num">Weekly net level</th><th class="r-num">Formula budget</th><th class="r-num">Budget % of net</th></tr></thead><tbody>${rows}</tbody></table>
-          <div class="r-mini-note">bands = observed weekly-net quantiles of the trailing 26 full weeks (${int(f.bands.weeksUsed)} full week(s) used, ${esc(f.bands.from)} → ${esc(f.bands.to)}) — the DERIVED view of the formula, never hand-set rows (the ruling): band % = (salaried + 22.4% × net) ÷ net at each level; the salaried term is fixed, so the % FALLS as net rises${sal ? '' : ' — the salaried term is unsourced (no settled labour week), so these are VARIABLE-ONLY budgets, flat at 22.4%'}${f.bands.excluded.length ? ` · ${int(f.bands.excluded.length)} partial week(s) excluded, not padded${esc(juneNote(f.bands.excluded))}` : ''} · ~30% of net at the High-band anchor is the ruled combined ceiling.</div>`;
+          <div class="r-mini-note">bands = observed weekly-net quantiles of the trailing 26 full weeks (${int(f.bands.weeksUsed)} full week(s) used, ${esc(f.bands.from)} → ${esc(f.bands.to)}) — the DERIVED view of the formula, never hand-set rows (the ruling): band % = (salaried + ${vTxt} × net) ÷ net at each level; the salaried term is fixed, so the % FALLS as net rises${sal ? '' : ` — the salaried term is unsourced (no settled labour week), so these are VARIABLE-ONLY budgets, flat at ${vTxt}`}${f.bands.excluded.length ? ` · ${int(f.bands.excluded.length)} partial week(s) excluded, not padded${esc(juneNote(f.bands.excluded))}` : ''} · ~30% of net at the High-band anchor is the ruled combined ceiling.</div>`;
       } else {
         bandsBody = S.rcc.emptyState({
           title: 'Five-band target curve',
@@ -1321,7 +1362,7 @@ module.exports = {
       let outlookBody;
       if (anyOutlook) {
         const rows = f.outlook.map((w) => {
-          const wBud = w.basisNet != null ? Math.round(VAR_RATE * w.basisNet) + (sal ? sal.pence : 0) : null;
+          const wBud = w.basisNet != null ? Math.round(C.varRate * w.basisNet) + (sal ? sal.pence : 0) : null;
           const wProm = w.shifts && w.shifts.hourlyPence != null ? w.shifts.hourlyPence : null;
           const wDelta = wProm != null && wBud != null ? wProm - wBud : null;
           return `<tr><td>${esc(dayLabel(w.from))} <span class="ash">w/c ${esc(w.from)}</span></td>
@@ -1329,11 +1370,11 @@ module.exports = {
             <td class="r-num mono">${w.basisNet != null ? gbp(w.basisNet) : '—'}</td>
             <td class="r-num mono">${wBud != null ? gbp(wBud) : '—'}</td>
             <td class="r-num mono">${wProm != null ? gbp(wProm) : '<span class="ash">rota not published</span>'}</td>
-            <td>${wDelta != null ? ruledChip(wDelta, 'Over', 'Under budget', 'On budget') : w.shifts ? S.rcc.tag('hours only') : S.rcc.tag('rota not published')}</td></tr>`;
+            <td>${wDelta != null ? ruledChip(C, wDelta, 'Over', 'Under budget', 'On budget') : w.shifts ? S.rcc.tag('hours only') : S.rcc.tag('rota not published')}</td></tr>`;
         }).join('');
         const salHours = f.outlook.reduce((s, w) => s + (w.shifts ? w.shifts.salMins + w.shifts.unmapMins : 0), 0);
         outlookBody = `<div style="overflow:auto"><table><thead><tr><th>Week</th><th>Net basis</th><th class="r-num">Basis £</th><th class="r-num">Formula budget</th><th class="r-num">Rota promise</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table></div>
-          <div class="r-mini-note">basis: published = Σ RC daily revenue targets (rota_ahead_budget, dept rows deduplicated, whole weeks only) · projection = the revenue projection's calendar-day weekly share${methodLabel ? ` (${esc(methodLabel)} · ${esc(ovBit)})` : ''} · promise = Σ published HOURLY shifts at locked rate × 1.159${salHours > 0 ? ` — ${hrs(salHours)} salaried/unmapped rota hours across the window carry no £ here (day-apportioned in the engine / never estimated)` : ''} · an unpublished week SAYS so — never a zero, never an estimate.</div>`;
+          <div class="r-mini-note">basis: published = Σ RC daily revenue targets (rota_ahead_budget, dept rows deduplicated, whole weeks only) · projection = the revenue projection's calendar-day weekly share${methodLabel ? ` (${esc(methodLabel)} · ${esc(ovBit)})` : ''} · promise = Σ published HOURLY shifts at locked rate × ${bTxt}${salHours > 0 ? ` — ${hrs(salHours)} salaried/unmapped rota hours across the window carry no £ here (day-apportioned in the engine / never estimated)` : ''} · an unpublished week SAYS so — never a zero, never an estimate.</div>`;
       } else {
         outlookBody = S.rcc.emptyState({
           title: 'Eight-week outlook',
@@ -1362,7 +1403,7 @@ module.exports = {
         const rows = [...byDate.entries()].map(([date, d0]) =>
           `<tr><td>${esc(dowLabel(date))} ${esc(date)}</td>${cell(d0.kitchen)}${cell(d0.foh)}<td class="r-num mono">${d0.unassigned ? hrs(d0.unassigned.mins) : '<span class="ash">—</span>'}</td></tr>`).join('');
         fwdBody = `<div style="overflow:auto"><table><thead><tr><th>Day</th><th class="r-num">Kitchen hrs</th><th class="r-num">Kitchen £</th><th class="r-num">FOH hrs</th><th class="r-num">FOH £</th><th class="r-num">Unassigned hrs</th></tr></thead><tbody>${rows}</tbody></table></div>
-          <div class="r-mini-note">next 14 days of the PUBLISHED rota (rota_ahead_shifts snapshot), aggregated per day + department — the rota carries names; they are aggregated away here BY RULING (NO NAMES, the surveillance boundary) · £ = hourly shifts at locked rate × 1.159 (TRUE); salaried hours are day-apportioned in the engine and unmapped hours are never estimated — both render as uncosted hours, stated · a day with nothing published is simply absent.</div>`;
+          <div class="r-mini-note">next 14 days of the PUBLISHED rota (rota_ahead_shifts snapshot), aggregated per day + department — the rota carries names; they are aggregated away here BY RULING (NO NAMES, the surveillance boundary) · £ = hourly shifts at locked rate × ${bTxt} (TRUE); salaried hours are day-apportioned in the engine and unmapped hours are never estimated — both render as uncosted hours, stated · a day with nothing published is simply absent.</div>`;
       } else {
         fwdBody = S.rcc.emptyState({
           title: 'Forward management view',
@@ -1380,11 +1421,11 @@ module.exports = {
         title: 'How the bands are calibrated', sub: 'the ruled formula — canon, not data',
         body: S.rcc.formula([
           'dept TRUE budget = dept salaried (burdened) + var% × net',
-          'variable splits (ruled): kitchen 14.3% · FOH 8.1% · combined 22.4%',
+          `variable splits (canon_constants): kitchen ${kTxt} · FOH ${fTxt} · combined ${vTxt}`,
           'anchor: ~30% of net combined at the High band — % falls as net rises (salaried is fixed)',
           'bands = observed weekly-net quantiles of the trailing 26 full weeks — a DERIVED view; band rows are never hand-set',
-          'OVER only beyond the ruled £45 materiality',
-          'TRUE ruler = locked rates × 1.159 employer burden + salaried/365 — RC screens translate on Rota vs Actual only, never mixed',
+          `OVER only beyond the ruled ${matTxt} materiality`,
+          `TRUE ruler = locked rates × ${bTxt} employer burden + salaried/365 — RC screens translate on Rota vs Actual only, never mixed`,
         ]),
       });
       const guardPanel = S.rcc.panel({
@@ -1407,7 +1448,7 @@ module.exports = {
     const renderDeptTab = (dept) => {
       const d = m.dept;
       const name = dept === 'kitchen' ? 'Kitchen' : 'Front of House';
-      const rate = VAR_RATE_DEPT[dept];
+      const rate = C.varDept[dept];
       const rateStr = `${(rate * 100).toFixed(1)}%`;
       if (!d) return noWire(`the ${name} department view`);
 
@@ -1416,7 +1457,7 @@ module.exports = {
       if (d.maxDate && d.days && d.days.length) {
         const missingDept = d.days.filter((r) => !r.dep).map((r) => r.date);
         const rows = d.days.map((r) => {
-          const trueVar = r.dep && r.dep.ac != null ? Math.round(r.dep.ac * BURDEN) : null;
+          const trueVar = r.dep && r.dep.ac != null ? Math.round(r.dep.ac * C.burden) : null;
           const netOk = r.net != null && r.net > 0;
           const bud = netOk ? Math.round(rate * r.net) : null;
           const dl = trueVar != null && bud != null ? trueVar - bud : null;
@@ -1432,12 +1473,12 @@ module.exports = {
             <td class="r-num mono">${trueVar != null ? gbp(trueVar) : '—'}</td>
             <td class="r-num mono">${bud != null ? gbp(bud) : '—'}</td>
             <td class="r-num mono">${dl != null ? signGbp(dl) : '—'}</td>
-            <td>${netOk ? ruledChip(dl, 'Over', 'Under budget', 'On budget') : S.rcc.tag('no net')}</td>
+            <td>${netOk ? ruledChip(C, dl, 'Over', 'Under budget', 'On budget') : S.rcc.tag('no net')}</td>
             <td class="r-num mono">${hrs(r.dep.am)}</td>
             <td class="r-num mono">${splh != null ? gbp(splh) : '—'}</td></tr>`;
         }).join('');
         dayBody = `<div style="overflow:auto"><table><thead><tr><th>Day</th><th class="r-num">Site net</th><th class="r-num">${esc(name)} variable TRUE £</th><th class="r-num">Var budget (${esc(rateStr)} × net)</th><th class="r-num">Δ £</th><th>Status</th><th class="r-num">${esc(name)} hrs</th><th class="r-num">Site SPLH</th></tr></thead><tbody>${rows}</tbody></table></div>
-          <div class="r-mini-note">variable TRUE = ${esc(name)} labour_dept hourly cost × 1.159 burden; the salaried term sits identically in the ruled dept budget (salaried burdened + ${esc(rateStr)} × net) and in TRUE cost, so it cancels and the delta is exact (the L1 dept-control discipline) · STATUS: OVER only beyond the ruled £45 materiality · a dept SPLH (site net ÷ dept hours) would be dishonest — it credits one department with the whole site's take — so dept HOURS render with the SITE SPLH (net ÷ site worked hours) as context, captioned${missingDept.length ? ` · ${int(missingDept.length)} day(s) have no ${esc(name)} labour_dept record — absent${esc(juneNote(missingDept))}, never zero` : ''}.</div>`;
+          <div class="r-mini-note">variable TRUE = ${esc(name)} labour_dept hourly cost × ${bTxt} burden; the salaried term sits identically in the ruled dept budget (salaried burdened + ${esc(rateStr)} × net) and in TRUE cost, so it cancels and the delta is exact (the L1 dept-control discipline) · STATUS: OVER only beyond the ruled ${matTxt} materiality · a dept SPLH (site net ÷ dept hours) would be dishonest — it credits one department with the whole site's take — so dept HOURS render with the SITE SPLH (net ÷ site worked hours) as context, captioned${missingDept.length ? ` · ${int(missingDept.length)} day(s) have no ${esc(name)} labour_dept record — absent${esc(juneNote(missingDept))}, never zero` : ''}.</div>`;
       } else {
         dayBody = S.rcc.emptyState({ title: `${name} day performance`, blocker: 'no settled labour-day record yet (labour_day is empty) — the dept grain hangs off the same daily ingest.', unlock: 'the daily RotaCloud ingest' });
       }
@@ -1499,7 +1540,7 @@ module.exports = {
       // ---- (4) decision ratios ----
       const interNet = d.inter && num(d.inter.net) > 0 ? num(d.inter.net) : null;
       const interDays = d.inter ? num(d.inter.days) || 0 : 0;
-      const varPct = interNet != null && d.inter && num(d.inter.ac) != null ? ((num(d.inter.ac) * BURDEN) / interNet) * 100 : null;
+      const varPct = interNet != null && d.inter && num(d.inter.ac) != null ? ((num(d.inter.ac) * C.burden) / interNet) * 100 : null;
       const totAm = d.share ? d.share.reduce((s, x) => s + x.am, 0) : 0;
       const meAm = d.share ? (d.share.find((x) => x.dept === dept) || { am: 0 }).am : 0;
       const sharePct = totAm > 0 ? (meAm / totAm) * 100 : null;
@@ -1523,7 +1564,7 @@ module.exports = {
       const ratiosPanel = S.rcc.panel({
         title: `Decision ratios — ${name}`, sub: `the dept control numbers · TRUE ruler · vs the ruled ${rateStr} variable target`,
         body: `<div class="lbc-drivers">${drivers}</div>${mixLine}
-          <div class="r-mini-note">variable % = labour_dept hourly cost × 1.159 ÷ net over the sales∩dept intersection days only (day-count labelled — the cross-ruler discipline) · hours share = labour_dept minute grain, RC paid basis (ruler-free) · senior mix = the rota-review MIX note VERBATIM — one home, never recomputed here.</div>`,
+          <div class="r-mini-note">variable % = labour_dept hourly cost × ${bTxt} ÷ net over the sales∩dept intersection days only (day-count labelled — the cross-ruler discipline) · hours share = labour_dept minute grain, RC paid basis (ruler-free) · senior mix = the rota-review MIX note VERBATIM — one home, never recomputed here.</div>`,
       });
 
       return `${dayPanel}
@@ -1656,8 +1697,8 @@ module.exports = {
             : 'ONLINE ORDER lines excluded — no true hour (the online-order ruling)';
           heatLegend = `<div class="r-legend"><span><i style="background:${S.rcc.tokens.heat[0]}"></i>Staffed under required</span><span><i style="background:${S.rcc.tokens.heat[5]}"></i>Staffed over required</span></div>`;
           heatBody = `<div class="r-heatmap">${head}${grid}</div>
-            <div class="r-mini-note"><b>required = formula budget spread by demand share — a derivation, not a rota standard.</b> budget = Σ salaried + 22.4% × net over the last settled week ${esc(B.from)} → ${esc(B.to)} (${gbp(B.pence)}, ${int(B.days)} intersection day(s)) · demand share = line-grain net by weekday × LOCAL London hour, 28d to ${esc(D.apiMax)} · ${esc(onlineNote)} · staffed hours include rota-as-worked for no-clock salaried.</div>
-            <div class="r-mini-note">staffed = labour_hourly TRUE £ (hourly × 1.159 burden + the ingest's salaried hour share) averaged per weekday occurrence, 28d to ${esc(H.to)} · SITE-level — labour_hourly carries no department key (checked) · levels centre on balanced: 1–3 staffed under the derived requirement, 4–6 over · a weekday with no hourly record renders blank, never zero${missNote}${uncNote}. This grid ABSORBED the old staffing-shape panel — one home.</div>`;
+            <div class="r-mini-note"><b>required = formula budget spread by demand share — a derivation, not a rota standard.</b> budget = Σ salaried + ${vTxt} × net over the last settled week ${esc(B.from)} → ${esc(B.to)} (${gbp(B.pence)}, ${int(B.days)} intersection day(s)) · demand share = line-grain net by weekday × LOCAL London hour, 28d to ${esc(D.apiMax)} · ${esc(onlineNote)} · staffed hours include rota-as-worked for no-clock salaried.</div>
+            <div class="r-mini-note">staffed = labour_hourly TRUE £ (hourly × ${bTxt} burden + the ingest's salaried hour share) averaged per weekday occurrence, 28d to ${esc(H.to)} · SITE-level — labour_hourly carries no department key (checked) · levels centre on balanced: 1–3 staffed under the derived requirement, 4–6 over · a weekday with no hourly record renders blank, never zero${missNote}${uncNote}. This grid ABSORBED the old staffing-shape panel — one home.</div>`;
         } else {
           // staffing-only fallback — the honest half while the required side is underivable
           const reasons = [];
@@ -1787,11 +1828,11 @@ module.exports = {
       const rulesPanel = S.rcc.panel({
         title: 'Labour accounting rules', sub: 'canon — rulings, not data',
         body: S.rcc.formula([
-          'TRUE cost = locked rate × minutes × 1.159 employer burden (hourly) + salaried annual/365 per calendar day',
+          `TRUE cost = locked rate × minutes × ${bTxt} employer burden (hourly) + salaried annual/365 per calendar day`,
           `RC-screen = RotaCloud's own per-user rates, pre-burden, salaried £0 — recomputed from LIVE rates, never cached`,
           'TRUE and RC-screen never mix — the translation card on Rota vs Actual is the only meeting point',
-          'dept TRUE budget = dept salaried (burdened) + var% × net — kitchen 14.3% · FOH 8.1% · combined 22.4% (~30% of net at the High-band anchor)',
-          'OVER only beyond the ruled £45 materiality',
+          `dept TRUE budget = dept salaried (burdened) + var% × net — kitchen ${kTxt} · FOH ${fTxt} · combined ${vTxt} (~30% of net at the High-band anchor; splits from canon_constants)`,
+          `OVER only beyond the ruled ${matTxt} materiality`,
         ]),
       });
 
@@ -1834,18 +1875,21 @@ module.exports = {
         + archPanel;
     };
 
-    const tabBody = tab === 'rota' ? renderRotaTab()
-      : tab === 'rota-review' ? ROTA_REVIEW.render(m.rr, ctx).body
-      : tab === 'forecast' ? renderForecastTab()
-      : tab === 'kitchen' ? renderKitchenTab()
-      : tab === 'foh' ? renderFohTab()
-      : tab === 'coverage' ? renderCoverageTab()
-      : renderExecutiveTab();
+    const tabBody = tab === 'rota-review' ? ROTA_REVIEW.render(m.rr, ctx).body
+      : !C ? constantsUnavailable
+        : tab === 'rota' ? renderRotaTab()
+          : tab === 'forecast' ? renderForecastTab()
+            : tab === 'kitchen' ? renderKitchenTab()
+              : tab === 'foh' ? renderFohTab()
+                : tab === 'coverage' ? renderCoverageTab()
+                  : renderExecutiveTab();
 
     const body = `<div class="rcc">` + styles + tabsNav + tabBody + `</div>`;
-    const stamp = m.maxDate
-      ? `labour · <span class="mono">RotaCloud · ${esc(m.maxDate)}</span>`
-      : 'labour · <span class="none">awaiting labour-day record</span>';
+    const stamp = !C && tab !== 'rota-review'
+      ? 'labour · <span class="none">ruled constants unavailable (canon_constants)</span>'
+      : m.maxDate
+        ? `labour · <span class="mono">RotaCloud · ${esc(m.maxDate)}</span>`
+        : 'labour · <span class="none">awaiting labour-day record</span>';
     return { stamp, body };
   },
 };

@@ -98,14 +98,15 @@ function seedExecutive(db) {
   insL.run('OO-1', 'l1', '2026-07-10', 5000, '17', Date.UTC(2026, 6, 10, 18, 0));
 }
 
-/** Forecast world (per-receipt only): 2025 = £10,000/month ×12, 2026 Jan–Jun = £11,000/month —
+/** Forecast world (day-net canon: v_sales_day_all values + API-ledger completeness — the
+ *  2026-08-10 revenue-of-record ruling): 2025 = £10,000/month ×12, 2026 Jan–Jun = £11,000/month —
  *  every pair 1.10 → full year = 1.1 × £120,000 = £132,000; override +5% journaled. */
 function seedForecast(db, { override = null } = {}) {
-  const insR = db.prepare(`INSERT INTO sales_receipts_api VALUES (?,?,?,0,'LOCAL',?,1,NULL)`);
+  const insD = db.prepare(`INSERT INTO sales_day (business_date, net_sales_pence, updated_at) VALUES (?,?,1)`);
   const insL2 = db.prepare(`INSERT INTO sales_api_ingest_runs VALUES (?,?,?,1,'',1)`);
   const cal = (ym) => new Date(Date.UTC(Number(ym.slice(0, 4)), Number(ym.slice(5, 7)), 0)).getUTCDate();
   const month = (ym, net) => {
-    insR.run(`R-${ym}`, `${ym}-01`, 'SALE', net);
+    insD.run(`${ym}-01`, net);
     for (let d = 1; d <= cal(ym); d++) insL2.run(`${ym}-${pad(d)}`, 'kseries-sales-daily', 'ok');
   };
   for (let mo = 1; mo <= 12; mo++) month(`2025-${pad(mo)}`, 1000000);

@@ -643,13 +643,17 @@ module.exports = {
     const tab = TAB_KEYS.includes(String(query.tab || '')) ? String(query.tab) : 'executive';
     if (typeof q !== 'function') return { now, tab, rv2: null };
 
-    // ---- shared: the per-receipt monthly record + projection (P1/P4 canon source) ----
+    // ---- shared: the monthly revenue-of-record + projection (P1/P4 canon source).
+    // REVENUE-OF-RECORD (operator ruling 2026-08-10, duplication wave): monthly net reads the
+    // engine's canonical day-net view v_sales_day_all — never re-summed from receipt headers
+    // (the two bases disagreed 36/37 months, worst £131.50; receipts stay the LINE-LEVEL grain
+    // for channel/hour/SKU below). Month-completeness still gates on the API ingest ledger. ----
     const nowYm = new Date(now).toISOString().slice(0, 7);
     const boundaryRow = rowsOf(q(`SELECT start_date FROM premises_regime WHERE name='current'`))[0];
     const boundaryDate = boundaryRow && boundaryRow.start_date ? String(boundaryRow.start_date) : '2023-04-01';
     const apiMonths = rowsOf(q(
-      `SELECT substr(r.business_date,1,7) AS ym, SUM(r.net_without_tax_pence) AS net, COUNT(*) AS txn
-         FROM sales_receipts_api r WHERE ${SALE_WHERE} GROUP BY ym ORDER BY ym`));
+      `SELECT substr(business_date,1,7) AS ym, SUM(net_sales_pence) AS net, SUM(transactions) AS txn
+         FROM v_sales_day_all GROUP BY ym ORDER BY ym`));
     const ledgerMonths = rowsOf(q(
       `SELECT substr(business_date,1,7) AS ym, COUNT(DISTINCT business_date) AS days
          FROM sales_api_ingest_runs WHERE source='kseries-sales-daily' AND status='ok' GROUP BY ym`));
@@ -662,7 +666,10 @@ module.exports = {
         WHERE ${SALE_WHERE} GROUP BY ym, label ORDER BY ym`));
     const maxApiRow = rowsOf(q(`SELECT MAX(business_date) AS d FROM sales_receipts_api`))[0];
     let rv2 = null;
-    if (apiMonths.length || ledgerMonths.length) {
+    // rv2 carries BOTH the monthly revenue-of-record (view) and the per-receipt window anchor
+    // (maxApiDate, the line-level analysis grain) — either presence builds it; the projection
+    // panels gate themselves on months, the 28d panels on the anchor.
+    if (apiMonths.length || ledgerMonths.length || (maxApiRow && maxApiRow.d)) {
       const months = REP.buildMonths({ apiMonths, ledgerMonths, nowYm });
       const year = Number(nowYm.slice(0, 4));
       rv2 = {
@@ -1305,7 +1312,7 @@ module.exports = {
       // ---- governance ----
       const gov = `<div class="source-map">
           <div class="source"><h4>Comparable calendar</h4><p>Current-premises months only — the ${esc(boundary)} move blocks cross-site YoY; a blocked comparison carries its reason, never a number.</p><div class="sync">PREMISES GUARD</div></div>
-          <div class="source"><h4>Revenue basis</h4><p>Recognised net revenue ex-VAT — the day-net canon (v_sales_day_all) and the per-receipt API record; tips and processor timing excluded.</p><div class="sync">FINANCE-CLEAN INPUT</div></div>
+          <div class="source"><h4>Revenue basis</h4><p>Recognised net revenue ex-VAT — the day-net canon v_sales_day_all is the revenue-of-record (ruling 2026-08-10); the per-receipt API record is the line-level analysis grain, never re-summed as "the" net; tips and processor timing excluded.</p><div class="sync">FINANCE-CLEAN INPUT</div></div>
           <div class="source"><h4>Known-event overrides</h4><p>Every non-zero override is journaled with its reason — see the override journal in the engine card.</p><div class="sync">AUDITABLE</div></div>
           <div class="source"><h4>Future labour handoff</h4><p>The forecast feeds the banded labour formula — the rota formulas read these projections directly.</p><div class="sync">POINTER, NOT A COPY</div></div>
         </div>`;
@@ -1325,7 +1332,7 @@ module.exports = {
         });})();</script>`;
 
       return `<div class="r-grid r-kpi-grid">${kpis}</div>
-        <div class="rv2-caption">projection basis: per-receipt API record (ledger-complete months) · YTD facts: day-net canon (v_sales_day_all / v_sales_month, premises current) · override: forecast_overrides journal.</div>
+        <div class="rv2-caption">projection basis: day-net canon v_sales_day_all, API-ledger-complete months only (revenue-of-record ruling 2026-08-10) · YTD facts: the same canon (v_sales_day_all / v_sales_month, premises current) · override: forecast_overrides journal.</div>
         <div class="monthly-layout">${columnsPanel}${enginePanel}</div>
         ${planPanel}${govPanel}${script}`;
     };
@@ -1559,7 +1566,7 @@ module.exports = {
       const formulaPanel = S.rcc.panel({
         title: 'Control formulas', sub: 'the rulings the batteries enforce',
         body: S.rcc.formula([
-          'day net (ex-VAT) = SUM(net_without_tax_pence) over non-cancelled SALE receipts',
+          'day net revenue-of-record = v_sales_day_all (day-net canon, ruled 2026-08-10); the battery cross-checks it against SUM(net_without_tax_pence) over non-cancelled SALE receipts',
           'ATV = net ÷ receipts · ex-VAT · per-receipt record basis',
           'QR = STOREKIT ORDER & PAY · sitting = table/QR-slot per day, split bills grouped; per-order ATV understates QR spend (fragmentation ruling 2026-07-31)',
           'gross = net + VAT; day_gross deltas vs the scraper eras = DOCUMENTED VAT-basis class (ruled 2026-07-20)',
