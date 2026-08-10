@@ -35,7 +35,7 @@ const T = '2026-08-05T12:00:00.000Z';
 // data-lc-cmd payload must parse as JSON naming a writer-allowlisted command.
 const WRITE_AFFORDANCE = /data-op|data-log-action|fetch\(|xhr|XMLHttpRequest|method="post"/i;
 const SANCTIONED_LC = new Set(['data-lc-cancel', 'data-lc-cmd', 'data-lc-complete', 'data-lc-wait', 'data-lc-edit', 'data-lc-fab', 'data-lc-focus', 'data-lc-quiet', 'data-lc-route',
-  'data-lc-rename', 'data-lc-cancel-project', 'data-lc-import']);
+  'data-lc-rename', 'data-lc-cancel-project', 'data-lc-import', 'data-lc-recap']);
 const CMD_ALLOWLIST = new Set(['note', 'decide', 'transition', 'complete', 'set_waiting', 'wake', 'reopen', 'undo', 'cancel',
   'plan_today', 'approve_plan', 'compile_week', 'approve_week', 'compile_quarter', 'approve_quarter',
   'pause_capability', 'resume_capability', 'create_outcome', 'create_project', 'set_route', 'set_setting',
@@ -470,6 +470,52 @@ test('bulk import (operator brief 2026-08-08): the inbox panel lists files with 
     fs.rmSync(dir, { recursive: true, force: true });
     fs.rmSync(inbox, { recursive: true, force: true });
   }
+});
+
+test('recapture-on-complete (operator GO 2026-08-10): flagged tasks offer the prefilled recapture; cadence math is a fixed table; declines are deliberate', () => {
+  // Cadence table — month arithmetic clamps the day; statutory labels all resolve.
+  assert.equal(SHARED.advanceCadence('Monthly', '2026-08-29'), '2026-09-29');
+  assert.equal(SHARED.advanceCadence('Monthly', '2026-01-31'), '2026-02-28', 'day clamps at month end');
+  assert.equal(SHARED.advanceCadence('Quarterly', '2026-09-07'), '2026-12-07');
+  assert.equal(SHARED.advanceCadence('Annually', '2026-11-06'), '2027-11-06');
+  assert.equal(SHARED.advanceCadence('Fortnightly', '2026-08-17'), '2026-08-31');
+  assert.equal(SHARED.advanceCadence('Every 6 weeks', '2026-08-14'), '2026-09-25');
+  assert.equal(SHARED.advanceCadence('Six-monthly and after form/legal changes', '2026-08-10'), '2027-02-10', 'six-monthly beats the month rule');
+  assert.equal(SHARED.advanceCadence('whenever', '2026-08-10'), '2026-09-10', 'unknown label suggests a month — the prompt is editable, never silent');
+  // Drawer: a flagged task's Mark-done carries the recap payload + a repeats tag; unflagged has neither.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-life-rc-'));
+  const dbPath = makeFixture(dir);
+  const db = new sqlite.DatabaseSync(dbPath);
+  db.exec("ALTER TABLE life_tasks ADD COLUMN recurs TEXT");
+  db.exec(`INSERT INTO life_tasks (id, owner_id, domain_key, title, status, risk_level, visibility, source_type, created_by, created_at, updated_at, recurs, due_at, due_kind)
+    VALUES ('t-vat','woody','business','VAT analysis and payment','READY','LOW','OWNER_ONLY','IMPORT','HUMAN:woody-import','2026-08-10T00:00:00Z','2026-08-10T00:00:00Z','Quarterly','2026-09-07T09:00:00.000Z','TARGET')`);
+  db.close();
+  withEnv(dbPath, () => {
+    const TASK2 = require('../mission-control/ui/pages/life/task.js');
+    const flagged = TASK2.render(TASK2.getSection(null, { query: { id: 't-vat' } }), {});
+    assert.match(flagged.body, /data-lc-recap=/, 'the flagged Mark-done carries the recapture payload');
+    const payload = /data-lc-recap="([^"]*)"/.exec(flagged.body);
+    const decoded = JSON.parse(payload[1].replaceAll('&quot;', '"').replaceAll('&amp;', '&').replaceAll('&#39;', "'"));
+    assert.deepEqual(decoded, { cadence: 'Quarterly', due: '2026-09-07' }, 'cadence + due ride the button for the prefill');
+    assert.match(flagged.body, /repeats · quarterly/, 'the obligation is visible on the drawer');
+    assertOnlySanctionedLc(flagged.body, 'life-task');
+    const plain = TASK2.render(TASK2.getSection(null, { query: { id: 't1' } }), {});
+    assert.ok(!plain.body.includes('data-lc-recap'), 'ordinary tasks stay one-step');
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+  // Shell wiring: the serialized cadence fn is the exported one; both decision paths ship.
+  const html = SHARED.renderShell({ active: 'life-today', title: 't', sub: '', stamp: '', body: '', badges: {}, foot: [] });
+  assert.ok(html.includes(`window.__lcNextDate=(${SHARED.advanceCadence.toString()})`), 'client cadence math is the tested export, byte-identical');
+  assert.ok(html.includes('declineRecapture'), 'the audited-decline path ships');
+  assert.ok(html.includes('recapture={nextDate:'), 'the recapture path ships');
+  assert.ok(html.includes('Decline the recapture?'), 'dismissing goes through one named confirm');
+  // TEMPLATE-COOKING PIN (live bug found 2026-08-10): a bare \d in the clientScript
+  // template literal cooks to plain 'd', silently breaking date validation (the
+  // Park-waiting check shipped broken this way). The RENDERED script must carry REAL
+  // date regexes — both of them (recapture + park-waiting).
+  const rendered = (html.match(/\^\\d\{4\}-\\d\{2\}-\\d\{2\}\$/g) || []).length;
+  assert.ok(rendered >= 2, `both client date regexes survive template cooking (found ${rendered})`);
+  assert.ok(!/\^d\{4\}-d\{2\}-d\{2\}/.test(html), 'no cooked-to-death date regex anywhere in the shell');
 });
 
 test('owner copy is owner-clean: no command vocabulary, no engineering terms, in ANY mapped sentence or the fallback', () => {
