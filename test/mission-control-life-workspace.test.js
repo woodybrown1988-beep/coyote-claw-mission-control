@@ -518,6 +518,28 @@ test('recapture-on-complete (operator GO 2026-08-10): flagged tasks offer the pr
   assert.ok(!/\^d\{4\}-d\{2\}-d\{2\}/.test(html), 'no cooked-to-death date regex anywhere in the shell');
 });
 
+test('agent deliverables (dispatch rung 2026-08-10): ALWAYS material on Today, Accept wording, never quiet-folded', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-life-ad-'));
+  const dbPath = makeFixture(dir);
+  const db = new sqlite.DatabaseSync(dbPath);
+  db.exec(`INSERT INTO life_update_proposals (id,owner_id,update_id,task_id,capability_key,command_type,command_json,reason,confidence,risk_level,authority_class,state,created_at)
+    VALUES ('agp1','woody','u1','t1','agent_delivery','complete','{"taskId":"t1","evidenceNote":"KPI baseline numbers attached"}','The boxquery agent finished job abc12345.',0.8,'LOW','INTERNAL_WRITE','PROPOSED','2026-08-05T10:00:00Z')`);
+  // quiet-support ON — a plain suggestion would fold; the agent deliverable must NOT.
+  db.exec("CREATE TABLE IF NOT EXISTS life_settings (key TEXT PRIMARY KEY, value TEXT, updated_at TEXT)");
+  db.exec("INSERT OR REPLACE INTO life_settings (key,value,updated_at) VALUES ('quiet_support','on','2026-08-05T10:00:00Z')");
+  db.close();
+  withEnv(dbPath, () => {
+    const TODAY = PAGES.find((p2) => p2.key === 'life-today');
+    const out = TODAY.render(TODAY.getSection(null, { now: Date.parse(T) }), { now: Date.parse(T) });
+    assert.match(out.body, /Agent deliverable awaiting your accept/, 'the deliverable renders with its own copy');
+    assert.match(out.body, /Accept completes it with the deliverable attached/);
+    const cmds = [...out.body.matchAll(/data-lc-cmd="([^"]*)"/g)].map((m) => JSON.parse(m[1].replaceAll('&quot;', '"').replaceAll('&amp;', '&')));
+    assert.ok(cmds.some((c) => c.command === 'decide' && c.payload && c.payload.proposalId === 'agp1' && c.payload.decision === 'accept'), 'Accept posts the existing decide command — the owner tap IS the state change');
+    assertOnlySanctionedLc(out.body, 'life-today');
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('task-to-project assignment (triage ruling 2026-08-10): the decision verb on drawer + rows + bulk, parked labelled, Inbox offers Accept standalone', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-life-as-'));
   const dbPath = makeFixture(dir);
