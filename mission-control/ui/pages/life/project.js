@@ -54,8 +54,11 @@ module.exports = {
 
     // ── project header: the same controls Projects offers, plus the way back ──
     const riskTone = { GREEN: 'good', AMBER: 'warn', RED: 'bad' };
+    const swap = p.status === 'ACTIVE' ? btnCmd('Park', 'park_project', { projectId: pid })
+      : ['PARKED', 'WAITING'].includes(String(p.status)) ? btnCmd('Activate', 'activate_project', { projectId: pid }) : '';
     const projectCtl = TERMINAL.includes(String(p.status)) ? '' :
       `<button class="r-btn small" data-lc-rename="${LIFE.esc(JSON.stringify({ kind: 'project', id: pid, title: p.title }))}">Rename…</button>`
+      + ` ${swap} `
       + `<button class="lc-cxl" data-lc-cancel-project="${LIFE.esc(pid)}">✕ cancel project</button>`;
     const head = `<div class="r-card r-panel"><div class="r-eyebrow">${LIFE.esc(String(p.stage || '').toLowerCase())}</div>
       <h3 style="margin-bottom:6px">${LIFE.esc(p.title)}</h3>
