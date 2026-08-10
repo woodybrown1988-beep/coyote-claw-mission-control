@@ -86,7 +86,7 @@ module.exports = {
       headRight: living.length ? `<span class="r-pill">${living.length}</span>` : '',
       body: living.length
         ? living.map(taskRow).join('')
-        : `<div class="r-lrow" style="color:var(--rmuted);font-size:13px">Nothing lives here yet. Assign tasks from <a href="/life/tasks">All tasks</a> — every row has a project selector — or capture something and home it here.</div>`,
+        : `<div class="r-lrow" style="color:var(--rmuted);font-size:13px">Nothing lives here yet. Add a task below — it lands homed here, never in the Inbox — or assign existing work from <a href="/life/tasks">All tasks</a>.</div>`,
     });
     const finishedPanel = finished.length ? S.rcc.panel({
       title: 'Finished here', sub: 'Done and cancelled work keeps its name and its record',
@@ -94,6 +94,20 @@ module.exports = {
       body: finished.map(taskRow).join(''),
     }) : '';
 
-    return { stamp: '', body: wrap(head + tasksPanel + finishedPanel) };
+    // ── add a task INTO this project (operator ask 2026-08-10): capture + home in one
+    // submit — the writer moves a homed Inbox task straight to READY, so nothing from
+    // here ever sits in the Inbox. Living projects only (the writer refuses finished
+    // homes anyway). data-fab-target: on THIS page the floating + means exactly this. ──
+    const domains = ['general', 'business', 'health', 'family', 'admin', 'venture'];
+    const domOpt = (dk) => `<option value="${dk}"${dk === p.domain_key ? ' selected' : ''}>${dk}</option>`;
+    const addForm = TERMINAL.includes(String(p.status)) ? '' :
+      `<div class="r-card r-panel" data-fab-target="Add a task to this project"><h3 class="r-panel-title" style="margin-bottom:8px">Add a task to this project</h3>
+      <form class="lc-create-form" data-kind="project-task" data-project="${LIFE.esc(pid)}" style="display:grid;gap:8px">
+        <input class="lc-input" name="title" maxlength="500" placeholder="The task, plainly named — it lands homed here, ready, never in the Inbox">
+        <div style="display:flex;gap:8px;align-items:center"><select class="lc-domain" name="domain">${domains.map(domOpt).join('')}</select>
+        <button type="submit" class="r-btn primary">Add task</button></div>
+      </form></div>`;
+
+    return { stamp: '', body: wrap(head + tasksPanel + addForm + finishedPanel) };
   },
 };

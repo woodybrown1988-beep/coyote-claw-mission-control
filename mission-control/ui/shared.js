@@ -430,7 +430,19 @@ function clientScript() {
     function hex(){var a=new Uint8Array(16);crypto.getRandomValues(a);var o='';for(var i=0;i<a.length;i++){o+=('0'+a[i].toString(16)).slice(-2);}return o;}
     function open(){ov.classList.add('lc-open');window.__lcOpen=true;out.className='lc-result';out.textContent='';setTimeout(function(){inp.focus();},50);}
     function close(){ov.classList.remove('lc-open');window.__lcOpen=false;}
+    // PAGE-CONTEXT FAB (operator report 2026-08-10: "+ on Projects made a task"): a page may
+    // mark ONE element [data-fab-target="label"] as what the floating + means HERE (Projects →
+    // the add-project form; a project drawer → its add-task form). The + then scrolls/focuses
+    // that element and takes the marker's label as its tooltip. Inline "Capture…" buttons and
+    // Ctrl/Cmd+K still mean capture-a-task everywhere; no marker = + captures, unchanged.
+    var fabTarget=document.querySelector('[data-fab-target]');
+    var fabBtn=document.querySelector('.lc-fab');
+    if(fabTarget&&fabBtn){var fl=fabTarget.getAttribute('data-fab-target')||'Add';fabBtn.title=fl;fabBtn.setAttribute('aria-label',fl);}
     document.addEventListener('click',function(e){var t=e.target;if(!t||!t.closest)return;
+      if(t.closest('.lc-fab')&&fabTarget){e.preventDefault();
+        fabTarget.scrollIntoView({behavior:'smooth',block:'center'});
+        var fi=fabTarget.querySelector('input,textarea');if(fi)setTimeout(function(){fi.focus({preventScroll:true});},250);
+        return;}
       if(t.closest('[data-lc-fab]')){e.preventDefault();open();return;}
       if(t===ov){close();return;}
       if(t.closest('[data-lc-close]')){e.preventDefault();close();return;}
@@ -552,6 +564,27 @@ function clientScript() {
       if(!f||!f.classList||!f.classList.contains('lc-create-form'))return;
       e.preventDefault();if(busy)return;
       var kind=f.getAttribute('data-kind');var d={};new FormData(f).forEach(function(v,k){d[k]=v;});
+      // TASK INTO A PROJECT (operator ask 2026-08-10): from a project's own page, a new task
+      // lands HOMED, not in the Inbox — capture, then assign_project on the returned id (the
+      // writer moves a homed Inbox task to READY itself; both legs idempotent on one key).
+      // If homing fails after capture, the truth is told: the task exists, in the Inbox.
+      if(kind==='project-task'){
+        var pjId=f.getAttribute('data-project');
+        var pjTitle=(d.title||'').trim();
+        if(!pjTitle){window.__lcSay(f,'Give it a name first.');return;}
+        busy=true;
+        var ck=hex();
+        fetch('/api/life/capture',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({title:pjTitle,domainKey:(d.domain||'general'),idempotencyKey:ck})})
+        .then(function(r){return r.json();}).then(function(r){
+          if(!(r&&r.ok&&r.result&&r.result.id)){busy=false;window.__lcRefuse(f,r&&r.error);return;}
+          fetch('/api/life/command',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({command:'assign_project',idempotencyKey:ck.slice(0,24)+':home',payload:{taskId:r.result.id,projectId:pjId}})})
+          .then(function(r2){return r2.json();}).then(function(r2){busy=false;
+            if(r2&&r2.ok){window.__lcDraftClear(f);location.reload();}
+            else{window.__lcSay(f,'Captured, but homing it here failed — the task is in your Inbox. '+((r2&&r2.error)||''));}})
+          .catch(function(){busy=false;window.__lcSay(f,'Captured, but homing it here failed — the task is in your Inbox.');});
+        })
+        .catch(function(){busy=false;window.__lcSay(f,'Connection lost — nothing was created. Try again in a moment.');});
+        return;}
       var payload,command;
       if(kind==='outcome'){command='create_outcome';payload={title:(d.title||'').trim(),proofDefinition:(d.proof||'').trim(),domainKey:(d.domain||'general'),activate:true};}
       else{command='create_project';payload={title:(d.title||'').trim(),definitionOfDone:(d.dod||'').trim(),domainKey:(d.domain||'general')};}
