@@ -104,7 +104,7 @@ module.exports = {
     const head = `<div class="r-card r-panel"><h3 style="margin-bottom:6px">${LIFE.esc(t.title)}</h3>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:4px 0 10px">
         ${S.rcc.tag(String(t.status).toLowerCase().replace('_', ' '))}${S.rcc.route(mode)}${S.rcc.tag(t.domain_key)}${S.rcc.tag(t.visibility === 'OWNER_ONLY' ? 'private' : String(t.visibility).toLowerCase())}${t.recurs ? S.rcc.tag(`repeats · ${String(t.recurs).toLowerCase()}`, 'warn') : ''}
-        ${t.project_id ? S.rcc.tag('project: ' + (((s.projects || []).find((pj) => pj.id === t.project_id) || {}).title || 'unknown'), 'info') : ''}
+        ${t.project_id ? `<a href="/life/project?id=${encodeURIComponent(String(t.project_id))}" style="text-decoration:none">${S.rcc.tag('project: ' + (((s.projects || []).find((pj) => pj.id === t.project_id) || {}).title || 'unknown'), 'info')}</a>` : ''}
         ${topConf ? S.rcc.conf(topConf.confidence) : ''}
         ${t.due_at ? S.rcc.tag(`due ${String(t.due_at).slice(0, 10)}${t.due_kind === 'HARD' ? ' · hard' : ''}`) : ''}
       </div>
