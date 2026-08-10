@@ -102,13 +102,19 @@ module.exports = {
       const task = t(p.task_id);
       const conf = S.rcc.conf(p.confidence);
       const highStakes = p.risk_level === 'HIGH' || p.risk_level === 'CRITICAL';
+      // Agent deliverables (dispatch rung 2026-08-10) are ALWAYS material — an agent worked
+      // and the outcome is yours to tap: Accept completes the task with the deliverable
+      // attached as evidence; No keeps it open with the attempt on the record.
+      const isAgentDelivery = p.capability_key === 'agent_delivery';
       const row = {
         title: task ? link(task.id, task.title) : 'A task',
-        sub: `${String(p.reason).slice(0, 110)} — it suggests ${p.command_type === 'set_waiting' ? 'parking this as waiting' : 'a next step'}.`,
+        sub: isAgentDelivery
+          ? `Agent deliverable awaiting your accept — the work is on the task. Accept completes it with the deliverable attached; No keeps it open.`
+          : `${String(p.reason).slice(0, 110)} — it suggests ${p.command_type === 'set_waiting' ? 'parking this as waiting' : 'a next step'}.`,
         conf,
-        actions: `${task ? `<a class="r-btn small" href="/life/task?id=${encodeURIComponent(task.id)}">Inspect</a>` : ''} ${cmd('Approve', 'decide', { proposalId: p.id, decision: 'accept' }, 'small primary')} ${cmd('No', 'decide', { proposalId: p.id, decision: 'reject' }, 'small')}`,
+        actions: `${task ? `<a class="r-btn small" href="/life/task?id=${encodeURIComponent(task.id)}">Inspect</a>` : ''} ${cmd(isAgentDelivery ? 'Accept' : 'Approve', 'decide', { proposalId: p.id, decision: 'accept' }, 'small primary')} ${cmd('No', 'decide', { proposalId: p.id, decision: 'reject' }, 'small')}`,
       };
-      (highStakes ? material : suggestions).push(row);
+      (highStakes || isAgentDelivery ? material : suggestions).push(row);
     }
     // quiet-support on → suggestions fold; off → they sit inline with the material items.
     const needs = s.quiet ? material : [...material, ...suggestions];
