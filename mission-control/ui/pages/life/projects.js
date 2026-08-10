@@ -30,7 +30,7 @@ module.exports = {
     const card = (p) => {
       const next = s.nexts.find((n) => n.project_id === p.id);
       return `<div class="r-card r-panel"><div class="r-eyebrow">${LIFE.esc(p.stage.toLowerCase())}</div>
-        <div style="font-size:16px;font-weight:650;line-height:1.3;margin-bottom:8px">${LIFE.esc(p.title)}</div>
+        <div style="font-size:16px;font-weight:650;line-height:1.3;margin-bottom:8px"><a href="/life/project?id=${encodeURIComponent(p.id)}" style="color:inherit">${LIFE.esc(p.title)}</a></div>
         <div>${S.rcc.tag(p.domain_key)} ${S.rcc.tag('risk ' + p.risk_state.toLowerCase(), riskTone[p.risk_state] || '')} ${p.due_date ? S.rcc.tag('due ' + String(p.due_date).slice(0, 10)) : ''}</div>
         <div class="r-defbox"><small>Definition of done</small><div style="font-size:13px;line-height:1.45">${LIFE.esc(p.definition_of_done)}</div></div>
         <div style="font-size:12.5px;color:var(--rmuted)">${next ? `Next: ${link(next.id, next.title)}` : '<span style="color:#f5c96b">No executable next action — a stalled project until one exists.</span>'}</div>
@@ -51,7 +51,7 @@ module.exports = {
         <div style="display:flex;gap:8px;align-items:center"><select class="lc-domain" name="domain"><option value="general">general</option><option value="business">business</option><option value="health">health</option><option value="family">family</option><option value="admin">admin</option><option value="venture">venture</option></select>
         <button type="submit" class="r-btn primary">Add project</button></div>
       </form></div>`;
-    const restRows = rest.length ? S.rcc.panel({ title: 'Waiting, parked and finished', body: rest.map((p) => `<div class="r-lrow"><div><div style="font-weight:600">${LIFE.esc(p.title)}</div><div style="margin-top:3px">${S.rcc.tag(p.status.toLowerCase())} ${S.rcc.tag(p.domain_key)}</div></div><div style="display:flex;gap:8px;align-items:center;flex-shrink:0">${ctl(p)}</div></div>`).join('') }) : '';
+    const restRows = rest.length ? S.rcc.panel({ title: 'Waiting, parked and finished', body: rest.map((p) => `<div class="r-lrow"><div><div style="font-weight:600"><a href="/life/project?id=${encodeURIComponent(p.id)}" style="color:inherit">${LIFE.esc(p.title)}</a></div><div style="margin-top:3px">${S.rcc.tag(p.status.toLowerCase())} ${S.rcc.tag(p.domain_key)}</div></div><div style="display:flex;gap:8px;align-items:center;flex-shrink:0">${ctl(p)}</div></div>`).join('') }) : '';
     return { stamp: '', body: wrap(`<div style="display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));margin-bottom:12px">${slots.join('')}</div>${active.length < 4 ? form : ''}${restRows}`) };
   },
 };
