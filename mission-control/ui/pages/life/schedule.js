@@ -56,9 +56,18 @@ module.exports = {
       if (!sync || !sync.last_sync_at) return { engine: { ok: true }, now, connected: false, attempted: !!(sync && sync.last_error) };
       const today = londonDate(now);
       const evQ = LIFE.lifeSelect(o.db,
+        'SELECT id, subject, start_at, end_at, is_all_day, location, show_as, is_protected, calendar_key FROM life_calendar_events WHERE start_at LIKE ? ORDER BY start_at',
+        [`${today}%`]);
+      // Legacy mirror (pre-Stage-W column) degrades to no calendar_key — everything default.
+      const evQ2 = evQ.ok ? evQ : LIFE.lifeSelect(o.db,
         'SELECT id, subject, start_at, end_at, is_all_day, location, show_as, is_protected FROM life_calendar_events WHERE start_at LIKE ? ORDER BY start_at',
         [`${today}%`]);
-      return { engine: { ok: true }, now, connected: true, sync, today, events: evQ.ok ? evQ.rows : [] };
+      // Open block proposals (Stage W): the golden's "Proposed next block" made real —
+      // accept places the block via its own HUMAN-gated verb; reject touches nothing.
+      const propQ = LIFE.lifeSelect(o.db,
+        `SELECT id, command_type, command_json, reason, confidence FROM life_update_proposals
+          WHERE state = 'PROPOSED' AND capability_key = 'calendar_block' ORDER BY created_at LIMIT 5`);
+      return { engine: { ok: true }, now, connected: true, sync, today, events: evQ2.ok ? evQ2.rows : [], blockProposals: propQ.ok ? propQ.rows : [] };
     } finally { o.db.close(); }
   },
 
@@ -92,26 +101,28 @@ module.exports = {
 
     const head = `<div style="display:flex;justify-content:space-between;align-items:flex-end;gap:12px;margin-bottom:14px;flex-wrap:wrap">`
       + `<div><div class="r-eyebrow">OUTLOOK IS CANONICAL · ${LIFE.esc(eyebrowDate(now))}</div>`
-      + `<div style="font-size:13.5px;color:var(--rmuted)">Read from your calendar, never invented — and nothing is written back.</div></div>`
+      + `<div style="font-size:13.5px;color:var(--rmuted)">Read from your calendar, never invented — nothing is written without your approval, and only ever into the Life OS calendar.</div></div>`
       + `<div style="display:flex;gap:8px;align-items:center">${f.pill}${cmd('Sync now', 'calendar_sync', {}, '')}</div></div>`;
+
+    const proposals = s.blockProposals || [];
 
     // The banner carries the page's one staleness caption in full sentence form.
     const banner = `<div class="r-card r-panel" style="margin-bottom:12px;${f.stale ? 'border-color:rgba(255,179,77,.45)' : ''}">`
       + `<div style="display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap">`
-      + `<div><b>Outlook is canonical.</b> <span style="color:var(--rmuted)">Committed appointments are read from Outlook and mirrored here. Proposing new blocks is a later decision — nothing is ever shown as booked that isn't in Outlook.</span></div>`
+      + `<div><b>One calendar, two states.</b> <span style="color:var(--rmuted)">Committed appointments are read from Outlook. Proposed blocks stay proposals until you approve one — only then is it written, into the dedicated Life OS calendar and nowhere else.</span></div>`
       + `<div style="flex-shrink:0;font-size:12.5px;color:${f.stale ? '#f5c96b' : 'var(--rmuted)'}">${LIFE.esc(f.caption)}</div></div></div>`;
 
     const tiles = `<div style="display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));margin-bottom:12px">`
       + S.rcc.kpi({ label: 'Canonical source', value: 'Outlook', sub: 'your real calendar' })
       + S.rcc.kpi({ label: 'This view', value: f.stale ? 'Stale' : 'Fresh', sub: f.stale ? 'Outlook is the truth right now' : 'matched to Outlook' })
       + S.rcc.kpi({ label: "Today's commitments", value: String(commitments.length), sub: allDay.length ? `+ ${allDay.length} all-day` : 'timed events' })
-      + S.rcc.kpi({ label: 'Uncommitted proposals', value: '0', sub: 'never shown as booked time' })
+      + S.rcc.kpi({ label: 'Uncommitted proposals', value: String(proposals.length), sub: 'never shown as booked time' })
       + `</div>`;
 
     const evRow = (e) => `<div class="r-lrow"><div style="min-width:0"><div style="font-weight:600">`
       + `<span style="font-family:var(--font-mono,monospace);color:#f0a276;font-size:12.5px;margin-right:10px">${LIFE.esc(hm(e.start_at))}–${LIFE.esc(hm(e.end_at))}</span>${LIFE.esc(e.subject || 'Busy')}</div>`
       + `<div style="font-size:12px;color:var(--rmuted);margin-top:3px">${LIFE.esc(e.location || '')}${e.location && e.show_as !== 'busy' ? ' · ' : ''}${e.show_as !== 'busy' ? LIFE.esc(String(e.show_as)) : ''}</div></div>`
-      + `<div style="flex-shrink:0">${e.is_protected ? S.rcc.tag('Focus candidate', 'good') : ''}</div></div>`;
+      + `<div style="flex-shrink:0;display:flex;gap:6px">${e.calendar_key === 'life' ? S.rcc.tag('Life OS', 'info') : ''}${e.is_protected ? S.rcc.tag('Focus candidate', 'good') : ''}</div></div>`;
     const todayPanel = S.rcc.panel({
       title: 'Today from Outlook', sub: 'Your fixed commitments in one chronological view',
       headRight: commitments.length ? `<span class="r-pill">${commitments.length}</span>` : '',
@@ -128,15 +139,33 @@ module.exports = {
         : `<div class="r-lrow" style="color:var(--rmuted);font-size:13px">None today. Give an Outlook event a “Protected” or “Focus” category and it shows here as a focus candidate.</div>`,
     });
 
+    // Proposed blocks (Stage W): the golden's "Proposed next block" made REAL. Accept rides
+    // the block's own HUMAN-gated verb (the writer places/removes the actual Outlook event
+    // in the Life OS calendar only); No is a plain reject and touches nothing in Outlook.
+    const propCard = (p) => {
+      let c = {}; try { c = JSON.parse(String(p.command_json || '{}')); } catch (_) { /* renders generic */ }
+      const when = p.command_type === 'place_block'
+        ? `${String(c.planDate || '')} · ${String(c.startAt || '').slice(11, 16)}–${String(c.endAt || '').slice(11, 16)}`
+        : 'standing block, task closed';
+      return `<div style="border:1px solid rgba(255,179,77,.4);background:rgba(255,179,77,.06);border-radius:10px;padding:12px;margin:8px 0">
+        <div style="font-size:11px;color:#f5c96b;font-weight:700">${LIFE.esc(when)}</div>
+        <div style="font-weight:650;margin:4px 0">${LIFE.esc(String(c.title || (p.command_type === 'remove_block' ? 'Remove a standing block' : 'Focus block')))}</div>
+        <div style="font-size:12px;color:var(--rmuted);margin-bottom:8px">${LIFE.esc(String(p.reason).slice(0, 140))} ${S.rcc.conf(p.confidence)}</div>
+        <div style="display:flex;gap:8px;justify-content:flex-end">${cmd(p.command_type === 'place_block' ? 'Place block' : 'Remove block', p.command_type, { proposalId: p.id }, 'small primary')}${cmd('No', 'decide', { proposalId: p.id, decision: 'reject' }, 'small')}</div></div>`;
+    };
     const proposalsPanel = S.rcc.panel({
-      title: 'Proposed next block', sub: 'Nothing is written to your calendar from here',
-      body: `<div class="r-lrow" style="color:var(--rmuted);font-size:13px">No proposed blocks. Proposing focus time into your calendar is a separate decision you haven't taken yet — until then this stays honestly empty.</div>`,
+      title: 'Proposed next block', sub: 'Not written to Outlook until you approve — and only ever into the Life OS calendar',
+      headRight: proposals.length ? `<span class="r-pill">${proposals.length}</span>` : '',
+      body: proposals.length
+        ? proposals.map(propCard).join('')
+        : `<div class="r-lrow" style="color:var(--rmuted);font-size:13px">No proposed blocks right now. The daily compile proposes up to three focus blocks around your real commitments — each waits for your yes.</div>`,
     });
 
     const authorityPanel = S.rcc.panel({
       title: 'Calendar authority', sub: 'The standing rules this page lives by',
       body: [
-        ['Read, never written', 'This page mirrors Outlook. Nothing here writes to your calendar.'],
+        ['Only the Life OS calendar', 'Approved blocks are written there and nowhere else — your other calendars are read-only by construction.'],
+        ['Your approval, every time', 'Nothing is placed, moved or removed without your tap; agents are refused by name.'],
         ['Stale means stale', 'If the refresh breaks, this page says so and shows when it last matched Outlook — stale is never dressed as fresh.'],
         ['No invented free time', 'Gaps between events are never offered back as bookable time.'],
       ].map(([t, d]) => `<div class="r-lrow"><div><div style="font-weight:600">${LIFE.esc(t)}</div><div style="font-size:12px;color:var(--rmuted);margin-top:2px">${LIFE.esc(d)}</div></div></div>`).join(''),

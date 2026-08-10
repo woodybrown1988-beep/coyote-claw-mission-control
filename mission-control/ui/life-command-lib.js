@@ -106,6 +106,12 @@ const COMMAND_SHAPES = {
   // and activates to manage the slots; the writer refuses the fifth activation by name.
   park_project: (p) => typeof p.projectId === 'string' && !!p.projectId,
   activate_project: (p) => typeof p.projectId === 'string' && !!p.projectId,
+  // Calendar blocks (Graph Stage W, operator GO 2026-08-10): accepting a block proposal
+  // rides its OWN verb — the writer places/removes the real Outlook event, then marks the
+  // proposal; a generic decide-accept on one is refused engine-side (fail-closed twice).
+  // HUMAN-only at the writer: any agent/service actor is refused by name.
+  place_block: (p) => typeof p.proposalId === 'string' && !!p.proposalId,
+  remove_block: (p) => typeof p.proposalId === 'string' && !!p.proposalId,
   // Bulk import (operator brief 2026-08-08): commands carry a file NAME in the import
   // inbox plus the operator's per-row rulings — never file content (the writer reads the
   // file itself and re-validates everything; preview writes nothing).

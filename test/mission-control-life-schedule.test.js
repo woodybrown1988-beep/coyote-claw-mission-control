@@ -36,7 +36,8 @@ function makeFixture(dir, { syncRow, events } = {}) {
   db.exec(`
     CREATE TABLE life_calendar_events (id TEXT PRIMARY KEY, owner_id TEXT, subject TEXT, start_at TEXT,
       end_at TEXT, timezone TEXT, is_all_day INTEGER DEFAULT 0, location TEXT DEFAULT '', show_as TEXT DEFAULT 'busy',
-      categories_json TEXT DEFAULT '[]', is_protected INTEGER DEFAULT 0, updated_at TEXT);
+      categories_json TEXT DEFAULT '[]', is_protected INTEGER DEFAULT 0,
+      series_master_id TEXT, calendar_key TEXT NOT NULL DEFAULT 'default', updated_at TEXT);
     CREATE TABLE life_calendar_sync (id INTEGER PRIMARY KEY, delta_link TEXT, window_anchor TEXT,
       last_sync_at TEXT, last_error TEXT, updated_at TEXT);
     CREATE TABLE life_tasks (id TEXT PRIMARY KEY, owner_id TEXT, outcome_id TEXT, project_id TEXT, domain_key TEXT,
@@ -67,9 +68,9 @@ function makeFixture(dir, { syncRow, events } = {}) {
       .run(syncRow.deltaLink ?? 'dl', DAY, syncRow.lastSyncAt ?? null, syncRow.lastError ?? null, new Date(NOW).toISOString());
   }
   for (const e of events || []) {
-    db.prepare(`INSERT INTO life_calendar_events (id, owner_id, subject, start_at, end_at, timezone, is_all_day, location, show_as, categories_json, is_protected, updated_at)
-                VALUES (?, 'woody', ?, ?, ?, 'Europe/London', ?, ?, ?, '[]', ?, ?)`)
-      .run(e.id, e.subject, e.start, e.end, e.allDay ? 1 : 0, e.location || '', e.showAs || 'busy', e.protected ? 1 : 0, new Date(NOW).toISOString());
+    db.prepare(`INSERT INTO life_calendar_events (id, owner_id, subject, start_at, end_at, timezone, is_all_day, location, show_as, categories_json, is_protected, calendar_key, updated_at)
+                VALUES (?, 'woody', ?, ?, ?, 'Europe/London', ?, ?, ?, '[]', ?, ?, ?)`)
+      .run(e.id, e.subject, e.start, e.end, e.allDay ? 1 : 0, e.location || '', e.showAs || 'busy', e.protected ? 1 : 0, e.calendarKey || 'default', new Date(NOW).toISOString());
   }
   db.close();
   return p;
@@ -175,6 +176,37 @@ test("Today's My-day rail: real commitments + staleness caption; stale flips the
     assert.match(body, /Outlook is not connected/, 'no sync row → the honest not-connected rail');
   });
   fs.rmSync(dir3, { recursive: true, force: true });
+});
+
+test('Stage W surfaces: block proposals on Schedule + Today ride their OWN verbs; Life OS pill; reject stays a plain decide', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-cal-'));
+  const dbPath = makeFixture(dir, {
+    syncRow: { lastSyncAt: new Date(NOW - 10 * 60_000).toISOString() },
+    events: [...EVENTS, { id: 'blk1', subject: 'Focus: costing', start: `${DAY}T13:00:00`, end: `${DAY}T14:00:00`, calendarKey: 'life' }],
+  });
+  const db = new sqlite.DatabaseSync(dbPath);
+  db.prepare(`INSERT INTO life_update_proposals (id, owner_id, update_id, task_id, capability_key, command_type, command_json, reason, confidence, risk_level, authority_class, state, created_at)
+              VALUES ('bp1','woody','u1','t1','calendar_block','place_block', ?, 'must-win focus block — avoids your fixed commitments', 0.75, 'LOW', 'EXTERNAL', 'PROPOSED', ?)`)
+    .run(JSON.stringify({ taskId: 't1', planDate: DAY, title: 'Focus: draft criteria', startAt: `${DAY}T10:15:00`, endAt: `${DAY}T11:45:00` }), new Date(NOW).toISOString());
+  db.close();
+  withEnv(dbPath, () => {
+    const sched = SCHEDULE.render(SCHEDULE.getSection(null, { now: NOW }), {}).body;
+    const cmds = [...sched.matchAll(/data-lc-cmd="([^"]*)"/g)]
+      .map((m) => JSON.parse(m[1].replaceAll('&quot;', '"').replaceAll('&amp;', '&').replaceAll('&#39;', "'")));
+    assert.ok(cmds.some((c) => c.command === 'place_block' && c.payload.proposalId === 'bp1'), 'accept rides place_block, never a generic decide-accept');
+    assert.ok(!cmds.some((c) => c.command === 'decide' && c.payload.decision === 'accept'), 'no generic accept exists for a calendar proposal');
+    assert.ok(cmds.some((c) => c.command === 'decide' && c.payload.decision === 'reject' && c.payload.proposalId === 'bp1'), 'No = a plain reject — Outlook untouched');
+    assert.match(sched, /10:15–11:45/, 'the proposal shows its times');
+    assert.match(sched, /Life OS<\/span>/, 'a mirrored block carries the Life OS pill');
+    assert.match(sched, /only ever into the Life OS calendar/, 'the write cage is named to the owner');
+    assert.match(sched, />1<\/div>/, 'the uncommitted-proposals tile counts the real open proposal');
+    const today = TODAY.render(TODAY.getSection(null, { now: NOW }), { now: NOW }).body;
+    const tcmds = [...today.matchAll(/data-lc-cmd="([^"]*)"/g)]
+      .map((m) => JSON.parse(m[1].replaceAll('&quot;', '"').replaceAll('&amp;', '&').replaceAll('&#39;', "'")));
+    assert.ok(tcmds.some((c) => c.command === 'place_block' && c.payload.proposalId === 'bp1'), 'Today routes the accept through place_block too');
+    assert.match(today, /Accept places it in Outlook; No leaves Outlook untouched/, 'the consequence is written on the row');
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
 });
 
 test('owner language: populated calendar surfaces carry no engineering vocabulary', () => {
