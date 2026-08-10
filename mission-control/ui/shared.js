@@ -270,6 +270,37 @@ function formInUse(doc) {
   return false;
 }
 
+// MANUAL RECURRENCE (operator GO 2026-08-10): the next-occurrence date for a recurring
+// obligation, advanced from its current due date by its cadence label. Month arithmetic
+// clamps the day (31 Jan + 1 month = end of Feb) — statutory dates anchor to the
+// calendar. Exported for tests AND serialized into the shell client from THIS definition
+// (the formInUse pattern: one source, byte-pinned). Unknown labels default to one month —
+// the prompt shows the date for editing, so a default is a suggestion, never a silent act.
+function advanceCadence(cadence, fromDate) {
+  var c = String(cadence || '').toLowerCase();
+  var m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(fromDate || ''));
+  var y, mo, d;
+  if (m) { y = +m[1]; mo = +m[2] - 1; d = +m[3]; } else { var t = new Date(); y = t.getFullYear(); mo = t.getMonth(); d = t.getDate(); }
+  function months(n) {
+    var tm = mo + n, ty = y + Math.floor(tm / 12); tm = ((tm % 12) + 12) % 12;
+    var last = new Date(Date.UTC(ty, tm + 1, 0)).getUTCDate();
+    return new Date(Date.UTC(ty, tm, Math.min(d, last)));
+  }
+  function days(n) { return new Date(Date.UTC(y, mo, d + n)); }
+  var wk = /every\s*(\d+)\s*week/.exec(c);
+  var out;
+  if (wk) out = days(7 * Number(wk[1]));
+  else if (/fortnight/.test(c)) out = days(14);
+  else if (/quarter/.test(c)) out = months(3);
+  else if (/six[\s-]*month|6[\s-]*month/.test(c)) out = months(6);
+  else if (/annual|year/.test(c)) out = months(12);
+  else if (/month/.test(c)) out = months(1);
+  else if (/week/.test(c)) out = days(7);
+  else if (/daily|\bday\b/.test(c)) out = days(1);
+  else out = months(1);
+  return out.toISOString().slice(0, 10);
+}
+
 // Defect 2 — the writer speaks command vocabulary by design ('create_project:
 // definitionOfDone required' is engineering truth); the OWNER surface translates before
 // rendering. ONE table, two consumers: exported for the tripwire tests AND serialized
@@ -289,6 +320,8 @@ const LIFE_REFUSAL_COPY = [
   ['dependencylabel required', 'Say who or what you are waiting on.'],
   ['fallbackat required', 'A follow-up date is needed — waiting work must never rot silently.'],
   ['wake condition', 'Parking work as waiting needs who it waits on and a follow-up date.'],
+  ['recurring obligation', 'This one repeats — give it its next date, or decline it so the drop is on the record.'],
+  ['nothing to recapture', 'That task does not repeat — complete it plainly.'],
   ['in the import inbox', 'That file is not in the import inbox — drop it into ~/life-os-imports and try again.'],
   ['over the 5 mb cap', 'That file is too big — keep imports under 5 MB.'],
   ['could not read', 'That file could not be read — is it a real .csv or .xlsx export?'],
@@ -326,6 +359,7 @@ function clientScript() {
   // life.db or any server store. A successful submit clears the draft; a refusal keeps
   // it (the owner is still editing).
   window.__lcFormBusy=(${formInUse.toString()});
+  window.__lcNextDate=(${advanceCadence.toString()});
   window.__lcOwnerCopy=(${ownerRefusalCopyClient()});
   window.__lcNet='Connection lost — nothing was changed. Try again in a moment.';
   window.__lcSay=function(near,msg,ok){try{var host=near&&near.closest?(near.closest('form')||near.closest('.r-card')||near.closest('.lc-focus-card')||near.closest('.lc-card')||near.parentNode):null;if(!host)return;var el=host.querySelector('[data-lc-msg]');if(!el){el=document.createElement('div');el.setAttribute('data-lc-msg','');host.appendChild(el);}el.className='lc-result '+(ok?'lc-ok':'lc-err');el.textContent=msg;}catch(_){}};
@@ -438,8 +472,24 @@ function clientScript() {
       if(dn){e.preventDefault();if(busy)return;
         var ev=prompt('Closure evidence (what proves it done?) — optional for low-risk tasks:','');
         if(ev===null)return;
-        busy=true;dn.disabled=true;
         var pay={taskId:dn.getAttribute('data-lc-complete')};if(ev.trim())pay.evidenceNote=ev.trim();
+        // RECURRING OBLIGATION (operator GO 2026-08-10): the completion flow offers the
+        // next occurrence prefilled — OK keeps it alive; dismissing is allowed but goes
+        // through one named confirm and lands as an AUDITED decline, never an accident.
+        var rc=dn.getAttribute('data-lc-recap');
+        if(rc){var ri2;try{ri2=JSON.parse(rc);}catch(_){ri2={};}
+          var nx=window.__lcNextDate(ri2.cadence,ri2.due);
+          var ans=prompt('Recurring obligation ('+(ri2.cadence||'repeats')+'). OK captures the next one on this date — edit if needed:',nx);
+          if(ans===null){
+            if(!confirm('Decline the recapture? This obligation will NOT come back — the drop goes on the record.'))return;
+            pay.declineRecapture=true;
+          } else {
+            ans=ans.trim();
+            if(!/^\\d{4}-\\d{2}-\\d{2}$/.test(ans)){window.__lcSay(dn,'Use a date like 2026-09-01 — nothing was completed.');return;}
+            pay.recapture={nextDate:ans};
+          }
+        }
+        busy=true;dn.disabled=true;
         fetch('/api/life/command',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({command:'complete',idempotencyKey:hex(),payload:pay})})
         .then(function(r){return r.json();}).then(function(r){if(r&&r.ok){location.reload();}else{busy=false;dn.disabled=false;window.__lcRefuse(dn,r&&r.error);}})
         .catch(function(){busy=false;dn.disabled=false;window.__lcSay(dn,window.__lcNet);});
@@ -448,7 +498,7 @@ function clientScript() {
       if(wt){e.preventDefault();if(busy)return;
         var dep=prompt('Waiting on (who/what):','');if(dep===null||!dep.trim())return;
         var fb2=prompt('Fallback date (YYYY-MM-DD) — required:','');if(fb2===null)return;
-        if(!/^\d{4}-\d{2}-\d{2}$/.test(fb2)){window.__lcSay(wt,'A follow-up date like 2026-09-01 is needed — waiting work must never rot silently.');return;}
+        if(!/^\\d{4}-\\d{2}-\\d{2}$/.test(fb2)){window.__lcSay(wt,'A follow-up date like 2026-09-01 is needed — waiting work must never rot silently.');return;}
         busy=true;wt.disabled=true;
         fetch('/api/life/command',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({command:'set_waiting',idempotencyKey:hex(),payload:{taskId:wt.getAttribute('data-lc-wait'),dependencyLabel:dep.trim(),wakeType:'HUMAN_UPDATE',fallbackAt:fb2+'T09:00:00.000Z'}})})
         .then(function(r){return r.json();}).then(function(r){if(r&&r.ok){location.reload();}else{busy=false;wt.disabled=false;window.__lcRefuse(wt,r&&r.error);}})
@@ -1153,6 +1203,7 @@ module.exports = {
   WORKSPACES,
   workspaceOf,
   formInUse,
+  advanceCadence,
   ownerRefusalCopy,
   LIFE_REFUSAL_COPY,
   LIFE_REFUSAL_FALLBACK,

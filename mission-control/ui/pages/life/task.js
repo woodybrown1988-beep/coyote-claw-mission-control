@@ -67,7 +67,7 @@ module.exports = {
       !['DONE', 'CANCELLED'].includes(String(t.status))
         ? `<button class="r-btn small" data-lc-rename="${LIFE.esc(JSON.stringify({ kind: 'task', id, title: t.title }))}">Rename…</button>` : '',
       ['INBOX', 'READY', 'SCHEDULED', 'IN_PROGRESS', 'BLOCKED', 'AWAITING_APPROVAL', 'BATCH'].includes(String(t.status))
-        ? `<button class="r-btn small" data-lc-complete="${LIFE.esc(id)}">Mark done…</button>`
+        ? `<button class="r-btn small" data-lc-complete="${LIFE.esc(id)}"${t.recurs ? ` data-lc-recap="${LIFE.esc(JSON.stringify({ cadence: t.recurs, due: String(t.due_at || '').slice(0, 10) }))}"` : ''}>Mark done…</button>`
           + `<button class="r-btn small" data-lc-wait="${LIFE.esc(id)}">Park waiting…</button>`
           + `<button class="lc-cxl" data-lc-cancel="${LIFE.esc(id)}">✕ cancel</button>`
         : '',
@@ -89,7 +89,7 @@ module.exports = {
       ? `<button class="r-btn small primary" data-lc-focus="${LIFE.esc(JSON.stringify({ taskId: id, title: t.title, dod: (t.definition_of_done && String(t.definition_of_done).trim()) || '' }))}">▶ Focus</button>` : '';
     const head = `<div class="r-card r-panel"><h3 style="margin-bottom:6px">${LIFE.esc(t.title)}</h3>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:4px 0 10px">
-        ${S.rcc.tag(String(t.status).toLowerCase().replace('_', ' '))}${S.rcc.route(mode)}${S.rcc.tag(t.domain_key)}${S.rcc.tag(t.visibility === 'OWNER_ONLY' ? 'private' : String(t.visibility).toLowerCase())}
+        ${S.rcc.tag(String(t.status).toLowerCase().replace('_', ' '))}${S.rcc.route(mode)}${S.rcc.tag(t.domain_key)}${S.rcc.tag(t.visibility === 'OWNER_ONLY' ? 'private' : String(t.visibility).toLowerCase())}${t.recurs ? S.rcc.tag(`repeats · ${String(t.recurs).toLowerCase()}`, 'warn') : ''}
         ${topConf ? S.rcc.conf(topConf.confidence) : ''}
         ${t.due_at ? S.rcc.tag(`due ${String(t.due_at).slice(0, 10)}${t.due_kind === 'HARD' ? ' · hard' : ''}`) : ''}
       </div>
