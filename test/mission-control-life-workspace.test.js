@@ -39,7 +39,8 @@ const SANCTIONED_LC = new Set(['data-lc-cancel', 'data-lc-cmd', 'data-lc-complet
 const CMD_ALLOWLIST = new Set(['note', 'decide', 'transition', 'complete', 'set_waiting', 'wake', 'reopen', 'undo', 'cancel',
   'plan_today', 'approve_plan', 'compile_week', 'approve_week', 'compile_quarter', 'approve_quarter',
   'pause_capability', 'resume_capability', 'create_outcome', 'create_project', 'set_route', 'set_setting',
-  'rename_task', 'rename_project', 'cancel_project', 'import_preview', 'import_batch', 'assign_project', 'accept_standalone']);
+  'rename_task', 'rename_project', 'cancel_project', 'import_preview', 'import_batch', 'assign_project', 'accept_standalone',
+  'calendar_sync']);
 function assertOnlySanctionedLc(body, key) {
   for (const m of body.matchAll(/data-lc-[a-z-]+/g)) {
     assert.ok(SANCTIONED_LC.has(m[0]), `${key}: unsanctioned life affordance ${m[0]}`);
@@ -153,8 +154,10 @@ test('registry: Life OS is the third workspace with the ruled shape', () => {
   const items = life.groups.flatMap((g) => g.items);
   assert.deepEqual(items.map((i) => i.key), PAGES.map((p) => p.key), 'sidebar items = page modules, in order');
   assert.ok(items.every((i) => i.route.startsWith('/life/')));
-  // AMENDMENT 2 (2026-08-05): Schedule + Agent activity EXIST as honest not-connected empty
-  // states only — their populated versions stay gated at the separate go/no-go.
+  // AMENDMENT 2 (2026-08-05) as amended by the calendar GO (2026-08-10): Schedule's
+  // populated view now exists, but with NOTHING KNOWN (empty section — no life.db, no
+  // mirror, no completed sync) it must still be the honest not-connected state, and
+  // Agent activity stays gated. These assertions are the not-connected pin.
   const sched = PAGES.find((pg) => pg.key === 'life-schedule').render({}, {});
   assert.match(sched.body, /Outlook is not connected/);
   assert.ok(!/\d{2}:\d{2}/.test(sched.body.replace(/<style>[\s\S]*?<\/style>/, '')), 'no times invented on an unconnected schedule');

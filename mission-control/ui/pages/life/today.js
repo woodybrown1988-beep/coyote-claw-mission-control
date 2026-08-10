@@ -54,6 +54,11 @@ module.exports = {
         decidedToday: q(`SELECT COUNT(*) c FROM life_update_proposals WHERE decided_at >= ?`, [`${today}T00:00:00.000Z`])[0]?.c ?? 0,
         doneToday: q(`SELECT COUNT(*) c FROM life_task_events WHERE event_type = 'STATUS_CHANGED' AND to_state = 'DONE' AND created_at >= ?`, [`${today}T00:00:00.000Z`])[0]?.c ?? 0,
         captured24h: q(`SELECT COUNT(*) c FROM life_task_events WHERE event_type = 'CREATED' AND created_at >= ?`, [new Date(now - 86_400_000).toISOString()])[0]?.c ?? 0,
+        // CALENDAR (Graph go 2026-08-10): the engine mirrors Outlook into life-side tables;
+        // My Day reads TODAY's mirror rows. Missing table (engine not deployed) → q() gives
+        // [] and calSync null → the honest not-connected rail, exactly as before the go.
+        calSync: q('SELECT last_sync_at, last_error FROM life_calendar_sync WHERE id = 1')[0] || null,
+        calEvents: q('SELECT id, subject, start_at, end_at, is_all_day, show_as, is_protected FROM life_calendar_events WHERE start_at LIKE ? ORDER BY start_at', [`${today}%`]),
       };
     } finally { o.db.close(); }
   },
@@ -165,11 +170,37 @@ module.exports = {
         <div style="display:flex;gap:8px;flex-wrap:wrap"><a class="r-btn primary" href="/life/task?id=${encodeURIComponent(mw.id)}">Open task</a>${planIsDraft ? cmd('Approve plan', 'approve_plan', { planDate: s.today }, '') : ''}</div></div>`;
     }
 
-    const myDay = S.rcc.panel({
-      title: 'My day', sub: 'Flexible blocks, not a brittle minute plan',
-      body: `<div style="font-size:13.5px;line-height:1.6;padding:6px 0;color:var(--rmuted)">Outlook is not connected, so no fixed commitments show here — and no free time is invented. Today runs on the must-win and the two supports.`
-        + `<div style="margin-top:10px"><button class="r-btn small" data-lc-fab>Capture a commitment</button></div></div>`,
-    });
+    // ── My day: REAL commitments from the Outlook mirror (calendar go 2026-08-10), with the
+    // staleness caption in every render. No sync yet → the honest not-connected rail. Never
+    // a free-time grid: the rail lists what is committed and says nothing about the gaps. ──
+    let myDay;
+    if (!s.calSync || !s.calSync.last_sync_at) {
+      myDay = S.rcc.panel({
+        title: 'My day', sub: 'Flexible blocks, not a brittle minute plan',
+        body: `<div style="font-size:13.5px;line-height:1.6;padding:6px 0;color:var(--rmuted)">Outlook is not connected, so no fixed commitments show here — and no free time is invented. Today runs on the must-win and the two supports.`
+          + `<div style="margin-top:10px"><button class="r-btn small" data-lc-fab>Capture a commitment</button></div></div>`,
+      });
+    } else {
+      const ageMin = Math.max(0, Math.round((now - Date.parse(s.calSync.last_sync_at)) / 60_000));
+      const ageText = ageMin < 60 ? `${ageMin} min` : `${Math.floor(ageMin / 60)}h ${ageMin % 60}m`;
+      const calStale = !!s.calSync.last_error || ageMin > 45;
+      const caption = calStale
+        ? `<div class="r-note" style="color:#f5c96b">Last matched Outlook ${ageText} ago${s.calSync.last_error ? ' and the latest refresh failed' : ''} — treat this as stale; Outlook is the truth.</div>`
+        : `<div class="r-note">Matched to Outlook ${ageText} ago.</div>`;
+      const timed = (s.calEvents || []).filter((e) => !e.is_all_day && e.show_as !== 'free');
+      const allDay = (s.calEvents || []).filter((e) => e.is_all_day);
+      const evLine = (e) => `<div class="r-lrow"><div style="min-width:0;font-size:13px"><span style="font-family:var(--font-mono,monospace);color:#f0a276;font-size:12px;margin-right:8px">${LIFE.esc(String(e.start_at).slice(11, 16))}–${LIFE.esc(String(e.end_at).slice(11, 16))}</span>${LIFE.esc(e.subject || 'Busy')}</div>${e.is_protected ? S.rcc.tag('Focus', 'good') : ''}</div>`;
+      myDay = S.rcc.panel({
+        title: 'My day', sub: 'Fixed commitments from Outlook — flexible time stays flexible',
+        headRight: timed.length ? `<span class="r-pill">${timed.length}</span>` : '',
+        body: (allDay.length ? `<div class="r-note">All day: ${allDay.map((e) => LIFE.esc(e.subject || 'Busy')).join(' · ')}</div>` : '')
+          + (timed.length
+            ? timed.map(evLine).join('')
+            : `<div class="r-lrow" style="color:var(--rmuted);font-size:13px">Nothing fixed in the calendar today — and no free time is invented around that.</div>`)
+          + caption
+          + `<div style="margin-top:8px"><a class="r-btn small" href="/life/schedule">Full schedule</a></div>`,
+      });
+    }
 
     // ── two supporting wins ──
     const supCard = (x) => `<div style="display:flex;gap:12px;align-items:center;justify-content:space-between;background:rgba(255,255,255,.04);border:1px solid var(--rline);border-radius:10px;padding:12px 14px"><div style="display:flex;gap:12px;align-items:center;min-width:0"><div class="r-check"></div><div style="min-width:0"><div style="font-weight:600">${link(x.id, x.title)}</div><div style="font-size:12px;color:var(--rmuted);margin-top:2px">${LIFE.esc(x.domain_key)}</div></div></div><a class="r-btn small" href="/life/task?id=${encodeURIComponent(x.id)}">Open</a></div>`;
