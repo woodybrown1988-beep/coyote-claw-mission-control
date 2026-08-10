@@ -129,12 +129,18 @@ module.exports = {
       const cmd = JSON.parse(String(p.command_json || '{}'));
       const editable = p.command_type === 'set_waiting'
         ? `<button class="r-btn small" data-lc-edit="${LIFE.esc(JSON.stringify({ proposalId: p.id, dependencyLabel: cmd.dependencyLabel, wakeType: cmd.wakeType, fallbackAt: cmd.fallbackAt }))}">Edit…</button>` : '';
+      // Calendar blocks (Stage W): accept rides the block's OWN verb — the writer places/
+      // removes the real Outlook event; a generic decide-accept is refused engine-side.
+      const isCalBlock = p.capability_key === 'calendar_block';
+      const accept = isCalBlock
+        ? btnCmd(p.command_type === 'place_block' ? 'Place block' : 'Remove block', p.command_type, { proposalId: p.id })
+        : btnCmd('Accept', 'decide', { proposalId: p.id, decision: 'accept' });
       return `<div style="border:1px solid rgba(255,255,255,.12);border-radius:8px;padding:10px;margin:8px 0">
         <div style="font-size:13px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><b>${LIFE.esc(String(p.capability_key).replace(/_/g, ' '))}</b> suggests <b>${LIFE.esc(p.command_type === 'set_waiting' ? 'parking this waiting' : p.command_type)}</b> ${S.rcc.conf(p.confidence)}</div>
         <div style="font-size:12px;color:var(--muted,#8aa);margin:4px 0">${LIFE.esc(p.reason)}</div>
         <div style="font-size:12px;font-family:monospace;margin:4px 0">${LIFE.esc(JSON.stringify(cmd))}</div>
         <div class="lc-row">
-          ${btnCmd('Accept', 'decide', { proposalId: p.id, decision: 'accept' })}
+          ${accept}
           ${editable}
           ${btnCmd('Reject', 'decide', { proposalId: p.id, decision: 'reject' })}
         </div></div>`;

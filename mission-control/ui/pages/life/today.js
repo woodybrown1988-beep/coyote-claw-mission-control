@@ -44,7 +44,7 @@ module.exports = {
         engine: { ok: true }, now, today, plan, taskOf,
         // quiet-support DEFAULT-ON (operator ruling 2026-08-05): absent row = on.
         quiet: setting('quiet_support', 'on') === 'on',
-        openProposals: q(`SELECT id, task_id, capability_key, command_type, reason, confidence, risk_level FROM life_update_proposals WHERE state = 'PROPOSED' ORDER BY created_at ASC LIMIT 10`),
+        openProposals: q(`SELECT id, task_id, capability_key, command_type, command_json, reason, confidence, risk_level FROM life_update_proposals WHERE state = 'PROPOSED' ORDER BY created_at ASC LIMIT 10`),
         approvalRows: q(`SELECT id, title FROM life_tasks WHERE status = 'AWAITING_APPROVAL' ORDER BY updated_at ASC LIMIT 10`),
         available: q(`SELECT id, title, domain_key, execution_mode FROM v_life_available_work ORDER BY calculated_priority DESC, created_at ASC LIMIT 8`),
         // DUE-SOON SAFETY NET (audit 2026-08 G-05): any live task with a deadline inside 72h (or already
@@ -117,15 +117,31 @@ module.exports = {
       // and the outcome is yours to tap: Accept completes the task with the deliverable
       // attached as evidence; No keeps it open with the attempt on the record.
       const isAgentDelivery = p.capability_key === 'agent_delivery';
+      // Calendar blocks (Graph Stage W 2026-08-10) are ALWAYS material — accepting writes
+      // to YOUR Outlook (the dedicated Life OS calendar only), so it interrupts by class.
+      // Accept rides the block's OWN verb (the writer places/removes the real event);
+      // No is a plain reject and touches nothing in Outlook.
+      const isCalendarBlock = p.capability_key === 'calendar_block';
+      let sub, acceptBtn;
+      if (isCalendarBlock) {
+        let c = {}; try { c = JSON.parse(String(p.command_json || '{}')); } catch (_) { /* renders generic */ }
+        sub = p.command_type === 'place_block'
+          ? `Proposed focus block ${String(c.startAt || '').slice(11, 16)}–${String(c.endAt || '').slice(11, 16)} in your Life OS calendar. Accept places it in Outlook; No leaves Outlook untouched.`
+          : `The task closed but its focus block still stands in Outlook. Accept removes the block (the task is not touched); No keeps it.`;
+        acceptBtn = cmd(p.command_type === 'place_block' ? 'Place block' : 'Remove block', p.command_type, { proposalId: p.id }, 'small primary');
+      } else {
+        sub = isAgentDelivery
+          ? `Agent deliverable awaiting your accept — the work is on the task. Accept completes it with the deliverable attached; No keeps it open.`
+          : `${String(p.reason).slice(0, 110)} — it suggests ${p.command_type === 'set_waiting' ? 'parking this as waiting' : 'a next step'}.`;
+        acceptBtn = cmd(isAgentDelivery ? 'Accept' : 'Approve', 'decide', { proposalId: p.id, decision: 'accept' }, 'small primary');
+      }
       const row = {
         title: task ? link(task.id, task.title) : 'A task',
-        sub: isAgentDelivery
-          ? `Agent deliverable awaiting your accept — the work is on the task. Accept completes it with the deliverable attached; No keeps it open.`
-          : `${String(p.reason).slice(0, 110)} — it suggests ${p.command_type === 'set_waiting' ? 'parking this as waiting' : 'a next step'}.`,
+        sub,
         conf,
-        actions: `${task ? `<a class="r-btn small" href="/life/task?id=${encodeURIComponent(task.id)}">Inspect</a>` : ''} ${cmd(isAgentDelivery ? 'Accept' : 'Approve', 'decide', { proposalId: p.id, decision: 'accept' }, 'small primary')} ${cmd('No', 'decide', { proposalId: p.id, decision: 'reject' }, 'small')}`,
+        actions: `${task ? `<a class="r-btn small" href="/life/task?id=${encodeURIComponent(task.id)}">Inspect</a>` : ''} ${acceptBtn} ${cmd('No', 'decide', { proposalId: p.id, decision: 'reject' }, 'small')}`,
       };
-      (highStakes || isAgentDelivery ? material : suggestions).push(row);
+      (highStakes || isAgentDelivery || isCalendarBlock ? material : suggestions).push(row);
     }
     // quiet-support on → suggestions fold; off → they sit inline with the material items.
     const needs = s.quiet ? material : [...material, ...suggestions];
