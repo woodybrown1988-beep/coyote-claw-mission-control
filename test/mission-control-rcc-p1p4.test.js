@@ -37,7 +37,7 @@ CREATE VIEW v_sales_month AS WITH g AS (
   SELECT month, CASE WHEN month >= (SELECT substr(start_date,1,7) FROM premises_regime WHERE name='current') THEN 'current' ELSE 'previous' END AS premises, days,
          CAST(julianday(month||'-01','+1 month') - julianday(month||'-01') AS INT) AS cal_days,
          (days >= CAST(julianday(month||'-01','+1 month') - julianday(month||'-01') AS INT)) AS complete, open_days, net_pence FROM g;
-CREATE TABLE sales_receipts_api (receipt_id TEXT PRIMARY KEY, business_date TEXT, type TEXT, cancelled INTEGER, account_profile_code TEXT, net_without_tax_pence INTEGER, updated_at INTEGER);
+CREATE TABLE sales_receipts_api (receipt_id TEXT PRIMARY KEY, business_date TEXT, type TEXT, cancelled INTEGER, account_profile_code TEXT, net_without_tax_pence INTEGER, updated_at INTEGER, table_name TEXT);
 CREATE TABLE sales_receipt_lines_api (receipt_id TEXT, line_id TEXT, business_date TEXT, net_without_tax_pence INTEGER, accounting_group TEXT, time_of_sale_ms INTEGER, updated_at INTEGER, PRIMARY KEY (receipt_id, line_id));
 CREATE TABLE sales_api_ingest_runs (business_date TEXT, source TEXT, status TEXT, receipts INTEGER, detail TEXT, pulled_at INTEGER, PRIMARY KEY (business_date, source));
 CREATE TABLE sales_channel_map_api (account_profile_code TEXT PRIMARY KEY, profile_name TEXT, delivery_mode TEXT, channel_label TEXT, first_seen INTEGER, updated_at INTEGER, label_source TEXT);
@@ -82,25 +82,26 @@ function seedExecutive(db) {
   for (const d of ['2026-07-12', '2026-07-13', '2026-07-14']) { rec.run(d, 'day_gross', 0); rec.run(d, 'day_net', 1); }
   // per-receipt record, all ≤ 2026-07-12 → the 28d per-receipt window ends 07-12:
   //   EAT IN 2×£100/day + QR 5×£33/day over 07-06..12, one £50 ONLINE order on 07-10
-  const insR = db.prepare(`INSERT INTO sales_receipts_api VALUES (?,?,?,0,?,?,1)`);
+  const insR = db.prepare(`INSERT INTO sales_receipts_api VALUES (?,?,?,0,?,?,1,?)`);
   const insL = db.prepare(`INSERT INTO sales_receipt_lines_api VALUES (?,?,?,?,?,?,1)`);
   for (let d = 6; d <= 12; d++) {
     const date = `2026-07-${pad(d)}`;
     const dinner = Date.UTC(2026, 6, d, 17, 30); // 18:30 London (BST) → DINNER
     for (let i = 0; i < 2; i++) {
-      insR.run(`E${d}-${i}`, date, 'SALE', 'LOCAL', 10000);
+      insR.run(`E${d}-${i}`, date, 'SALE', 'LOCAL', 10000, `Order ${10 + i}`); // device counter → own sitting each
       insL.run(`E${d}-${i}`, 'l1', date, 10000, i === 0 ? '27' : '17', dinner); // one drink line per day
     }
-    for (let i = 0; i < 5; i++) insR.run(`Q${d}-${i}`, date, 'SALE', 'storekit_orderpay', 3300);
+    // QR: 5 orders/day on 3 session slots (2+2+1) → 21 sittings, £33/order, £55/sitting
+    for (let i = 0; i < 5; i++) insR.run(`Q${d}-${i}`, date, 'SALE', 'storekit_orderpay', 3300, `Order ${1 + Math.floor(i / 2)}`);
   }
-  insR.run('OO-1', '2026-07-10', 'SALE', 'online', 5000);
+  insR.run('OO-1', '2026-07-10', 'SALE', 'online', 5000, null);
   insL.run('OO-1', 'l1', '2026-07-10', 5000, '17', Date.UTC(2026, 6, 10, 18, 0));
 }
 
 /** Forecast world (per-receipt only): 2025 = £10,000/month ×12, 2026 Jan–Jun = £11,000/month —
  *  every pair 1.10 → full year = 1.1 × £120,000 = £132,000; override +5% journaled. */
 function seedForecast(db, { override = null } = {}) {
-  const insR = db.prepare(`INSERT INTO sales_receipts_api VALUES (?,?,?,0,'LOCAL',?,1)`);
+  const insR = db.prepare(`INSERT INTO sales_receipts_api VALUES (?,?,?,0,'LOCAL',?,1,NULL)`);
   const insL2 = db.prepare(`INSERT INTO sales_api_ingest_runs VALUES (?,?,?,1,'',1)`);
   const cal = (ym) => new Date(Date.UTC(Number(ym.slice(0, 4)), Number(ym.slice(5, 7)), 0)).getUTCDate();
   const month = (ym, net) => {
@@ -170,9 +171,13 @@ test('executive decision feed: rota £ verdicts (both modes), reconciliation lin
   assert.match(body, /Foh £124\.18 over formula budget/, 'hindsight verdict with its £');
   assert.match(body, /see Rota Review/, 'the one-line action');
   assert.match(body, /reconciliation clean — 3 days, day_gross variance is the documented VAT-basis class/);
-  // QR: 35 txn @ £33 vs £38 → impact (500p × 35) = £175.00
-  assert.match(body, /QR ATV £33\.00 vs the £38 target/);
-  assert.match(body, /−£175\.00/, 'the computed £ gap, never a vibe');
+  // QR sitting basis (£38/order target retired 2026-07-31): 35 orders on 21 slot-sittings
+  // @ £33/order → £55.00/sitting, vs EAT IN 14 tabs = 14 sittings @ £100.00/sitting
+  assert.match(body, /QR £55\.00\/sitting vs EAT IN £100\.00/);
+  assert.match(body, /21 QR sittings/, 'sitting count named');
+  assert.match(body, /QR orders fragment per sitting/, 'the ruled caption');
+  assert.match(body, /per-order ATV \(£33\.00, 35 txn\) understates spend/, 'per-order basis demoted to caption');
+  assert.doesNotMatch(body, /£38 target/, 'the per-order target is retired');
   // attach: drink dict exists, first window → honest baseline note (7 of 50 receipts)
   assert.match(body, /Drink attachment 14\.0%/);
   assert.match(body, /first 28d window on record/);

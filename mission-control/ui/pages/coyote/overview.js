@@ -10,9 +10,10 @@
 const S = require('../../shared.js');
 const K = require('../../kpi.js');
 
-// The £38 QR checkpoint is a standing DECISION (docs/qr-upsell-spec.md:87 in coyote-claw) —
-// a target, not a measured value, so it may live here per the canonical-source ruling.
-const QR_TARGET_PENCE = 3800;
+// The £38/order QR target is RETIRED (operator ruling 2026-07-31): a QR sitting places several
+// orders from several phones, so per-order ATV structurally understates QR spend. The verdict
+// line renders spend per SITTING instead; per-cover is the honest comparison once the OpenTable
+// covers feed is regular. Evidence + sitting-key derivation: docs/qr-sitting-basis-2026-07-31.md.
 
 function toInt(v) { const n = Number(v); return Number.isFinite(n) ? n : 0; }
 function row(res) { return res && res.ok && res.rows && res.rows.length ? res.rows[0] : null; }
@@ -139,17 +140,34 @@ module.exports = {
         if (dd) decompNow = { month: curMonth, mtdDay: maxDay, delta: dd.delta, lead: dd.lead, lyNet: toInt(b.net) };
       }
     }
-    // (b) QR ATV, trailing 28 settled days from the PER-RECEIPT record (the one source — the old
-    // P3 table computed the same fact from the scraper table: the audit's deepest violation)
+    // (b) QR vs EAT IN spend per SITTING, trailing 28 settled days from the PER-RECEIPT record.
+    // Sitting keys (derivation: docs/qr-sitting-basis-2026-07-31.md): a STOREKIT table_name is a
+    // real table or a daily QR session slot — re-orders land on the same slot, so date+name is one
+    // sitting; EAT IN 'Table N.M' rows are split bills of one party (grouped to base table per
+    // day); EAT IN 'Order N' is a per-device counter, so each closed tab is one sitting.
     let qr = null;
     if (kpiMax) {
       const from = K.shiftDays(kpiMax, -27);
-      const r = row(q(
-        `SELECT SUM(r.net_without_tax_pence) net, COUNT(*) txn
+      const rs = rows(q(
+        `SELECT m.channel_label ch, SUM(r.net_without_tax_pence) net, COUNT(*) txn,
+                COUNT(DISTINCT CASE
+                  WHEN m.channel_label = 'STOREKIT ORDER & PAY' THEN r.business_date || '|' || r.table_name
+                  WHEN r.table_name LIKE 'Table %' THEN r.business_date || '|T' || CAST(substr(r.table_name, 7) AS INTEGER)
+                  ELSE 'R' || r.receipt_id END) sittings
            FROM sales_receipts_api r JOIN sales_channel_map_api m ON m.account_profile_code = COALESCE(r.account_profile_code,'')
-          WHERE r.business_date BETWEEN ? AND ? AND m.channel_label = 'STOREKIT ORDER & PAY'
-            AND r.cancelled = 0 AND (r.type IS NULL OR r.type NOT IN ('VOID','CANCEL','RECALL'))`, [from, kpiMax]));
-      if (r && toInt(r.txn) > 0) qr = { atv: toInt(r.net) / toInt(r.txn), txn: toInt(r.txn), from, to: kpiMax };
+          WHERE r.business_date BETWEEN ? AND ? AND m.channel_label IN ('STOREKIT ORDER & PAY', 'EAT IN')
+            AND r.cancelled = 0 AND (r.type IS NULL OR r.type NOT IN ('VOID','CANCEL','RECALL'))
+          GROUP BY 1`, [from, kpiMax]));
+      const sk = rs.find((x) => x.ch === 'STOREKIT ORDER & PAY');
+      const eat = rs.find((x) => x.ch === 'EAT IN');
+      if (sk && toInt(sk.sittings) > 0) {
+        qr = {
+          perSit: toInt(sk.net) / toInt(sk.sittings), sittings: toInt(sk.sittings),
+          atv: toInt(sk.net) / toInt(sk.txn), txn: toInt(sk.txn),
+          eatPerSit: eat && toInt(eat.sittings) > 0 ? toInt(eat.net) / toInt(eat.sittings) : null,
+          from, to: kpiMax,
+        };
+      }
     }
     // (c) labour verdict: last full week, scorecard ruler (the tables live in Labour / Rota Review)
     let labourWeek = null;
@@ -301,8 +319,8 @@ module.exports = {
       lines.push(`<b>${esc(monthLabel(dd.month))} MTD (day ${esc(String(Number(dd.mtdDay)))})</b>: <span class="${dd.delta >= 0 ? 'rp-yoy-up' : 'rp-yoy-down'}">${signedGbp(dd.delta)} (${pct(dd.lyNet + dd.delta, dd.lyNet)})</span> vs LY — <b>${dd.lead === 'volume' ? 'COVERS-led' : 'SPEND-led'}</b> · <a href="/coyote/reports" style="color:var(--cyan,#22D3EE)">decomposition →</a>`);
     }
     if (m.qr) {
-      const at = m.qr.atv;
-      lines.push(`QR ATV <b>${gbp(at)}</b> (28d, ${S.fmtInt(m.qr.txn)} txn, per-receipt record) vs the £38 target${at >= QR_TARGET_PENCE ? ' ✓' : ` (<span class="rp-yoy-down">${gbp(QR_TARGET_PENCE - at)} short</span>)`} · <a href="/coyote/reports" style="color:var(--cyan,#22D3EE)">channel mix →</a>`);
+      const vs = m.qr.eatPerSit != null ? ` vs EAT IN ${gbp(m.qr.eatPerSit)}` : '';
+      lines.push(`QR <b>${gbp(m.qr.perSit)}</b>/sitting${vs} (28d, ${S.fmtInt(m.qr.sittings)} QR sittings, per-receipt record) — <span style="opacity:.75">QR orders fragment per sitting; per-order ATV (${gbp(m.qr.atv)}) understates spend; per-cover basis is the honest comparison</span> · <a href="/coyote/reports" style="color:var(--cyan,#22D3EE)">channel mix →</a>`);
     }
     if (m.labourWeek && m.labourWeek.actPct != null) {
       const lw = m.labourWeek;
