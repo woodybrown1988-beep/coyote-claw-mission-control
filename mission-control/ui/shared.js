@@ -555,7 +555,8 @@ function clientScript() {
       box.appendChild(iEl('div','font-weight:650;font-size:14px;margin-bottom:6px','Preview — '+file+' (nothing is created yet)'));
       var pj=plan.project;
       var full=plan.capacity&&plan.capacity.activeProjects>=plan.capacity.ceiling;
-      box.appendChild(iEl('div','font-size:13px;margin-bottom:2px','Project: '+(pj?(pj.title+(pj.existingId?' — existing, tasks attach to it':(full?' — new, will land PARKED (four active is the ceiling; activate it later by parking another)':' — new, will be created ACTIVE'))):'none in this file — tasks land in your Inbox (you can name one at commit)')));
+      var pjLine=pj?(pj.title+(pj.existingId?' — existing, tasks attach to it':(pj.requestedStatus==='PARKED'?' — new, will land PARKED (your ruling in the file — real, just not this quarter\\u2019s fight)':(full?' — new, will land PARKED (four active is the ceiling; activate it later by parking another)':' — new, will be created ACTIVE')))):'none in this file — tasks land in your Inbox (you can name one at commit)';
+      box.appendChild(iEl('div','font-size:13px;margin-bottom:2px','Project: '+pjLine));
       box.appendChild(iEl('div','font-size:12px;color:var(--rmuted,#9ea7b2);margin-bottom:8px','Active projects now: '+(plan.capacity?plan.capacity.activeProjects+' of '+plan.capacity.ceiling:'—')));
       var create=[],rec=[],done=[];
       for(var i=0;i<plan.tasks.length;i++){var t=plan.tasks[i];if(t.alreadyImported)done.push(t);else if(t.recurring)rec.push(t);else create.push(t);}
