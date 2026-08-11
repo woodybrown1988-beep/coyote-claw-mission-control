@@ -95,7 +95,8 @@ module.exports = {
         // the drafts table arrives with the engine's migration, and MC may deploy first. A
         // missing table costs the draft body on a proposal, never the decision queue.
         draftOf: Object.fromEntries(q(
-          `SELECT proposal_id, voice, needs_judgement, judgement_reason, replying_to, commits_to, body
+          `SELECT proposal_id, voice, needs_judgement, judgement_reason, replying_to, commits_to, body,
+                  outlook_draft_id, seam_id, filed_move_id
              FROM life_mail_drafts WHERE state = 'PROPOSED' AND proposal_id IS NOT NULL`,
         ).map((r) => [r.proposal_id, r])),
         // APPROVED drafts stay reachable for the rest of the day. Accepting a proposal removes
@@ -209,7 +210,7 @@ module.exports = {
             : p.command_type === 'add_update' ? 'Add to the task'
               : p.command_type === 'create_project' ? 'Create project' : 'Create task';
         const what = p.command_type === 'draft_reply'
-          ? 'Nothing has been sent and nothing here can send. Copy it into Outlook when you are happy with it.'
+          ? 'Nothing has been sent and nothing here can send — the draft waits in Outlook until you send it.'
           : p.command_type === 'wake' ? 'This looks like the reply this task was waiting for. Accept wakes it; No leaves it waiting.'
           : p.command_type === 'add_update' ? 'Accept files this email on the task as evidence. Nothing else moves.'
             : p.command_type === 'create_project' ? `Accept creates the project with this definition of done: “${String(c.definitionOfDone || '').slice(0, 160)}”.`
@@ -229,9 +230,23 @@ module.exports = {
             ? `<div class="r-note" style="color:#f5c96b;font-weight:600">⚠ NEEDS YOUR JUDGEMENT — ${LIFE.esc(String(dr.judgement_reason || 'money, legal, staff or a dispute'))}. Read every line of this one.</div>`
             : '';
           const to = String(c.to || (m && m.from_address) || '');
+          // WHERE IT IS. Since the reply loop went in, the draft is not a thing to copy — it is
+          // already sitting in his Outlook, in the thread. The board's job changed from "here
+          // are some words" to "here is what I did, undo it if I was wrong", so it says which
+          // and offers the undo. If the Outlook draft could NOT be made, the words are all
+          // there is, and it says that too rather than implying a draft that is not there.
+          const inOutlook = !!dr.outlook_draft_id;
+          const whereNote = inOutlook
+            ? `<div class="r-note">✍️ Drafted in your Outlook${dr.filed_move_id
+              ? ' · the email was filed to <b>Emails to Respond</b>'
+              : ' · the email was <b>left in your Inbox</b>'} — read it there and send it yourself.</div>`
+            : `<div class="r-note" style="color:#f5c96b">Not in Outlook — the draft could not be created there, so these words are all there is. Copy them across.</div>`;
           extraActions = `<button class="r-btn small" data-lc-draftcopy="${LIFE.esc(String(dr.body || ''))}">Copy the reply</button>`
-            + ` <button class="r-btn small" data-lc-draftedit="${LIFE.esc(JSON.stringify({ proposalId: p.id, body: String(dr.body || '') }))}">Edit</button>`;
-          extra = `${flag}`
+            + ` <button class="r-btn small" data-lc-draftedit="${LIFE.esc(JSON.stringify({ proposalId: p.id, body: String(dr.body || '') }))}">Edit</button>`
+            + (inOutlook && dr.seam_id
+              ? ` ${cmd('Undo the draft', 'undo_draft', { seamId: String(dr.seam_id) }, 'small')}`
+              : '');
+          extra = `${flag}${whereNote}`
             + `<div class="r-note">To ${LIFE.esc(to)} · ${dr.voice === 'BRAND' ? 'brand voice' : 'plain professional'}</div>`
             + `<div class="r-note"><b>Replying to:</b> ${LIFE.esc(String(dr.replying_to || ''))}</div>`
             + `<div class="r-note"><b>Commits us to:</b> ${LIFE.esc(String(dr.commits_to || ''))}</div>`

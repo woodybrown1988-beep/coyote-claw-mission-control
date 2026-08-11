@@ -93,7 +93,9 @@ function fixture(dir, opts) {
       CREATE TABLE life_mail_drafts (id TEXT PRIMARY KEY, owner_id TEXT, mail_id TEXT, proposal_id TEXT, task_id TEXT,
         voice TEXT, voice_reason TEXT, needs_judgement INTEGER DEFAULT 0, judgement_reason TEXT,
         replying_to TEXT DEFAULT '', commits_to TEXT DEFAULT '', body TEXT DEFAULT '', model TEXT DEFAULT '',
-        shape_key TEXT DEFAULT '', state TEXT DEFAULT 'PROPOSED', skip_reason TEXT, approved_at TEXT,
+        shape_key TEXT DEFAULT '', needs_reply INTEGER DEFAULT 1, reply_reason TEXT,
+        outlook_draft_id TEXT, seam_id TEXT, filed_move_id TEXT,
+        state TEXT DEFAULT 'PROPOSED', skip_reason TEXT, approved_at TEXT,
         created_at TEXT, updated_at TEXT);
       INSERT INTO life_mail_messages (id, owner_id, from_address, from_name, subject, body_preview, received_at, web_link, classification, classified_at)
         VALUES ('mail-3','woody','marcusrocke@carpigiani.co.uk','Marcus Rocke','Ice cream machine','Part on order.','${ago(5400000)}','https://outlook.live.com/owa/?ItemID=ghi','UPDATE','${ago(600000)}'),
@@ -106,14 +108,16 @@ function fixture(dir, opts) {
         ('pr-draft-j','woody',NULL,NULL,'mail-4','mail_reply_draft','draft_reply','{"mailId":"mail-4","draftId":"d2","to":"accounts@thorntons.test"}',
           'NEEDS YOUR JUDGEMENT - the word "overdue" appears. A reply is drafted below; nothing is sent and nothing is committed.',
           '[]',0.4,'HIGH','INTERNAL_WRITE','PROPOSED','${ago(200000)}');
-      INSERT INTO life_mail_drafts (id, owner_id, mail_id, proposal_id, voice, voice_reason, needs_judgement, judgement_reason, replying_to, commits_to, body, state, created_at, updated_at)
+      INSERT INTO life_mail_drafts (id, owner_id, mail_id, proposal_id, voice, voice_reason, needs_judgement, judgement_reason, replying_to, commits_to, body, outlook_draft_id, seam_id, filed_move_id, state, created_at, updated_at)
         VALUES ('d1','woody','mail-3','pr-draft','PLAIN','reads as business correspondence',0,NULL,
                 'They say the part is on order.','nothing - it acknowledges and asks a question',
                 'Hi Marcus,' || char(10) || char(10) || 'Thanks for the update. Could you confirm the date?' || char(10) || char(10) || 'Thanks,' || char(10) || 'David',
+                'outlook-d1','seam-d1-0000000','mv-d1',
                 'PROPOSED','${ago(300000)}','${ago(300000)}'),
                ('d2','woody','mail-4','pr-draft-j','PLAIN','this one needs your judgement',1,'the word "overdue" appears',
                 'They say invoice 4471 is overdue.','nothing - it acknowledges and asks a question',
                 'Dear Thorntons,' || char(10) || char(10) || 'Thanks for the reminder. I will come back to you on this.' || char(10) || char(10) || 'Regards,' || char(10) || 'David',
+                'outlook-d2','seam-d2-0000000',NULL,
                 'PROPOSED','${ago(200000)}','${ago(200000)}');
     `);
   }
@@ -470,6 +474,9 @@ test('a drafted reply shows the WORDS, what it replies to, and what it commits u
     assert.match(body, /plain professional/);
     assert.match(body, /Nothing has been sent and nothing here can send/,
       'the one sentence this feature can never be without');
+    assert.match(body, /Drafted in your Outlook/, 'and the board says WHERE the draft is');
+    assert.match(body, /filed to <b>Emails to Respond<\/b>/, 'and what happened to the email');
+    assert.match(body, /data-lc-cmd="[^"]*undo_draft/, 'with an undo, because it wrote to his mailbox');
     assert.match(body, /data-lc-draftcopy=/, 'a copy button, because sending is done by hand');
     assert.match(body, /data-lc-draftedit="[^"]*pr-draft/, 'and the words can be rewritten first');
     const c = cmdsIn(body);
@@ -491,6 +498,7 @@ test('a NEEDS-YOUR-JUDGEMENT draft is MATERIAL — quiet support can never fold 
     assert.ok(judgeAt < foldAt, 'and it sits ABOVE the fold — money, legal, staff and disputes never get folded');
     assert.match(body, /the word &quot;overdue&quot; appears/, 'with the reason it was flagged');
     assert.match(body, /Read every line of this one/);
+    assert.match(body, /left in your Inbox/, 'a flagged email is drafted but never filed away');
     // …and the ordinary draft IS folded, so the distinction is doing real work
     assert.ok(body.indexOf('Could you confirm the date') > foldAt, 'the routine one folds');
   });
@@ -574,4 +582,18 @@ test('NO SILENT TRUNCATION on the approved-replies panel either', () => {
     assert.match(body, /The 6 most recent are shown; 4 older are in/, 'and the overflow says where the rest live');
   });
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('undo_draft is relayed, and only ever names a record — never a message', () => {
+  const ok = LIFECMD.validateCommand({ command: 'undo_draft', idempotencyKey: 'k'.repeat(16), payload: { seamId: 'a'.repeat(36) } });
+  assert.equal(ok.ok, true, 'the owner can undo a draft this system created');
+  for (const bad of [{ seamId: '' }, { seamId: 'short' }, { seamId: 'x'.repeat(200) }, { messageId: 'abc' }]) {
+    assert.equal(LIFECMD.validateCommand({ command: 'undo_draft', idempotencyKey: 'k'.repeat(16), payload: bad }).ok, false,
+      `payload ${JSON.stringify(bad)} must be refused`);
+  }
+  // and nothing that SENDS or deletes mail is relayable from this surface, by name
+  for (const c of ['create_outlook_draft', 'send_mail', 'sendMail', 'delete_message', 'mail_send', 'reply']) {
+    assert.equal(LIFECMD.validateCommand({ command: c, idempotencyKey: 'k'.repeat(16), payload: {} }).ok, false,
+      `${c} must not be relayable`);
+  }
 });
