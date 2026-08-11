@@ -219,3 +219,44 @@ test('STRUCTURAL: no Mission Control file names a mailbox-write endpoint or scop
   for (const r of roots) walk(r);
   assert.ok(seen.size > 5, `the scan actually walked the tree (${seen.size} files)`);
 });
+
+test('NO SILENT TRUNCATION: a queue longer than the render limit says so instead of looking complete', () => {
+  // The defect this pins, found on the first live mail pass: the panel took the 10 OLDEST
+  // open proposals. Thirteen agent-dispatch recommendations landed in one second the day
+  // before, filled the limit, and every newer item — agent deliverables awaiting an accept,
+  // calendar blocks, every mail proposal — vanished from a board that looked complete.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-mail-trunc-'));
+  const dbPath = fixture(dir);
+  const db = new sqlite.DatabaseSync(dbPath);
+  for (let i = 0; i < 70; i++) {
+    db.exec(`INSERT INTO life_update_proposals (id,owner_id,update_id,task_id,capability_key,command_type,command_json,reason,confidence,risk_level,authority_class,state,created_at)
+      VALUES ('old-${i}','woody','u1','t1','agent_dispatch','recommendation','{}','Really needs you: piled up',0.7,'LOW','READ','PROPOSED','2026-08-10T16:04:38.00${i % 10}Z')`);
+  }
+  db.close();
+  withEnv(dbPath, () => {
+    const out = renderToday();
+    assert.match(out.body, /more open suggestions beyond what fits here/, 'the overflow is COUNTED and stated');
+    assert.match(out.body, /Nothing is being hidden from you silently/);
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('the mail proposals SURFACE even behind a day of older recommendations (the live failure)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-mail-behind-'));
+  const dbPath = fixture(dir);
+  const db = new sqlite.DatabaseSync(dbPath);
+  // 13 older recommendations, exactly the live shape that hid everything newer.
+  for (let i = 0; i < 13; i++) {
+    db.exec(`INSERT INTO life_update_proposals (id,owner_id,update_id,task_id,capability_key,command_type,command_json,reason,confidence,risk_level,authority_class,state,created_at)
+      VALUES ('rec-${i}','woody','u1','t1','agent_dispatch','recommendation','{}','Really needs you: shape refusal',0.7,'LOW','READ','PROPOSED','2026-08-10T16:04:38.00${i % 10}Z')`);
+  }
+  db.exec(`INSERT INTO life_settings (key,value,updated_at) VALUES ('quiet_support','on','${T}')`);
+  db.close();
+  withEnv(dbPath, () => {
+    const body = renderToday().body;
+    assert.match(body, /From Lightspeed Support/, 'the mail proposal renders despite 13 older ones ahead of it');
+    assert.match(body, /Book the annual gas safety re-certification/);
+    assert.ok(!/more open suggestions beyond what fits/.test(body), 'and a queue this size needs no overflow warning');
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+});
