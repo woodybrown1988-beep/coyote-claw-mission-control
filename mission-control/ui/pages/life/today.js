@@ -24,6 +24,12 @@ function eyebrowDate(nowMs) {
 const link = (id, title) => `<a href="/life/task?id=${encodeURIComponent(id)}" style="color:inherit">${LIFE.esc(title)}</a>`;
 const cmd = (label, command, payload, cls) =>
   `<button class="r-btn ${cls || ''}" data-lc-cmd="${LIFE.esc(JSON.stringify({ command, payload: payload || {} }))}">${LIFE.esc(label)}</button>`;
+/** A mail proposal about work that does not exist yet has no task to name it, so the row
+ *  takes its heading from what the proposal would create. */
+function mailTitle(p) {
+  let c = {}; try { c = JSON.parse(String(p.command_json || '{}')); } catch (_) { /* fall through */ }
+  return LIFE.esc(String(c.title || 'From your inbox'));
+}
 
 module.exports = {
   key: 'life-today', route: '/life/today', workspace: 'life', title: 'Today',
@@ -45,6 +51,21 @@ module.exports = {
         // quiet-support DEFAULT-ON (operator ruling 2026-08-05): absent row = on.
         quiet: setting('quiet_support', 'on') === 'on',
         openProposals: q(`SELECT id, task_id, capability_key, command_type, command_json, reason, confidence, risk_level FROM life_update_proposals WHERE state = 'PROPOSED' ORDER BY created_at ASC LIMIT 10`),
+        // MAIL (Graph Stage C 2026-08-11) — deliberately SEPARATE queries, not extra columns
+        // on the one above. MC and the engine deploy on independent taps, so this page can
+        // meet a life.db that predates the mail migration; folding source_mail_id into the
+        // proposals SELECT would make one missing column blank the ENTIRE decision queue.
+        // Split, the worst case is that the mail rail is simply absent for a few minutes.
+        mailOf: Object.fromEntries(q(
+          `SELECT id, source_mail_id FROM life_update_proposals WHERE state = 'PROPOSED' AND source_mail_id IS NOT NULL`,
+        ).map((r) => [r.id, r.source_mail_id])),
+        mailById: Object.fromEntries(q(
+          `SELECT m.id, m.from_name, m.from_address, m.subject, m.received_at, m.web_link
+             FROM life_mail_messages m
+            WHERE m.id IN (SELECT source_mail_id FROM life_update_proposals WHERE state = 'PROPOSED' AND source_mail_id IS NOT NULL)`,
+        ).map((r) => [r.id, r])),
+        mailSync: q('SELECT last_sync_at, last_error, last_triage_at FROM life_mail_sync WHERE id = 1')[0] || null,
+        mailBacklog: q('SELECT COUNT(*) c FROM life_mail_messages WHERE classified_at IS NULL')[0]?.c ?? 0,
         approvalRows: q(`SELECT id, title FROM life_tasks WHERE status = 'AWAITING_APPROVAL' ORDER BY updated_at ASC LIMIT 10`),
         available: q(`SELECT id, title, domain_key, execution_mode FROM v_life_available_work ORDER BY calculated_priority DESC, created_at ASC LIMIT 8`),
         // DUE-SOON SAFETY NET (audit 2026-08 G-05): any live task with a deadline inside 72h (or already
@@ -122,8 +143,35 @@ module.exports = {
       // Accept rides the block's OWN verb (the writer places/removes the real event);
       // No is a plain reject and touches nothing in Outlook.
       const isCalendarBlock = p.capability_key === 'calendar_block';
-      let sub, acceptBtn;
-      if (isCalendarBlock) {
+      // MAIL proposals (Graph Stage C 2026-08-11) are SUGGESTIONS by class — they fold under
+      // quiet support, because an email is not an interruption. Each one shows WHO it came
+      // from and the machine-derived evidence for the match, so the call takes one glance.
+      const mailId = (s.mailOf || {})[p.id] || null;
+      const isMail = !!mailId;
+      let sub, acceptBtn, extraActions = '';
+      if (isMail) {
+        let c = {}; try { c = JSON.parse(String(p.command_json || '{}')); } catch (_) { /* renders generic */ }
+        const m = (s.mailById || {})[mailId] || null;
+        const who = m ? (m.from_name || m.from_address || 'an email') : 'an email';
+        const verb = p.command_type === 'wake' ? 'Wake it'
+          : p.command_type === 'add_update' ? 'Add to the task'
+            : p.command_type === 'create_project' ? 'Create project' : 'Create task';
+        const what = p.command_type === 'wake' ? 'This looks like the reply this task was waiting for. Accept wakes it; No leaves it waiting.'
+          : p.command_type === 'add_update' ? 'Accept files this email on the task as evidence. Nothing else moves.'
+            : p.command_type === 'create_project' ? `Accept creates the project with this definition of done: “${String(c.definitionOfDone || '').slice(0, 160)}”.`
+              : `Accept captures “${String(c.title || 'it')}” into your Inbox. Nothing is sent, and the email is not touched.`;
+        // RAW on purpose — needRow escapes n.sub once. Escaping here too would render a
+        // vendor's apostrophes as &#39; on the owner's own board.
+        sub = `From ${who} — ${String(p.reason).slice(0, 180)}. ${what}`;
+        acceptBtn = cmd(verb, 'decide', { proposalId: p.id, decision: 'accept' }, 'small primary');
+        // Edit is only meaningful where there is wording to change (a title / a project name).
+        if (p.command_type === 'create_task' || p.command_type === 'create_project') {
+          extraActions = `<button class="r-btn small" data-lc-mailedit="${LIFE.esc(JSON.stringify({ proposalId: p.id, title: String(c.title || ''), kind: p.command_type }))}">Edit</button>`;
+        }
+        if (m && m.web_link) {
+          extraActions = `<a class="r-btn small" href="${LIFE.esc(m.web_link)}" target="_blank" rel="noopener noreferrer">Read email</a> ${extraActions}`;
+        }
+      } else if (isCalendarBlock) {
         let c = {}; try { c = JSON.parse(String(p.command_json || '{}')); } catch (_) { /* renders generic */ }
         sub = p.command_type === 'place_block'
           ? `Proposed focus block ${String(c.startAt || '').slice(11, 16)}–${String(c.endAt || '').slice(11, 16)} in your Life OS calendar. Accept places it in Outlook; No leaves Outlook untouched.`
@@ -136,10 +184,10 @@ module.exports = {
         acceptBtn = cmd(isAgentDelivery ? 'Accept' : 'Approve', 'decide', { proposalId: p.id, decision: 'accept' }, 'small primary');
       }
       const row = {
-        title: task ? link(task.id, task.title) : 'A task',
+        title: task ? link(task.id, task.title) : (isMail ? mailTitle(p) : 'A task'),
         sub,
         conf,
-        actions: `${task ? `<a class="r-btn small" href="/life/task?id=${encodeURIComponent(task.id)}">Inspect</a>` : ''} ${acceptBtn} ${cmd('No', 'decide', { proposalId: p.id, decision: 'reject' }, 'small')}`,
+        actions: `${task ? `<a class="r-btn small" href="/life/task?id=${encodeURIComponent(task.id)}">Inspect</a>` : ''}${extraActions ? ` ${extraActions}` : ''} ${acceptBtn} ${cmd('No', 'decide', { proposalId: p.id, decision: 'reject' }, 'small')}`,
       };
       (highStakes || isAgentDelivery || isCalendarBlock ? material : suggestions).push(row);
     }
@@ -236,16 +284,38 @@ module.exports = {
       + `<div style="font-size:12.5px;color:var(--rmuted);margin-top:3px;line-height:1.45">${LIFE.esc(n.sub)}</div>`
       + `${n.conf ? `<div style="margin-top:5px">${n.conf}</div>` : ''}</div>`
       + `<div style="display:flex;gap:6px;flex-shrink:0">${n.actions}</div></div>`;
+    // FOLDED, NOT HIDDEN (Graph Stage C 2026-08-11). Quiet support used to fold suggestions
+    // into a bare count pointing at All tasks — which worked while every suggestion belonged
+    // to a task. A mail proposal about work that does not exist yet has no task and would
+    // therefore have had no home at all. So the fold is now a real disclosure: below the
+    // material items, closed by default, one click to see them. Nothing interrupts; nothing
+    // disappears either.
     const foldLine = foldedCount
-      ? `<div class="r-note">Quiet support is on — ${foldedCount} lower-stakes suggestion${foldedCount === 1 ? '' : 's'} folded so only material calls interrupt you. <a href="/life/tasks">Review them in All tasks</a>, or turn quiet support off in <a href="/life/settings">Settings</a>.</div>`
+      ? `<details class="r-note" style="padding:0"><summary style="cursor:pointer;padding:8px 0">Quiet support is on — ${foldedCount} lower-stakes suggestion${foldedCount === 1 ? '' : 's'} folded so only material calls interrupt you.</summary>`
+        + `<div style="margin-top:4px">${suggestions.map(needRow).join('')}</div>`
+        + `<div style="padding:6px 0 2px">Turn quiet support off in <a href="/life/settings">Settings</a> to see these inline.</div></details>`
       : '';
+    // MAIL FRESHNESS: mail proposals live in this panel, so its honesty caption lives here
+    // too. A broken poll means nothing has been read — and therefore nothing proposed, which
+    // must never be mistaken for a quiet inbox.
+    let mailNote = '';
+    if (s.mailSync) {
+      const mAge = s.mailSync.last_sync_at ? Math.max(0, Math.round((now - Date.parse(s.mailSync.last_sync_at)) / 60_000)) : null;
+      const mText = mAge === null ? 'never' : mAge < 60 ? `${mAge} min ago` : `${Math.floor(mAge / 60)}h ${mAge % 60}m ago`;
+      // "Read inbox now" refreshes the MIRROR only. The classification pass rides the
+      // 20-minute timer — it spawns an engine per batch and would outrun the relay.
+      const readNow = cmd('Read inbox now', 'mail_sync', {}, 'small');
+      mailNote = (mAge === null || mAge > 90 || s.mailSync.last_error)
+        ? `<div class="r-note" style="color:#f5c96b">Inbox last read ${mText}${s.mailSync.last_error ? ` and the last pass failed (${LIFE.esc(String(s.mailSync.last_error).slice(0, 100))})` : ''} — nothing has been read, so nothing has been suggested from it. Outlook is untouched either way. ${readNow}</div>`
+        : `<div class="r-note">Inbox read ${mText}${s.mailBacklog ? ` · ${s.mailBacklog} message${s.mailBacklog === 1 ? '' : 's'} not looked at yet` : ''} — read-only, and only ever suggestions. ${readNow}</div>`;
+    }
     const needsPanel = S.rcc.panel({
       title: `Needs you`, sub: 'Only irreversible calls and genuine owner judgement',
       headRight: needs.length ? `<span class="r-pill">${needs.length}</span>` : '',
       body: (needs.length
         ? needs.map(needRow).join('')
         : `<div class="r-lrow" style="color:var(--rmuted);font-size:13px">Nothing needs you${foldedCount ? ' right now' : '. That is the design working'}.</div>`)
-        + foldLine,
+        + foldLine + mailNote,
     });
 
     // ── CAPACITY GUARDRAILS (A3): per stated-aim domain, protected vs review-due — derived from

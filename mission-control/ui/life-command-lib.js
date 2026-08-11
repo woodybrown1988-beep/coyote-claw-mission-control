@@ -81,7 +81,11 @@ function validateCancel(body) {
  *  twice). Anything not listed here cannot leave Mission Control. */
 const COMMAND_SHAPES = {
   note: (p) => typeof p.taskId === 'string' && typeof p.text === 'string' && p.text.trim() && p.text.length <= 4000,
-  decide: (p) => typeof p.proposalId === 'string' && ['accept', 'edit', 'reject'].includes(p.decision),
+  // An EDIT must actually carry an edit — the writer merges it over the original command, so
+  // a missing editedCommand would silently become a plain accept of wording the owner meant
+  // to change.
+  decide: (p) => typeof p.proposalId === 'string' && ['accept', 'edit', 'reject'].includes(p.decision)
+    && (p.decision !== 'edit' || (!!p.editedCommand && typeof p.editedCommand === 'object' && !Array.isArray(p.editedCommand))),
   transition: (p) => typeof p.taskId === 'string' && typeof p.to === 'string',
   complete: (p) => typeof p.taskId === 'string',
   set_waiting: (p) => typeof p.taskId === 'string' && typeof p.dependencyLabel === 'string' && typeof p.fallbackAt === 'string',
@@ -131,6 +135,15 @@ const COMMAND_SHAPES = {
   // calendar. The writer refuses this from any agent-actor payload; MC relays no actor at
   // all (it IS the authenticated owner surface).
   calendar_sync: () => true,
+  // Mail (Graph Stage C 2026-08-11): the owner's "read my inbox now". READ-ONLY against the
+  // mailbox — the writer polls Graph and updates its OWN mirror; nothing is ever sent.
+  //
+  // `mail_triage` is deliberately NOT relayed. The classification pass spawns the Codex
+  // engine per batch and routinely outruns this relay's 5-second timeout, so a button for it
+  // would mostly return "command state UNKNOWN" — an affordance that lies about what
+  // happened is worse than no affordance. The 20-minute timer owns triage; this verb just
+  // makes the mirror current.
+  mail_sync: () => true,
 };
 
 function validateCommand(body) {

@@ -483,6 +483,22 @@ function clientScript() {
         .then(function(r){return r.json();}).then(function(r){if(r&&r.ok){location.reload();}else{busy=false;b.disabled=false;window.__lcRefuse(b,r&&r.error);}})
         .catch(function(){busy=false;b.disabled=false;window.__lcSay(b,window.__lcNet);});
         return;}
+      // MAIL PROPOSAL EDIT (Graph Stage C 2026-08-11): the owner rewords what a mail
+      // proposal would create before accepting it. The edit is MERGED engine-side over the
+      // original command, so the message the proposal came from stays attached to it.
+      var me=t.closest('[data-lc-mailedit]');
+      if(me){e.preventDefault();if(busy)return;
+        var mi;try{mi=JSON.parse(me.getAttribute('data-lc-mailedit'));}catch(_){return;}
+        var lbl=mi.kind==='create_project'?'Project name':'Task title';
+        var nt=prompt(lbl+' — edit it, then OK accepts with your wording:',mi.title||'');
+        if(nt===null)return;
+        nt=nt.trim();
+        if(!nt){window.__lcSay(me,'A name is needed — nothing was accepted.');return;}
+        busy=true;me.disabled=true;
+        fetch('/api/life/command',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({command:'decide',idempotencyKey:hex(),payload:{proposalId:mi.proposalId,decision:'edit',editedCommand:{title:nt}}})})
+        .then(function(r){return r.json();}).then(function(r){if(r&&r.ok){location.reload();}else{busy=false;me.disabled=false;window.__lcRefuse(me,r&&r.error);}})
+        .catch(function(){busy=false;me.disabled=false;window.__lcSay(me,window.__lcNet);});
+        return;}
       var dn=t.closest('[data-lc-complete]');
       if(dn){e.preventDefault();if(busy)return;
         var ev=prompt('Closure evidence (what proves it done?) — optional for low-risk tasks:','');
