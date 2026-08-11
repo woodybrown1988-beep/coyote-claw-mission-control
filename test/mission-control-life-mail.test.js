@@ -260,3 +260,10 @@ test('the mail proposals SURFACE even behind a day of older recommendations (the
   });
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('the board can actually CHOOSE an email-reply wait (it used to hardcode HUMAN_UPDATE)', () => {
+  const shell = fs.readFileSync(path.join(__dirname, '..', 'mission-control', 'ui', 'shared.js'), 'utf8');
+  assert.match(shell, /Are you waiting on an EMAIL REPLY\?/, 'the owner is asked, once');
+  assert.match(shell, /wakeType:byEmail\?'EMAIL_REPLY':'HUMAN_UPDATE'/, 'and the answer reaches the writer');
+  assert.ok(!/wakeType:'HUMAN_UPDATE'/.test(shell), 'the hardcoded wake type is gone — it made the record lie');
+});

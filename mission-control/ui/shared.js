@@ -528,10 +528,15 @@ function clientScript() {
       var wt=t.closest('[data-lc-wait]');
       if(wt){e.preventDefault();if(busy)return;
         var dep=prompt('Waiting on (who/what):','');if(dep===null||!dep.trim())return;
+        // WAKE TYPE (Graph Stage C 2026-08-11): waiting on an EMAIL REPLY is the commonest
+        // kind of waiting, and now that the inbox is mirrored the triage rail can actually
+        // propose the wake when the reply lands. Recording it as HUMAN_UPDATE would make the
+        // record lie about what the task is waiting for — so the owner is asked, once.
+        var byEmail=confirm('Are you waiting on an EMAIL REPLY?\n\nOK — the inbox is watched and a matching reply will offer to wake this task.\nCancel — you will wake it yourself.');
         var fb2=prompt('Fallback date (YYYY-MM-DD) — required:','');if(fb2===null)return;
         if(!/^\\d{4}-\\d{2}-\\d{2}$/.test(fb2)){window.__lcSay(wt,'A follow-up date like 2026-09-01 is needed — waiting work must never rot silently.');return;}
         busy=true;wt.disabled=true;
-        fetch('/api/life/command',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({command:'set_waiting',idempotencyKey:hex(),payload:{taskId:wt.getAttribute('data-lc-wait'),dependencyLabel:dep.trim(),wakeType:'HUMAN_UPDATE',fallbackAt:fb2+'T09:00:00.000Z'}})})
+        fetch('/api/life/command',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({command:'set_waiting',idempotencyKey:hex(),payload:{taskId:wt.getAttribute('data-lc-wait'),dependencyLabel:dep.trim(),wakeType:byEmail?'EMAIL_REPLY':'HUMAN_UPDATE',fallbackAt:fb2+'T09:00:00.000Z'}})})
         .then(function(r){return r.json();}).then(function(r){if(r&&r.ok){location.reload();}else{busy=false;wt.disabled=false;window.__lcRefuse(wt,r&&r.error);}})
         .catch(function(){busy=false;wt.disabled=false;window.__lcSay(wt,window.__lcNet);});
         return;}
