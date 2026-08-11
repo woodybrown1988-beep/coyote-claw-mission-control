@@ -80,6 +80,17 @@ module.exports = {
         // blanked every mail row against a pre-migration DB.)
         mailFolderOf: Object.fromEntries(q('SELECT id, folder_name FROM life_mail_messages WHERE folder_name <> \'\'')
           .map((r) => [r.id, r.folder_name])),
+        // FILING (Stage C-move 2026-08-11) — separate queries again, for the reason learned
+        // twice already: these tables arrive with the engine's migration and MC may deploy
+        // first. A table that is not there yet costs the filing rail, never the board.
+        mailFiling: {
+          shadow: q("SELECT COUNT(*) c FROM life_mail_moves WHERE state = 'SHADOW'")[0]?.c ?? 0,
+          moved: q("SELECT COUNT(*) c FROM life_mail_moves WHERE state = 'APPLIED'")[0]?.c ?? 0,
+          undone: q("SELECT COUNT(*) c FROM life_mail_moves WHERE state = 'UNDONE'")[0]?.c ?? 0,
+          rulesProposed: q("SELECT COUNT(*) c FROM life_mail_rules WHERE state = 'PROPOSED'")[0]?.c ?? 0,
+          rulesShadow: q("SELECT COUNT(*) c FROM life_mail_rules WHERE state = 'SHADOW'")[0]?.c ?? 0,
+          rulesArmed: q("SELECT COUNT(*) c FROM life_mail_rules WHERE state = 'ARMED'")[0]?.c ?? 0,
+        },
         mailSync: q('SELECT last_sync_at, last_error, last_triage_at FROM life_mail_sync WHERE id = 1')[0] || null,
         mailBacklog: q('SELECT COUNT(*) c FROM life_mail_messages WHERE classified_at IS NULL')[0]?.c ?? 0,
         approvalRows: q(`SELECT id, title FROM life_tasks WHERE status = 'AWAITING_APPROVAL' ORDER BY updated_at ASC LIMIT 10`),
@@ -336,13 +347,25 @@ module.exports = {
     const overflowLine = overflow
       ? `<div class="r-note" style="color:#f5c96b">${overflow} more open suggestion${overflow === 1 ? '' : 's'} beyond what fits here — clear some of these and the rest surface. Nothing is being hidden from you silently.</div>`
       : '';
+    // FILING RAIL. While rules rehearse, the honest headline is what it WOULD have done —
+    // that number is the whole point of the shadow period, and it must be impossible to miss.
+    const f = s.mailFiling || {};
+    let filingNote = '';
+    if ((f.shadow || f.moved || f.rulesProposed || f.rulesShadow || f.rulesArmed)) {
+      const bits = [];
+      if (f.rulesShadow) bits.push(`<b>${f.shadow}</b> message${f.shadow === 1 ? '' : 's'} would have been filed by ${f.rulesShadow} rule${f.rulesShadow === 1 ? '' : 's'} still rehearsing — nothing has moved`);
+      if (f.rulesArmed) bits.push(`${f.moved} filed by ${f.rulesArmed} armed rule${f.rulesArmed === 1 ? '' : 's'}`);
+      if (f.undone) bits.push(`${f.undone} put back`);
+      if (f.rulesProposed) bits.push(`<b>${f.rulesProposed}</b> filing rule${f.rulesProposed === 1 ? '' : 's'} proposed, awaiting you`);
+      filingNote = `<div class="r-note">🗂️ ${bits.join(' · ')}. Nothing is ever filed while it still has an undecided proposal here.</div>`;
+    }
     const needsPanel = S.rcc.panel({
       title: `Needs you`, sub: 'Only irreversible calls and genuine owner judgement',
       headRight: needs.length ? `<span class="r-pill">${needs.length}</span>` : '',
       body: (needs.length
         ? needs.map(needRow).join('')
         : `<div class="r-lrow" style="color:var(--rmuted);font-size:13px">Nothing needs you${foldedCount ? ' right now' : '. That is the design working'}.</div>`)
-        + foldLine + overflowLine + mailNote,
+        + foldLine + overflowLine + mailNote + filingNote,
     });
 
     // ── CAPACITY GUARDRAILS (A3): per stated-aim domain, protected vs review-due — derived from
