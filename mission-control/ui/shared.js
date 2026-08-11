@@ -116,6 +116,7 @@ const WORKSPACES = [
       { key: 'life-projects', label: 'Projects', route: '/life/projects', ico: '<path d="M12 2 2 7l10 5 10-5z"/><path d="M2 12l10 5 10-5M2 17l10 5 10-5"/>' },
       { key: 'life-tasks', label: 'All tasks', route: '/life/tasks', ico: '<path d="M9 6h12M9 12h12M9 18h12"/><path d="M3.5 5.5 5 7l2.5-2.5M3.5 11.5 5 13l2.5-2.5M3.5 17.5 5 19l2.5-2.5"/>' },
       { key: 'life-schedule', label: 'Schedule', route: '/life/schedule', ico: '<rect x="3" y="4" width="18" height="17" rx="2"/><path d="M8 2v4M16 2v4M3 9h18"/>' },
+      { key: 'life-recurring', label: 'Recurring', route: '/life/recurring', ico: '<path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/>' },
     ] },
     { group: 'Review', items: [
       { key: 'life-review', label: 'Weekly review', route: '/life/review', ico: '<rect x="3" y="4" width="18" height="17" rx="2"/><path d="M8 2v4M16 2v4M3 9h18"/><path d="m9 15 2 2 4-4"/>' },

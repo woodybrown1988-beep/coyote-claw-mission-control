@@ -307,6 +307,7 @@ const PAGES = [
   require('./ui/pages/life/task.js'),   // the drawer — reached by links, no sidebar slot
   require('./ui/pages/life/project.js'), // project drawer — same pattern (operator ask 2026-08-10)
   require('./ui/pages/life/schedule.js'),
+  require('./ui/pages/life/recurring.js'),
   require('./ui/pages/life/quarterly.js'),
   require('./ui/pages/life/agents.js'),
   require('./ui/pages/life/settings.js'),

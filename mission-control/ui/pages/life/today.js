@@ -261,10 +261,33 @@ module.exports = {
         }
       } else if (isCalendarBlock) {
         let c = {}; try { c = JSON.parse(String(p.command_json || '{}')); } catch (_) { /* renders generic */ }
-        sub = p.command_type === 'place_block'
-          ? `Proposed focus block ${String(c.startAt || '').slice(11, 16)}–${String(c.endAt || '').slice(11, 16)} in your Life OS calendar. Accept places it in Outlook; No leaves Outlook untouched.`
-          : `The task closed but its focus block still stands in Outlook. Accept removes the block (the task is not touched); No keeps it.`;
-        acceptBtn = cmd(p.command_type === 'place_block' ? 'Place block' : 'Remove block', p.command_type, { proposalId: p.id }, 'small primary');
+        const span = `${String(c.startAt || '').slice(11, 16)}–${String(c.endAt || '').slice(11, 16)}`;
+        // FOUR verbs now, not two. Continuous replan (2026-08-11) added move and swap, and a
+        // two-way branch labelled every one of them "Remove block" over the sentence "the
+        // task closed" — a swap proposal read as a removal of a task that is very much open,
+        // while the button underneath dispatched something else entirely. Each verb says
+        // what it would actually do, and the REASON carries the rest: the engine writes a
+        // full sentence naming the clash or both priorities, and it is shown, not replaced.
+        const VERB = {
+          place_block: {
+            label: 'Place block',
+            sub: `Proposed focus block ${span} in your Life OS calendar. Accept places it in Outlook; No leaves Outlook untouched.`,
+          },
+          remove_block: {
+            label: 'Remove block',
+            sub: `${String(p.reason)} Accept removes the block (the task is not touched); No keeps it.`,
+          },
+          move_block: {
+            label: 'Move block',
+            sub: `${String(p.reason)} Accept moves it to ${span}; No leaves it where it is.`,
+          },
+          swap_block: {
+            label: 'Swap the slot',
+            sub: `${String(p.reason)} Accept frees that block and gives the slot to the other task; No changes nothing.`,
+          },
+        }[p.command_type] || { label: 'Apply', sub: String(p.reason) };
+        sub = VERB.sub;
+        acceptBtn = cmd(VERB.label, p.command_type, { proposalId: p.id }, 'small primary');
       } else {
         sub = isAgentDelivery
           ? `Agent deliverable awaiting your accept — the work is on the task. Accept completes it with the deliverable attached; No keeps it open.`

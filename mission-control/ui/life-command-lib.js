@@ -116,6 +116,12 @@ const COMMAND_SHAPES = {
   // HUMAN-only at the writer: any agent/service actor is refused by name.
   place_block: (p) => typeof p.proposalId === 'string' && !!p.proposalId,
   remove_block: (p) => typeof p.proposalId === 'string' && !!p.proposalId,
+  // Continuous replan (operator ask 2026-08-11): the compiler revisits blocks that already
+  // stand and proposes moving or swapping one when it stops being true. Both ride a
+  // PROPOSAL id and nothing else — the times and the block live in the proposal the owner is
+  // looking at, so no payload from this surface can name a time he was never shown.
+  move_block: (p) => typeof p.proposalId === 'string' && !!p.proposalId,
+  swap_block: (p) => typeof p.proposalId === 'string' && !!p.proposalId,
   // Bulk import (operator brief 2026-08-08): commands carry a file NAME in the import
   // inbox plus the operator's per-row rulings — never file content (the writer reads the
   // file itself and re-validates everything; preview writes nothing).

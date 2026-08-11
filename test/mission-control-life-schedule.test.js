@@ -222,3 +222,251 @@ test('owner language: populated calendar surfaces carry no engineering vocabular
   });
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+// ── WEEK VIEW (operator ask 2026-08-11) ──────────────────────────────────────
+// The week inherits every honesty law the day view lives by and softens none of them. Pinned
+// here: the day view is untouched unless ?view=week is asked for; commitments and Life OS
+// blocks render side by side per day; an event running in from the previous day appears on
+// both days (the `LIKE 'day%'` trap a week is exactly where you find); navigation is bounded
+// by what has actually been read and SAYS so at the edge; proposals land on their target day
+// and keep their own per-block verbs; and NO GRID — the free-time tripwire holds across
+// seven days, which is the surface most likely to imply bookable time.
+
+/** The week fixture adds the block registry — a placed block is read from Life OS's own
+ *  record, not inferred from the mirror. */
+function makeWeekFixture(dir, { events, blocks, proposals, lastSyncAt } = {}) {
+  const p = makeFixture(dir, { syncRow: { lastSyncAt: lastSyncAt ?? new Date(NOW - 10 * 60_000).toISOString() }, events });
+  const db = new sqlite.DatabaseSync(p);
+  db.exec(`CREATE TABLE life_calendar_blocks (id TEXT PRIMARY KEY, owner_id TEXT, task_id TEXT, proposal_id TEXT,
+    graph_event_id TEXT, calendar_id TEXT, title TEXT, start_at TEXT, end_at TEXT, state TEXT,
+    created_at TEXT, updated_at TEXT);`);
+  for (const b of blocks || []) {
+    db.prepare(`INSERT INTO life_calendar_blocks (id, owner_id, task_id, graph_event_id, calendar_id, title, start_at, end_at, state, created_at, updated_at)
+                VALUES (?, 'woody', ?, ?, 'CAL-LIFE', ?, ?, ?, ?, ?, ?)`)
+      .run(b.id, b.taskId || 't1', b.eventId || `ev-${b.id}`, b.title, b.start, b.end, b.state || 'PLACED', new Date(NOW).toISOString(), new Date(NOW).toISOString());
+  }
+  for (const pr of proposals || []) {
+    db.prepare(`INSERT INTO life_update_proposals (id, owner_id, update_id, task_id, capability_key, command_type,
+                command_json, reason, confidence, risk_level, authority_class, state, created_at)
+                VALUES (?, 'woody', 'u1', 't1', 'calendar_block', ?, ?, ?, 0.7, 'LOW', 'EXTERNAL', 'PROPOSED', ?)`)
+      .run(pr.id, pr.type, JSON.stringify(pr.command), pr.reason, new Date(NOW).toISOString());
+  }
+  db.close();
+  return p;
+}
+const weekOut = (dbPath, query) => withEnv(dbPath, () => {
+  const ctx = { now: NOW, query: { view: 'week', ...(query || {}) } };
+  return SCHEDULE.render(SCHEDULE.getSection(null, ctx), ctx);
+});
+
+test('week: seven rolling days from today, commitments and Life OS blocks side by side, same staleness caption', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-week-'));
+  const dbPath = makeWeekFixture(dir, {
+    events: [
+      ...EVENTS,
+      { id: 'w1', subject: 'Supplier review', start: '2026-08-13T11:00:00', end: '2026-08-13T12:00:00' },
+    ],
+    blocks: [{ id: 'b1', title: 'Focus: menu costing', start: '2026-08-13T14:00:00', end: '2026-08-13T15:30:00', eventId: 'blockev1' }],
+  });
+  const out = weekOut(dbPath);
+  const v = visibleText(out.body);
+
+  assert.match(v, /The next seven days/);
+  assert.match(v, /2026-08-10 to 2026-08-16/, 'the window is today + 6, stated');
+  assert.match(v, /Supplier review/, 'a commitment three days out renders');
+  assert.match(v, /Focus: menu costing/, 'and the Life OS block beside it');
+  assert.match(v, /Life OS/, 'the block is marked as ours, not as an Outlook commitment');
+  // The SAME staleness sentence as the day view — one voice, not seven.
+  assert.match(v, /Fresh — matched to Outlook 10 min ago\./);
+  assert.ok(!FREE_TIME_RE.test(v), 'a week of days still offers no free time');
+  assert.ok(!/&lt;style|<table/i.test(''), 'sanity');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('week: an event running in from the day BEFORE appears on both days — the prefix-match trap', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-week-spill-'));
+  // Starts the day before the window opens and runs into it.
+  const dbPath = makeWeekFixture(dir, {
+    events: [{ id: 'ov', subject: 'Overnight stocktake', start: '2026-08-09T22:00:00', end: '2026-08-10T03:00:00' }],
+  });
+  const v = visibleText(weekOut(dbPath).body);
+  assert.match(v, /Overnight stocktake/, 'an event that starts before the window still covers a day inside it');
+  // …and it says which way it runs, so last night's 22:00–05:00 can never be mistaken for
+  // tonight's. Both render on the same day otherwise, as two identical-looking rows.
+  assert.match(v, /carried over from Sun 9 Aug/);
+  assert.ok(!/22:00–05:00/.test(v), 'a spilled-in event does not claim a start time it did not have today');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('week: an event running OUT into the next day says so on the day it starts', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-week-spillout-'));
+  const dbPath = makeWeekFixture(dir, {
+    events: [{ id: 'ov2', subject: 'Night shift', start: '2026-08-12T22:00:00', end: '2026-08-13T05:00:00' }],
+  });
+  const v = visibleText(weekOut(dbPath).body);
+  assert.match(v, /runs into Thu 13 Aug/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('week: the day view is UNCHANGED unless ?view=week is asked for', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-week-default-'));
+  const dbPath = makeWeekFixture(dir, { events: EVENTS });
+  const plain = withEnv(dbPath, () => SCHEDULE.render(SCHEDULE.getSection(null, { now: NOW }), {}));
+  assert.match(visibleText(plain.body), /Today from Outlook/, 'the page still opens on the day');
+  assert.ok(!/The next seven days/.test(visibleText(plain.body)), 'the week is opt-in');
+  // …and an unparseable start is ignored rather than erroring the page.
+  const junk = weekOut(dbPath, { start: 'not-a-date' });
+  assert.match(visibleText(junk.body), /2026-08-10 to 2026-08-16/, 'a junk date falls back to today, never a broken page');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('week: navigation moves 7 days at a time and is BOUNDED by what has been read — the edge says so', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-week-nav-'));
+  const dbPath = makeWeekFixture(dir, { events: EVENTS });
+
+  const fwd = weekOut(dbPath, { start: '2026-08-17' });
+  assert.match(visibleText(fwd.body), /2026-08-17 to 2026-08-23/);
+  assert.match(fwd.body, /start=2026-08-24/, 'next steps a full week');
+  assert.match(fwd.body, /start=2026-08-10/, 'and back a full week');
+
+  // Past the guaranteed forward horizon: clamped, and the clamp is NAMED.
+  const far = weekOut(dbPath, { start: '2027-06-01' });
+  const fv = visibleText(far.body);
+  assert.match(fv, /moved to the furthest week the calendar has actually been read for/);
+  assert.match(fv, /as far forward as the calendar has been read/);
+  assert.match(fv, /aren’t empty — they’re unknown/, 'unknown is not dressed as empty');
+
+  const back = weekOut(dbPath, { start: '2020-01-01' });
+  assert.match(visibleText(back.body), /as far back as the mirror is kept/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('week: proposals render on their TARGET day and keep their own per-block verbs', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-week-prop-'));
+  const dbPath = makeWeekFixture(dir, {
+    events: EVENTS,
+    blocks: [{ id: 'b9', title: 'Focus: forecast', start: '2026-08-12T10:00:00', end: '2026-08-12T11:30:00', eventId: 'bev9' }],
+    proposals: [
+      { id: 'p1', type: 'place_block', reason: 'must-win focus block', command: { taskId: 't1', planDate: '2026-08-11', title: 'Focus: VAT', startAt: '2026-08-11T09:00:00', endAt: '2026-08-11T10:30:00' } },
+      { id: 'p2', type: 'move_block', reason: '"Bank call" now sits on your "Rebuild the forecast" block', command: { blockId: 'b9', startAt: '2026-08-12T11:30:00', endAt: '2026-08-12T13:00:00', title: 'Focus: forecast' } },
+      { id: 'p3', type: 'remove_block', reason: 'the task closed but its block still stands', command: { blockId: 'b9' } },
+    ],
+  });
+  const out = weekOut(dbPath);
+  const v = visibleText(out.body);
+
+  assert.match(v, /Focus: VAT/, 'a placement shows on the day it would take');
+  assert.match(v, /now sits on your/, 'a collision states its reason');
+  // Each verb names its own consequence — never a bare "accept", never the wrong verb.
+  // data-lc-cmd payloads are HTML-escaped into the attribute, so match the emitted form.
+  const cmdOf = (name) => new RegExp(`&quot;command&quot;:&quot;${name}&quot;`);
+  assert.match(out.body, cmdOf('place_block'));
+  assert.match(out.body, cmdOf('move_block'));
+  assert.match(out.body, cmdOf('remove_block'));
+  assert.match(v, /Move block/);
+  assert.match(v, /Remove block/);
+  // A removal names only a block, so its day comes from the block itself — not guessed.
+  assert.ok(!/Waiting on you, outside this week[\s\S]{0,400}Remove a standing block/.test(v),
+    'a removal whose block is inside the week is shown against that day, not in the leftovers');
+  // Rejecting is still a plain decide, on every verb.
+  assert.match(out.body, cmdOf('decide'));
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('week: stale is stale across all seven days, and no list is silently truncated', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-week-stale-'));
+  const dbPath = makeWeekFixture(dir, { events: EVENTS, lastSyncAt: new Date(NOW - 5 * 3_600_000).toISOString() });
+  const v = visibleText(weekOut(dbPath).body);
+  assert.match(v, /Stale — last good look at Outlook was 5h 0m ago/);
+  assert.match(v, /Outlook itself is the truth right now/);
+  assert.ok(!FREE_TIME_RE.test(v));
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('week: a day with nothing on it says so — and never as an invitation', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-week-empty-'));
+  const dbPath = makeWeekFixture(dir, { events: [] });
+  const v = visibleText(weekOut(dbPath).body);
+  assert.match(v, /Nothing in the calendar\./);
+  assert.ok(!FREE_TIME_RE.test(v), 'an empty week is the highest-risk surface for implying bookable time');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+// ── REGRESSIONS from the adversarial review (2026-08-11) ─────────────────────
+
+test('RED: the proposals tile states the TRUE total, not the number that fitted on the page', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-week-cap-'));
+  const many = Array.from({ length: 45 }, (_, i) => ({
+    id: `p${i}`, type: 'place_block', reason: 'must-win focus block',
+    command: { taskId: 't1', planDate: '2026-08-12', title: `Focus ${i}`, startAt: '2026-08-12T09:00:00', endAt: '2026-08-12T10:00:00' },
+  }));
+  const dbPath = makeWeekFixture(dir, { events: EVENTS, proposals: many });
+  for (const out of [weekOut(dbPath), withEnv(dbPath, () => SCHEDULE.render(SCHEDULE.getSection(null, { now: NOW }), {}))]) {
+    const v = visibleText(out.body);
+    assert.match(v, /Showing 40 of 45 open calendar questions/, 'the list states its total');
+    assert.ok(!/>40<\/div><div class="r-kpi-sub">never shown as booked time/.test(out.body),
+      'and the tile does not contradict it two lines above');
+    assert.match(out.body, />45<\/div><div class="r-kpi-sub">never shown as booked time/, 'the tile states the real total');
+  }
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('RED: a placed block is counted ONCE — as a block, not also as a commitment', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-week-dbl-'));
+  // placeBlock mirrors its own event into the calendar, so the mirror row is present and
+  // busy-marked exactly as it is in life.
+  const dbPath = makeWeekFixture(dir, {
+    events: [{ id: 'blockev1', subject: 'Focus: menu costing', start: '2026-08-13T14:00:00', end: '2026-08-13T15:30:00', calendarKey: 'life' }],
+    blocks: [{ id: 'b1', title: 'Focus: menu costing', start: '2026-08-13T14:00:00', end: '2026-08-13T15:30:00', eventId: 'blockev1' }],
+  });
+  const v = visibleText(weekOut(dbPath).body);
+  assert.match(v, /0 commitments · 1 block/, 'one block, zero commitments — the count reconciles against the list');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('RED: a long reason is trimmed VISIBLY — a swap must not lose the second priority silently', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-week-reason-'));
+  const long = 'A'.repeat(380) + ' (priority 31) holds 2026-08-12 at 10:00 — swap them into that slot?';
+  const dbPath = makeWeekFixture(dir, {
+    events: EVENTS,
+    blocks: [{ id: 'bx', title: 'Focus', start: '2026-08-12T10:00:00', end: '2026-08-12T11:00:00', eventId: 'bevx' }],
+    proposals: [{ id: 'ps', type: 'swap_block', reason: long, command: { fromBlockId: 'bx', taskId: 't2', title: 'File the VAT return', startAt: '2026-08-12T10:00:00', endAt: '2026-08-12T11:00:00' } }],
+  });
+  const v = visibleText(weekOut(dbPath).body);
+  assert.match(v, /…/, 'the cut is marked, so a truncated number never reads as a finished sentence');
+  assert.match(v, /Swap the slot/, 'and the button names the verb it actually dispatches');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('RED: a BACKWARD clamp is described in backward words', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-week-back-'));
+  const dbPath = makeWeekFixture(dir, { events: EVENTS });
+  const back = visibleText(weekOut(dbPath, { start: '2020-01-01' }).body);
+  assert.match(back, /moved to the earliest week the mirror still keeps/);
+  assert.ok(!/furthest week the calendar has actually been read/.test(back),
+    'days that were read and then let go must not be described as never looked at');
+  const fwd = visibleText(weekOut(dbPath, { start: '2027-06-01' }).body);
+  assert.match(fwd, /moved to the furthest week the calendar has actually been read for/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('RED: Today renders every calendar verb with its own words and its own button', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-today-verbs-'));
+  const dbPath = makeWeekFixture(dir, {
+    events: EVENTS,
+    blocks: [{ id: 'bt', title: 'Focus', start: '2026-08-12T10:00:00', end: '2026-08-12T11:00:00', eventId: 'bevt' }],
+    proposals: [
+      { id: 'pm', type: 'move_block', reason: '"Bank call" (10:30–11:00) now sits on your "Rebuild the forecast" block.', command: { blockId: 'bt', startAt: '2026-08-12T11:00:00', endAt: '2026-08-12T12:00:00' } },
+      { id: 'pw', type: 'swap_block', reason: '"File the VAT return" (priority 61) has no time held, while "Tidy the drive" (priority 31) holds it.', command: { fromBlockId: 'bt', taskId: 't2', title: 'File the VAT return', startAt: '2026-08-12T10:00:00', endAt: '2026-08-12T11:00:00' } },
+    ],
+  });
+  const out = withEnv(dbPath, () => TODAY.render(TODAY.getSection(null, { now: NOW }), { now: NOW }));
+  const v = visibleText(out.body);
+  assert.match(v, /Move block/);
+  assert.match(v, /Swap the slot/);
+  assert.match(v, /now sits on your/, 'the engine’s reason is shown, not replaced by boilerplate');
+  assert.match(v, /priority 61.*priority 31|priority 31/, 'a swap still states both priorities on Today');
+  assert.ok(!/The task closed but its focus block still stands/.test(v),
+    'a move or a swap is never described as a closed task');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
