@@ -74,6 +74,12 @@ module.exports = {
              FROM life_mail_messages m
             WHERE m.id IN (SELECT source_mail_id FROM life_update_proposals WHERE state = 'PROPOSED' AND source_mail_id IS NOT NULL)`,
         ).map((r) => [r.id, r])),
+        // SEPARATE again, for the same reason as mailOf: folder_name arrives with the
+        // multi-folder migration, and MC must not blank the mail rail if it deploys first.
+        // (This exact mistake was made and caught here — folding it into the query above
+        // blanked every mail row against a pre-migration DB.)
+        mailFolderOf: Object.fromEntries(q('SELECT id, folder_name FROM life_mail_messages WHERE folder_name <> \'\'')
+          .map((r) => [r.id, r.folder_name])),
         mailSync: q('SELECT last_sync_at, last_error, last_triage_at FROM life_mail_sync WHERE id = 1')[0] || null,
         mailBacklog: q('SELECT COUNT(*) c FROM life_mail_messages WHERE classified_at IS NULL')[0]?.c ?? 0,
         approvalRows: q(`SELECT id, title FROM life_tasks WHERE status = 'AWAITING_APPROVAL' ORDER BY updated_at ASC LIMIT 10`),
@@ -163,6 +169,10 @@ module.exports = {
         let c = {}; try { c = JSON.parse(String(p.command_json || '{}')); } catch (_) { /* renders generic */ }
         const m = (s.mailById || {})[mailId] || null;
         const who = m ? (m.from_name || m.from_address || 'an email') : 'an email';
+        // WHERE it was read from. Only shown when it is not the Inbox, because that is the
+        // interesting case: the folder you moved it into is the one you were acting on.
+        const foldName = (s.mailFolderOf || {})[mailId];
+        const where = foldName && foldName !== 'Inbox' ? ` (${String(foldName)})` : '';
         const verb = p.command_type === 'wake' ? 'Wake it'
           : p.command_type === 'add_update' ? 'Add to the task'
             : p.command_type === 'create_project' ? 'Create project' : 'Create task';
@@ -172,7 +182,7 @@ module.exports = {
               : `Accept captures “${String(c.title || 'it')}” into your Inbox. Nothing is sent, and the email is not touched.`;
         // RAW on purpose — needRow escapes n.sub once. Escaping here too would render a
         // vendor's apostrophes as &#39; on the owner's own board.
-        sub = `From ${who} — ${String(p.reason).slice(0, 180)}. ${what}`;
+        sub = `From ${who}${where} — ${String(p.reason).slice(0, 180)}. ${what}`;
         acceptBtn = cmd(verb, 'decide', { proposalId: p.id, decision: 'accept' }, 'small primary');
         // Edit is only meaningful where there is wording to change (a title / a project name).
         if (p.command_type === 'create_task' || p.command_type === 'create_project') {

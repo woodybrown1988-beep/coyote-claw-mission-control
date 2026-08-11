@@ -69,7 +69,8 @@ function fixture(dir, opts) {
       CREATE TABLE life_mail_messages (id TEXT PRIMARY KEY, owner_id TEXT, internet_message_id TEXT, conversation_id TEXT,
         from_address TEXT, from_name TEXT, to_json TEXT, subject TEXT, body_preview TEXT, received_at TEXT,
         is_read INTEGER, has_attachments INTEGER, web_link TEXT, classification TEXT, classification_reason TEXT,
-        classifier_model TEXT, classified_at TEXT, proposal_id TEXT, first_seen_at TEXT, updated_at TEXT);
+        classifier_model TEXT, classified_at TEXT, proposal_id TEXT, folder_id TEXT DEFAULT '',
+        folder_name TEXT DEFAULT '', first_seen_at TEXT, updated_at TEXT);
       CREATE TABLE life_mail_sync (id INTEGER PRIMARY KEY, delta_link TEXT, window_anchor TEXT, last_sync_at TEXT,
         last_error TEXT, last_triage_at TEXT, last_triage_error TEXT, updated_at TEXT);
       INSERT INTO life_mail_messages (id, owner_id, from_address, from_name, subject, body_preview, received_at, web_link, classification, classified_at)
@@ -266,4 +267,37 @@ test('the board can actually CHOOSE an email-reply wait (it used to hardcode HUM
   assert.match(shell, /Are you waiting on an EMAIL REPLY\?/, 'the owner is asked, once');
   assert.match(shell, /wakeType:byEmail\?'EMAIL_REPLY':'HUMAN_UPDATE'/, 'and the answer reaches the writer');
   assert.ok(!/wakeType:'HUMAN_UPDATE'/.test(shell), 'the hardcoded wake type is gone — it made the record lie');
+});
+
+test('a mail proposal says which FOLDER it was read from, when it was not the Inbox', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-mail-folder-'));
+  const dbPath = fixture(dir);
+  const db = new sqlite.DatabaseSync(dbPath);
+  db.exec("UPDATE life_mail_messages SET folder_name = 'Inbox/Emails to Respond' WHERE id = 'mail-1'");
+  db.exec("UPDATE life_mail_messages SET folder_name = 'Inbox' WHERE id = 'mail-2'");
+  db.close();
+  withEnv(dbPath, () => {
+    const body = renderToday().body;
+    assert.match(body, /From Lightspeed Support \(Inbox\/Emails to Respond\)/,
+      'the folder you filed it into is the interesting fact — it is what you were acting on');
+    assert.match(body, /From GasSafe —/, 'an ordinary Inbox message says nothing extra');
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('DEPLOY ORDERING again: a life.db without folder_name still renders every mail row', () => {
+  // The folder annotation is a nice-to-have; the proposals are not. This is the same guard
+  // as mailOf, and it exists because folding folder_name into the message query DID blank
+  // the whole mail rail against a pre-migration fixture while this feature was being built.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-mail-nofolder-'));
+  const dbPath = fixture(dir);
+  const db = new sqlite.DatabaseSync(dbPath);
+  db.exec('ALTER TABLE life_mail_messages DROP COLUMN folder_name');
+  db.close();
+  withEnv(dbPath, () => {
+    const body = renderToday().body;
+    assert.match(body, /From Lightspeed Support/, 'the mail proposals still render');
+    assert.ok(!/\(Inbox\//.test(body), 'just without the folder annotation');
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
 });
