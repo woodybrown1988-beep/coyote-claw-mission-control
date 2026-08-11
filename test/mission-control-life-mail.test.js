@@ -159,6 +159,27 @@ test('the mail rail is honest: fresh reads say so, a broken poll says nothing wa
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('a RECENT pass that hit a problem is not reported as "nothing has been read"', () => {
+  // The engine can now finish a pass, sync every folder, and still not have been able to LIST
+  // them all (mailbox-fingerprint work, 2026-08-11). The same is true of a pass that lost one
+  // folder out of five. Calling either "nothing has been read" sends the owner hunting a
+  // healthy sync — and a caption that cries wolf is a caption that stops being read.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-mail-partial-'));
+  const dbPath = fixture(dir);
+  const db = new sqlite.DatabaseSync(dbPath);
+  db.exec(`UPDATE life_mail_sync SET last_sync_at = '${ago(10 * 60000)}', last_error = 'folder discovery INCOMPLETE: children of ''Inbox'' → 503 Service Unavailable'`);
+  db.close();
+  withEnv(dbPath, () => {
+    const body = renderToday().body;
+    assert.match(body, /Inbox read 10 min ago, but that pass hit a problem/);
+    assert.match(body, /folder discovery INCOMPLETE/, 'the actual problem is quoted, not summarised away');
+    assert.match(body, /part of the mailbox may not have been read/);
+    assert.ok(!/nothing has been read/.test(body), 'because that is not what happened');
+    assert.match(body, /#f5c96b/, 'and it is still flagged, not quietly downgraded to normal');
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('DEPLOY ORDERING: a life.db predating the mail migration still renders the whole decision queue', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-mail-premig-'));
   withEnv(fixture(dir, { withMail: false }), () => {

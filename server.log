@@ -1,0 +1,3 @@
+Mission Control listening on http://127.0.0.1:8787
+(node:102354) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)

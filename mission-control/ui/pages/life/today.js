@@ -336,9 +336,17 @@ module.exports = {
       // "Read inbox now" refreshes the MIRROR only. The classification pass rides the
       // 20-minute timer — it spawns an engine per batch and would outrun the relay.
       const readNow = cmd('Read inbox now', 'mail_sync', {}, 'small');
-      mailNote = (mAge === null || mAge > 90 || s.mailSync.last_error)
-        ? `<div class="r-note" style="color:#f5c96b">Inbox last read ${mText}${s.mailSync.last_error ? ` and the last pass failed (${LIFE.esc(String(s.mailSync.last_error).slice(0, 100))})` : ''} — nothing has been read, so nothing has been suggested from it. Outlook is untouched either way. ${readNow}</div>`
-        : `<div class="r-note">Inbox read ${mText}${s.mailBacklog ? ` · ${s.mailBacklog} message${s.mailBacklog === 1 ? '' : 's'} not looked at yet` : ''} — read-only, and only ever suggestions. ${readNow}</div>`;
+      // "Nothing has been read" is only TRUE when nothing was read. A pass that reached the
+      // mailbox and lost one folder — or completed every folder but could not list them all
+      // (mailbox fingerprint work, engine 2026-08-11) — read most of it, and saying otherwise
+      // sends the owner hunting a healthy sync. Loud is right; wrong is not.
+      const stale = mAge === null || mAge > 90;
+      const err = s.mailSync.last_error ? LIFE.esc(String(s.mailSync.last_error).slice(0, 140)) : '';
+      mailNote = stale
+        ? `<div class="r-note" style="color:#f5c96b">Inbox last read ${mText}${err ? ` and the last pass failed (${err})` : ''} — nothing has been read, so nothing has been suggested from it. Outlook is untouched either way. ${readNow}</div>`
+        : err
+          ? `<div class="r-note" style="color:#f5c96b">Inbox read ${mText}, but that pass hit a problem (${err}) — part of the mailbox may not have been read, so treat the absence of a suggestion as unknown rather than clear. Outlook is untouched either way. ${readNow}</div>`
+          : `<div class="r-note">Inbox read ${mText}${s.mailBacklog ? ` · ${s.mailBacklog} message${s.mailBacklog === 1 ? '' : 's'} not looked at yet` : ''} — read-only, and only ever suggestions. ${readNow}</div>`;
     }
     // If the queue ever outgrows the render limit, SAY SO. Never let the board look complete
     // while it is holding something back (see the truncation note in getSection).
