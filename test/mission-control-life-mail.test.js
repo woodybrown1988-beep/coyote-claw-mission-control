@@ -345,3 +345,62 @@ test("the emitted due-date regex actually WORKS — not just that it looks right
   assert.equal(test1('2026-9-1'), false);
   assert.equal(test1('next Tuesday'), false);
 });
+
+// ── filing rail (Stage C-move) ───────────────────────────────────────────────────────────
+
+function withFiling(dir, rows) {
+  const dbPath = fixture(dir);
+  const db = new sqlite.DatabaseSync(dbPath);
+  db.exec(`CREATE TABLE life_mail_moves (id TEXT PRIMARY KEY, owner_id TEXT, message_id TEXT, new_message_id TEXT,
+    subject TEXT, from_address TEXT, from_folder_id TEXT, from_folder_name TEXT, to_folder_id TEXT, to_folder_name TEXT,
+    rule_id TEXT, state TEXT, error TEXT, moved_at TEXT, undone_at TEXT);
+   CREATE TABLE life_mail_rules (id TEXT PRIMARY KEY, owner_id TEXT, match_kind TEXT, match_value TEXT,
+    dest_folder_id TEXT, dest_path TEXT, state TEXT, origin TEXT, sample_count INTEGER, reason TEXT,
+    created_at TEXT, armed_at TEXT, updated_at TEXT);`);
+  for (const [i, st] of (rows.moves || []).entries())
+    db.exec(`INSERT INTO life_mail_moves (id,owner_id,message_id,subject,from_folder_name,to_folder_name,state,moved_at)
+             VALUES ('mv${i}','woody','m${i}','s','Inbox','Supplier/X','${st}','${T}')`);
+  for (const [i, st] of (rows.rules || []).entries())
+    db.exec(`INSERT INTO life_mail_rules (id,owner_id,match_kind,match_value,dest_folder_id,dest_path,state,origin,sample_count,reason,created_at,updated_at)
+             VALUES ('r${i}','woody','SENDER_DOMAIN','v${i}','f','Supplier/X','${st}','CLASSIFIER',5,'',' ${T}','${T}')`);
+  db.close();
+  return dbPath;
+}
+
+test('during SHADOW the rail leads with what WOULD have moved — and says nothing has', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-file-'));
+  withEnv(withFiling(dir, { moves: ['SHADOW', 'SHADOW', 'SHADOW'], rules: ['SHADOW'] }), () => {
+    const body = renderToday().body;
+    assert.match(body, /<b>3<\/b> messages would have been filed by 1 rule still rehearsing — nothing has moved/);
+    assert.match(body, /Nothing is ever filed while it still has an undecided proposal here/);
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('a proposed filing rule is surfaced as awaiting you', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-file2-'));
+  withEnv(withFiling(dir, { moves: [], rules: ['PROPOSED', 'PROPOSED'] }), () => {
+    assert.match(renderToday().body, /<b>2<\/b> filing rules proposed, awaiting you/);
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('armed rules report real moves and undos', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-file3-'));
+  withEnv(withFiling(dir, { moves: ['APPLIED', 'APPLIED', 'UNDONE'], rules: ['ARMED'] }), () => {
+    const body = renderToday().body;
+    assert.match(body, /2 filed by 1 armed rule/);
+    assert.match(body, /1 put back/);
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('DEPLOY ORDERING: no filing tables yet → the rail is absent, the board is untouched', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-file4-'));
+  withEnv(fixture(dir), () => {
+    const body = renderToday().body;
+    assert.ok(!/would have been filed|filed by/.test(body), 'no filing rail');
+    assert.match(body, /From Lightspeed Support/, 'and the decision queue renders exactly as before');
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+});
