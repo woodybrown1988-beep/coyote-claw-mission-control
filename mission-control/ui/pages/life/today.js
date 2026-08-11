@@ -50,7 +50,17 @@ module.exports = {
         engine: { ok: true }, now, today, plan, taskOf,
         // quiet-support DEFAULT-ON (operator ruling 2026-08-05): absent row = on.
         quiet: setting('quiet_support', 'on') === 'on',
-        openProposals: q(`SELECT id, task_id, capability_key, command_type, command_json, reason, confidence, risk_level FROM life_update_proposals WHERE state = 'PROPOSED' ORDER BY created_at ASC LIMIT 10`),
+        // SILENT TRUNCATION, found on the first live mail pass (2026-08-11). This was
+        // `LIMIT 10` ordered oldest-first. Thirteen agent-dispatch recommendations landed in
+        // one second yesterday, took the whole limit, and everything newer simply vanished
+        // from the board — four agent deliverables awaiting an accept, two calendar blocks,
+        // and every mail proposal. The owner had no way to know: the page rendered a
+        // confident, complete-looking queue.
+        //
+        // A cap the reader cannot see is the defect. The limit is now well above any real
+        // queue, and anything beyond it is COUNTED and said out loud.
+        openProposals: q(`SELECT id, task_id, capability_key, command_type, command_json, reason, confidence, risk_level FROM life_update_proposals WHERE state = 'PROPOSED' ORDER BY created_at ASC LIMIT 60`),
+        openProposalCount: q(`SELECT COUNT(*) c FROM life_update_proposals WHERE state = 'PROPOSED'`)[0]?.c ?? 0,
         // MAIL (Graph Stage C 2026-08-11) — deliberately SEPARATE queries, not extra columns
         // on the one above. MC and the engine deploy on independent taps, so this page can
         // meet a life.db that predates the mail migration; folding source_mail_id into the
@@ -309,13 +319,20 @@ module.exports = {
         ? `<div class="r-note" style="color:#f5c96b">Inbox last read ${mText}${s.mailSync.last_error ? ` and the last pass failed (${LIFE.esc(String(s.mailSync.last_error).slice(0, 100))})` : ''} — nothing has been read, so nothing has been suggested from it. Outlook is untouched either way. ${readNow}</div>`
         : `<div class="r-note">Inbox read ${mText}${s.mailBacklog ? ` · ${s.mailBacklog} message${s.mailBacklog === 1 ? '' : 's'} not looked at yet` : ''} — read-only, and only ever suggestions. ${readNow}</div>`;
     }
+    // If the queue ever outgrows the render limit, SAY SO. Never let the board look complete
+    // while it is holding something back (see the truncation note in getSection).
+    const shown = (s.openProposals || []).length;
+    const overflow = Math.max(0, (s.openProposalCount || 0) - shown);
+    const overflowLine = overflow
+      ? `<div class="r-note" style="color:#f5c96b">${overflow} more open suggestion${overflow === 1 ? '' : 's'} beyond what fits here — clear some of these and the rest surface. Nothing is being hidden from you silently.</div>`
+      : '';
     const needsPanel = S.rcc.panel({
       title: `Needs you`, sub: 'Only irreversible calls and genuine owner judgement',
       headRight: needs.length ? `<span class="r-pill">${needs.length}</span>` : '',
       body: (needs.length
         ? needs.map(needRow).join('')
         : `<div class="r-lrow" style="color:var(--rmuted);font-size:13px">Nothing needs you${foldedCount ? ' right now' : '. That is the design working'}.</div>`)
-        + foldLine + mailNote,
+        + foldLine + overflowLine + mailNote,
     });
 
     // ── CAPACITY GUARDRAILS (A3): per stated-aim domain, protected vs review-due — derived from
