@@ -144,6 +144,11 @@ const COMMAND_SHAPES = {
   // happened is worse than no affordance. The 20-minute timer owns triage; this verb just
   // makes the mirror current.
   mail_sync: () => true,
+  // Due dates (2026-08-11): null clears. The writer enforces the two invariants — a date
+  // needs a kind, and clearing the date clears the kind — so this only refuses garbage early.
+  set_due: (p) => typeof p.taskId === 'string' && !!p.taskId
+    && (p.dueAt === null || (typeof p.dueAt === 'string' && !!p.dueAt.trim()))
+    && (p.dueKind === undefined || ['HARD', 'TARGET', 'NONE'].includes(p.dueKind)),
 };
 
 function validateCommand(body) {
