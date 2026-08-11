@@ -499,6 +499,54 @@ function clientScript() {
         .then(function(r){return r.json();}).then(function(r){if(r&&r.ok){location.reload();}else{busy=false;me.disabled=false;window.__lcRefuse(me,r&&r.error);}})
         .catch(function(){busy=false;me.disabled=false;window.__lcSay(me,window.__lcNet);});
         return;}
+      // DRAFTED REPLY — COPY (2026-08-11). The reply lives on the board and is sent by hand
+      // from Outlook; this is the bridge. Nothing is posted anywhere: it is a clipboard write
+      // and a label change, so a failure here can never mean a half-sent anything.
+      var dc=t.closest('[data-lc-draftcopy]');
+      if(dc){e.preventDefault();
+        var body=dc.getAttribute('data-lc-draftcopy')||'';
+        var mark=function(ok){var o=dc.textContent;dc.textContent=ok?'Copied - now paste it into Outlook':'Could not copy - select the text above';setTimeout(function(){dc.textContent=o;},2600);};
+        if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(body).then(function(){mark(true);},function(){mark(false);});}
+        else{try{var ta=document.createElement('textarea');ta.value=body;document.body.appendChild(ta);ta.select();document.execCommand('copy');document.body.removeChild(ta);mark(true);}catch(_){mark(false);}}
+        return;}
+      // DRAFTED REPLY — EDIT (2026-08-11). A prompt() is too small for a whole email, so this
+      // swaps the draft for a textarea in place. Accepting stores HIS wording, not the rail's.
+      var de=t.closest('[data-lc-draftedit]');
+      if(de){e.preventDefault();if(busy)return;
+        var di2;try{di2=JSON.parse(de.getAttribute('data-lc-draftedit'));}catch(_){return;}
+        var rowEl=de.closest('.r-lrow');var pre=rowEl?rowEl.querySelector('.lc-draft'):null;
+        if(!pre){window.__lcSay(de,'Could not find the draft to edit - nothing changed.');return;}
+        if(pre.getAttribute('data-editing')==='1')return;
+        pre.setAttribute('data-editing','1');
+        // WHAT YOU SEE IS WHAT YOU COPY. While an edit is open the screen shows one thing and
+        // the copy button still holds the original, so copying mid-edit would paste words the
+        // owner had just replaced - the "read one thing, paste another" failure, self-inflicted.
+        // The button is disabled for the duration and restored on save or cancel.
+        var cp=rowEl?rowEl.querySelector('[data-lc-draftcopy]'):null;
+        var cpWas=cp?cp.textContent:null;
+        if(cp){cp.disabled=true;cp.textContent='Finish editing first';}
+        var restoreCopy=function(){if(cp){cp.disabled=false;cp.textContent=cpWas;}};
+        var ta2=document.createElement('textarea');
+        ta2.value=di2.body||'';
+        ta2.style.cssText='width:100%;min-height:180px;margin:8px 0;padding:10px;font:13px/1.5 ui-monospace,Menlo,monospace';
+        var save=document.createElement('button');save.className='r-btn small primary';save.textContent='Save and use this';
+        var cancel=document.createElement('button');cancel.className='r-btn small';cancel.textContent='Cancel';
+        var bar=document.createElement('div');bar.style.cssText='display:flex;gap:6px;margin-bottom:8px';
+        bar.appendChild(save);bar.appendChild(cancel);
+        pre.parentNode.insertBefore(ta2,pre);pre.parentNode.insertBefore(bar,pre);pre.style.display='none';
+        cancel.addEventListener('click',function(ev){ev.preventDefault();ta2.remove();bar.remove();pre.style.display='';pre.removeAttribute('data-editing');restoreCopy();});
+        save.addEventListener('click',function(ev){ev.preventDefault();if(busy)return;
+          var nb=ta2.value.trim();
+          if(!nb){window.__lcSay(save,'An empty reply is not a reply - nothing was accepted.');return;}
+          // Keep the copy button in step with the words actually being approved, so a reload
+          // that never arrives still cannot leave stale text behind the button.
+          if(cp){cp.setAttribute('data-lc-draftcopy',nb);}
+          busy=true;save.disabled=true;
+          fetch('/api/life/command',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({command:'decide',idempotencyKey:hex(),payload:{proposalId:di2.proposalId,decision:'edit',editedCommand:{body:nb}}})})
+          .then(function(r){return r.json();}).then(function(r){if(r&&r.ok){location.reload();}else{busy=false;save.disabled=false;window.__lcRefuse(save,r&&r.error);}})
+          .catch(function(){busy=false;save.disabled=false;window.__lcSay(save,window.__lcNet);});
+        });
+        return;}
       // DUE DATE (2026-08-11). Escapes are DOUBLED on purpose: this whole script is built
       // inside a template literal, so \\n emits a newline escape and \\\\d emits a regex \\d.
       // Writing them singly is what silently broke every button in Mission Control earlier

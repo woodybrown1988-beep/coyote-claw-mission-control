@@ -16,6 +16,7 @@ const sqlite = require('node:sqlite');
 const LIFECMD = require('../mission-control/ui/life-command-lib.js');
 const TODAY = require('../mission-control/ui/pages/life/today.js');
 
+const MC = path.join(__dirname, '..', 'mission-control');
 const T = '2026-08-11T12:00:00.000Z';
 const NOW = Date.parse(T);
 const ago = (ms) => new Date(NOW - ms).toISOString();
@@ -85,6 +86,35 @@ function fixture(dir, opts) {
         ('pr-new','woody',NULL,NULL,'mail-2','mail_capture','create_task','{"mailId":"mail-2","title":"Book the annual gas safety re-certification"}',
           'a certificate has to be re-booked before it lapses (from GasSafe, 2026-08-11)',
           '[{"kind":"mail","mailId":"mail-2"}]',0.55,'LOW','INTERNAL_WRITE','PROPOSED','${ago(400000)}');
+    `);
+  }
+  if (withMail && (!opts || opts.withDrafts !== false)) {
+    db.exec(`
+      CREATE TABLE life_mail_drafts (id TEXT PRIMARY KEY, owner_id TEXT, mail_id TEXT, proposal_id TEXT, task_id TEXT,
+        voice TEXT, voice_reason TEXT, needs_judgement INTEGER DEFAULT 0, judgement_reason TEXT,
+        replying_to TEXT DEFAULT '', commits_to TEXT DEFAULT '', body TEXT DEFAULT '', model TEXT DEFAULT '',
+        shape_key TEXT DEFAULT '', state TEXT DEFAULT 'PROPOSED', skip_reason TEXT, approved_at TEXT,
+        created_at TEXT, updated_at TEXT);
+      INSERT INTO life_mail_messages (id, owner_id, from_address, from_name, subject, body_preview, received_at, web_link, classification, classified_at)
+        VALUES ('mail-3','woody','marcusrocke@carpigiani.co.uk','Marcus Rocke','Ice cream machine','Part on order.','${ago(5400000)}','https://outlook.live.com/owa/?ItemID=ghi','UPDATE','${ago(600000)}'),
+               ('mail-4','woody','accounts@thorntons.test','Thorntons','Overdue invoice 4471','Payment is now due.','${ago(5000000)}','https://outlook.live.com/owa/?ItemID=jkl','NEW_TASK','${ago(600000)}');
+      INSERT INTO life_update_proposals (id,owner_id,update_id,task_id,source_mail_id,capability_key,command_type,command_json,reason,evidence_refs_json,confidence,risk_level,authority_class,state,created_at)
+        VALUES
+        ('pr-draft','woody',NULL,NULL,'mail-3','mail_reply_draft','draft_reply','{"mailId":"mail-3","draftId":"d1","to":"marcusrocke@carpigiani.co.uk"}',
+          'A reply to Marcus Rocke is drafted below - read it, edit it, copy it. Nothing is sent from here.',
+          '[]',0.7,'LOW','INTERNAL_WRITE','PROPOSED','${ago(300000)}'),
+        ('pr-draft-j','woody',NULL,NULL,'mail-4','mail_reply_draft','draft_reply','{"mailId":"mail-4","draftId":"d2","to":"accounts@thorntons.test"}',
+          'NEEDS YOUR JUDGEMENT - the word "overdue" appears. A reply is drafted below; nothing is sent and nothing is committed.',
+          '[]',0.4,'HIGH','INTERNAL_WRITE','PROPOSED','${ago(200000)}');
+      INSERT INTO life_mail_drafts (id, owner_id, mail_id, proposal_id, voice, voice_reason, needs_judgement, judgement_reason, replying_to, commits_to, body, state, created_at, updated_at)
+        VALUES ('d1','woody','mail-3','pr-draft','PLAIN','reads as business correspondence',0,NULL,
+                'They say the part is on order.','nothing - it acknowledges and asks a question',
+                'Hi Marcus,' || char(10) || char(10) || 'Thanks for the update. Could you confirm the date?' || char(10) || char(10) || 'Thanks,' || char(10) || 'David',
+                'PROPOSED','${ago(300000)}','${ago(300000)}'),
+               ('d2','woody','mail-4','pr-draft-j','PLAIN','this one needs your judgement',1,'the word "overdue" appears',
+                'They say invoice 4471 is overdue.','nothing - it acknowledges and asks a question',
+                'Dear Thorntons,' || char(10) || char(10) || 'Thanks for the reminder. I will come back to you on this.' || char(10) || char(10) || 'Regards,' || char(10) || 'David',
+                'PROPOSED','${ago(200000)}','${ago(200000)}');
     `);
   }
   db.close();
@@ -422,6 +452,126 @@ test('DEPLOY ORDERING: no filing tables yet → the rail is absent, the board is
     const body = renderToday().body;
     assert.ok(!/would have been filed|filed by/.test(body), 'no filing rail');
     assert.match(body, /From Lightspeed Support/, 'and the decision queue renders exactly as before');
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+
+// ── REPLY DRAFTS (operator GO 2026-08-11) ────────────────────────────────────────────────
+
+test('a drafted reply shows the WORDS, what it replies to, and what it commits us to', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-draft-'));
+  withEnv(fixture(dir), () => {
+    const body = renderToday().body;
+    assert.match(body, /Thanks for the update\. Could you confirm the date\?/, 'the draft itself is on the board');
+    assert.match(body, /<b>Replying to:<\/b> They say the part is on order\./);
+    assert.match(body, /<b>Commits us to:<\/b> nothing - it acknowledges and asks a question/);
+    assert.match(body, /To marcusrocke@carpigiani\.co\.uk/, 'and WHO it would go to');
+    assert.match(body, /plain professional/);
+    assert.match(body, /Nothing has been sent and nothing here can send/,
+      'the one sentence this feature can never be without');
+    assert.match(body, /data-lc-draftcopy=/, 'a copy button, because sending is done by hand');
+    assert.match(body, /data-lc-draftedit="[^"]*pr-draft/, 'and the words can be rewritten first');
+    const c = cmdsIn(body);
+    assert.ok(c.some((x) => x.command === 'decide' && x.payload.proposalId === 'pr-draft' && x.payload.decision === 'accept'));
+    assert.ok(c.some((x) => x.command === 'decide' && x.payload.proposalId === 'pr-draft' && x.payload.decision === 'reject'));
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('a NEEDS-YOUR-JUDGEMENT draft is MATERIAL — quiet support can never fold it away', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-draft-judge-'));
+  // quiet support is DEFAULT-ON (absent setting row = on), which is the state that matters.
+  withEnv(fixture(dir), () => {
+    const body = renderToday().body;
+    const foldAt = body.indexOf('Quiet support is on');
+    assert.ok(foldAt > 0, 'quiet support is on for this render');
+    const judgeAt = body.indexOf('NEEDS YOUR JUDGEMENT');
+    assert.ok(judgeAt > 0, 'the flagged draft is on the page');
+    assert.ok(judgeAt < foldAt, 'and it sits ABOVE the fold — money, legal, staff and disputes never get folded');
+    assert.match(body, /the word &quot;overdue&quot; appears/, 'with the reason it was flagged');
+    assert.match(body, /Read every line of this one/);
+    // …and the ordinary draft IS folded, so the distinction is doing real work
+    assert.ok(body.indexOf('Could you confirm the date') > foldAt, 'the routine one folds');
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('DEPLOY ORDERING: a life.db with no drafts table still renders the whole queue', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-draft-premig-'));
+  withEnv(fixture(dir, { withDrafts: false }), () => {
+    const out = renderToday();
+    assert.match(out.body, /From Lightspeed Support/, 'the mail rail is untouched');
+    assert.match(out.body, /Card reader on till 2 is dead/, 'and so is the rest of the board');
+    assert.ok(!/data-lc-draftcopy/.test(out.body), 'the draft controls are simply absent');
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('STRUCTURAL: no Mission Control file can ask the writer to send or create mail', () => {
+  // The relay is an allowlist, but this is the cheaper, louder check: the words themselves
+  // must not appear anywhere in the UI. A button that does not exist cannot be clicked.
+  const roots = [path.join(MC, 'ui'), path.join(MC, 'server')].filter((d) => fs.existsSync(d));
+  const files = [];
+  const walk = (d) => { for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+    const f = path.join(d, e.name); if (e.isDirectory()) walk(f); else if (/\.(js|mjs)$/.test(e.name)) files.push(f); } };
+  roots.forEach(walk);
+  assert.ok(files.length > 0, 'the walk found files — otherwise this test proves nothing');
+  for (const f of files) {
+    const src = fs.readFileSync(f, 'utf8');
+    assert.ok(!/sendMail|Mail\.Send|['"]send_mail['"]|createReply|create_outlook_draft/.test(src),
+      `${path.relative(MC, f)} names a mail-sending path`);
+  }
+});
+
+test('an APPROVED reply stays reachable — accepting must not lose the words', () => {
+  // Accepting removes a proposal from the queue, which is right for every other shape. Here
+  // the row IS the deliverable: tap accept before copying and the email is simply gone. The
+  // caption also has to stay honest — approved is not sent, and this system cannot know.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-draft-appr-'));
+  const dbPath = fixture(dir);
+  const db = new sqlite.DatabaseSync(dbPath);
+  db.exec(`UPDATE life_mail_drafts SET state = 'APPROVED', approved_at = '${ago(120000)}' WHERE id = 'd1'`);
+  db.exec("UPDATE life_update_proposals SET state = 'ACCEPTED' WHERE id = 'pr-draft'");
+  db.close();
+  withEnv(dbPath, () => {
+    const body = renderToday().body;
+    assert.match(body, /1 reply you approved today — still yours to send/);
+    assert.match(body, /Nothing here has left the building/, 'approved is never dressed up as sent');
+    assert.match(body, /Thanks for the update\. Could you confirm the date\?/, 'and the words are still there to copy');
+    assert.ok((body.match(/data-lc-draftcopy=/g) || []).length >= 1);
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('WHAT YOU SEE IS WHAT YOU COPY — the copy button is disabled while an edit is open', () => {
+  // The self-inflicted version of "read one thing, paste another": opening the editor changes
+  // what is on screen while the copy button still holds the original body.
+  const js = fs.readFileSync(path.join(MC, 'ui', 'shared.js'), 'utf8');
+  const start = js.indexOf('data-lc-draftedit');
+  assert.ok(start > 0, 'the edit handler exists');
+  const region = js.slice(start, start + 2600);
+  assert.match(region, /cp\.disabled\s*=\s*true/, 'the copy button is disabled while editing');
+  assert.match(region, /restoreCopy/, 'and restored on cancel');
+  assert.match(region, /cp\.setAttribute\('data-lc-draftcopy',nb\)/,
+    'and on save it carries the words actually approved, not the ones replaced');
+});
+
+test('NO SILENT TRUNCATION on the approved-replies panel either', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-draft-trunc-'));
+  const dbPath = fixture(dir);
+  const db = new sqlite.DatabaseSync(dbPath);
+  db.exec(`UPDATE life_mail_drafts SET state = 'APPROVED', approved_at = '${ago(120000)}'`);
+  for (let i = 0; i < 8; i++) {
+    db.exec(`INSERT INTO life_mail_drafts (id, owner_id, mail_id, proposal_id, voice, needs_judgement,
+      replying_to, commits_to, body, state, approved_at, created_at, updated_at)
+      VALUES ('extra-${i}','woody','mx-${i}','px-${i}','PLAIN',0,'r','c','body ${i}','APPROVED','${ago(60000 + i)}','${ago(60000)}','${ago(60000)}')`);
+  }
+  db.close();
+  withEnv(dbPath, () => {
+    const body = renderToday().body;
+    assert.match(body, /10 replies you approved today/, 'the TOTAL is stated, not the rendered count');
+    assert.match(body, /The 6 most recent are shown; 4 older are in/, 'and the overflow says where the rest live');
   });
   fs.rmSync(dir, { recursive: true, force: true });
 });
