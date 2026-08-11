@@ -12,7 +12,7 @@ const sqlite = require('node:sqlite');
 const SHARED = require('../mission-control/ui/shared.js');
 const LIFE = require('../mission-control/ui/pages/life/life-lib.js');
 
-// Sidebar order (visual pack v1.1.0): Focus · Plan · Review · System — eleven surfaces.
+// Sidebar order (visual pack v1.1.0): Focus · Plan · Review · System — twelve surfaces.
 const PAGES = [
   require('../mission-control/ui/pages/life/today.js'),
   require('../mission-control/ui/pages/life/waiting.js'),
@@ -20,12 +20,23 @@ const PAGES = [
   require('../mission-control/ui/pages/life/projects.js'),
   require('../mission-control/ui/pages/life/tasks.js'),
   require('../mission-control/ui/pages/life/schedule.js'),
+  require('../mission-control/ui/pages/life/recurring.js'),
   require('../mission-control/ui/pages/life/review.js'),
   require('../mission-control/ui/pages/life/quarterly.js'),
   require('../mission-control/ui/pages/life/trust.js'),
   require('../mission-control/ui/pages/life/agents.js'),
   require('../mission-control/ui/pages/life/settings.js'),
 ];
+
+// Pages are looked up BY KEY, never by position. This list is order-pinned against the
+// sidebar, so an insertion shifts every index after it — and a positional assertion then
+// quietly starts testing a different page instead of failing. (It did: adding Recurring
+// moved review and trust down one.)
+const P = (key) => {
+  const page = PAGES.find((p) => p.key === key);
+  assert.ok(page, `no such life page: ${key}`);
+  return page;
+};
 
 const T = '2026-08-05T12:00:00.000Z';
 // The tripwire, EVOLVED AGAIN with the planner surfaces: life page bodies still may not
@@ -41,7 +52,7 @@ const CMD_ALLOWLIST = new Set(['note', 'decide', 'transition', 'complete', 'set_
   'plan_today', 'approve_plan', 'compile_week', 'approve_week', 'compile_quarter', 'approve_quarter',
   'pause_capability', 'resume_capability', 'create_outcome', 'create_project', 'set_route', 'set_setting',
   'rename_task', 'rename_project', 'cancel_project', 'import_preview', 'import_batch', 'assign_project', 'accept_standalone',
-  'calendar_sync', 'park_project', 'activate_project', 'place_block', 'remove_block', 'mail_sync', 'set_due']);
+  'calendar_sync', 'park_project', 'activate_project', 'place_block', 'remove_block', 'move_block', 'swap_block', 'mail_sync', 'set_due']);
 function assertOnlySanctionedLc(body, key) {
   for (const m of body.matchAll(/data-lc-[a-z-]+/g)) {
     assert.ok(SANCTIONED_LC.has(m[0]), `${key}: unsanctioned life affordance ${m[0]}`);
@@ -201,22 +212,22 @@ test('with a real life.db: real counts, real rows, HTML-escaped, still zero writ
       assert.ok(!WRITE_AFFORDANCE.test(out.body), `${page.key} emits no raw write mechanism`);
       assertOnlySanctionedLc(out.body, page.key);
     }
-    const today = PAGES[0].render(PAGES[0].getSection(null, {}), {});
+    const today = P('life-today').render(P('life-today').getSection(null, {}), {});
     // A5 acceptance, GOLDEN-MASTER form: Today stays calm — a fresh capture surfaces as the
     // triage line (one click to All tasks, where the Inbox lives); cancel lives in the drawer.
     assert.match(today.body, /1 fresh capture to sort/);
     assert.match(today.body, /triage in All tasks/);
     assert.match(today.body, /Capture, ask or command/, 'the capture bar rides the page head');
-    const outcomes = PAGES[2].render(PAGES[2].getSection(null, {}), {});
+    const outcomes = P('life-outcomes').render(P('life-outcomes').getSection(null, {}), {});
     assert.ok(outcomes.body.includes('&lt;script&gt;'), 'DB strings render escaped');
     assert.ok(!outcomes.body.includes('<script>alert'), 'never raw');
-    const waiting = PAGES[1].render(PAGES[1].getSection(null, {}), {});
+    const waiting = P('life-waiting').render(P('life-waiting').getSection(null, {}), {});
     assert.match(waiting.body, /Lightspeed engineer/);
-    const tasks = PAGES[4].render(PAGES[4].getSection(null, {}), {});
+    const tasks = P('life-tasks').render(P('life-tasks').getSection(null, {}), {});
     assert.match(tasks.body, /Waiting/, 'the waiting section renders in owner case');
     assert.match(tasks.body, /Filter by words/, 'search/filter control present');
     // planner surfaces render LIVE from the fixture
-    const today2 = PAGES[0].render(PAGES[0].getSection(null, { now: Date.parse(T) }), {});
+    const today2 = P('life-today').render(P('life-today').getSection(null, { now: Date.parse(T) }), {});
     assert.match(today2.body, /Today's must-win/i);
     assert.match(today2.body, /approve_plan/, 'draft plan carries the approve action');
     assert.match(today2.body, /Quiet corner: nothing is moving on/, 'neglected aim named in owner words');
@@ -228,16 +239,18 @@ test('with a real life.db: real counts, real rows, HTML-escaped, still zero writ
     // Scrub the OWNER-VISIBLE text only: machine payloads inside data-lc-* attributes carry
     // IDs (e.g. proposal 'pr1') that are not language the owner reads.
     const visible = today2.body.replace(/data-lc-[a-z-]+="[^"]*"/g, '');
-    const OWNER_SCRUB = /(PR\s?#?\d+|\bschema\b|DB-enforced|engine PR|\bPhase\b|sole writer|life\.db)/i;
+    // \bPR is load-bearing: unanchored, /PR\s?#?\d+/i matches the "pr 2027" inside "Apr 2027",
+    // so any April date in a title would fail this for speaking English correctly.
+    const OWNER_SCRUB = /(\bPR\s?#?\d+|\bschema\b|DB-enforced|engine PR|\bPhase\b|sole writer|life\.db)/i;
     assert.ok(!OWNER_SCRUB.test(visible), 'today speaks owner, never engineer');
-    const review = PAGES[6].render(PAGES[6].getSection(null, {}), {});
+    const review = P('life-review').render(P('life-review').getSection(null, {}), {});
     assert.match(review.body, /week of 2026-08-03/);
     assert.match(review.body, /approve_week/);
-    const trust = PAGES[8].render(PAGES[8].getSection(null, {}), {});
+    const trust = P('life-trust').render(P('life-trust').getSection(null, {}), {});
     assert.match(trust.body, /Waiting-condition inference/);
     assert.match(trust.body, /pause_capability/);
     assert.match(trust.body, /Not enough observations yet/, 'per-capability honesty, no synthetic score');
-    const outc = PAGES[2].render(PAGES[2].getSection(null, {}), {});
+    const outc = P('life-outcomes').render(P('life-outcomes').getSection(null, {}), {});
     assert.match(outc.body, /Proof of completion/);
     assert.match(outc.body, /open outcome slot/i, 'slots render, never six zero counters');
     assert.match(outc.body, /lc-create-form/, 'the Add outcome action exists');
@@ -251,7 +264,7 @@ test('with a real life.db: real counts, real rows, HTML-escaped, still zero writ
     assert.ok(drawer.body.includes('waiting on the &lt;engineer&gt;'), 'note text escaped byte-for-byte');
     assert.match(drawer.body, /Handoffs &amp; history/, "audit trail reframed as handoffs (A3)");
     assertOnlySanctionedLc(drawer.body, 'life-task');
-    const waiting2 = PAGES[1].render(PAGES[1].getSection(null, {}), {});
+    const waiting2 = P('life-waiting').render(P('life-waiting').getSection(null, {}), {});
     assert.match(waiting2.body, /data-lc-cmd/, 'wake button present');
     assert.match(waiting2.body, /Waiting on Lightspeed engineer/, 'the dependency reads as a sentence');
   });

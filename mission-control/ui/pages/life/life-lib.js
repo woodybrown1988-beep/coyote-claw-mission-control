@@ -64,4 +64,24 @@ function absentCard(what) {
     '<button class="r-btn primary" data-lc-fab>Capture your first task</button>');
 }
 
-module.exports = { lifeDbPath, openLifeReadonly, lifeSelect, esc, emptyCard, absentCard };
+// CALENDAR FRESHNESS — ONE definition of "is this picture of Outlook still true", shared by
+// every surface that shows the calendar. It lives here because it was already duplicated
+// (Schedule and Today each carried their own 45), and a week view would have made three
+// copies of a rule whose whole point is that it never drifts. The poll runs every 20 min;
+// twice that plus slack is the honest window.
+const FRESH_WINDOW_MIN = 45;
+
+/** Age + the one staleness sentence. A failed refresh is stale by definition, however
+ *  recent it was: a broken poll must never read as a fresh picture. */
+function freshness(sync, nowMs) {
+  const ageMin = Math.max(0, Math.round((nowMs - Date.parse(sync.last_sync_at)) / 60_000));
+  const ageText = ageMin < 60 ? `${ageMin} min` : `${Math.floor(ageMin / 60)}h ${ageMin % 60}m`;
+  const failed = !!sync.last_error;
+  const stale = failed || ageMin > FRESH_WINDOW_MIN;
+  const caption = stale
+    ? `Stale — last good look at Outlook was ${ageText} ago${failed ? ' and the latest refresh failed' : ''}. Outlook itself is the truth right now.`
+    : `Fresh — matched to Outlook ${ageText} ago.`;
+  return { stale, caption, ageText };
+}
+
+module.exports = { lifeDbPath, openLifeReadonly, lifeSelect, esc, emptyCard, absentCard, freshness, FRESH_WINDOW_MIN };
