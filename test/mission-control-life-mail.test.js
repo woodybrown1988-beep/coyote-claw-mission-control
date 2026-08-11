@@ -301,3 +301,47 @@ test('DEPLOY ORDERING again: a life.db without folder_name still renders every m
   });
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+// ── due dates (2026-08-11) ───────────────────────────────────────────────────────────────
+
+test('the task drawer offers a due-date control on living tasks, and never on finished ones', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-due-'));
+  const dbPath = fixture(dir);
+  const db = new sqlite.DatabaseSync(dbPath);
+  db.exec(`INSERT INTO life_tasks (id, owner_id, domain_key, title, status, due_at, due_kind, risk_level, visibility, source_type, created_by, created_at, updated_at)
+    VALUES ('tdone','woody','admin','finished thing','DONE',NULL,'NONE','LOW','OWNER_ONLY','MANUAL','h','${T}','${T}')`);
+  db.close();
+  withEnv(dbPath, () => {
+    const TASK = require('../mission-control/ui/pages/life/task.js');
+    const live = TASK.render(TASK.getSection(null, { query: { id: 't1' } }), {}).body;
+    assert.match(live, /data-lc-due=/, 'a living task can be given a deadline');
+    assert.match(live, /Due date…/);
+    const done = TASK.render(TASK.getSection(null, { query: { id: 'tdone' } }), {}).body;
+    assert.ok(!/data-lc-due=/.test(done), 'finished work keeps the deadline it had — no dead button offered');
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('the relay accepts set_due including a null clear, and refuses garbage early', () => {
+  const key = 'k'.repeat(16);
+  const ok = LIFECMD.validateCommand({ command: 'set_due', idempotencyKey: key, payload: { taskId: 't1', dueAt: '2026-09-01', dueKind: 'HARD' } });
+  assert.equal(ok.ok, true);
+  assert.equal(LIFECMD.validateCommand({ command: 'set_due', idempotencyKey: key, payload: { taskId: 't1', dueAt: null, dueKind: 'NONE' } }).ok, true, 'null clears');
+  assert.equal(LIFECMD.validateCommand({ command: 'set_due', idempotencyKey: key, payload: { taskId: 't1', dueAt: '2026-09-01', dueKind: 'WHENEVER' } }).ok, false);
+  assert.equal(LIFECMD.validateCommand({ command: 'set_due', idempotencyKey: key, payload: { dueAt: '2026-09-01' } }).ok, false, 'a task must be named');
+  assert.equal(LIFECMD.validateCommand({ command: 'set_due', idempotencyKey: key, payload: { taskId: 't1', dueAt: '  ' } }).ok, false);
+});
+
+test("the emitted due-date regex actually WORKS — not just that it looks right in the source", () => {
+  // The escaping lesson, applied: assert against the OUTPUT and exercise it. A source-level
+  // match would pass on a regex the template had already destroyed.
+  const S2 = require('../mission-control/ui/shared.js');
+  const js = String(S2.renderShell({ title: 't', sub: '', body: '<div></div>', workspace: 'life', route: '/life/task', key: 'k' }))
+    .match(/<script>([\s\S]*?)<\/script>/)[1];
+  const line = js.split('\n').find((l) => l.includes('__lcSay(du,'));
+  assert.ok(line, 'the due-date handler is in the emitted script');
+  const test1 = new Function('d', 'return ' + line.match(/\/\^[^/]+\//)[0] + '.test(d)');
+  assert.equal(test1('2026-09-01'), true);
+  assert.equal(test1('2026-9-1'), false);
+  assert.equal(test1('next Tuesday'), false);
+});

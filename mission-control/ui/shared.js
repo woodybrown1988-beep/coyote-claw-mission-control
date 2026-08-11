@@ -499,6 +499,28 @@ function clientScript() {
         .then(function(r){return r.json();}).then(function(r){if(r&&r.ok){location.reload();}else{busy=false;me.disabled=false;window.__lcRefuse(me,r&&r.error);}})
         .catch(function(){busy=false;me.disabled=false;window.__lcSay(me,window.__lcNet);});
         return;}
+      // DUE DATE (2026-08-11). Escapes are DOUBLED on purpose: this whole script is built
+      // inside a template literal, so \\n emits a newline escape and \\\\d emits a regex \\d.
+      // Writing them singly is what silently broke every button in Mission Control earlier
+      // today — test/mission-control-client-script-parses.test.js now parses the OUTPUT.
+      var du=t.closest('[data-lc-due]');
+      if(du){e.preventDefault();if(busy)return;
+        var di;try{di=JSON.parse(du.getAttribute('data-lc-due'));}catch(_){return;}
+        var d=prompt('Due date (YYYY-MM-DD). Leave EMPTY to clear it:',di.dueAt||'');
+        if(d===null)return;
+        d=d.trim();
+        var pay={taskId:di.id};
+        if(!d){pay.dueAt=null;pay.dueKind='NONE';}
+        else{
+          if(!/^\\d{4}-\\d{2}-\\d{2}$/.test(d)){window.__lcSay(du,'Use a date like 2026-09-01 — nothing was changed.');return;}
+          pay.dueAt=d;
+          pay.dueKind=confirm('Is this a HARD deadline?\\n\\nOK — it MUST happen by then (it will sort as urgent).\\nCancel — a target, it should happen by then.')?'HARD':'TARGET';
+        }
+        busy=true;du.disabled=true;
+        fetch('/api/life/command',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({command:'set_due',idempotencyKey:hex(),payload:pay})})
+        .then(function(r){return r.json();}).then(function(r){if(r&&r.ok){location.reload();}else{busy=false;du.disabled=false;window.__lcRefuse(du,r&&r.error);}})
+        .catch(function(){busy=false;du.disabled=false;window.__lcSay(du,window.__lcNet);});
+        return;}
       var dn=t.closest('[data-lc-complete]');
       if(dn){e.preventDefault();if(busy)return;
         var ev=prompt('Closure evidence (what proves it done?) — optional for low-risk tasks:','');

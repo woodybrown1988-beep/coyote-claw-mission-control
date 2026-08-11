@@ -70,7 +70,11 @@ module.exports = {
       // Rename lives on every LIVING task (WAITING included) — finished work keeps its
       // name, so DONE/CANCELLED never offer it (the writer refuses anyway; no dead buttons).
       !['DONE', 'CANCELLED'].includes(String(t.status))
-        ? `<button class="r-btn small" data-lc-rename="${LIFE.esc(JSON.stringify({ kind: 'task', id, title: t.title }))}">Rename…</button>` : '',
+        ? `<button class="r-btn small" data-lc-rename="${LIFE.esc(JSON.stringify({ kind: 'task', id, title: t.title }))}">Rename…</button>`
+          // DUE DATE (2026-08-11): until now nothing could set one outside the bulk importer,
+          // so the due-soon safety net on Today could only catch imported work. Finished work
+          // keeps the deadline it had, so this sits with Rename on living tasks only.
+          + `<button class="r-btn small" data-lc-due="${LIFE.esc(JSON.stringify({ id, dueAt: String(t.due_at || '').slice(0, 10), dueKind: String(t.due_kind || 'NONE') }))}">Due date…</button>` : '',
       ['INBOX', 'READY', 'SCHEDULED', 'IN_PROGRESS', 'BLOCKED', 'AWAITING_APPROVAL', 'BATCH'].includes(String(t.status))
         ? `<button class="r-btn small" data-lc-complete="${LIFE.esc(id)}"${t.recurs ? ` data-lc-recap="${LIFE.esc(JSON.stringify({ cadence: t.recurs, due: String(t.due_at || '').slice(0, 10) }))}"` : ''}>Mark done…</button>`
           + `<button class="r-btn small" data-lc-wait="${LIFE.esc(id)}">Park waiting…</button>`
