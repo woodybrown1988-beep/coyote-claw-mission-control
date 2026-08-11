@@ -146,6 +146,11 @@ const COMMAND_SHAPES = {
   mail_sync: () => true,
   // Due dates (2026-08-11): null clears. The writer enforces the two invariants — a date
   // needs a kind, and clearing the date clears the kind — so this only refuses garbage early.
+  // Undo a draft reply this system put in Outlook (reply loop, operator ruling 2026-08-11).
+  // The seamId names a ROW IN OUR OWN LOG, never a message: the writer looks the Graph id up
+  // from that row, so there is no shape of payload from this surface that reaches a message
+  // we did not create. Nothing here can send, delete mail, or touch the original.
+  undo_draft: (p) => typeof p.seamId === 'string' && p.seamId.length > 8 && p.seamId.length < 80,
   set_due: (p) => typeof p.taskId === 'string' && !!p.taskId
     && (p.dueAt === null || (typeof p.dueAt === 'string' && !!p.dueAt.trim()))
     && (p.dueKind === undefined || ['HARD', 'TARGET', 'NONE'].includes(p.dueKind)),
