@@ -732,7 +732,11 @@ function clientScript() {
         command:'mail_owner_replied',idempotencyKey:hex(),
         payload:{draftId:draftId,note:note,taskOutcome:outcome}})})
       .then(function(r){return r.json();}).then(function(r){busy=false;if(r&&r.ok){window.__lcDraftClear(f);location.reload();}else{window.__lcRefuse(f,r&&r.error);}})
-      .catch(function(){busy=false;window.__lcSay(f,'Connection lost — nothing was changed. The draft is still in your Outlook.');});
+      // NEVER "nothing was changed". The request may have reached the writer and done the
+      // irreversible half — deleted the draft, undone the filing — before the connection
+      // dropped. This is the ONE verb in the relay that mutates a mailbox before it answers,
+      // so the honest line names the uncertainty and points at the only way to resolve it.
+      .catch(function(){busy=false;window.__lcSay(f,'Connection lost before this was confirmed — some of it may already have happened. Reload to see where things stand; nothing here will do it twice.');});
     });
     // A3: execution-route control — a [data-lc-route] <select> posts set_route on change.
     document.addEventListener('change',function(e){var el=e.target;

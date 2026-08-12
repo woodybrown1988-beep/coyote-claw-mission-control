@@ -470,11 +470,8 @@ test('the "I\'ve replied myself" form: inline, hidden until asked for, and it sa
   // The button reveals; the form carries the payload. The button holds only the draft id.
   assert.match(out.body, /data-lc-replied="[^"]+" aria-expanded="false"/, 'the toggle starts closed');
   assert.match(out.body, /<form class="lc-replied-form" data-draft="[^"]+" style="display:none/, 'the form is inline and hidden');
-  assert.match(out.body, /name="note" maxlength="2000"/, 'the note is a real textarea, capped to match the writer');
-
   // It is honest about the boundary that makes it necessary, in the owner's words.
   assert.match(out.body, /never reads your Sent Items, so it can’t see what you sent/);
-  assert.match(out.body, /Leave it blank and the record just says you replied/, 'the note is optional, and says so');
   // And it says what the button will DO, before it is pressed.
   assert.match(out.body, /deletes the draft from your Outlook and stops the email being treated as awaiting a reply/);
 
@@ -492,6 +489,8 @@ test('the task select appears only when a task exists — with none, the board i
   if (taskId) {
     assert.match(a.body, /name="outcome"/, 'the planner question is asked');
     assert.match(a.body, /still waiting — it’s on them now/, 'and "still waiting" is the first option: the wait usually moves to them');
+    assert.match(a.body, /name="note" maxlength="2000"/, 'and the note box appears, capped to match the writer');
+    assert.match(a.body, /Leave it blank and the record just says you replied/, 'the note is optional, and says so');
   }
 
   const noTask = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-mail-rf-notask-'));
@@ -501,10 +500,41 @@ test('the task select appears only when a task exists — with none, the board i
   d2.close();
   const b = withEnv(p2, () => renderToday());
   assert.ok(!/name="outcome"/.test(b.body), 'no task = no planner question');
+  // AND no note box: asking for words the verb would discard is worse than not asking.
+  assert.ok(!/name="note"/.test(b.body), 'no task = no note box');
+  assert.match(b.body, /no task on this correspondence to remember it against, so it won’t ask you to type it out/);
   assert.match(b.body, /No task is attached to this correspondence, so nothing on the board changes/);
 
   fs.rmSync(withTask, { recursive: true, force: true });
   fs.rmSync(noTask, { recursive: true, force: true });
+});
+
+// ── REGRESSIONS from the adversarial review (2026-08-12) ─────────────────────
+
+test('RED: the failure copy never claims "nothing was changed" — this verb mutates the mailbox before it answers', () => {
+  const S = require('../mission-control/ui/shared.js');
+  const html = S.renderShell({ active: 'life-today', title: 't', sub: 's', stamp: '', body: '', badges: {}, foot: [] });
+  const js = (html.match(/<script>([\s\S]*?)<\/script>/) || [])[1] || '';
+  const i = js.indexOf('lc-replied-form');
+  assert.ok(i > 0, 'the handler is in the emitted script');
+  // Comments are STRIPPED before the check. A comment explaining which phrase was removed
+  // contains that phrase, and matching prose instead of emitted copy is how this test failed
+  // its first run — the same false positive that has now bitten three times in this session.
+  const handler = js.slice(i, i + 4000).split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
+  assert.ok(!/nothing was changed/.test(handler),
+    'a dropped connection cannot know the draft was not already deleted — saying so is false about an irreversible act');
+  assert.match(handler, /some of it may already have happened/, 'it names the uncertainty');
+  assert.match(handler, /Reload to see where things stand/, 'and points at the way to resolve it');
+});
+
+test('RED: a draft the reconcile pass found GONE does not also claim to be waiting in Outlook', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-mail-gone2-'));
+  const out = withEnv(fixtureWithGone(dir, '2026-08-12T09:00:00.000Z'), () => renderToday());
+  assert.match(out.body, /This draft is no longer in your Outlook/);
+  // The two statements used to render on the same card, one of them false.
+  assert.ok(!/✍️ Drafted in your Outlook/.test(out.body),
+    '"read it there and send it yourself" must not sit under "it is no longer there"');
+  fs.rmSync(dir, { recursive: true, force: true });
 });
 
 /** The post-migration shape: the same fixture plus outlook_gone_at, so the pair can be pinned

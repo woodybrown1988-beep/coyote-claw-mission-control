@@ -245,7 +245,14 @@ module.exports = {
           // and offers the undo. If the Outlook draft could NOT be made, the words are all
           // there is, and it says that too rather than implying a draft that is not there.
           const inOutlook = !!dr.outlook_draft_id;
-          const whereNote = inOutlook
+          // whereNote was gated on outlook_draft_id ALONE, so a draft the reconcile pass had
+          // already found GONE still rendered "Drafted in your Outlook — read it there",
+          // directly under the note saying it is no longer there. Two statements, one screen,
+          // one of them false.
+          const gone = !!(s.goneAt || {})[p.id];
+          const whereNote = gone
+            ? ''
+            : inOutlook
             ? `<div class="r-note">✍️ Drafted in your Outlook${dr.filed_move_id
               ? ' · the email was filed to <b>Emails to Respond</b>'
               : ' · the email was <b>left in your Inbox</b>'} — read it there and send it yourself.</div>`
@@ -270,8 +277,13 @@ module.exports = {
           // The task select only exists when there IS a task; with none, the handler sends
           // 'none' because there is nothing for the planner to be told.
           const repliedForm = `<form class="lc-replied-form" data-draft="${LIFE.esc(String(dr.id || ''))}" style="display:none;margin:8px 0;padding:10px;border-left:3px solid #f5c96b;background:rgba(255,179,77,.05)">`
-            + `<div style="font-size:12.5px;color:var(--rmuted);margin-bottom:6px">This system never reads your Sent Items, so it can’t see what you sent — tell it as much or as little as you like. Leave it blank and the record just says you replied.</div>`
-            + `<textarea name="note" maxlength="2000" rows="3" class="lc-input" style="resize:vertical;width:100%" placeholder="What did you tell them? (optional)"></textarea>`
+            // The note box is offered ONLY where there is a task to hang it on. Asking for
+            // words and then discarding them is worse than not asking; with no task the form
+            // says so instead of taking dictation it will bin.
+            + (dr.task_id
+              ? `<div style="font-size:12.5px;color:var(--rmuted);margin-bottom:6px">This system never reads your Sent Items, so it can’t see what you sent — tell it as much or as little as you like. Leave it blank and the record just says you replied.</div>`
+                + `<textarea name="note" maxlength="2000" rows="3" class="lc-input" style="resize:vertical;width:100%" placeholder="What did you tell them? (optional)"></textarea>`
+              : `<div style="font-size:12.5px;color:var(--rmuted);margin-bottom:6px">This system never reads your Sent Items, so it can’t see what you sent — and there is no task on this correspondence to remember it against, so it won’t ask you to type it out.</div>`)
             + (dr.task_id
               ? `<div class="lc-row" style="align-items:center;margin-top:6px"><label style="font-size:12px;color:var(--rmuted)">And the task on this: `
                 + `<select name="outcome" class="lc-input" style="margin-left:6px">`
