@@ -699,6 +699,38 @@ function clientScript() {
       .then(function(r){return r.json();}).then(function(r){busy=false;if(r&&r.ok){window.__lcDraftClear(f);location.reload();}else{window.__lcRefuse(f,r&&r.error);}})
       .catch(function(){busy=false;window.__lcSay(f,'Connection lost — the update was not saved. Try again in a moment.');});
     });
+    // "I'VE REPLIED MYSELF" (operator ask 2026-08-12). Sent Items is a refused folder, so this
+    // system can NEVER observe that he replied — he is the only source, which is why this is a
+    // prompt and not a detector. It asks two things and posts once:
+    //   the note  — optional, and OPTIONAL ON PURPOSE: the system cannot read what he sent, so
+    //               a skipped note records the act and stays silent on the content;
+    //   the task  — what the reply means for it. Only asked when a task exists.
+    // Confirm is deliberate: this deletes a draft from Outlook and undoes a filing, and the
+    // owner tapping "I've replied" on the wrong card should not discover that afterwards.
+    document.addEventListener('click',function(e){var t3=e.target;if(!t3||!t3.closest)return;
+      var rb=t3.closest('[data-lc-replied]');
+      if(!rb)return;e.preventDefault();if(busy)return;
+      var meta={};try{meta=JSON.parse(rb.getAttribute('data-lc-replied')||'{}');}catch(_e){meta={};}
+      if(!meta.draftId){window.__lcSay(rb,'That draft has no record to close — reload and try again.');return;}
+      var note=window.prompt('What did you tell them? (optional — leave blank and the record just says you replied)','');
+      if(note===null)return;
+      var outcome='waiting';
+      if(meta.hasTask){
+        var ans=window.prompt('And the task on this? Type: waiting (still on them) / wake / done','waiting');
+        if(ans===null)return;
+        ans=(ans||'').trim().toLowerCase();
+        if(ans==='done'||ans==='complete')outcome='complete';
+        else if(ans==='wake')outcome='wake';
+        else if(ans===''||ans==='waiting')outcome='waiting';
+        else{window.__lcSay(rb,'Type waiting, wake or done — nothing was changed.');return;}
+      }else{outcome='none';}
+      busy=true;
+      fetch('/api/life/command',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({
+        command:'mail_owner_replied',idempotencyKey:hex(),
+        payload:{draftId:meta.draftId,note:(note||'').trim(),taskOutcome:outcome}})})
+      .then(function(r){return r.json();}).then(function(r){busy=false;if(r&&r.ok){location.reload();}else{window.__lcRefuse(rb,r&&r.error);}})
+      .catch(function(){busy=false;window.__lcSay(rb,window.__lcNet);});
+    });
     // A3: execution-route control — a [data-lc-route] <select> posts set_route on change.
     document.addEventListener('change',function(e){var el=e.target;
       if(!el||!el.classList||!el.classList.contains('lc-route-sel'))return;

@@ -95,10 +95,19 @@ module.exports = {
         // the drafts table arrives with the engine's migration, and MC may deploy first. A
         // missing table costs the draft body on a proposal, never the decision queue.
         draftOf: Object.fromEntries(q(
-          `SELECT proposal_id, voice, needs_judgement, judgement_reason, replying_to, commits_to, body,
+          `SELECT id, task_id, proposal_id, voice, needs_judgement, judgement_reason, replying_to, commits_to, body,
                   outlook_draft_id, seam_id, filed_move_id
              FROM life_mail_drafts WHERE state = 'PROPOSED' AND proposal_id IS NOT NULL`,
         ).map((r) => [r.proposal_id, r])),
+        // outlook_gone_at is read SEPARATELY, and the comment four lines above says why: a
+        // column folded into the SELECT above would make ONE missing column blank the entire
+        // draft rail on a life.db that predates the migration. Split, the worst case is that
+        // the "this draft has vanished" note is absent for a few minutes. I folded it in first
+        // and the fixture caught it — which is the whole reason that rule is written down.
+        goneAt: Object.fromEntries(q(
+          `SELECT proposal_id, outlook_gone_at FROM life_mail_drafts
+            WHERE state = 'PROPOSED' AND proposal_id IS NOT NULL AND outlook_gone_at IS NOT NULL`,
+        ).map((r) => [r.proposal_id, r.outlook_gone_at])),
         // APPROVED drafts stay reachable for the rest of the day. Accepting a proposal removes
         // it from the queue — which for every other shape is correct, but here the row IS the
         // deliverable: tap accept before copying and the words are simply gone. Cheap to keep,
@@ -243,10 +252,20 @@ module.exports = {
             : `<div class="r-note" style="color:#f5c96b">Not in Outlook — the draft could not be created there, so these words are all there is. Copy them across.</div>`;
           extraActions = `<button class="r-btn small" data-lc-draftcopy="${LIFE.esc(String(dr.body || ''))}">Copy the reply</button>`
             + ` <button class="r-btn small" data-lc-draftedit="${LIFE.esc(JSON.stringify({ proposalId: p.id, body: String(dr.body || '') }))}">Edit</button>`
+            + ` <button class="r-btn small" data-lc-replied="${LIFE.esc(JSON.stringify({ draftId: String(dr.id || ''), hasTask: !!dr.task_id }))}">I've replied myself</button>`
             + (inOutlook && dr.seam_id
               ? ` ${cmd('Undo the draft', 'undo_draft', { seamId: String(dr.seam_id) }, 'small')}`
               : '');
-          extra = `${flag}${whereNote}`
+          // THE DRAFT HAS VANISHED FROM OUTLOOK and this system did not remove it. He sent it
+          // or he binned it, and Sent Items is a refused folder so there is no way to tell
+          // which. That is the one moment the system genuinely knows something changed — so it
+          // asks, rather than leaving a card that invites him to read words that are not there.
+          const goneNote = (s.goneAt || {})[p.id]
+            ? `<div class="r-note" style="border-left:3px solid #f5c96b;padding-left:8px;margin:8px 0">`
+              + `<b>This draft is no longer in your Outlook.</b> You either sent it or binned it — this system cannot see which, because it never reads your Sent Items. If you sent it, say so and the email stops being treated as awaiting a reply.`
+              + `</div>`
+            : '';
+          extra = `${flag}${goneNote}${whereNote}`
             + `<div class="r-note">To ${LIFE.esc(to)} · ${dr.voice === 'BRAND' ? 'brand voice' : 'plain professional'}</div>`
             + `<div class="r-note"><b>Replying to:</b> ${LIFE.esc(String(dr.replying_to || ''))}</div>`
             + `<div class="r-note"><b>Commits us to:</b> ${LIFE.esc(String(dr.commits_to || ''))}</div>`

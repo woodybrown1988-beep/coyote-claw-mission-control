@@ -463,6 +463,42 @@ test('DEPLOY ORDERING: no filing tables yet → the rail is absent, the board is
 
 // ── REPLY DRAFTS (operator GO 2026-08-11) ────────────────────────────────────────────────
 
+/** The post-migration shape: the same fixture plus outlook_gone_at, so the pair can be pinned
+ *  in BOTH directions — absent column = no note, present-and-set = the note. */
+function fixtureWithGone(dir, goneAt) {
+  const p = fixture(dir);
+  const db = new sqlite.DatabaseSync(p);
+  db.exec('ALTER TABLE life_mail_drafts ADD COLUMN outlook_gone_at TEXT');
+  db.prepare('UPDATE life_mail_drafts SET outlook_gone_at = ?').run(goneAt);
+  db.close();
+  return p;
+}
+
+test('the draft has VANISHED from Outlook: the card asks, because Sent Items can never answer', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-mail-gone-'));
+  const out = withEnv(fixtureWithGone(dir, '2026-08-12T09:00:00.000Z'), () => renderToday());
+  assert.match(out.body, /This draft is no longer in your Outlook/);
+  assert.match(out.body, /You either sent it or binned it/, 'it does not claim to know which');
+  assert.match(out.body, /never reads your Sent Items/, 'and it says WHY it cannot know');
+  // It asks — it does not decide. Nothing is retired without his word.
+  assert.ok(!/we have marked|automatically/i.test(out.body), 'no silent disposal');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+// PRE-MIGRATION SHAPE. This file's fixture deliberately has NO outlook_gone_at column — it is
+// the life.db an MC deploy can meet before the engine's migration runs, because the two ship on
+// independent taps. The draft rail must survive that; only the "vanished from Outlook" note may
+// be missing. Folding the column into the main SELECT blanked the whole rail, and this fixture
+// is what caught it.
+test('a life.db WITHOUT outlook_gone_at still renders the drafts — one column never costs the rail', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-mail-premig-'));
+  const out = withEnv(fixture(dir), () => renderToday());
+  assert.match(out.body, /Drafted in your Outlook|these words are all there is/, 'the draft rail is intact');
+  assert.ok(!/no longer in your Outlook/.test(out.body), 'and the note that needs the missing column is simply absent');
+  assert.match(out.body, /I've replied myself|I&#39;ve replied myself/, 'the escape hatch is still offered');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('a drafted reply shows the WORDS, what it replies to, and what it commits us to', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-draft-'));
   withEnv(fixture(dir), () => {

@@ -32,7 +32,7 @@ test('the emitted client script PARSES — every data-lc-* control depends on it
 test('and it still carries every handler — a script that parses but lost its wiring is no better', () => {
   const js = emittedScript('/life/task', 'life');
   for (const h of ['cmd', 'rename', 'cancel', 'complete', 'wait', 'mailedit', 'due', 'draftcopy', 'draftedit',
-    'fab', 'focus', 'route', 'quiet']) {
+    'fab', 'focus', 'route', 'quiet', 'replied']) {
     assert.ok(js.includes(`data-lc-${h}`), `data-lc-${h} handler is missing from the emitted script`);
   }
 });
