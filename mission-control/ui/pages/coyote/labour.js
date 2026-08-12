@@ -52,7 +52,11 @@
 // The People exception queue is EXCLUDED-BY-RULING; the gap map records it. The boundary is
 // CLASS-based, not name-based: the ruled-IN person-keyed classes (WTR regulatory flags,
 // rate-parity payroll rows, unmapped-shift names) DO render names — structural/regulatory
-// facts, not behavioural framing. Attendance renders as AGGREGATES only.
+// facts, not behavioural framing. Attendance renders as AGGREGATES only — including
+// NO-SHOWS, which named the person until 2026-08-12 (found by a register verification, not
+// by a test: the boundary test seeded an empty no-show list, so the branch that leaked was
+// the one branch never exercised). Presence is structural and may be named; ABSENCE is a
+// judgement and is counted, never named.
 // Contract: { key, route, workspace, title, sub, getSection, render }. SELECT-only via ctx.q.
 const S = require('../../shared.js');
 const REP = require('../../reporting.js');
@@ -1595,8 +1599,22 @@ module.exports = {
         const blocks = rows.map((r) => {
           let inNow = []; try { inNow = JSON.parse(r.clocked_in_now || '[]'); } catch (e) { /* keep going */ }
           const names = inNow.map((x) => `${esc(x.name)} <span class="ash">${lonTime(num(x.since_ms))}</span>`).join(' · ');
+          // NO-SHOW IS AN AGGREGATE — it names nobody (surveillance boundary, ruling
+          // labour-centre-stage2-rulings clause 3). This row used to render the person's name,
+          // directly above the caption promising attendance renders as aggregates only. Being
+          // present is a rota-structural fact; failing to appear is a judgement about someone,
+          // and a named judgement standing on a dashboard is the per-person behavioural queue
+          // the ruling excluded — a queue of one is still a queue.
+          // The ROTA'D TIME stays, because that is the operational fact: it says which shift is
+          // uncovered and since when, which is what a coverage decision needs. The name adds
+          // nothing to that decision and everything to the framing.
           let noShows = []; try { noShows = JSON.parse(r.no_shows || '[]'); } catch (e) { /* keep going */ }
-          const noShowHtml = noShows.length ? `<tr><td class="R">NO-SHOW (15min+)</td><td class="R">${noShows.map((x) => `${esc(x.name)} <span class="mono">rota'd ${lonTime(num(x.rota_start_ms))}</span>`).join(' · ')}</td></tr>` : '';
+          const noShowTimes = noShows.map((x) => num(x.rota_start_ms)).filter((t) => t != null).sort((a, b) => a - b);
+          const noShowHtml = noShows.length
+            ? `<tr><td class="R">NO-SHOW (15min+)</td><td class="R">${noShows.length} unfilled`
+              + (noShowTimes.length ? ` <span class="mono">rota'd ${noShowTimes.map((t) => lonTime(t)).join(' · ')}</span>` : '')
+              + `</td></tr>`
+            : '';
           return `<div class="lb-card"><div class="lb-cardhead">${esc(DEPT_LABEL[r.department] || r.department)}</div>
             <table class="lb-tbl"><tbody>${noShowHtml}
               <tr><td>Clocked in now (${inNow.length})</td><td>${names || '<span class="ash">nobody</span>'}</td></tr>
