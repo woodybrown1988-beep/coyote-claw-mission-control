@@ -252,7 +252,7 @@ module.exports = {
             : `<div class="r-note" style="color:#f5c96b">Not in Outlook — the draft could not be created there, so these words are all there is. Copy them across.</div>`;
           extraActions = `<button class="r-btn small" data-lc-draftcopy="${LIFE.esc(String(dr.body || ''))}">Copy the reply</button>`
             + ` <button class="r-btn small" data-lc-draftedit="${LIFE.esc(JSON.stringify({ proposalId: p.id, body: String(dr.body || '') }))}">Edit</button>`
-            + ` <button class="r-btn small" data-lc-replied="${LIFE.esc(JSON.stringify({ draftId: String(dr.id || ''), hasTask: !!dr.task_id }))}">I've replied myself</button>`
+            + ` <button class="r-btn small" data-lc-replied="${LIFE.esc(String(dr.id || ''))}" aria-expanded="false">I&#39;ve replied myself</button>`
             + (inOutlook && dr.seam_id
               ? ` ${cmd('Undo the draft', 'undo_draft', { seamId: String(dr.seam_id) }, 'small')}`
               : '');
@@ -265,7 +265,25 @@ module.exports = {
               + `<b>This draft is no longer in your Outlook.</b> You either sent it or binned it — this system cannot see which, because it never reads your Sent Items. If you sent it, say so and the email stops being treated as awaiting a reply.`
               + `</div>`
             : '';
-          extra = `${flag}${goneNote}${whereNote}`
+          // THE FORM, inline and hidden until asked for. Two questions, and the note is the one
+          // worth typing properly — which is why this is a form and not a modal prompt chain.
+          // The task select only exists when there IS a task; with none, the handler sends
+          // 'none' because there is nothing for the planner to be told.
+          const repliedForm = `<form class="lc-replied-form" data-draft="${LIFE.esc(String(dr.id || ''))}" style="display:none;margin:8px 0;padding:10px;border-left:3px solid #f5c96b;background:rgba(255,179,77,.05)">`
+            + `<div style="font-size:12.5px;color:var(--rmuted);margin-bottom:6px">This system never reads your Sent Items, so it can’t see what you sent — tell it as much or as little as you like. Leave it blank and the record just says you replied.</div>`
+            + `<textarea name="note" maxlength="2000" rows="3" class="lc-input" style="resize:vertical;width:100%" placeholder="What did you tell them? (optional)"></textarea>`
+            + (dr.task_id
+              ? `<div class="lc-row" style="align-items:center;margin-top:6px"><label style="font-size:12px;color:var(--rmuted)">And the task on this: `
+                + `<select name="outcome" class="lc-input" style="margin-left:6px">`
+                + `<option value="waiting">still waiting — it’s on them now</option>`
+                + `<option value="wake">wake it — it’s mine again</option>`
+                + `<option value="complete">done — that was the whole task</option>`
+                + `</select></label></div>`
+              : `<div class="r-note" style="margin-top:6px">No task is attached to this correspondence, so nothing on the board changes.</div>`)
+            + `<div class="lc-row" style="margin-top:8px"><button type="submit" class="r-btn small primary">Yes — I replied, close this off</button></div>`
+            + `<div style="font-size:11.5px;color:var(--rmuted);margin-top:6px">This deletes the draft from your Outlook and stops the email being treated as awaiting a reply.</div>`
+            + `</form>`;
+          extra = `${flag}${goneNote}${whereNote}${repliedForm}`
             + `<div class="r-note">To ${LIFE.esc(to)} · ${dr.voice === 'BRAND' ? 'brand voice' : 'plain professional'}</div>`
             + `<div class="r-note"><b>Replying to:</b> ${LIFE.esc(String(dr.replying_to || ''))}</div>`
             + `<div class="r-note"><b>Commits us to:</b> ${LIFE.esc(String(dr.commits_to || ''))}</div>`

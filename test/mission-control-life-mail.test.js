@@ -463,6 +463,50 @@ test('DEPLOY ORDERING: no filing tables yet → the rail is absent, the board is
 
 // ── REPLY DRAFTS (operator GO 2026-08-11) ────────────────────────────────────────────────
 
+test('the "I\'ve replied myself" form: inline, hidden until asked for, and it says what it will do', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-mail-replied-'));
+  const out = withEnv(fixture(dir), () => renderToday());
+
+  // The button reveals; the form carries the payload. The button holds only the draft id.
+  assert.match(out.body, /data-lc-replied="[^"]+" aria-expanded="false"/, 'the toggle starts closed');
+  assert.match(out.body, /<form class="lc-replied-form" data-draft="[^"]+" style="display:none/, 'the form is inline and hidden');
+  assert.match(out.body, /name="note" maxlength="2000"/, 'the note is a real textarea, capped to match the writer');
+
+  // It is honest about the boundary that makes it necessary, in the owner's words.
+  assert.match(out.body, /never reads your Sent Items, so it can’t see what you sent/);
+  assert.match(out.body, /Leave it blank and the record just says you replied/, 'the note is optional, and says so');
+  // And it says what the button will DO, before it is pressed.
+  assert.match(out.body, /deletes the draft from your Outlook and stops the email being treated as awaiting a reply/);
+
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('the task select appears only when a task exists — with none, the board is told nothing changes', () => {
+  const withTask = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-mail-rf-task-'));
+  const p1 = fixture(withTask);
+  const d1 = new sqlite.DatabaseSync(p1);
+  const taskId = (d1.prepare('SELECT id FROM life_tasks LIMIT 1').get() || {}).id || null;
+  d1.prepare('UPDATE life_mail_drafts SET task_id = ?').run(taskId);
+  d1.close();
+  const a = withEnv(p1, () => renderToday());
+  if (taskId) {
+    assert.match(a.body, /name="outcome"/, 'the planner question is asked');
+    assert.match(a.body, /still waiting — it’s on them now/, 'and "still waiting" is the first option: the wait usually moves to them');
+  }
+
+  const noTask = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-mail-rf-notask-'));
+  const p2 = fixture(noTask);
+  const d2 = new sqlite.DatabaseSync(p2);
+  d2.prepare('UPDATE life_mail_drafts SET task_id = NULL').run();
+  d2.close();
+  const b = withEnv(p2, () => renderToday());
+  assert.ok(!/name="outcome"/.test(b.body), 'no task = no planner question');
+  assert.match(b.body, /No task is attached to this correspondence, so nothing on the board changes/);
+
+  fs.rmSync(withTask, { recursive: true, force: true });
+  fs.rmSync(noTask, { recursive: true, force: true });
+});
+
 /** The post-migration shape: the same fixture plus outlook_gone_at, so the pair can be pinned
  *  in BOTH directions — absent column = no note, present-and-set = the note. */
 function fixtureWithGone(dir, goneAt) {

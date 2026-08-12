@@ -58,7 +58,7 @@ function assertOnlySanctionedLc(body, key) {
     assert.ok(SANCTIONED_LC.has(m[0]), `${key}: unsanctioned life affordance ${m[0]}`);
   }
   for (const m of body.matchAll(/<form\b[^>]*/g)) {
-    assert.ok(/lc-note-form|lc-create-form/.test(m[0]), `${key}: only the sanctioned form classes`);
+    assert.ok(/lc-note-form|lc-create-form|lc-replied-form/.test(m[0]), `${key}: only the sanctioned form classes`);
   }
   for (const m of body.matchAll(/data-lc-cmd="([^"]*)"/g)) {
     const decoded = m[1].replaceAll('&quot;', '"').replaceAll('&amp;', '&').replaceAll('&#39;', "'");
