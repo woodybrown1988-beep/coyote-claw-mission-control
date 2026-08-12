@@ -89,7 +89,16 @@ test('coverage: TODAY-live held panel — names + as-of + so-far vs full-day rot
   assert.ok(body.includes('as of '), 'fresh snapshot is not flagged stale');
   assert.ok(!body.includes('STALE'), 'no false stale alarm at 20 min');
   assert.ok(body.includes('£0 in the RC-screen ruler'), 'uncosted so-far surfaced (FOH 6h)');
-  assert.ok(body.includes('NO-SHOW') && body.includes('Leon Mackay'), 'no-show named in red');
+  // WAS: `body.includes('NO-SHOW') && body.includes('Leon Mackay')` — "no-show named in red".
+  // That assertion PINNED THE LEAK. It required the very thing the surveillance-boundary ruling
+  // excludes, which is why the leak shipped and stayed: the L3 boundary test seeded an empty
+  // no-show list and never reached this branch, while this test insisted the name be there.
+  // Presence is a rota-structural fact and may be named (Rio Alexander, above). Absence is a
+  // judgement about a person: counted, with the rota'd time that a coverage decision needs,
+  // and never named.
+  assert.ok(body.includes('NO-SHOW'), 'the uncovered shift is still surfaced');
+  assert.ok(!body.includes('Leon Mackay'), 'but the person is NOT named — a behavioural queue of one is still a queue');
+  assert.match(body, /NO-SHOW \(15min\+\)<\/td><td class="R">1 unfilled <span class="mono">rota'd \d{2}:\d{2}<\/span>/, 'counted, with the operational fact kept');
   assert.ok(body.includes('Reference — last Thursday (2026-06-25, settled) by 20:00'), 'reference labelled with its date');
   assert.ok(body.includes('never a projection'), 'the no-projection label is on the panel');
 

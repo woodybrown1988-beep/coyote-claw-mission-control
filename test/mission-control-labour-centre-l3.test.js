@@ -199,10 +199,23 @@ test('ratios: adherence / WTR streak / parity-clean / unmapped share / staffing-
 test('today-live intraday strip renders ABOVE the KPI strip — operational coverage, its ruled home', () => {
   const db = makeDb();
   seedKpiWeek(db);
-  db.prepare(`INSERT INTO labour_intraday VALUES ('2026-07-23', 'kitchen', ?, 960, 20000, 300, 6000, 0, '[{"name":"Dana Onclock","since_ms":1784790000000}]', '[]', NULL, NULL, NULL, NULL, 1)`).run(NOW - 600000);
-  db.prepare(`INSERT INTO labour_intraday VALUES ('2026-07-23', 'foh', ?, 700, 15000, 200, 4000, 0, '[]', '[]', NULL, NULL, NULL, NULL, 1)`).run(NOW - 600000);
+  // no_shows carries a REAL name in both departments. It used to be seeded '[]' in both, so the
+  // only branch that leaked a name was the one branch never exercised — the leak shipped and
+  // the suite stayed green for three weeks.
+  db.prepare(`INSERT INTO labour_intraday VALUES ('2026-07-23', 'kitchen', ?, 960, 20000, 300, 6000, 0, '[{"name":"Dana Onclock","since_ms":1784790000000}]', '[{"name":"Nora Noshow","rota_start_ms":1784786400000}]', NULL, NULL, NULL, NULL, 1)`).run(NOW - 600000);
+  db.prepare(`INSERT INTO labour_intraday VALUES ('2026-07-23', 'foh', ?, 700, 15000, 200, 4000, 0, '[]', '[{"name":"Sam Absent","rota_start_ms":1784790000000},{"name":"Kit Missing","rota_start_ms":1784797200000}]', NULL, NULL, NULL, NULL, 1)`).run(NOW - 600000);
   const body = renderTab(db, { tab: 'coverage' });
   assert.ok(body.includes('Today — live'), 'the strip is present');
+  // THE NO-SHOW BOUNDARY. Absence is a judgement about a person; it is counted, never named.
+  for (const name of ['Nora Noshow', 'Sam Absent', 'Kit Missing']) {
+    assert.ok(!body.includes(name), `a no-show is never named (${name}) — a behavioural queue of one is still a queue`);
+  }
+  assert.match(body, /NO-SHOW \(15min\+\)<\/td><td class="R">1 unfilled/, 'kitchen: counted');
+  assert.match(body, /NO-SHOW \(15min\+\)<\/td><td class="R">2 unfilled/, 'FOH: counted, both of them');
+  // The operational fact survives the de-naming: WHICH shift is uncovered, and since when.
+  assert.match(body, /1 unfilled <span class="mono">rota'd \d{2}:\d{2}<\/span>/, 'the rota\'d time is kept — that is what a coverage decision needs');
+  // Presence is structural and MAY be named — the boundary is class-based, not a blanket ban.
+  assert.ok(body.includes('Dana Onclock'), 'clocked-in-now still names, being a rota-structural fact');
   assert.ok(body.indexOf('Today — live') < body.indexOf('class="r-grid r-kpi-grid"'), 'and it sits ABOVE the KPI strip');
   assert.ok(body.includes('partial-day figures, never a day result'), 'the partial-day honesty holds');
   assert.ok(body.includes('Dana Onclock'), 'who is on the clock NOW renders — live operational coverage, not behavioural history');
