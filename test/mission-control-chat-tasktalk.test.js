@@ -46,3 +46,49 @@ test('the page script still parses — reply wiring cannot cost the whole page i
   assert.doesNotThrow(() => new Function(m[1]), 'the emitted script parses (mc-client-script-parse-gate)');
   assert.match(m[1], /setReply\(null, null\)/, 'send clears the reply target — no accidental second brief');
 });
+
+test('a stuck card can be resolved: the board links to chat, and chat arrives loaded with the two exits', () => {
+  // Operator ask 2026-08-13, looking at a Lead card held 8 days: "theres no way to resolve
+  // this." The board keeps its READ-ONLY boundary — this is a plain GET link — and the chat
+  // it lands on names the job and spells out the exits (close / retask) the engine now has.
+  const db = fixtureDb();
+  db.exec(`INSERT INTO jobs (id, type, status, payload, error, created_at, updated_at, attempts, max_attempts)
+           VALUES ('e7de1759-aaaa-bbbb-cccc-dddddddddddd', 'lead', 'escalated',
+             '{"brief":"look into what the new openclaw update has compared to our last update"}',
+             'spec advise malformed: killed after 300000ms timeout', 1000, 2000, 1, 1)`);
+  const ctx = {
+    q: (sql, params) => { try { return { ok: true, rows: db.prepare(sql).all(...(params || [])) }; } catch (e) { return { ok: false, error: String(e.message) }; } },
+    now: 3000, query: { about: 'e7de1759-aaaa-bbbb-cccc-dddddddddddd' },
+  };
+  const out = CHAT.render(CHAT.getSection(db, ctx), ctx);
+  assert.match(out.body, /About lead job e7de1759/, 'the thread names the job he came from');
+  assert.match(out.body, /look into what the new openclaw update/, 'in its own words');
+  assert.match(out.body, /spec advise malformed/, 'and says how it died');
+  assert.match(out.body, /close e7de1759 &lt;why&gt;/, 'exit one: drop it');
+  assert.match(out.body, /retask e7de1759/, 'exit two: make it a task');
+  assert.match(out.body, /<textarea[^>]*>retask e7de1759<\/textarea>/, 'the composer opens pre-loaded');
+
+  // An unknown or malformed id must never fabricate a card.
+  const bad = CHAT.render(CHAT.getSection(db, { ...ctx, query: { about: 'not-an-id' } }), { ...ctx, query: { about: 'not-an-id' } });
+  assert.ok(!/About .* job/.test(bad.body), 'no job, no banner — never invented');
+});
+
+test('the board offers "Talk about this" on blocked cards, and it stays a GET link', () => {
+  const AGENTS = require('../mission-control/ui/pages/claw/agents.js');
+  const now = 1786600000000;
+  const job = {
+    id: 'e7de1759-aaaa-bbbb-cccc-dddddddddddd', type: 'lead', status: 'escalated',
+    payload: JSON.stringify({ brief: 'look into what the new openclaw update has' }),
+    created_at: now - 8 * 86400000, updated_at: now - 8 * 86400000, attempts: 1, error: 'timeout', parent_job_id: null, owner_id: null,
+  };
+  const q = (sql) => {
+    const s = String(sql);
+    if (/FROM jobs WHERE status NOT IN/.test(s)) return { ok: true, rows: [job] };
+    return { ok: true, rows: [] };
+  };
+  const out = AGENTS.render(AGENTS.getSection(null, { q, now, halt: { halted: false } }), { serverRev: '' });
+  assert.match(out.body, /<a class="acard-btn" href="\/claw\/chat\?about=e7de1759[^"]*">Talk about this<\/a>/, 'the way out is on the card');
+  assert.match(out.body, /Open in TG/, 'and the Telegram route still stands beside it');
+  // The /claw read-only boundary: a link is a GET; no write affordance may appear.
+  assert.ok(!/data-op|method="post"|fetch\(/i.test(out.body), 'the console stays read-only');
+});

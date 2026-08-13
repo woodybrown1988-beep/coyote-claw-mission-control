@@ -414,6 +414,7 @@ module.exports = {
         c.task = { strong: summary, tail: ' — ' + cp.verb + '.' };
         c.waitPill = { tone: 'you', text: cp.pill };
         c.button = { label: cp.btn };
+        c.talkJobId = job.id; // "Talk about this" → MC Chat, where close/retask live
         c.time = job.status === 'awaiting_signoff'
           ? 'waiting on the operator · ' + fmtDur(now - num(job.updated_at))
           : 'held ' + S.agoLabel(now - num(job.updated_at));
@@ -531,7 +532,7 @@ module.exports = {
         const waiting = j.status === 'awaiting_signoff'
           ? 'waiting on the operator · ' + fmtDur(now - num(j.updated_at))
           : 'held ' + S.agoLabel(now - num(j.updated_at));
-        cards.push(Object.assign(base, { col: 'blocked', variant: 'you', task: { strong: typeLabel, tail: ' — ' + cp.verb + '.' }, waitPill: { tone: 'you', text: cp.pill }, button: { label: cp.btn }, time: waiting, _ageMs: now - num(j.updated_at), _trackJob: j.id, _trackMode: 'gate' }));
+        cards.push(Object.assign(base, { col: 'blocked', variant: 'you', task: { strong: typeLabel, tail: ' — ' + cp.verb + '.' }, waitPill: { tone: 'you', text: cp.pill }, button: { label: cp.btn }, talkJobId: j.id, time: waiting, _ageMs: now - num(j.updated_at), _trackJob: j.id, _trackMode: 'gate' }));
         trackJobIds.add(j.id);
       } else if (b === 'blocked_dept') {
         cards.push(Object.assign(base, { col: 'blocked', variant: 'dept', task: { strong: typeLabel, tail: ' — awaiting another desk.' }, waitPill: { tone: 'dept', text: 'Waiting on ' + deptNameFor(j) + ' Dept' }, time: 'blocked ' + S.agoLabel(now - num(j.updated_at)), _ageMs: now - num(j.updated_at), button: lifeBtn || undefined }));
@@ -641,9 +642,17 @@ module.exports = {
           ? '<a class="acard-btn" href="' + esc(c.button.href) + '">' + esc(c.button.label) + '</a>'
           : '<button class="acard-btn" type="button">' + esc(c.button.label) + '</button>';
       }
+      // TALK ABOUT THIS (operator ask 2026-08-13): "theres no way to resolve this" — a card
+      // held 8 days offered only "Open in TG". This is a plain LINK into MC Chat carrying the
+      // job id (a GET, never a write affordance — /claw stays the read-only console and its
+      // boundary test still holds); the chat composer opens pre-loaded so the resolving verbs
+      // — close <id> / retask <id> — are one keystroke away, and the agents are right there.
+      const talk = c.talkJobId
+        ? '<a class="acard-btn" href="/claw/chat?about=' + encodeURIComponent(c.talkJobId) + '">Talk about this</a>'
+        : '';
       const time = c.time ? '<span class="acard-time">' + esc(c.time) + '</span>' : '';
-      if (!btn && !time) return '';
-      return '<div class="acard-foot">' + btn + time + '</div>';
+      if (!btn && !talk && !time) return '';
+      return '<div class="acard-foot">' + btn + talk + time + '</div>';
     }
     function cardHtml(c) {
       const cls = 'acard' + (c.variant ? ' ' + c.variant : '') + (c.faded ? ' faded' : '');

@@ -39,7 +39,26 @@ module.exports = {
   getSection(db, ctx) {
     const q = ctx && ctx.q;
     const now = (ctx && ctx.now) || Date.now();
-    if (typeof q !== 'function') return { now, wired: false, messages: [], total: 0, cpage: 0, lastId: 0 };
+    if (typeof q !== 'function') return { now, wired: false, messages: [], total: 0, cpage: 0, lastId: 0, about: null };
+    // ?about=<jobId> — arriving from a board card (operator ask 2026-08-13: "theres no way to
+    // resolve this"). The thread opens with that job named and its two exits spelled out, so
+    // the card he was staring at is one keystroke from being closed or turned into a task.
+    const aboutId = String((ctx.query && ctx.query.about) || '').trim();
+    let about = null;
+    if (/^[0-9a-f-]{8,36}$/i.test(aboutId)) {
+      const r = rowsOf(q(`SELECT id, type, status, payload, error, updated_at FROM jobs WHERE id = ? LIMIT 1`, [aboutId]))[0];
+      if (r) {
+        let brief = '';
+        try {
+          const p = JSON.parse(r.payload || '{}') || {};
+          brief = String(p.brief || p.question || (p.lifeDispatch && p.lifeDispatch.title) || '');
+        } catch (_) { brief = ''; }
+        about = {
+          id: String(r.id), short: String(r.id).slice(0, 8), type: String(r.type), status: String(r.status),
+          brief: brief.slice(0, 220), error: String(r.error || '').slice(0, 160), updated_at: Number(r.updated_at) || 0,
+        };
+      }
+    }
 
     const cpage = Math.max(0, parseInt((ctx.query && ctx.query.cpage) || '0', 10) || 0);
     // Newest page window, rendered oldest-first. LEFT JOIN jobs for the async-status chips.
@@ -53,7 +72,7 @@ module.exports = {
     const totalRow = rowsOf(q(`SELECT COUNT(*) AS c FROM chat_messages`))[0];
     const lastRow = rowsOf(q(`SELECT MAX(id) AS m FROM chat_messages`))[0];
     return {
-      now, wired, messages, cpage,
+      now, wired, messages, cpage, about,
       total: totalRow ? Number(totalRow.c) || 0 : 0,
       lastId: lastRow && lastRow.m != null ? Number(lastRow.m) : 0,
     };
@@ -82,6 +101,17 @@ module.exports = {
     if (!m.wired) {
       parts.push(`<div class="banner muted" data-chat-page>Chat lands once the engine side deploys (the <span class="mono">chat_messages</span> store is not in this DB yet — cc PR #80). Nothing is simulated in the meantime; Telegram remains fully live.</div>`);
       return { stamp: 'web transport · awaiting engine deploy', body: parts.join('\n') };
+    }
+
+    // ---- the job you arrived to talk about (?about=), with its two exits ----
+    if (m.about) {
+      const a = m.about;
+      parts.push(`<div class="banner" style="border-left:3px solid var(--amber,#FBBF24)">`
+        + `<b>About ${esc(a.type)} job ${esc(a.short)}</b> — ${esc(a.status)}${a.error ? ` · ${esc(a.error)}` : ''}`
+        + (a.brief ? `<div style="font-size:12.5px;margin-top:4px;color:var(--muted,#8b98a5)">“${esc(a.brief)}”</div>` : '')
+        + `<div style="font-size:12.5px;margin-top:6px">Ask about it in your own words, or take one of the two exits:`
+        + ` <span class="mono">close ${esc(a.short)} &lt;why&gt;</span> to drop it,`
+        + ` or <span class="mono">retask ${esc(a.short)}</span> to make it a task in the Life OS.</div></div>`);
     }
 
     // ---- pager (unbounded-list rule: last page window + honest total) ----
@@ -168,7 +198,7 @@ module.exports = {
     // a cleared bar means a plain message, never a silent misroute.
     parts.push(`<div id="ch-replybar" style="display:none;font-size:11.5px;color:var(--muted,#8b98a5);padding:4px 2px">↩ replying to <span id="ch-replylabel" class="mono"></span> — this goes to that task’s agent <button type="button" class="btn" id="ch-replyclear" style="padding:0 8px">✕</button></div>
     <form class="ch-form" id="ch-form">
-      <textarea name="text" id="ch-text" placeholder="data: … / research: … / plain text → the Lead / ask Rex by name · ↩ reply on a task message to brief its agent" maxlength="4000" required></textarea>
+      <textarea name="text" id="ch-text" placeholder="data: … / research: … / plain text → the Lead / ask Rex by name · ↩ reply on a task message to brief its agent · close &lt;id&gt; · retask &lt;id&gt;" maxlength="4000" required>${m.about ? esc('retask ' + m.about.short) : ''}</textarea>
       <button class="btn" type="submit" id="ch-send">Send</button>
     </form>
     <div class="ash" style="font-size:11px;margin-top:4px">Same pipeline as Telegram — plan/merge gates still tap on Telegram in Phase 1. Tailnet-only surface.</div>`);
