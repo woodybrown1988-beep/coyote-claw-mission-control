@@ -1166,8 +1166,24 @@ function css() {
      from across the room before any text is read. Negative margins cancel the card's own padding.
      The kanban state rail (.acard::before) is absolutely positioned and therefore paints ABOVE this
      background — state and department still never occupy the same pixel. */
-  .acard-head{margin:-11px -12px 9px;padding:10px 12px 8px;border-bottom:1px solid}
+  /* FLAT tint + a solid top bar, not a gradient: the Coyote design system rules out gradient
+     backgrounds, and a flat band with a hard 2px edge reads as MORE deliberate (and more obvious)
+     than a fade. Same signature as the .dept-card tiles above the board. */
+  .acard-head{margin:-11px -12px 9px;padding:9px 12px 8px;border-bottom:1px solid;border-top:2px solid;border-radius:8px 8px 0 0}
   .acard.faded .acard-head{opacity:.75}
+  /* In-flight, inline. This was a full boxed ROW on every worker card that usually read "0" — six
+     cards of vertical space spent restating idleness. It is now a pill beside the name, present
+     only when the worker is actually carrying something. */
+  .inflight-pill{font-family:var(--font-mono);font-size:8.5px;font-weight:600;letter-spacing:.05em;padding:1.5px 6px;border-radius:5px;background:rgba(96,165,250,.14);color:var(--blue);border:1px solid rgba(96,165,250,.3)}
+  /* A column with nothing in it still has to SAY something (UX pattern: every state is designed). */
+  .col-empty{font-family:var(--font-mono);font-size:10px;color:var(--muted);padding:10px 6px;line-height:1.5}
+  /* One-line strips replacing two full-width bands + a four-tile row. Same numbers, ~200px back. */
+  .strip{display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:8px 12px;border:1px solid var(--border);border-radius:9px;background:var(--panel-2);margin-top:10px}
+  .strip .s-name{font-family:var(--font-display);font-weight:600;font-size:12px;color:var(--text)}
+  .strip .s-item{font-family:var(--font-mono);font-size:10.5px;color:var(--text-2)}
+  .strip .s-item b{color:var(--text);font-size:12px}
+  .strip .s-sep{flex:1}
+  .strip .s-note{font-family:var(--font-mono);font-size:9.5px;color:var(--muted)}
   .dept-rollcall{display:flex;gap:7px;flex-wrap:wrap;margin:11px 0 0}
   .dept-card{flex:1 1 128px;border:1px solid;border-top-width:3px;border-radius:9px;padding:8px 10px;background:var(--panel-2)}
   .dept-card .dn{font-family:var(--font-mono);font-size:9px;font-weight:600;text-transform:uppercase;letter-spacing:.1em}
@@ -1507,14 +1523,19 @@ const rcc = {
 //
 // Roles are written for the OPERATOR, not the engine: what this agent does for him, in plain
 // words. Departments carry a pronounced colour so the board is scannable by desk.
+// Seven departments, seven hues — all drawn from Mission Control's own console palette (--amber,
+// --blue, --green, --cyan) plus two neighbours chosen to sit inside that language. The first pass
+// used violet/pink, which the Coyote design system names off-brand ("never purple, teal, or pastel")
+// and which read as candy against this near-black navy. Deliberately NO red: red means BLOCKED on
+// this board, and a department wearing the state colour would be misread at a glance.
 const DEPARTMENTS = {
-  build: { key: 'build', label: 'Build', colour: '#FBBF24' },
-  data: { key: 'data', label: 'Data', colour: '#60A5FA' },
-  finance: { key: 'finance', label: 'Finance', colour: '#34D399' },
-  research: { key: 'research', label: 'Research', colour: '#A78BFA' },
-  customer: { key: 'customer', label: 'Customer', colour: '#F472B6' },
-  office: { key: 'office', label: 'Office', colour: '#22D3EE' },
-  engine: { key: 'engine', label: 'Engine', colour: '#94A3B8' },
+  build: { key: 'build', label: 'Build', colour: '#FBBF24' },     // --amber
+  data: { key: 'data', label: 'Data', colour: '#60A5FA' },        // --blue
+  finance: { key: 'finance', label: 'Finance', colour: '#34D399' }, // --green
+  research: { key: 'research', label: 'Research', colour: '#818CF8' }, // indigo — cool, industrial
+  customer: { key: 'customer', label: 'Customer', colour: '#FB923C' }, // orange — clear of amber, clear of red
+  office: { key: 'office', label: 'Office', colour: '#22D3EE' },  // --cyan
+  engine: { key: 'engine', label: 'Engine', colour: '#94A3B8' },  // slate — the plumbing, deliberately quiet
 };
 
 const FLEET = {

@@ -120,18 +120,30 @@ module.exports = {
     const failedSubcopy = h.failedLearnValidate > 0
       ? `failed jobs — incl. the ${S.fmtInt(h.failedLearnValidate)} dormant learn-validate — named, never hidden`
       : 'failed jobs — named, never hidden';
-    const hero = `<div class="tiles" style="grid-template-columns:repeat(4,minmax(150px,1fr))">
+    // THE TRIAGE ROW — three tiles, not four.
+    //
+    // Dropped: the "Board — fleet ↓ · plumbing ↓↓" tile, which was a table of contents for a page
+    // you can see, occupying a quarter of the most valuable row on the screen.
+    // Demoted: "Failed jobs · lifetime" moved OUT of triage and into the plumbing section. 126
+    // lifetime failures, 95 of them a dormant job type, is a number nobody can act on — it sat in
+    // the row whose whole job is "what needs you", next to two numbers that genuinely do.
+    const hero = `<div class="tiles" style="grid-template-columns:repeat(3,minmax(160px,1fr))">
       <div class="tile ${h.esc7 + h.awaiting > 0 ? 'red' : 'green'}"><div class="lab">Needs you now</div><div class="val">${S.fmtInt(h.esc7 + h.awaiting)}</div><div class="sub">${S.fmtInt(h.awaiting)} awaiting sign-off · ${S.fmtInt(h.esc7)} fresh give-up${h.esc7 === 1 ? '' : 's'} (≤7d)</div></div>
       <div class="tile ${h.escAging > 0 ? 'amber' : 'muted'}"><div class="lab">Aging give-ups</div><div class="val">${S.fmtInt(h.escAging)}</div><div class="sub">held over 7 days — in the board's collapsed group</div></div>
-      <div class="tile ${h.failed > 0 ? 'amber' : 'muted'}"><div class="lab">Failed jobs · lifetime</div><div class="val">${S.fmtInt(h.failed)}</div><div class="sub">${failedSubcopy}</div></div>
-      <div class="tile blue"><div class="lab">Board</div><div class="val" style="font-size:15px">fleet ↓ · plumbing ↓↓</div><div class="sub">blocked column reads OLDEST first</div></div>
+      <div class="tile ${m.flow && m.flow.live > 0 ? 'green' : 'blue'}"><div class="lab">Finished today</div><div class="val">${S.fmtInt((m.flow && m.flow.finished) || 0)}</div><div class="sub">${m.flow && m.flow.live > 0 ? `${S.fmtInt(m.flow.live)} moving right now` : 'nothing running this second'}</div></div>
     </div>`;
+    const failedLine = `<div class="strip" style="margin-top:14px"><span class="s-name">Failed · lifetime</span>`
+      + `<span class="s-item"><b>${S.fmtInt(h.failed)}</b></span>`
+      + `<span class="s-sep"></span><span class="s-note">${esc(failedSubcopy)}</span></div>`;
     return {
       stamp: a.stamp || hh.stamp,
+      // ONE "The fleet" heading. There were two — this one, and the flow-divider inside the board
+      // module — so the page announced the same section twice, twelve inches apart, with the whole
+      // apex and both strips sitting between them.
       body: hero
         + flowHtml(m.flow)
-        + `<div class="sec-label" style="margin-top:16px">The fleet<span class="rule"></span></div>` + a.body
-        + `<div class="sec-label" style="margin-top:22px">The plumbing<span class="rule"></span></div>` + hh.body,
+        + a.body
+        + `<div class="sec-label" style="margin-top:22px">The plumbing<span class="rule"></span></div>` + failedLine + hh.body,
     };
   },
 };

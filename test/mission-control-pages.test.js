@@ -97,7 +97,11 @@ test('agents: matches the mockup structure + counts a TEXT guard_flag (the fixed
   const ctx = ctxFor(db);
   const out = PAGES.agents.render(PAGES.agents.getSection(db, ctx), ctx);
   assert.match(out.body, /class="apex"/, 'leadership apex');
-  assert.match(out.body, /class="librarian"/, 'Librarian band');
+  // The Librarian is still named and still publishes its three counters — it is now a one-line
+  // strip rather than a full-width band with a paragraph explaining what a database is (design
+  // pass 2026-08-13: it was helping push the board below the fold).
+  assert.match(out.body, /The Librarian/, 'the Librarian is still named');
+  assert.match(out.body, /active</, 'and still publishes its live count');
   for (const c of ['idle', 'queued', 'working', 'blocked', 'done']) assert.match(out.body, new RegExp(`col ${c}`), `kanban ${c}`);
   assert.match(out.body, /Chief of Staff/);
   // The two hard-coded "Research — not yet wired" / "Accountant — not built" cards were REMOVED on
