@@ -30,6 +30,38 @@ function mailTitle(p) {
   let c = {}; try { c = JSON.parse(String(p.command_json || '{}')); } catch (_) { /* fall through */ }
   return LIFE.esc(String(c.title || 'From your inbox'));
 }
+/** A slice that SAYS it sliced. Hard `.slice(n)` rendered mid-word word-salad on ~13 live
+ *  cards ("suggest re-") — the audit's most visible polish defect (Wave 3, 2026-08-13). */
+function snip(v, n) {
+  const s = String(v == null ? '' : v);
+  return s.length > n ? `${s.slice(0, n - 1).trimEnd()}…` : s;
+}
+// DEADLINE-AWARE FOLD OVERRIDE (Wave 3, 2026-08-13 audit). The quiet-fold was class-based
+// only, and an engineer's next-morning 8–9am access request sat folded as "low stakes" — one
+// closed <details> from being missed. Content carrying a live time commitment inside ~48h
+// never folds, whatever its risk class. The match is deliberately broad (the COST of a false
+// unfold is one extra card; the cost of a false fold is a missed visit).
+const TIME_HINT_RE = /\b(today|tonight|tomorrow|this (morning|afternoon|evening))\b|\b\d{1,2}[:.]\d{2}\s*(am|pm)?\s*[–—-]\s*\d{1,2}\b|\b\d{1,2}\s*(am|pm)\s*[–—-]\s*\d{1,2}\b/i;
+function timeCritical(p, nowMs) {
+  const text = `${String(p.reason || '')} ${String(p.command_json || '')}`;
+  if (TIME_HINT_RE.test(text)) return true;
+  // ISO dates count only when FUTURE-inside-48h: a date in the past is almost always
+  // provenance ("from GasSafe, 2026-08-11" — when the email arrived), and unfolding on
+  // provenance would unfold half the mail rail. A real past-due commitment reaches Today
+  // through the due-soon safety net; this override is for content-borne upcoming times.
+  for (const d of text.match(/\d{4}-\d{2}-\d{2}/g) || []) {
+    const ms = Date.parse(`${d}T12:00:00Z`);
+    if (Number.isFinite(ms) && ms > nowMs && ms < nowMs + 48 * 3_600_000) return true;
+  }
+  return false;
+}
+/** Friendly group names for the batch-decide screen (falls back to the raw key). */
+const CAP_LABEL = {
+  agent_dispatch: 'Routing suggestions', agent_delivery: 'Agent deliverables',
+  mail_capture: 'From your inbox — new tasks', mail_update: 'From your inbox — task updates',
+  mail_wake: 'From your inbox — wake a waiting task', mail_project: 'From your inbox — projects',
+  mail_reply_draft: 'Drafted replies', calendar_block: 'Calendar blocks',
+};
 
 module.exports = {
   key: 'life-today', route: '/life/today', workspace: 'life', title: 'Today',
@@ -125,6 +157,8 @@ module.exports = {
         mailBacklog: q('SELECT COUNT(*) c FROM life_mail_messages WHERE classified_at IS NULL')[0]?.c ?? 0,
         approvalRows: q(`SELECT id, title FROM life_tasks WHERE status = 'AWAITING_APPROVAL' ORDER BY updated_at ASC LIMIT 10`),
         available: q(`SELECT id, title, domain_key, execution_mode FROM v_life_available_work ORDER BY calculated_priority DESC, created_at ASC LIMIT 8`),
+        // The "Available now 5" pill understated by 111 (audit F7): the COUNT is said too.
+        availableCount: q(`SELECT COUNT(*) c FROM v_life_available_work`)[0]?.c ?? 0,
         // DUE-SOON SAFETY NET (audit 2026-08 G-05): any live task with a deadline inside 72h (or already
         // overdue) surfaces on Today REGARDLESS of what the plan compiled — statutory dues were TARGET
         // (not HARD), so the priority view never lifted them and they were invisible two days out.
@@ -222,11 +256,11 @@ module.exports = {
           ? 'Nothing has been sent and nothing here can send — the draft waits in Outlook until you send it.'
           : p.command_type === 'wake' ? 'This looks like the reply this task was waiting for. Accept wakes it; No leaves it waiting.'
           : p.command_type === 'add_update' ? 'Accept files this email on the task as evidence. Nothing else moves.'
-            : p.command_type === 'create_project' ? `Accept creates the project with this definition of done: “${String(c.definitionOfDone || '').slice(0, 160)}”.`
+            : p.command_type === 'create_project' ? `Accept creates the project with this definition of done: “${snip(c.definitionOfDone, 160)}”.`
               : `Accept captures “${String(c.title || 'it')}” into your Inbox. Nothing is sent, and the email is not touched.`;
         // RAW on purpose — needRow escapes n.sub once. Escaping here too would render a
         // vendor's apostrophes as &#39; on the owner's own board.
-        sub = `From ${who}${where} — ${String(p.reason).slice(0, 180)}. ${what}`;
+        sub = `From ${who}${where} — ${snip(p.reason, 180)}. ${what}`;
         acceptBtn = cmd(verb, 'decide', { proposalId: p.id, decision: 'accept' }, 'small primary');
         // A DRAFTED REPLY shows the words themselves. Everything about this block is built so
         // the one thing that can go wrong here — copying it without reading it — is as hard
@@ -338,9 +372,25 @@ module.exports = {
         sub = VERB.sub;
         acceptBtn = cmd(VERB.label, p.command_type, { proposalId: p.id }, 'small primary');
       } else {
+        // THE DELIVERABLE ON THE CARD (Wave 3, audit stall-1 friction): agent deliverables
+        // were the only material card class with no inline content — the reader had to
+        // round-trip through Inspect while reply drafts showed their words right here (and
+        // got decided). The evidenceNote IS the deliverable summary the agent filed; a
+        // proposal without one (older rows) keeps the open-the-task wording instead of
+        // pointing at content that is not there.
+        let deliverableNote = '';
+        if (isAgentDelivery) {
+          let c = {}; try { c = JSON.parse(String(p.command_json || '{}')); } catch (_) { /* renders without */ }
+          deliverableNote = String(c.evidenceNote || '').trim();
+          if (deliverableNote) {
+            extra = `<pre class="lc-draft" style="white-space:pre-wrap;margin:8px 0;padding:10px;border-left:3px solid #4a5568;background:rgba(255,255,255,.04);font:12.5px/1.5 ui-monospace,Menlo,monospace">${LIFE.esc(snip(deliverableNote, 700))}</pre>`;
+          }
+        }
         sub = isAgentDelivery
-          ? `Agent deliverable awaiting your accept — the work is on the task. Accept completes it with the deliverable attached; No keeps it open.`
-          : `${String(p.reason).slice(0, 110)} — it suggests ${p.command_type === 'set_waiting' ? 'parking this as waiting' : 'a next step'}.`;
+          ? (deliverableNote
+            ? `Agent deliverable awaiting your accept — the content is below. Accept completes the task with it attached as evidence; No keeps the task open.`
+            : `Agent deliverable awaiting your accept — the work is on the task. Accept completes it with the deliverable attached; No keeps it open.`)
+          : `${snip(p.reason, 110)} — it suggests ${p.command_type === 'set_waiting' ? 'parking this as waiting' : p.command_type === 'set_route' ? 'the routing change below' : 'a next step'}.`;
         acceptBtn = cmd(isAgentDelivery ? 'Accept' : 'Approve', 'decide', { proposalId: p.id, decision: 'accept' }, 'small primary');
       }
       const row = {
@@ -353,7 +403,13 @@ module.exports = {
       // A drafted reply that NEEDS YOUR JUDGEMENT is material by definition — money, legal,
       // staff or a dispute is exactly the class of thing quiet support must never fold away.
       const judgementDraft = !!((s.draftOf || {})[p.id] || {}).needs_judgement;
-      (highStakes || isAgentDelivery || isCalendarBlock || judgementDraft ? material : suggestions).push(row);
+      // DEADLINE-AWARE OVERRIDE: content carrying a live time commitment inside ~48h never
+      // folds, whatever its risk class (the engineer-visit case, audit F6).
+      const urgent = timeCritical(p, now);
+      if (urgent) {
+        row.extra = `<div style="margin-top:4px">${S.rcc.tag('time-critical', 'warn')}</div>${row.extra || ''}`;
+      }
+      (highStakes || isAgentDelivery || isCalendarBlock || judgementDraft || urgent ? material : suggestions).push(row);
     }
     // quiet-support on → suggestions fold; off → they sit inline with the material items.
     const needs = s.quiet ? material : [...material, ...suggestions];
@@ -368,6 +424,10 @@ module.exports = {
       focusBtn,
       plan ? cmd('Replan', 'plan_today', {}, '') : cmd('Plan my day', 'plan_today', {}, 'primary'),
       planIsDraft ? cmd('Approve plan', 'approve_plan', { planDate: s.today }, '') : '',
+      // ONE THUMB-FLICK TO THE QUEUE (Wave 3, audit F8): on a phone the decision queue — the
+      // tap-first workflow's whole point — landed 3–4 screens deep. The chip jumps straight
+      // to it from the top on every viewport.
+      needs.length ? `<a class="r-btn small" href="#lt-needs">▼ ${needs.length} decision${needs.length === 1 ? '' : 's'}</a>` : '',
     ].join(' ');
 
     // ── hero row: brief · must-win · my day ──
@@ -523,14 +583,58 @@ module.exports = {
       if (f.rulesProposed) bits.push(`<b>${f.rulesProposed}</b> filing rule${f.rulesProposed === 1 ? '' : 's'} proposed, awaiting you`);
       filingNote = `<div class="r-note">🗂️ ${bits.join(' · ')}. Nothing is ever filed while it still has an undecided proposal here.</div>`;
     }
-    const needsPanel = S.rcc.panel({
+    const needsPanel = `<div id="lt-needs">` + S.rcc.panel({
       title: `Needs you`, sub: 'Only irreversible calls and genuine owner judgement',
       headRight: needs.length ? `<span class="r-pill">${needs.length}</span>` : '',
       body: (needs.length
         ? needs.map(needRow).join('')
         : `<div class="r-lrow" style="color:var(--rmuted);font-size:13px">Nothing needs you${foldedCount ? ' right now' : '. That is the design working'}.</div>`)
         + foldLine + overflowLine + approvedNote + mailNote + filingNote,
-    });
+    }) + `</div>`;
+
+    // ── BATCH DECIDE (Wave 3, 2026-08-13 audit — the decision-throughput screen). The audit's
+    // one number: proposals arrive 4.4× faster than they get decided, because each decide was
+    // a find-the-card-and-tap. This screen lists EVERY open proposal grouped by capability
+    // with a checkbox each; one submit posts one ordinary `decide` per ticked row — each tick
+    // is still an individual HUMAN selection and `decideProposal` is untouched. Accept
+    // deliberately NEVER rides a calendar block (its accept IS the Outlook placement, own
+    // verb) or a drafted reply (its accept means "I read these words") from here — those
+    // tick-boxes carry data-acceptok="0" and batch-accept skips them out loud. Reject is a
+    // plain decide for every class. ──
+    let batchPanel = '';
+    if ((s.openProposalCount || 0) >= 4) {
+      const groups = new Map();
+      for (const p of s.openProposals || []) {
+        const g = groups.get(p.capability_key) || [];
+        g.push(p); groups.set(p.capability_key, g);
+      }
+      const groupHtml = [...groups.entries()].map(([cap, rows]) => {
+        const rowsHtml = rows.map((p) => {
+          const task = t(p.task_id);
+          let c = {}; try { c = JSON.parse(String(p.command_json || '{}')); } catch (_) { /* label falls back */ }
+          const label = task ? task.title : String(c.title || CAP_LABEL[cap] || cap.replace(/_/g, ' '));
+          const acceptOk = cap !== 'calendar_block' && cap !== 'mail_reply_draft';
+          return `<label class="r-lrow" style="cursor:pointer"><div style="min-width:0;display:flex;gap:9px;align-items:flex-start">`
+            + `<input type="checkbox" class="lc-batch-ck" data-proposal="${LIFE.esc(p.id)}" data-acceptok="${acceptOk ? '1' : '0'}" style="margin-top:3px">`
+            + `<div style="min-width:0"><div style="font-weight:600">${LIFE.esc(label)}</div>`
+            + `<div style="font-size:12px;color:var(--rmuted);margin-top:2px;line-height:1.4">${LIFE.esc(snip(p.reason, 140))}${acceptOk ? '' : ' · <i>accept on its own card — reject works from here</i>'}</div></div></div>`
+            + `<div style="flex-shrink:0">${S.rcc.conf(p.confidence)}</div></label>`;
+        }).join('');
+        return `<div class="r-eyebrow" style="margin-top:10px">${LIFE.esc(CAP_LABEL[cap] || cap.replace(/_/g, ' '))} · ${rows.length}</div>${rowsHtml}`;
+      }).join('');
+      batchPanel = S.rcc.panel({
+        title: 'Batch decide', sub: 'Tick what you’ve read, then one submit — every tick is still your individual yes or no',
+        headRight: `<span class="r-pill">${s.openProposalCount}</span>`,
+        body: `<div class="lc-batch">`
+          + `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:4px"><button class="r-btn small" data-lc-batch-all>Tick everything</button></div>`
+          + groupHtml
+          + `<div style="margin-top:10px"><input class="lc-input" name="batchnote" maxlength="500" placeholder="Optional note — lands on every ticked decision (why you said no teaches the proposer)" style="width:100%"></div>`
+          + `<div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">`
+          + `<button class="r-btn small primary" data-lc-batch="accept">Accept ticked</button>`
+          + `<button class="r-btn small" data-lc-batch="reject">Reject ticked</button>`
+          + `</div><div class="lc-batch-out r-note" style="min-height:18px"></div></div>`,
+      });
+    }
 
     // ── CAPACITY GUARDRAILS (A3): per stated-aim domain, protected vs review-due — derived from
     // real signals (active outcomes, available work, overdue follow-ups), never a mock score. ──
@@ -567,12 +671,16 @@ module.exports = {
     // ── available now (+ the Inbox triage line — captures stay one click away) ──
     const planPicked = new Set([mw && mw.id, ...sup.map((x) => x.id)].filter(Boolean));
     const availRows = (s.available || []).filter((a) => !planPicked.has(a.id)).slice(0, 5);
+    // "Available now 5" against 116 executable rows was the one dishonest pill on a page
+    // whose other arithmetic is impeccable (audit F7) — the remainder is now said out loud.
+    const availMore = Math.max(0, (s.availableCount || 0) - availRows.length);
     const availPanel = S.rcc.panel({
-      title: 'Available now', sub: 'Only work that is executable now — waiting and approval items are excluded',
-      headRight: availRows.length ? `<span class="r-pill">${availRows.length}</span>` : '',
+      title: 'Available now', sub: 'The top of the executable list — waiting and approval items are excluded',
+      headRight: availRows.length ? `<span class="r-pill">${availRows.length}${availMore ? ` of ${s.availableCount}` : ''}</span>` : '',
       body: (availRows.length
         ? availRows.map((a) => `<div class="r-lrow"><div><div style="font-weight:600">${link(a.id, a.title)}</div><div style="margin-top:4px">${S.rcc.tag(a.domain_key)}</div></div>${cmd('Start', 'transition', { taskId: a.id, to: 'IN_PROGRESS' }, 'small')}</div>`).join('')
         : `<div class="r-lrow" style="color:var(--rmuted);font-size:13px">Nothing else is ready. Capture something, or wake a waiting item if it is genuinely unblocked.</div>`)
+        + (availMore ? `<div class="r-note">${availMore} more executable now — <a href="/life/tasks">the full list is in All tasks</a>.</div>` : '')
         + (s.inboxCount ? `<div class="r-note">${s.inboxCount} fresh capture${s.inboxCount === 1 ? '' : 's'} to sort — <a href="/life/tasks">triage in All tasks</a>.</div>` : ''),
     });
 
@@ -613,7 +721,7 @@ module.exports = {
       + (dueSoonPanel ? `<div style="margin-bottom:12px">${dueSoonPanel}</div>` : '')
       + `<div style="margin-bottom:12px">${supportsBand}</div>`
       + `<div class="lt-main">`
-      + `<div style="display:grid;gap:12px;align-content:start">${needsPanel}${availPanel}</div>`
+      + `<div style="display:grid;gap:12px;align-content:start">${needsPanel}${batchPanel}${availPanel}</div>`
       + `<div style="display:grid;gap:12px;align-content:start">${waitingPanel}${guardrails}${handled}</div>`
       + `</div>`
       + `<style>

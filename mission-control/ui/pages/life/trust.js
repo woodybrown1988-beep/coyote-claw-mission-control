@@ -18,14 +18,30 @@ module.exports = {
       const q = (sql, args) => { const r = LIFE.lifeSelect(o.db, sql, args); return r.ok ? r.rows : []; };
       return {
         caps: q(`SELECT capability_key, display_name, maturity, authority_ceiling, emergency_paused, minimum_sample, required_accuracy FROM life_automation_capabilities ORDER BY capability_key`),
+        // RESOLVED counts only real verdicts — CORRECT / CORRECT_AFTER_EDIT / WRONG. The
+        // lifecycle sweep (engine Wave 1, 2026-08-13) writes UNRESOLVED on expiry, and that
+        // row must move NO capability's accuracy in either direction. This formula matches
+        // capabilityCalibration() in the engine's reviews.ts — the two must not drift.
         calib: q(`SELECT p.capability_key, COUNT(*) n, AVG(p.predicted_confidence) mean_conf,
                          SUM(CASE WHEN o2.resolution IN ('CORRECT','CORRECT_AFTER_EDIT') THEN 1 ELSE 0 END) correct,
-                         SUM(CASE WHEN o2.id IS NOT NULL THEN 1 ELSE 0 END) resolved
+                         SUM(CASE WHEN o2.resolution IN ('CORRECT','CORRECT_AFTER_EDIT','WRONG') THEN 1 ELSE 0 END) resolved
                     FROM life_confidence_predictions p LEFT JOIN life_confidence_outcomes o2 ON o2.prediction_id = p.id
                    GROUP BY p.capability_key`),
+        expired: q(`SELECT COUNT(*) c FROM life_update_proposals WHERE state = 'EXPIRED'`)[0]?.c ?? 0,
         events: q(`SELECT e.event_type, e.reason, e.created_at, c.capability_key
                      FROM life_automation_events e JOIN life_automation_capabilities c ON c.id = e.capability_id
                     ORDER BY e.created_at DESC LIMIT 15`),
+        // THE FILING RAIL'S EVIDENCE, finally on the page where promotions are judged (Wave
+        // 3, audit §4 counter-example). It runs its own per-rule ladder — each rule armed
+        // by an explicit operator tap authorizing a CLASS — so its promotion-grade numbers
+        // lived in a parallel set of books this page could not see.
+        rail: {
+          armed: q(`SELECT COUNT(*) c FROM life_mail_rules WHERE state = 'ARMED'`)[0]?.c ?? 0,
+          armedMachine: q(`SELECT COUNT(*) c FROM life_mail_rules WHERE state = 'ARMED' AND origin = 'CLASSIFIER'`)[0]?.c ?? 0,
+          disabled: q(`SELECT COUNT(*) c FROM life_mail_rules WHERE state = 'DISABLED'`)[0]?.c ?? 0,
+          applied: q(`SELECT COUNT(*) c FROM life_mail_moves WHERE state = 'APPLIED'`)[0]?.c ?? 0,
+          undone: q(`SELECT COUNT(*) c FROM life_mail_moves WHERE state = 'UNDONE'`)[0]?.c ?? 0,
+        },
       };
     } finally { o.db.close(); }
   },
@@ -60,7 +76,39 @@ module.exports = {
       title: 'The record', sub: 'Every automation change, on the books',
       body: s.events.map((e) => `<div class="r-lrow"><div style="font-size:12.5px"><b>${LIFE.esc(e.capability_key.replace(/_/g, ' '))}</b> — ${LIFE.esc(e.event_type.toLowerCase())} · ${LIFE.esc(String(e.reason))}</div></div>`).join(''),
     }) : '';
+    // ONE-LINE ROLLUP (Wave 3, audit: 13 identical "0 of 30" cards with no summary). The
+    // glanceable truth first; the cards carry the detail.
+    const capsArr = s.caps || [];
+    let rollup = '';
+    if (capsArr.length) {
+      const maturities = [...new Set(capsArr.map((c) => String(c.maturity).toLowerCase().replace('_', ' ')))];
+      let best = null;
+      for (const c of capsArr) {
+        const k = calibOf[c.capability_key] || {};
+        const r = Number(k.resolved || 0);
+        if (!best || r > best.r) best = { name: c.display_name, r, need: Number(c.minimum_sample) };
+      }
+      rollup = `<div class="r-note" style="margin-bottom:12px"><b>${capsArr.length} capabilities, ${maturities.length === 1 ? `all at ${maturities[0]}` : `at ${maturities.join(' / ')}`}.</b>`
+        + (best && best.r > 0
+          ? ` Furthest along: ${LIFE.esc(String(best.name))} — ${best.r} of ${best.need} decisions toward its promotion review.`
+          : ' None has enough decided suggestions to move yet — deciding proposals on Today is what feeds this page.')
+        + (Number(s.expired || 0) ? ` ${s.expired} proposal${s.expired === 1 ? '' : 's'} expired unattended — expiries never count for or against anyone.` : '')
+        + `</div>`;
+    }
+    // THE FILING RAIL'S LEDGER CARD (audit §4): the one class-authorized actor, with its
+    // promotion-grade numbers where promotions are judged. Its ladder is per-rule (your tap
+    // arms each rule); the undo rate is its standing accuracy measure.
+    const rl = s.rail || {};
+    const railTotal = Number(rl.applied || 0) + Number(rl.undone || 0);
+    const railCard = railTotal ? S.rcc.panel({
+      title: 'The filing rail — class-authorized, working', sub: 'Each rule armed by your tap authorizes a CLASS; every move individually reversible',
+      body: `<div style="font-size:13px;line-height:1.8">`
+        + `<b>${rl.applied}</b> filed by <b>${rl.armed}</b> armed rule${rl.armed === 1 ? '' : 's'} (${rl.armedMachine || 0} machine-authored, armed by you) · `
+        + `<b>${rl.undone}</b> put back (${railTotal ? ((Number(rl.undone) / railTotal) * 100).toFixed(1) : '0.0'}%)`
+        + `${rl.disabled ? ` · ${rl.disabled} rule${rl.disabled === 1 ? '' : 's'} retired` : ''}.`
+        + `<div class="r-note" style="margin-top:6px">This is the trust ladder working at class grain: one tap authorized each rule, the undo is the accuracy measure, and an undo retires its rule. The rails above earn the same shape by being right here first.</div></div>`,
+    }) : '';
     const note = `<div class="r-note" style="margin-bottom:12px">Being confident is not the same as being allowed: whatever the numbers say, nothing external ever happens without your yes, and the crossed-out rungs are ceilings that cannot be climbed.</div>`;
-    return { stamp: '', body: wrap(note + `<div style="display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));margin-bottom:12px">${(s.caps || []).map(card).join('')}</div>` + ledger) };
+    return { stamp: '', body: wrap(note + rollup + railCard + `<div style="display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));margin:12px 0 12px">${capsArr.map(card).join('')}</div>` + ledger) };
   },
 };

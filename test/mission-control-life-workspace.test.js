@@ -47,7 +47,10 @@ const T = '2026-08-05T12:00:00.000Z';
 const WRITE_AFFORDANCE = /data-op|data-log-action|fetch\(|xhr|XMLHttpRequest|method="post"/i;
 const SANCTIONED_LC = new Set(['data-lc-cancel', 'data-lc-cmd', 'data-lc-complete', 'data-lc-wait', 'data-lc-edit', 'data-lc-fab', 'data-lc-focus', 'data-lc-quiet', 'data-lc-route',
   'data-lc-rename', 'data-lc-cancel-project', 'data-lc-import', 'data-lc-recap', 'data-lc-assign-bulk',
-  'data-lc-mailedit', 'data-lc-due', 'data-lc-replied']);
+  'data-lc-mailedit', 'data-lc-due', 'data-lc-replied',
+  // Batch decide (Wave 3, 2026-08-13): sugar over per-proposal audited `decide` posts —
+  // the shell handler posts one allowlisted command per ticked row, same relay, same gates.
+  'data-lc-batch', 'data-lc-batch-all']);
 const CMD_ALLOWLIST = new Set(['note', 'decide', 'transition', 'complete', 'set_waiting', 'wake', 'reopen', 'undo', 'cancel',
   'plan_today', 'approve_plan', 'compile_week', 'approve_week', 'compile_quarter', 'approve_quarter',
   'pause_capability', 'resume_capability', 'create_outcome', 'create_project', 'set_route', 'set_setting',
@@ -58,7 +61,10 @@ function assertOnlySanctionedLc(body, key) {
     assert.ok(SANCTIONED_LC.has(m[0]), `${key}: unsanctioned life affordance ${m[0]}`);
   }
   for (const m of body.matchAll(/<form\b[^>]*/g)) {
-    assert.ok(/lc-note-form|lc-create-form|lc-replied-form/.test(m[0]), `${key}: only the sanctioned form classes`);
+    // lc-search-form (Wave 3, 2026-08-13) is GET-only — a read affordance (the All-tasks
+    // database search), pinned as such right here so it can never quietly grow a POST.
+    assert.ok(/lc-note-form|lc-create-form|lc-replied-form|lc-search-form/.test(m[0]), `${key}: only the sanctioned form classes`);
+    if (/lc-search-form/.test(m[0])) assert.match(m[0], /method="get"/, `${key}: the search form must stay GET-only`);
   }
   for (const m of body.matchAll(/data-lc-cmd="([^"]*)"/g)) {
     const decoded = m[1].replaceAll('&quot;', '"').replaceAll('&amp;', '&').replaceAll('&#39;', "'");
@@ -173,8 +179,11 @@ test('registry: Life OS is the third workspace with the ruled shape', () => {
   const sched = PAGES.find((pg) => pg.key === 'life-schedule').render({}, {});
   assert.match(sched.body, /Outlook is not connected/);
   assert.ok(!/\d{2}:\d{2}/.test(sched.body.replace(/<style>[\s\S]*?<\/style>/, '')), 'no times invented on an unconnected schedule');
+  // Wave 3 (2026-08-13 audit F3): the old "No agents are connected yet" empty-state was
+  // FALSE against five live deliverables. The page now reads life.db; with an empty section
+  // it renders the honest zero-state instead.
   const ag = PAGES.find((pg) => pg.key === 'life-agents').render({}, {});
-  assert.match(ag.body, /No agents are connected/);
+  assert.match(ag.body, /Nothing has worked on your behalf yet/);
 });
 
 test('workspace switcher: claw note byte-identical; life renders no read-only note', () => {
@@ -225,7 +234,9 @@ test('with a real life.db: real counts, real rows, HTML-escaped, still zero writ
     assert.match(waiting.body, /Lightspeed engineer/);
     const tasks = P('life-tasks').render(P('life-tasks').getSection(null, {}), {});
     assert.match(tasks.body, /Waiting/, 'the waiting section renders in owner case');
-    assert.match(tasks.body, /Filter by words/, 'search/filter control present');
+    // Wave 3 (2026-08-13 audit F1): the DOM-only filter became a DATABASE search — the old
+    // one searched the fetched 100 rows and could report nothing for a task that exists.
+    assert.match(tasks.body, /Search every open task/, 'search/filter control present');
     // planner surfaces render LIVE from the fixture
     const today2 = P('life-today').render(P('life-today').getSection(null, { now: Date.parse(T) }), {});
     assert.match(today2.body, /Today's must-win/i);
@@ -549,7 +560,10 @@ test('agent deliverables (dispatch rung 2026-08-10): ALWAYS material on Today, A
     const TODAY = PAGES.find((p2) => p2.key === 'life-today');
     const out = TODAY.render(TODAY.getSection(null, { now: Date.parse(T) }), { now: Date.parse(T) });
     assert.match(out.body, /Agent deliverable awaiting your accept/, 'the deliverable renders with its own copy');
-    assert.match(out.body, /Accept completes it with the deliverable attached/);
+    // Wave 3 (2026-08-13 audit): the deliverable CONTENT renders on the card — the only
+    // material class without an inline preview was the one the owner never accepted.
+    assert.match(out.body, /Accept completes the task with it attached as evidence/);
+    assert.match(out.body, /KPI baseline numbers attached/, 'the evidenceNote is ON the card, not behind an Inspect round-trip');
     const cmds = [...out.body.matchAll(/data-lc-cmd="([^"]*)"/g)].map((m) => JSON.parse(m[1].replaceAll('&quot;', '"').replaceAll('&amp;', '&')));
     assert.ok(cmds.some((c) => c.command === 'decide' && c.payload && c.payload.proposalId === 'agp1' && c.payload.decision === 'accept'), 'Accept posts the existing decide command — the owner tap IS the state change');
     assertOnlySanctionedLc(out.body, 'life-today');

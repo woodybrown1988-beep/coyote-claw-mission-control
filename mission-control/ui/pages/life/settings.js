@@ -33,7 +33,7 @@ module.exports = {
       body: `<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:6px 0">
           <div><div style="font-weight:600;font-size:13.5px">Quiet support mode</div>
           <div style="font-size:12.5px;color:var(--rmuted);margin-top:3px;line-height:1.5">${quietOn
-            ? 'On — only material calls (approvals, high-stakes suggestions, overdue follow-ups) interrupt you on Today. Lower-stakes suggestions fold quietly into All tasks.'
+            ? 'On — only material calls (approvals, agent deliverables, calendar blocks, time-critical items) interrupt you on Today. Lower-stakes suggestions fold into a quiet disclosure on the same page — one click to see them, never hidden.'
             : 'Off — every open suggestion sits inline on Today. Turn on for a calmer surface.'}</div></div>
           <div class="r-toggle ${quietOn ? 'on' : ''}" data-lc-quiet="${quietOn ? 'on' : 'off'}" role="switch" aria-checked="${quietOn}"><span class="sw"></span></div>
         </div>`,
@@ -67,7 +67,7 @@ module.exports = {
         · <b>Pause any automation</b> — per capability, on <a href="/life/trust">Trust &amp; automation</a>${s.paused && s.paused.length ? ` (currently paused: ${s.paused.map((p) => LIFE.esc(p.capability_key)).join(', ')})` : ''}.<br>
         · <b>Capture</b> — Ctrl/Cmd+K anywhere, or the ＋ button.<br>
         · <b>Cancel / reopen / undo</b> — on each task's own page, always audited.<br>
-        · Calendar and mail connections are separate future decisions; nothing here asks for them.</div>`,
+        · Calendar and mail are connected, read-only and caged: drafts wait in your Outlook unsent, calendar writes land only in the Life OS calendar and only on your accept, and Sent Items is never read. Nothing sends, ever.</div>`,
     });
     return { stamp: '', body: wrap(`<div style="display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(340px,1fr))">${behaviour}${gates}${charter}${privacy}${controls}</div>`) };
   },

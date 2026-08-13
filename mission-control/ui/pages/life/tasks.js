@@ -37,13 +37,28 @@ module.exports = {
   key: 'life-tasks', route: '/life/tasks', workspace: 'life', title: 'All tasks',
   sub: 'Everything, by state — open any task for its history, updates and actions',
 
-  getSection(_db, _ctx) {
+  getSection(_db, ctx) {
     const o = LIFE.openLifeReadonly();
     if (!o.ok) return { absent: true };
     try {
       const q = (sql, args) => { const r = LIFE.lifeSelect(o.db, sql, args); return r.ok ? r.rows : []; };
+      // SILENT TRUNCATION, the All-tasks instance (Wave 3, 2026-08-13 audit F1). The old
+      // LIMIT 100 hid 45 of 143 READY tasks behind a confident-looking page, and the filter
+      // box searched only the fetched DOM — a search could report nothing for a task that
+      // exists. Same defect class Today fixed on 2026-08-11; the fix is the same shape:
+      // true counts said out loud, a show-all path, and a filter that queries the DATABASE.
+      const query = (ctx && ctx.query) || {};
+      const qStr = String(query.q || '').trim().slice(0, 120);
+      const showAll = String(query.all || '') === '1';
+      const like = `%${qStr.replaceAll('%', '').replaceAll('_', '')}%`; // a filter, not a query language
+      const openSel = `SELECT id, title, status, domain_key, execution_mode, due_kind, due_at, project_id FROM life_tasks WHERE status NOT IN ('DONE','CANCELLED')`;
       return {
-        open: q(`SELECT id, title, status, domain_key, execution_mode, due_kind, due_at, project_id FROM life_tasks WHERE status NOT IN ('DONE','CANCELLED') ORDER BY updated_at DESC LIMIT 100`),
+        open: qStr
+          ? q(`${openSel} AND (title LIKE ? OR description LIKE ?) ORDER BY updated_at DESC LIMIT 400`, [like, like])
+          : q(`${openSel} ORDER BY updated_at DESC LIMIT ${showAll ? 2000 : 100}`),
+        counts: q(`SELECT status, COUNT(*) n FROM life_tasks WHERE status NOT IN ('DONE','CANCELLED') GROUP BY status`),
+        finishedCount: q(`SELECT COUNT(*) c FROM life_tasks WHERE status IN ('DONE','CANCELLED')`)[0]?.c ?? 0,
+        q: qStr, showAll,
         waitingOf: q(`SELECT task_id, dependency_label, fallback_at FROM life_waiting_conditions WHERE state = 'ACTIVE'`),
         // real per-task confidence: the strongest open proposal on that task (never a fabricated score).
         confOf: q(`SELECT task_id, MAX(confidence) conf FROM life_update_proposals WHERE state = 'PROPOSED' GROUP BY task_id`),
@@ -57,11 +72,25 @@ module.exports = {
   render(section, _ctx) {
     const s = section || {};
     if (s.absent) return { stamp: '', body: wrap(LIFE.absentCard('All tasks')) };
+    // The search is a FORM, not a DOM filter: it queries every open task in the database
+    // (title + description), so "no results" finally means what it says. The old oninput
+    // filter searched only the 100 fetched rows — a lie by omission on 145 open tasks.
+    const totalOpen = (s.counts || []).reduce((a, c) => a + Number(c.n || 0), 0);
     const head = `<div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
       <div class="r-capline" data-lc-fab role="button" tabindex="0" style="flex:1;min-width:240px">Capture, ask or command…<kbd>⌘K</kbd></div>
-      <input class="lc-input" id="lt-filter" placeholder="Filter by words…" style="max-width:260px" oninput="(function(v){for(const r of document.querySelectorAll('[data-task-row]')){const t=(r.firstElementChild?r.firstElementChild.textContent:r.textContent);r.style.display=t.toLowerCase().includes(v)?'':'none';}})(this.value.toLowerCase())">
+      <form method="get" action="/life/tasks" class="lc-search-form" style="display:flex;gap:6px;align-items:center;margin:0">
+        <input class="lc-input" name="q" value="${LIFE.esc(s.q || '')}" placeholder="Search every open task…" style="max-width:240px">
+        ${s.showAll ? '<input type="hidden" name="all" value="1">' : ''}
+        <button class="r-btn small" type="submit">Search</button>
+        ${s.q ? `<a class="r-btn small" href="/life/tasks${s.showAll ? '?all=1' : ''}">Clear</a>` : ''}
+      </form>
       <select class="r-routesel" data-assign-bulk-sel style="max-width:170px"><option value="">— bulk: pick a project —</option>${(s.projects || []).map((pj) => `<option value="${LIFE.esc(pj.id)}">${LIFE.esc(pj.title)}${pj.status === 'ACTIVE' ? '' : ` (${LIFE.esc(String(pj.status).toLowerCase())})`}</option>`).join('')}</select>
-      <button class="r-btn small" data-lc-assign-bulk title="Assign every VISIBLE row — each task gets its own audited record">Assign visible…</button></div>`;
+      <button class="r-btn small" data-lc-assign-bulk title="Assign every VISIBLE row — each task gets its own audited record">Assign visible…</button></div>`
+      + (s.q
+        ? `<div class="r-note" style="margin-bottom:10px">${s.open.length} of ${totalOpen} open task${totalOpen === 1 ? '' : 's'} match “${LIFE.esc(s.q)}” — searched every open task, title and description.</div>`
+        : (!s.showAll && totalOpen > s.open.length
+          ? `<div class="r-note" style="color:#f5c96b;margin-bottom:10px">Showing the ${s.open.length} most recently touched of <b>${totalOpen}</b> open tasks — <a href="/life/tasks?all=1">show all ${totalOpen}</a>.</div>`
+          : ''));
     const wake = (id) => s.waitingOf.find((w) => w.task_id === id);
     const confOf = (id) => { const r = (s.confOf || []).find((c) => c.task_id === id); return r ? Number(r.conf) : null; };
     const pjSel = (t) => `<select class="r-routesel lc-assign-sel" data-task="${LIFE.esc(t.id)}" title="Project home — parked = not this quarter's fight" style="max-width:170px">
@@ -77,17 +106,33 @@ module.exports = {
     };
     let body = head;
     let shown = 0;
+    // True per-state totals from COUNT, not from the fetched page: a pill that quietly
+    // meant "of the rows we happened to fetch" is the defect this page had (audit F1).
+    const totalFor = (states) => (s.counts || []).filter((c) => states.includes(c.status)).reduce((a, c) => a + Number(c.n || 0), 0);
     for (const [label, states] of SECTIONS) {
       const rows = s.open.filter((t) => states.includes(t.status));
-      if (!rows.length) continue;
+      const total = totalFor(states);
+      if (!rows.length && (s.q || !total)) continue; // searching: only sections with matches
       shown += rows.length;
-      body += S.rcc.panel({ title: `${label}`, headRight: `<span class="r-pill">${rows.length}</span>`, body: rows.map(row).join('') });
+      const pill = rows.length === total || s.q ? `${rows.length}` : `${rows.length} of ${total}`;
+      body += S.rcc.panel({
+        title: `${label}`, headRight: `<span class="r-pill">${pill}</span>`,
+        body: (rows.length ? rows.map(row).join('') : '')
+          + (!s.q && total > rows.length
+            ? `<div class="r-note" style="color:#f5c96b">${total - rows.length} more ${label.split(' — ')[0].toLowerCase()} task${total - rows.length === 1 ? '' : 's'} not shown — <a href="/life/tasks?all=1">show all</a>.</div>`
+            : ''),
+      });
     }
-    if (!shown) {
+    if (!shown && !totalFor(SECTIONS.flatMap(([, st]) => st))) {
       body += LIFE.emptyCard('Inbox', 'Nothing open', 'Nothing is open right now. Capture is one keystroke away, from any page.', '<button class="r-btn primary" data-lc-fab>Capture a task</button>');
     }
     if (s.finished.length) {
-      body += S.rcc.panel({ title: 'Recently finished', body: s.finished.map((t) => `<div class="r-lrow" data-task-row><div>${link(t.id, t.title)} <span style="margin-left:6px">${S.rcc.tag(t.status.toLowerCase())}</span></div></div>`).join('') });
+      const finMore = Math.max(0, (s.finishedCount || 0) - s.finished.length);
+      body += S.rcc.panel({
+        title: 'Recently finished', headRight: `<span class="r-pill">${s.finished.length}${finMore ? ` of ${s.finishedCount}` : ''}</span>`,
+        body: s.finished.map((t) => `<div class="r-lrow" data-task-row><div>${link(t.id, t.title)} <span style="margin-left:6px">${S.rcc.tag(t.status.toLowerCase())}</span></div></div>`).join('')
+          + (finMore ? `<div class="r-note">${finMore} older finished task${finMore === 1 ? '' : 's'} stay on their own pages — every one is reachable from its project or a search.</div>` : ''),
+      });
     }
     const files = s.importFiles || [];
     const fileRow = (f) => `<div class="r-lrow"><div style="min-width:0"><div style="font-weight:600">${LIFE.esc(f.name)}</div>
