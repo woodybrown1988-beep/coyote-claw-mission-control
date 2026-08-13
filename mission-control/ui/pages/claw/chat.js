@@ -25,6 +25,11 @@ const SOURCE_LABEL = {
   router: 'Router', boxquery: 'Box Query', rex: 'Rex', lead: 'Lead', research: 'Researcher',
   brief: 'Rex · morning brief', soto: 'Rex · state of the org',
 };
+// Task-agent messages (operator ask 2026-08-13): source carries life-task:<id>. Labelled by
+// PREFIX, and every one gets a Reply affordance — replying routes note + send-back through
+// the frontdoor core (the engine's task-brief route), so the thread IS the conversation.
+const isTaskSource = (s) => String(s || '').startsWith('life-task:');
+const labelOf = (s) => SOURCE_LABEL[s] || (isTaskSource(s) ? 'Task · agent' : (s || 'box'));
 const COLLAPSED_SOURCES = new Set(['brief', 'soto', 'research']); // long-form → collapsed cards
 
 module.exports = {
@@ -116,7 +121,11 @@ module.exports = {
       }
       // folded ack: the answer card carries its timing
       if (r.source === 'router' && r.job_id && answerByJob.has(r.job_id)) return '';
-      const label = SOURCE_LABEL[r.source] || r.source || 'box';
+      const label = labelOf(r.source);
+      // The reply affordance, task messages only: sets the form's reply target (page script).
+      const replyBtn = isTaskSource(r.source)
+        ? ` <button type="button" class="btn ch-reply" data-reply="${esc(String(r.id))}" data-replylabel="${esc(String(r.text).split('\n')[0].slice(0, 60))}">↩ reply</button>`
+        : '';
       // async chip: a linked job still in flight → amber status chip the poller updates live
       const terminal = r.job_status == null || ['done', 'failed', 'escalated'].includes(String(r.job_status));
       const chip = r.job_id && !terminal
@@ -138,7 +147,7 @@ module.exports = {
       } else {
         body = `${guarded(r.text)}${ack ? `<div class="ch-meta">${asked}answered <time data-ms="${esc(String(r.created_at))}"></time></div>` : ''}`;
       }
-      const inner = `<div class="ch-src">${esc(label)}${chip}<time data-ms="${esc(String(r.created_at))}"></time></div>${body}`;
+      const inner = `<div class="ch-src">${esc(label)}${chip}<time data-ms="${esc(String(r.created_at))}"></time>${replyBtn}</div>${body}`;
       if (COLLAPSED_SOURCES.has(String(r.source))) {
         const first = String(r.text).split('\n')[0].slice(0, 80);
         return `<div class="ch-msg ch-out" data-mid="${esc(String(r.id))}"><details class="ch-details"><summary><span class="ch-src" style="display:inline-flex">${esc(label)}</span> ${esc(first)} ▸</summary>${inner}</details></div>`;
@@ -154,8 +163,12 @@ module.exports = {
     parts.push(`</div>`);
 
     // ---- input (the ONE write affordance — POST /api/chat-message) ----
-    parts.push(`<form class="ch-form" id="ch-form">
-      <textarea name="text" id="ch-text" placeholder="data: … / research: … / plain text → the Lead / ask Rex by name" maxlength="4000" required></textarea>
+    // The reply bar (task-talk, 2026-08-13): visible only while a reply target is set; the
+    // send carries reply_to_id so the engine's task-brief route claims it. ✕ clears it —
+    // a cleared bar means a plain message, never a silent misroute.
+    parts.push(`<div id="ch-replybar" style="display:none;font-size:11.5px;color:var(--muted,#8b98a5);padding:4px 2px">↩ replying to <span id="ch-replylabel" class="mono"></span> — this goes to that task’s agent <button type="button" class="btn" id="ch-replyclear" style="padding:0 8px">✕</button></div>
+    <form class="ch-form" id="ch-form">
+      <textarea name="text" id="ch-text" placeholder="data: … / research: … / plain text → the Lead / ask Rex by name · ↩ reply on a task message to brief its agent" maxlength="4000" required></textarea>
       <button class="btn" type="submit" id="ch-send">Send</button>
     </form>
     <div class="ash" style="font-size:11px;margin-top:4px">Same pipeline as Telegram — plan/merge gates still tap on Telegram in Phase 1. Tailnet-only surface.</div>`);
@@ -165,6 +178,24 @@ module.exports = {
     parts.push(`<script>(function(){
       var last = Number(document.getElementById('ch-thread') ? document.getElementById('ch-thread').dataset.last : 0) || 0;
       var busy = false;
+      // reply target (task-talk 2026-08-13): set by the reply buttons, cleared by send or the bar.
+      var replyTo = null;
+      function setReply(id, label){
+        replyTo = id;
+        var bar = document.getElementById('ch-replybar');
+        var lb = document.getElementById('ch-replylabel');
+        if (lb) lb.textContent = label || ('message ' + id);
+        if (bar) bar.style.display = id == null ? 'none' : 'block';
+        var ta0 = document.getElementById('ch-text'); if (id != null && ta0) ta0.focus();
+      }
+      document.addEventListener('click', function(e){
+        var t = e.target;
+        if (t && t.closest) {
+          var rb = t.closest('.ch-reply');
+          if (rb) { setReply(Number(rb.getAttribute('data-reply')), rb.getAttribute('data-replylabel')); return; }
+          if (t.closest && t.closest('#ch-replyclear')) { setReply(null, null); return; }
+        }
+      });
       var form = document.getElementById('ch-form');
       if (form) form.addEventListener('submit', function(e){
         e.preventDefault();
@@ -173,9 +204,11 @@ module.exports = {
         var text = (ta.value || '').trim();
         if (!text) return;
         busy = true; document.getElementById('ch-send').disabled = true;
-        fetch('/api/chat-message', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: text }) })
+        var payload = { text: text };
+        if (replyTo != null) payload.reply_to_id = replyTo;
+        fetch('/api/chat-message', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) })
           .then(function(r){ return r.json(); })
-          .then(function(r){ if (r && r.ok) { ta.value=''; poll(); } })
+          .then(function(r){ if (r && r.ok) { ta.value=''; setReply(null, null); poll(); } })
           .finally(function(){ busy = false; document.getElementById('ch-send').disabled = false; });
       });
       function collapsedText(target, text){
@@ -195,12 +228,21 @@ module.exports = {
         d.className = 'ch-msg ' + (m.direction === 'in' ? 'ch-in' : 'ch-out');
         d.setAttribute('data-mid', String(m.id));
         if (m.direction === 'out') {
+          var isTask = String(m.source || '').indexOf('life-task:') === 0;
           var src = document.createElement('div'); src.className = 'ch-src';
-          src.textContent = m.label || m.source || 'box';
+          src.textContent = isTask ? 'Task · agent' : (m.label || m.source || 'box');
           if (m.job_id && m.job_status && ['done','failed','escalated'].indexOf(m.job_status) === -1) {
             var c = document.createElement('span'); c.className = 'ch-chip'; c.setAttribute('data-jobchip', m.job_id);
             c.textContent = m.job_status + '…'; src.appendChild(document.createTextNode(' ')); src.appendChild(c);
             if (m.source === 'router' && m.job_id) d.setAttribute('data-ackjob', m.job_id);
+          }
+          if (isTask) {
+            var rbtn = document.createElement('button');
+            rbtn.type = 'button'; rbtn.className = 'btn ch-reply';
+            rbtn.setAttribute('data-reply', String(m.id));
+            rbtn.setAttribute('data-replylabel', String(m.text || '').split('\\n')[0].slice(0, 60));
+            rbtn.textContent = '\\u21a9 reply';
+            src.appendChild(document.createTextNode(' ')); src.appendChild(rbtn);
           }
           d.appendChild(src);
           // an arriving ANSWER folds its standalone ack bubble (same rule as the server render)
