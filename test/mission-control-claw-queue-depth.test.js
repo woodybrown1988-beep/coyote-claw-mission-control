@@ -66,8 +66,14 @@ function insertHeartbeat(db, ownerId, workerName) {
     .run(ownerId, workerName, NOW - 1000);
 }
 
+// A worker appears EITHER on the board (it is on a job) or in its department (it is at rest) —
+// operator ruling 2026-08-13, "if they are done on a job then they can be in their departments".
+// These assertions are about the worker's identity and gauge, which are the same in both places,
+// so the helper looks in both rather than pinning where the card happened to sit.
 function workerCards(section) {
-  return section.columns.flatMap((column) => column.cards).filter((card) => card.workerGauge);
+  const onBoard = section.columns.flatMap((column) => column.cards);
+  const atHome = (section.departments || []).flatMap((d) => d.agents);
+  return onBoard.concat(atHome).filter((card) => card.workerGauge);
 }
 
 function assertSelectOnly(statements) {

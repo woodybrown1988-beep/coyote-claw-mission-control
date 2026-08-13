@@ -639,8 +639,53 @@ module.exports = {
     }
 
     // --- assemble columns in fixed order ----------------------------------------------------------
+    // THE FLEET AT REST GOES HOME (operator ask 2026-08-13: "if they are done on a job then they
+    // can be in their departments which will sit above the kanban board — the list for complete is
+    // long so makes it messy").
+    //
+    // The board is for work IN MOTION. An agent that is idle, or that finished something hours
+    // ago, is not work — it was sitting in Idle and Done as a card the same size and weight as a
+    // live job, which is what made Done a wall. Those agents now sit in their DEPARTMENT above the
+    // board, where "who have I got and what did they last do" is answered in one glance.
+    //
+    // Only AGENT cards move. A job card — a life task, an unattributed fleet job — stays in Done,
+    // because that IS a piece of work reaching an end and the operator tracks it. Nothing is
+    // hidden: an agent that FAILED goes home too, with the failure named on its row.
+    const atRest = new Set(['idle', 'done']);
+    const isAgentCard = (c) => c.kind === 'agent' || c.kind === 'reviewsQueue';
+    const homeCards = cards.filter((c) => isAgentCard(c) && atRest.has(c.col));
+    const boardCards = cards.filter((c) => !(isAgentCard(c) && atRest.has(c.col)));
+
+    // One panel per department that has anyone at home; the rest are named as quiet in one line, so
+    // a department is never silently missing.
+    const departments = [];
+    for (const d of Object.values(S.DEPARTMENTS)) {
+      const mine = homeCards.filter((c) => c.dept === d.key);
+      if (!mine.length) continue;
+      departments.push({
+        key: d.key, label: d.label, colour: d.colour,
+        // The row carries the SAME identity fields a board card does — name, role, department,
+        // avatar, worker gauge. Going home must not make an agent's facts less available than
+        // being on the board did; only the presentation changes.
+        agents: mine.map((c) => ({
+          kind: c.kind, name: c.name, initials: c.initials, role: c.role, av: c.av, col: c.col,
+          dept: c.dept, deptLabel: c.deptLabel, deptColour: c.deptColour,
+          workerGauge: c.workerGauge,
+          line: c.task ? ((c.task.strong || '') + (c.task.tail || '')).trim() : '',
+          time: c.time || '', failed: /failed/i.test(String(c.time || '')),
+          button: c.button || null,
+        })),
+      });
+    }
+    // A department with nobody at home is either OUT (its agents are on the board right now) or
+    // genuinely empty. Saying "nobody at home in Build" while both Coders sit in Blocked would read
+    // as though the department did not exist — the same class of lie as the old "Not built" cards.
+    const onBoardDepts = new Set(boardCards.filter((c) => isAgentCard(c) && c.dept).map((c) => c.dept));
+    const restDepts = Object.values(S.DEPARTMENTS).filter((d) => !departments.some((x) => x.key === d.key));
+    const outDepts = restDepts.filter((d) => onBoardDepts.has(d.key)).map((d) => d.label);
+    const quietDepts = restDepts.filter((d) => !onBoardDepts.has(d.key)).map((d) => d.label);
+
     const COLS = [
-      { id: 'idle', cls: 'idle', label: 'Idle' },
       { id: 'queued', cls: 'queued', label: 'Queued' },
       { id: 'working', cls: 'working', label: 'Working' },
       { id: 'blocked', cls: 'blocked', label: 'Blocked' },
@@ -652,7 +697,7 @@ module.exports = {
     // the presentation ages).
     const AGING_MS = 7 * 86_400_000;
     const columns = COLS.map((col) => {
-      const colCards = cards.filter((c) => c.col === col.id);
+      const colCards = boardCards.filter((c) => c.col === col.id);
       if (col.id !== 'blocked') return { ...col, cards: colCards };
       const sorted = colCards.slice().sort((a, b) => (b._ageMs || 0) - (a._ageMs || 0));
       return { ...col, cards: sorted.filter((c) => (c._ageMs || 0) < AGING_MS), aging: sorted.filter((c) => (c._ageMs || 0) >= AGING_MS) };
@@ -662,6 +707,9 @@ module.exports = {
       halt: ctx.halt || { halted: false },
       lib: { active: libActive, total: libTotal, events: libEvents },
       queueDepth,
+      departments,
+      quietDepts,
+      outDepts,
       columns,
     };
   },
@@ -840,18 +888,66 @@ module.exports = {
       '<span class="s-note">oldest queued: ' + esc(oldestQueue) + '</span>' +
       '</div>';
 
-    const divider =
-      '<div class="flow-divider">' +
-      '<span class="t">The fleet</span><span class="rule"></span>' +
-      '<span class="legend">' +
-      '<span><i style="background:#566"></i>idle</span><span><i style="background:#60A5FA"></i>queued</span>' +
-      '<span><i style="background:#34D399"></i>working</span><span><i style="background:#F87171"></i>blocked</span>' +
-      '<span><i style="background:rgba(52,211,153,.45)"></i>done</span>' +
-      '</span></div>';
+    // THE DEPARTMENTS — the fleet at home, above the board. Each agent is one dense ROW, not a
+    // card: at rest the useful facts are who it is and what it last did, and a card's worth of
+    // chrome for that is exactly what made the Done column a wall.
+    function deptHtml(d) {
+      const rows = d.agents.map((a) => {
+        // NOT truncated. This line carries the honesty copy — "you sent it back, but the task is
+        // routed HYBRID and the sweep only takes AI-routed work" is the sentence that stops the
+        // owner waiting for a re-run that cannot happen. Clipping it at 68 characters cut it in
+        // half. A row can wrap; a half-truth cannot.
+        const detail = a.line
+          ? '<div class="dagent-line' + (a.failed ? ' bad' : '') + '">' + esc(a.line) + '</div>'
+          : '';
+        // What this agent DOES, kept at rest: the department panel doubles as the org chart, and
+        // "finds precedent · cites sources" is the answer to "what have I actually got here".
+        const role = a.role ? '<div class="dagent-role">' + esc(a.role) + '</div>' : '';
+        const when = a.time ? '<span class="dagent-time">' + esc(a.time) + '</span>' : '';
+        const open = a.button && a.button.href
+          ? '<a class="dagent-link" href="' + esc(a.button.href) + '">' + esc(a.button.label) + '</a>'
+          : '';
+        return '<div class="dagent">'
+          + '<div class="dagent-av ' + esc(a.av) + '" style="background:' + esc(d.colour) + ';color:#0A0E16;border-color:' + esc(d.colour) + '">' + esc(a.initials) + '</div>'
+          + '<div class="dagent-body"><div class="dagent-top"><span class="dagent-name">' + esc(a.name) + '</span>'
+          + workerGaugeHtml(a.workerGauge) + when + '</div>'
+          + role + detail + open + '</div></div>';
+      }).join('');
+      return '<div class="dept-panel" style="border-top-color:' + esc(d.colour) + ';background:' + esc(d.colour) + '0A">'
+        + '<div class="dept-panel-head" style="color:' + esc(d.colour) + '">' + esc(d.label)
+        + '<span class="dept-panel-n">' + d.agents.length + '</span></div>'
+        + rows + '</div>';
+    }
+    const depts = section.departments || [];
+    const notes = [];
+    if ((section.outDepts || []).length) {
+      notes.push('<span style="color:var(--text-2)">Out on the board:</span> ' + esc((section.outDepts || []).join(' · ')));
+    }
+    if ((section.quietDepts || []).length) {
+      notes.push('No agents standing by in ' + esc((section.quietDepts || []).join(' · ')));
+    }
+    const quiet = notes.length ? '<div class="dept-quiet">' + notes.join(' &nbsp;·&nbsp; ') + '</div>' : '';
+    const deptBand = depts.length || quiet
+      ? '<div class="sec-label" style="margin-top:16px">The departments<span class="rule"></span>'
+        + '<span class="legend"><span>standing by · last job shown</span></span></div>'
+        + '<div class="dept-grid">' + depts.map(deptHtml).join('') + '</div>' + quiet
+      : '';
 
-    const board = '<div class="board">' + (section.columns || []).map(colHtml).join('') + '</div>';
+    // The board's own heading carries the state legend. The old "The fleet" flow-divider is gone:
+    // it was a third heading for the same region, and its 'idle' swatch named a column that no
+    // longer exists — idle agents are at home in their department now.
+    const board = '<div class="flow-divider" style="margin:18px 0 13px">'
+      + '<span class="t">On the board</span><span class="rule"></span>'
+      + '<span class="legend">'
+      + '<span><i style="background:#60A5FA"></i>queued</span>'
+      + '<span><i style="background:#34D399"></i>working</span>'
+      + '<span><i style="background:#F87171"></i>blocked</span>'
+      + '<span><i style="background:rgba(52,211,153,.45)"></i>done</span>'
+      + '<span style="color:var(--muted)">an agent goes home to its department when it finishes</span>'
+      + '</span></div>'
+      + '<div class="board">' + (section.columns || []).map(colHtml).join('') + '</div>';
 
-    const body = haltBanner + apex + librarian + queueContext + divider + board;
+    const body = haltBanner + apex + librarian + queueContext + deptBand + board;
     return { stamp, body };
   },
 };
