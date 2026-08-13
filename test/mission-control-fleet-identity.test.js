@@ -45,7 +45,11 @@ const job = (db, r) => db.prepare(
   `INSERT INTO jobs (id,type,payload,status,created_at,updated_at,attempts,error,parent_job_id,owner_id)
    VALUES (?,?,?,?,?,?,0,NULL,NULL,?)`,
 ).run(r.id, r.type, r.payload || '{}', r.status, r.at ?? NOW - 60000, r.at ?? NOW - 60000, r.owner ?? null);
-const allCards = (section) => section.columns.flatMap((c) => c.cards.concat(c.aging || []));
+// The whole fleet, wherever it is standing: on the board (working / queued / blocked) or at home
+// in its department (idle / just finished). Identity is identical in both — see agents.js.
+const allCards = (section) => section.columns
+  .flatMap((c) => c.cards.concat(c.aging || []))
+  .concat((section.departments || []).flatMap((d) => d.agents));
 
 // ── the live bug, exactly ───────────────────────────────────────────────────────────────────────
 test('every live worker keeps its OWN identity — no desk is absorbed by whoever registered first', () => {
@@ -88,6 +92,7 @@ test('the board never asserts that a working agent does not exist', () => {
   // Both are present as live workers, under their own names and their own departments.
   assert.match(html, /researcher-1/);
   assert.match(html, /accountant-1/);
+  // The role travels with the agent even at rest — the department panel doubles as the org chart.
   assert.match(html, /finds precedent · cites sources/, 'the Researcher does research');
   assert.match(html, /books · obligations · advisory/, 'the Accountant does the books');
   db.close();
@@ -122,7 +127,11 @@ test('every card on the board carries a department', () => {
 test('the department OWNS the head of the card, not just a chip', () => {
   const db = makeDb();
   beat(db, 'b:1', 'accountant-1');   // Finance, emerald
-  beat(db, 'b:2', 'researcher-1');   // Research, violet
+  beat(db, 'b:2', 'researcher-1');   // Research, indigo
+  // Both must be ON THE BOARD for there to be a card head to check — an agent at rest goes home to
+  // its department, where it is a row rather than a card (operator ruling 2026-08-13).
+  job(db, { id: 'a1', type: 'accountant', status: 'running', owner: 'b:1' });
+  job(db, { id: 'r1', type: 'research', status: 'running', owner: 'b:2' });
   const html = AGENTS.render(AGENTS.getSection(db, ctxFor(db)), { serverRev: '' }).body;
   const finance = S.DEPARTMENTS.finance.colour;
   const research = S.DEPARTMENTS.research.colour;
@@ -141,21 +150,80 @@ test('the department OWNS the head of the card, not just a chip', () => {
   db.close();
 });
 
+// ── the fleet at rest goes home ─────────────────────────────────────────────────────────────────
+// "if they are done on a job then they can be in their departments which will sit above the kanban
+// board — the list for complete is long so makes it messy" (operator, 2026-08-13). The rule: the
+// BOARD is work in motion; an agent that is idle or finished is at home in its department. What
+// must NOT happen is an agent disappearing, or a job card being swept up with the agents.
+test('an agent at rest goes home to its department and leaves the board', () => {
+  const db = makeDb();
+  beat(db, 'b:1', 'accountant-1');                                   // idle → home
+  beat(db, 'b:2', 'boxquery-1');                                     // working → board
+  job(db, { id: 'w1', type: 'boxquery', status: 'running', owner: 'b:2', payload: JSON.stringify({ question: 'covers yesterday?' }) });
+  job(db, { id: 'd1', type: 'accountant', status: 'done', owner: 'b:1', at: NOW - 3600_000 });
+  const s = AGENTS.getSection(db, ctxFor(db));
+
+  const home = (s.departments || []).flatMap((d) => d.agents).map((a) => a.name);
+  const board = s.columns.flatMap((c) => c.cards).map((c) => c.name);
+  assert.ok(home.includes('accountant-1'), 'the finished worker is at home in Finance');
+  assert.ok(!board.includes('accountant-1'), 'and is NOT still sitting in the board');
+  assert.ok(board.includes('boxquery-1'), 'the working one stays on the board');
+  assert.ok(!home.includes('boxquery-1'), 'and is not also at home — an agent is in exactly one place');
+  assert.equal(s.columns.find((c) => c.id === 'idle'), undefined, 'there is no Idle column any more');
+  db.close();
+});
+
+test('a JOB card is never swept home with the agents — only agents go to departments', () => {
+  const db = makeDb();
+  // A life task that finished: it is WORK, and the owner tracks it, so it stays in Done.
+  job(db, {
+    id: 'lt', type: 'boxquery', status: 'done', at: NOW - 3600_000,
+    payload: JSON.stringify({ lifeDispatch: { taskId: 'task-1', title: 'Create repeat-member dashboard' } }),
+  });
+  const s = AGENTS.getSection(db, ctxFor(db));
+  const done = s.columns.find((c) => c.id === 'done').cards;
+  assert.ok(done.some((c) => /repeat-member dashboard/.test((c.task && c.task.strong) || '')),
+    'the finished life task stays on the board where the owner tracks it');
+  const home = (s.departments || []).flatMap((d) => d.agents);
+  assert.ok(!home.some((a) => /repeat-member dashboard/.test(a.line || '')), 'it did not go home with the fleet');
+  db.close();
+});
+
+test('going home never truncates the honesty line', () => {
+  const db = makeDb();
+  // The sentence that tells the owner a re-run CANNOT happen is long — and was being clipped at 68
+  // characters into "...but the task is r…", which reads as if the re-run is coming.
+  job(db, {
+    id: 'gv', type: 'lead', status: 'escalated', at: NOW - 3600_000,
+    payload: JSON.stringify({ lifeDispatch: { taskId: 'task-hy', title: 'Answered HYBRID task' } }),
+  });
+  db.prepare(`INSERT INTO job_events (job_id, kind, detail) VALUES ('gv','owner-answered',?)`)
+    .run(JSON.stringify({ mode: 'HYBRID' }));
+  const html = AGENTS.render(AGENTS.getSection(db, ctxFor(db)), { serverRev: '' }).body;
+  assert.match(html, /routed HYBRID and the sweep only takes AI-routed work/,
+    'the whole sentence survives — a row can wrap, a half-truth cannot');
+  db.close();
+});
+
 test('the BOARD leads; the summary tiles sit underneath it (operator ruling 2026-08-13)', () => {
   const db = makeDb();
   beat(db, 'b:1', 'coder-1');
   job(db, { id: 'j1', type: 'boxquery', status: 'done', at: NOW - 600_000 });
   const body = ENGINE.render(ENGINE.getSection(db, ctxFor(db)), ctxFor(db)).body;
+  const depts = body.indexOf('The departments');
   const board = body.indexOf('<div class="board">');
   const summary = body.indexOf('Where it stands');
   const today = body.indexOf('dept-rollcall');
   const plumbing = body.indexOf('The plumbing');
-  assert.ok(board > -1 && summary > -1 && today > -1 && plumbing > -1, 'all four sections render');
+  assert.ok(depts > -1 && board > -1 && summary > -1 && today > -1 && plumbing > -1, 'all five sections render');
+  assert.ok(depts < board, 'the fleet at rest sits ABOVE the board (operator ruling 2026-08-13)');
   assert.ok(board < summary, 'the board comes before the summary — this page is worked, not read');
   assert.ok(summary < today, 'the triage tiles and the day roll-call stay together');
   assert.ok(today < plumbing, 'the plumbing stays last');
-  // and the section heading is announced ONCE
-  assert.equal(body.split('>The fleet<').length - 1, 1, 'one "The fleet" heading, not two');
+  // each region is announced exactly ONCE — the page used to say "The fleet" twice
+  for (const heading of ['The departments', 'On the board', 'Where it stands', 'The plumbing']) {
+    assert.equal(body.split('>' + heading + '<').length - 1, 1, `one "${heading}" heading`);
+  }
   db.close();
 });
 

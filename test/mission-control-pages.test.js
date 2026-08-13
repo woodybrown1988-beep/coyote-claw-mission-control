@@ -102,7 +102,11 @@ test('agents: matches the mockup structure + counts a TEXT guard_flag (the fixed
   // pass 2026-08-13: it was helping push the board below the fold).
   assert.match(out.body, /The Librarian/, 'the Librarian is still named');
   assert.match(out.body, /active</, 'and still publishes its live count');
-  for (const c of ['idle', 'queued', 'working', 'blocked', 'done']) assert.match(out.body, new RegExp(`col ${c}`), `kanban ${c}`);
+  // Four columns, not five: the Idle column is gone — an agent at rest goes home to its DEPARTMENT
+  // above the board (operator ruling 2026-08-13, "the list for complete is long so makes it messy").
+  for (const c of ['queued', 'working', 'blocked', 'done']) assert.match(out.body, new RegExp(`col ${c}`), `kanban ${c}`);
+  assert.doesNotMatch(out.body, /col idle/, 'no Idle column — at-rest agents are in their departments');
+  assert.match(out.body, /The departments/, 'and the departments band exists to hold them');
   assert.match(out.body, /Chief of Staff/);
   // The two hard-coded "Research — not yet wired" / "Accountant — not built" cards were REMOVED on
   // 2026-08-13: both services had been running for weeks and had completed jobs that same day, so
@@ -146,6 +150,14 @@ test('agents: NO heartbeat rows → degrades to in-flight coder jobs by owner (n
   db.close();
 });
 
+// An agent is EITHER on the board (on a job) or at home in its department (idle / just finished) —
+// operator ruling 2026-08-13. These assertions are about the worker's state, which is recorded the
+// same way in both, so gather from both rather than pinning where the card happens to sit.
+function fleetCards(section) {
+  return section.columns.flatMap((c) => c.cards)
+    .concat((section.departments || []).flatMap((d) => d.agents));
+}
+
 test('agents: a fresh worker owning a CANCELLED escalation + stale-done jobs does NOT flood — one idle card', () => {
   const OLD = NOW - 5 * 86400000; // 5 days ago — well past the 36h "recently done" window
   const db = makeDb((d) => {
@@ -160,7 +172,7 @@ test('agents: a fresh worker owning a CANCELLED escalation + stale-done jobs doe
   });
   const ctx = ctxFor(db);
   const section = PAGES.agents.getSection(db, ctx);
-  const coderCards = section.columns.flatMap((c) => c.cards).filter((c) => c.av === 'av-coder');
+  const coderCards = fleetCards(section).filter((c) => c.av === 'av-coder');
   assert.equal(coderCards.length, 1, 'exactly ONE coder card (coder-1) — not one per stale/cancelled job');
   assert.equal(coderCards[0].name, 'coder-1');
   assert.equal(coderCards[0].col, 'idle', 'a deliberate cancel is suppressed + stale done skipped → the worker is IDLE');
@@ -182,7 +194,7 @@ test('agents: a LIVE worker that GAVE UP (unmarked escalation) surfaces "gave up
   });
   const ctx = ctxFor(db);
   const section = PAGES.agents.getSection(db, ctx);
-  const cards = section.columns.flatMap((c) => c.cards).filter((c) => c.av === 'av-coder');
+  const cards = fleetCards(section).filter((c) => c.av === 'av-coder');
   const c1 = cards.find((c) => c.name === 'coder-1');
   const c2 = cards.find((c) => c.name === 'coder-2');
   // coder-1 gave up → Blocked column, "Gave up — needs you", a TG button (a real failure is VISIBLE)

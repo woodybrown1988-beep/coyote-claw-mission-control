@@ -1191,6 +1191,25 @@ function css() {
   .strip .s-item b{color:var(--text);font-size:12px}
   .strip .s-sep{flex:1}
   .strip .s-note{font-family:var(--font-mono);font-size:9.5px;color:var(--muted)}
+  /* THE DEPARTMENTS — the fleet at home. An agent at rest is a ROW, not a card: at rest the only
+     facts worth space are who it is and what it last did. Cards for that is what turned the Done
+     column into a wall (operator: "the list for complete is long so makes it messy"). */
+  .dept-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(228px,1fr));gap:10px}
+  .dept-panel{border:1px solid var(--border);border-top:3px solid;border-radius:10px;padding:9px 11px 10px}
+  .dept-panel-head{font-family:var(--font-mono);font-size:9.5px;font-weight:600;text-transform:uppercase;letter-spacing:.11em;display:flex;align-items:center;gap:7px;margin-bottom:8px}
+  .dept-panel-n{margin-left:auto;font-size:9.5px;color:var(--muted);background:rgba(255,255,255,.05);border-radius:7px;padding:0 6px}
+  .dagent{display:flex;gap:8px;align-items:flex-start;padding:6px 0;border-top:1px solid var(--border)}
+  .dept-panel .dagent:first-of-type{border-top:none;padding-top:0}
+  .dagent-av{width:22px;height:22px;border-radius:6px;display:grid;place-items:center;flex-shrink:0;font-family:var(--font-display);font-weight:600;font-size:9px;border:1px solid}
+  .dagent-body{min-width:0;flex:1}
+  .dagent-top{display:flex;align-items:baseline;gap:7px}
+  .dagent-name{font-family:var(--font-display);font-weight:600;font-size:12px;color:var(--text)}
+  .dagent-time{margin-left:auto;font-family:var(--font-mono);font-size:8.5px;color:var(--muted);white-space:nowrap}
+  .dagent-role{font-family:var(--font-mono);font-size:8px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-top:1px}
+  .dagent-line{font-size:11px;color:var(--text-2);line-height:1.4;margin-top:3px}
+  .dagent-line.bad{color:var(--amber)}
+  .dagent-link{display:inline-block;margin-top:4px;font-family:var(--font-mono);font-size:9px;color:var(--cyan);border-bottom:1px solid rgba(34,211,238,.35)}
+  .dept-quiet{font-family:var(--font-mono);font-size:9.5px;color:var(--muted);margin-top:8px}
   .dept-rollcall{display:flex;gap:7px;flex-wrap:wrap;margin:11px 0 0}
   .dept-card{flex:1 1 128px;border:1px solid;border-top-width:3px;border-radius:9px;padding:8px 10px;background:var(--panel-2)}
   .dept-card .dn{font-family:var(--font-mono);font-size:9px;font-weight:600;text-transform:uppercase;letter-spacing:.1em}
