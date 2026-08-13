@@ -84,4 +84,79 @@ function freshness(sync, nowMs) {
   return { stale, caption, ageText };
 }
 
-module.exports = { lifeDbPath, openLifeReadonly, lifeSelect, esc, emptyCard, absentCard, freshness, FRESH_WINDOW_MIN };
+// ── AGENT PRESENCE (operator ask 2026-08-13): who is on a task, and where they are ──────
+// The job STATE MACHINE is the stage — never a fabricated percentage. Life pages supply the
+// task→job mapping (AGENT_DISPATCHED events, latest per task, from life.db); the BUSINESS
+// ctx.q supplies live job status from librarian.db — a cross-domain read BY REFERENCE (ids
+// only), exactly the canon shape. A missing jobs table or a stale id degrades to no chip.
+const AGENT_NAME = { boxquery: 'Box Query', research: 'Researcher', lead: 'The Lead' };
+const STAGE_LABEL = {
+  queued: 'queued', preparing: 'picked up', dispatched: 'picked up', running: 'working now',
+  awaiting_plan_feedback: 'plan awaits your approval', awaiting_signoff: 'in review',
+  done: 'delivered', failed: 'gave up', escalated: 'gave up',
+};
+const IN_FLIGHT_STATUSES = ['queued', 'preparing', 'dispatched', 'running', 'awaiting_plan_feedback', 'awaiting_signoff'];
+
+/** rows of AGENT_DISPATCHED events (ordered ASC by created_at) → Map(taskId → {jobId, jobKind}),
+ *  LAST dispatch wins (a sent-back task's live job is its newest one). */
+function latestDispatchByTask(eventRows) {
+  const m = new Map();
+  for (const r of eventRows || []) {
+    let pj = {};
+    try { pj = JSON.parse(String(r.payload_json || '{}')); } catch (_) { continue; }
+    if (pj && typeof pj.jobId === 'string' && pj.jobId) m.set(r.task_id, { jobId: pj.jobId, jobKind: String(pj.jobKind || '') });
+  }
+  return m;
+}
+
+/** Batch job-status lookup over the BUSINESS q (ctx.q shape: (sql, params) → {ok, rows}). */
+function jobStates(bizQ, jobIds) {
+  const out = new Map();
+  const ids = [...new Set(jobIds)].filter(Boolean).slice(0, 200);
+  if (!ids.length || typeof bizQ !== 'function') return out;
+  const ph = ids.map(() => '?').join(',');
+  const res = bizQ(`SELECT id, type, status, updated_at, result FROM jobs WHERE id IN (${ph})`, ids);
+  if (!res || !res.ok || !Array.isArray(res.rows)) return out;
+  for (const r of res.rows) out.set(String(r.id), r);
+  return out;
+}
+
+/** The one-line presence chip: '🤖 Box Query · working now' (empty when nothing live). */
+function agentChip(jobKind, status) {
+  if (!status) return '';
+  const name = AGENT_NAME[jobKind] || jobKind || 'agent';
+  const stage = STAGE_LABEL[status] || status;
+  const tone = status === 'awaiting_plan_feedback' ? 'color:#ef6b68;font-weight:600'
+    : status === 'awaiting_signoff' ? 'color:#f5c96b' : 'color:var(--rmuted)';
+  return `<span style="font-size:11.5px;${tone}">🤖 ${esc(name)} · ${esc(stage)}</span>`;
+}
+
+/** The honest stage strip: the REAL state machine as steps, current highlighted. No %s —
+ *  a one-shot job has no truthful percentage; the machine's position is the truth. */
+function stageStrip(status) {
+  const STEPS = [
+    { label: 'queued', at: ['queued'] },
+    { label: 'working', at: ['preparing', 'dispatched', 'running'] },
+    { label: 'review', at: ['awaiting_plan_feedback', 'awaiting_signoff'] },
+    { label: 'delivered', at: ['done'] },
+  ];
+  if (status === 'failed' || status === 'escalated') {
+    return `<span style="font-size:11px;color:#ef6b68">✕ gave up — reopen or send back to try again</span>`;
+  }
+  let reached = -1;
+  STEPS.forEach((st, i) => { if (st.at.includes(status)) reached = i; });
+  if (reached === -1 && status === 'done') reached = 3;
+  const seg = (st, i) => {
+    const isNow = i === reached;
+    const past = i < reached || status === 'done';
+    const col = isNow ? (status === 'awaiting_plan_feedback' ? '#ef6b68' : '#f0b64f') : past ? 'var(--rgood,#45c486)' : 'var(--rmuted)';
+    const w = isNow ? 'font-weight:650;' : '';
+    return `<span style="${w}color:${col}">${esc(st.label)}</span>`;
+  };
+  return `<span style="font-size:11px;display:inline-flex;gap:6px;align-items:center">${STEPS.map(seg).join('<span style="color:var(--rmuted)">›</span>')}</span>`;
+}
+
+module.exports = {
+  lifeDbPath, openLifeReadonly, lifeSelect, esc, emptyCard, absentCard, freshness, FRESH_WINDOW_MIN,
+  AGENT_NAME, STAGE_LABEL, IN_FLIGHT_STATUSES, latestDispatchByTask, jobStates, agentChip, stageStrip,
+};

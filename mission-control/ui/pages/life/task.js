@@ -55,16 +55,38 @@ module.exports = {
         projects: q("SELECT id, title, status FROM life_projects WHERE status NOT IN ('CANCELLED','DONE') ORDER BY CASE status WHEN 'ACTIVE' THEN 0 ELSE 1 END, title"),
         // Owner→agent context (operator ask 2026-08-13): the task's files, for the rail below.
         files: q("SELECT id, filename, kind, bytes, note, created_at FROM life_task_files WHERE task_id = ? AND state = 'ATTACHED' ORDER BY created_at", [id]),
+        // AGENT PRESENCE (operator ask 2026-08-13): the latest dispatch's job id — the live
+        // stage comes from librarian.db in render via ctx.q (cross-domain read by reference).
+        lastDispatch: (() => {
+          const rows = q(`SELECT task_id, payload_json FROM life_task_events WHERE task_id = ? AND event_type = 'AGENT_DISPATCHED' ORDER BY created_at ASC`, [id]);
+          const m = LIFE.latestDispatchByTask(rows);
+          return m.get(id) || null;
+        })(),
       };
     } finally { o.db.close(); }
   },
 
-  render(section, _ctx) {
+  render(section, ctx) {
     const s = section || {};
     if (s.err) return { stamp: '', body: wrap(LIFE.emptyCard('Task', 'Not found', s.err, '<a class="r-btn" href="/life/tasks">All tasks</a>')) };
     if (!s.engine || !s.engine.ok) return { stamp: '', body: wrap(LIFE.absentCard('This task')) };
     const t = s.task;
     const id = String(t.id);
+    // LIVE JOB STAGE (agent presence): the dispatched job's real state-machine position,
+    // read at render time from the business store by id. Stale id / absent table → no chip.
+    const liveJob = s.lastDispatch
+      ? (LIFE.jobStates((ctx && ctx.q) || null, [s.lastDispatch.jobId]).get(s.lastDispatch.jobId) || null)
+      : null;
+    // A handoff's specialist job is the one actually working — follow it for the stage.
+    let handoffJob = null;
+    if (liveJob && liveJob.result) {
+      try {
+        const jr = JSON.parse(String(liveJob.result));
+        if (jr && typeof jr.handoffJob === 'string' && jr.handoffJob) {
+          handoffJob = LIFE.jobStates((ctx && ctx.q) || null, [jr.handoffJob]).get(jr.handoffJob) || null;
+        }
+      } catch (_) { /* result is the job's own record — unreadable means no follow */ }
+    }
 
     // header + actions
     const acts = (ACTIONS[t.status] || []).map(([label, cmd, to]) => btnCmd(label, cmd, to === null ? { taskId: id } : { taskId: id, to })).join(' ');
@@ -137,6 +159,18 @@ module.exports = {
           : 'Route it AI and the sweep picks it up with everything on this page.';
       } else if (lastAgentEv && lastAgentEv.event_type === 'REOPENED') {
         stateLine = 'Sent back — it goes out again on the next sweep with your notes and files.';
+      } else if (liveJob) {
+        // AGENT PRESENCE: the agent by NAME and the job's real state-machine position — a
+        // stage strip, never a fabricated %. A handoff shows the specialist actually working.
+        const who = handoffJob
+          ? `${LIFE.esc(LIFE.AGENT_NAME[s.lastDispatch.jobKind] || s.lastDispatch.jobKind)} → <b>${LIFE.esc(LIFE.AGENT_NAME[String(handoffJob.type)] || String(handoffJob.type))}</b>`
+          : `<b>${LIFE.esc(LIFE.AGENT_NAME[s.lastDispatch.jobKind] || s.lastDispatch.jobKind)}</b>`;
+        const stageJob = handoffJob || liveJob;
+        const planGate = String(stageJob.status) === 'awaiting_plan_feedback'
+          ? `<div style="font-size:12.5px;color:#ef6b68;font-weight:600;margin-top:4px">⛔ The Lead’s plan awaits YOUR approval — the gate taps on Telegram; nothing builds until you answer.</div>`
+          : '';
+        stateLine = `${who} is on this — ${LIFE.stageStrip(String(stageJob.status))}`
+          + ` <a class="r-btn small" href="/claw/agents" style="margin-left:8px">See the board</a>${planGate}`;
       } else {
         let pl = {}; try { pl = JSON.parse(String((lastAgentEv || {}).payload_json || '{}')); } catch (_) { /* renders generic */ }
         stateLine = `An agent has been sent (job ${LIFE.esc(String(pl.jobId || '').slice(0, 8))}, ${LIFE.esc(String(pl.jobKind || 'agent'))}) — its answer lands below as an update, and the accept stays yours on Today.`;

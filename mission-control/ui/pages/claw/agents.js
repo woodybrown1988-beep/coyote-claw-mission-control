@@ -79,6 +79,11 @@ function describeJob(job) {
     p = {};
   }
   if (p && typeof p === 'object') {
+    // Life-dispatched work names its TASK first (operator ask 2026-08-13): the board is
+    // where the agents live, and a life job's identity is the task it serves.
+    if (p.lifeDispatch && typeof p.lifeDispatch === 'object' && typeof p.lifeDispatch.title === 'string' && p.lifeDispatch.title.trim()) {
+      return trunc(p.lifeDispatch.title.trim(), 90);
+    }
     for (const f of ['title', 'summary', 'brief', 'description', 'headline', 'subject', 'task', 'name']) {
       if (typeof p[f] === 'string' && p[f].trim()) return trunc(p[f].trim(), 90);
     }
@@ -86,6 +91,19 @@ function describeJob(job) {
     if (prn != null && Number.isFinite(Number(prn))) return 'PR #' + Number(prn);
     if (typeof p.repo === 'string' && p.repo.trim()) return trunc(p.repo.trim(), 90);
   }
+  return null;
+}
+
+// Life-task pointer on a job (payload.lifeDispatch, written by the life dispatcher) —
+// the board↔task link both ways. Ids only; the title already rides the payload.
+function lifeTaskOf(job) {
+  try {
+    const p = JSON.parse(job.payload || '{}') || {};
+    const ld = p && p.lifeDispatch;
+    if (ld && typeof ld === 'object' && typeof ld.taskId === 'string' && ld.taskId) {
+      return { taskId: ld.taskId, title: typeof ld.title === 'string' ? ld.title : '' };
+    }
+  } catch (_) { /* not a life job */ }
   return null;
 }
 
@@ -362,6 +380,9 @@ module.exports = {
         c.workerGauge = { known: inFlightCount !== null, count: inFlightCount };
       }
       const summary = job ? describeJob(job) || String(job.type) : null;
+      // A life-dispatched rep job links its card back to the task (board↔task, 2026-08-13).
+      // Set AFTER the bucket branches below so a blocked-on-you card keeps its gate button.
+      const lifeRep = job ? lifeTaskOf(job) : null;
       if (rep.bucket === 'blocked_you') {
         const cp = youCopy(meta.key, job.status);
         c.col = 'blocked';
@@ -412,6 +433,12 @@ module.exports = {
         c.task = { muted: true, tail: 'No active job — standing by.' };
         if (job) c.time = 'last seen ' + S.agoLabel(now - num(job.updated_at));
       }
+      // The board↔task link: only where no bucket button exists (a blocked-on-you card's
+      // gate tap outranks navigation — the tap IS the point there).
+      if (lifeRep && !c.button && rep.bucket !== 'idle') {
+        c.button = { label: 'Open the task', href: '/life/task?id=' + encodeURIComponent(lifeRep.taskId) };
+        c.role = meta.role + ' · life task';
+      }
       return c;
     }
 
@@ -456,12 +483,18 @@ module.exports = {
     let genTerminal = 0;
     for (const j of generics.slice().sort((x, y) => num(y.updated_at) - num(x.updated_at))) {
       const b = classify(j, activeChildParents);
-      const typeLabel = String(j.type || 'job');
+      const life = lifeTaskOf(j);
+      const typeLabel = life ? (describeJob(j) || String(j.type || 'job')) : String(j.type || 'job');
       const fleetOnly = unattributedCoderJobIds.has(j.id);
-      const role = fleetOnly
-        ? (j.status === 'queued' ? 'fleet · unattributed queue' : (j.owner_id ? 'fleet · unrecognised ' + trunc(String(j.owner_id), 14) : 'fleet · unowned'))
-        : 'worker · ' + (j.owner_id ? trunc(String(j.owner_id), 14) : 'unassigned');
-      const base = { kind: 'generic', av: 'av-research', initials: 'JB', name: trunc(typeLabel, 16), role };
+      const role = life
+        ? 'life task · ' + String(j.type || 'job')
+        : fleetOnly
+          ? (j.status === 'queued' ? 'fleet · unattributed queue' : (j.owner_id ? 'fleet · unrecognised ' + trunc(String(j.owner_id), 14) : 'fleet · unowned'))
+          : 'worker · ' + (j.owner_id ? trunc(String(j.owner_id), 14) : 'unassigned');
+      const base = { kind: 'generic', av: 'av-research', initials: life ? 'LT' : 'JB', name: trunc(life ? String(j.type || 'job') : typeLabel, 16), role };
+      // The board↔task link (operator ask 2026-08-13): a life job's card opens its task.
+      // Blocked-on-you keeps its gate button (the tap is the point there).
+      const lifeBtn = life ? { label: 'Open the task', href: '/life/task?id=' + encodeURIComponent(life.taskId) } : null;
       if (b === 'blocked_you') {
         const cp = youCopy(null, j.status);
         const waiting = j.status === 'awaiting_signoff'
@@ -470,18 +503,18 @@ module.exports = {
         cards.push(Object.assign(base, { col: 'blocked', variant: 'you', task: { strong: typeLabel, tail: ' — ' + cp.verb + '.' }, waitPill: { tone: 'you', text: cp.pill }, button: { label: cp.btn }, time: waiting, _ageMs: now - num(j.updated_at), _trackJob: j.id, _trackMode: 'gate' }));
         trackJobIds.add(j.id);
       } else if (b === 'blocked_dept') {
-        cards.push(Object.assign(base, { col: 'blocked', variant: 'dept', task: { strong: typeLabel, tail: ' — awaiting another desk.' }, waitPill: { tone: 'dept', text: 'Waiting on ' + deptNameFor(j) + ' Dept' }, time: 'blocked ' + S.agoLabel(now - num(j.updated_at)), _ageMs: now - num(j.updated_at) }));
+        cards.push(Object.assign(base, { col: 'blocked', variant: 'dept', task: { strong: typeLabel, tail: ' — awaiting another desk.' }, waitPill: { tone: 'dept', text: 'Waiting on ' + deptNameFor(j) + ' Dept' }, time: 'blocked ' + S.agoLabel(now - num(j.updated_at)), _ageMs: now - num(j.updated_at), button: lifeBtn || undefined }));
       } else if (b === 'working') {
-        cards.push(Object.assign(base, { col: 'working', variant: 'w', task: { strong: typeLabel, tail: ' running.' }, time: 'running ' + fmtDur(now - num(j.updated_at)), _trackJob: j.id, _trackMode: 'working' }));
+        cards.push(Object.assign(base, { col: 'working', variant: 'w', task: { strong: typeLabel, tail: ' running.' }, time: 'running ' + fmtDur(now - num(j.updated_at)), _trackJob: j.id, _trackMode: 'working', button: lifeBtn || undefined }));
         trackJobIds.add(j.id);
       } else if (b === 'queued') {
-        cards.push(Object.assign(base, { col: 'queued', variant: 'q', task: { strong: typeLabel, tail: ' queued.' }, time: 'waiting ' + S.agoLabel(now - num(j.created_at)) }));
+        cards.push(Object.assign(base, { col: 'queued', variant: 'q', task: { strong: typeLabel, tail: ' queued.' }, time: 'waiting ' + S.agoLabel(now - num(j.created_at)), button: lifeBtn || undefined }));
       } else if ((b === 'done' || b === 'failed') && now - num(j.updated_at) <= RECENT_MS && genTerminal < 4) {
         genTerminal++;
         if (b === 'failed') {
-          cards.push(Object.assign(base, { col: 'done', variant: '', inlineStyle: 'border-left:2.5px solid var(--amber)', task: { strong: typeLabel, tail: ' — failed.' }, time: '✕ failed · ' + S.agoLabel(now - num(j.updated_at)) }));
+          cards.push(Object.assign(base, { col: 'done', variant: '', inlineStyle: 'border-left:2.5px solid var(--amber)', task: { strong: typeLabel, tail: ' — failed.' }, time: '✕ failed · ' + S.agoLabel(now - num(j.updated_at)), button: lifeBtn || undefined }));
         } else {
-          cards.push(Object.assign(base, { col: 'done', variant: 'd', task: { strong: typeLabel, tail: ' — done.' }, time: '✓ ' + S.agoLabel(now - num(j.updated_at)) }));
+          cards.push(Object.assign(base, { col: 'done', variant: 'd', task: { strong: typeLabel, tail: ' — done.' }, time: '✓ ' + S.agoLabel(now - num(j.updated_at)), button: lifeBtn || undefined }));
         }
       }
     }
