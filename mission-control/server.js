@@ -743,7 +743,14 @@ function handleForecastOverride(req, res) {
 }
 
 // Short-poll: messages after the cursor + job statuses for the chips. Pure-read; exported for tests.
-const CHAT_SOURCE_LABEL = { router: 'Router', boxquery: 'Box Query', rex: 'Rex', lead: 'Lead', research: 'Researcher', brief: 'Rex · morning brief', soto: 'Rex · state of the org' };
+// Agent names from the shared roster (the fourth place that had invented its own — the live chat
+// feed labelled the same agent differently from the board and the task pages). Non-agent sources
+// (the router, Rex's two scheduled formats) are named here because no roster entry owns them.
+const CHAT_SOURCE_LABEL = {
+  router: 'Router', rex: 'Rex',
+  boxquery: SHARED.FLEET.boxquery.name, lead: SHARED.FLEET.lead.name, research: SHARED.FLEET.research.name,
+  brief: 'Rex · morning brief', soto: 'Rex · state of the org',
+};
 function chatUpdates(db, afterId, jobIds) {
   try {
     const messages = db.prepare(

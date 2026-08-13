@@ -1153,6 +1153,19 @@ function css() {
   .av-acct{background:rgba(137,154,177,.07);color:rgba(170,195,225,.3)} .av-boss{background:rgba(137,154,177,.12);color:#A9B6C9} .av-cos{background:var(--cyan-dim);color:#7FE9F5}
   .acard-name{font-family:var(--font-display);font-weight:600;font-size:13.5px;line-height:1.1}
   .acard-role{font-family:var(--font-mono);font-size:8.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-top:2px}
+  /* DEPARTMENT (operator ask 2026-08-13: "each department should have a more pronounced colour so
+     its distinguishable and we should know what department they are in"). The department owns the
+     AVATAR and the chip; the left rail keeps carrying kanban STATE. Two colour systems, two
+     surfaces — never the same pixel, so neither can be mistaken for the other. */
+  .dept-chip{font-family:var(--font-mono);font-size:8px;font-weight:600;text-transform:uppercase;letter-spacing:.1em;padding:1.5px 6px;border-radius:5px;border:1px solid;display:inline-block;vertical-align:middle}
+  .acard-namerow{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+  .acard-av.dept-av{border-width:1.5px}
+  .dept-rollcall{display:flex;gap:7px;flex-wrap:wrap;margin:11px 0 0}
+  .dept-card{flex:1 1 128px;border:1px solid;border-radius:9px;padding:8px 10px;background:var(--panel-2)}
+  .dept-card .dn{font-family:var(--font-mono);font-size:9px;font-weight:600;text-transform:uppercase;letter-spacing:.1em}
+  .dept-card .dv{font-family:var(--font-display);font-size:17px;font-weight:600;color:var(--text);margin-top:3px;line-height:1}
+  .dept-card .ds{font-family:var(--font-mono);font-size:8.5px;color:var(--muted);margin-top:3px}
+  .dept-card.quiet{opacity:.55}
   .acard-task{font-size:12.5px;color:var(--text-2);line-height:1.45;margin-bottom:8px}
   .acard-task .muted{color:var(--muted)} .acard-task b{color:var(--text);font-weight:600}
   .wait-pill{display:flex;align-items:center;gap:6px;padding:5px 9px;border-radius:7px;margin-bottom:8px;line-height:1.3;font-family:var(--font-mono);font-size:10.5px}
@@ -1471,7 +1484,122 @@ const rcc = {
   },
 };
 
+// ── THE FLEET ROSTER ───────────────────────────────────────────────────────────────────────────
+// ONE place that says who each agent is and which department it belongs to (operator ask
+// 2026-08-13: "the names of the agents as 'cos-query' and finplan etc don't mean much").
+//
+// Before this, three separate places invented their own answer and all three were wrong:
+//   • the board printed the RAW JOB TYPE as the agent's name — cos-query, finplan, boxquery;
+//   • the coder roster claimed EVERY heartbeat worker, so accountant-1, boxquery-1, finplan-1 and
+//     researcher-1 all rendered as "Coder · builder · cage" — the Accountant was labelled a
+//     builder in a cage while it was doing the books;
+//   • life-lib.js carried a 3-entry name map, so a task dispatched to the Financial Planner
+//     showed "finplan" on the task page.
+// A name that appears in two places drifts; this is the single writer for agent identity.
+//
+// Roles are written for the OPERATOR, not the engine: what this agent does for him, in plain
+// words. Departments carry a pronounced colour so the board is scannable by desk.
+const DEPARTMENTS = {
+  build: { key: 'build', label: 'Build', colour: '#FBBF24' },
+  data: { key: 'data', label: 'Data', colour: '#60A5FA' },
+  finance: { key: 'finance', label: 'Finance', colour: '#34D399' },
+  research: { key: 'research', label: 'Research', colour: '#A78BFA' },
+  customer: { key: 'customer', label: 'Customer', colour: '#F472B6' },
+  office: { key: 'office', label: 'Office', colour: '#22D3EE' },
+  engine: { key: 'engine', label: 'Engine', colour: '#94A3B8' },
+};
+
+const FLEET = {
+  lead: { key: 'lead', name: 'The Lead', role: 'plans the work · reviews the diff', dept: 'build', initials: 'LE' },
+  coder: { key: 'coder', name: 'Coder', role: 'writes the code · opens the PR', dept: 'build', initials: 'CO' },
+  boxquery: { key: 'boxquery', name: 'Data Desk', role: 'answers from the box · read-only', dept: 'data', initials: 'DD' },
+  research: { key: 'research', name: 'Researcher', role: 'finds precedent · cites sources', dept: 'research', initials: 'RE' },
+  finplan: { key: 'finplan', name: 'Financial Planner', role: 'plans the numbers · reports only', dept: 'finance', initials: 'FP' },
+  accountant: { key: 'accountant', name: 'Accountant', role: 'books · obligations · advisory', dept: 'finance', initials: 'AC' },
+  reviews: { key: 'reviews', name: 'Reviews', role: 'drafts replies in your voice', dept: 'customer', initials: 'RV' },
+  'cos-query': { key: 'cos-query', name: 'Rex', role: 'chief of staff · reads, never acts', dept: 'office', initials: 'RX' },
+  'learn-validate': { key: 'learn-validate', name: 'Learning Check', role: 'banks what the fleet learns', dept: 'engine', initials: 'LC' },
+  regate: { key: 'regate', name: 'Re-gate', role: 're-presents a PR to the merge gate', dept: 'engine', initials: 'RG' },
+  'needs-human': { key: 'needs-human', name: 'Needs a human', role: 'nothing automatic fits', dept: 'engine', initials: 'NH' },
+};
+
+// job.type → roster key. Exact match first (the types the fleet actually enqueues), then the
+// historic substring rule so older/compound types — 'coder-build', 'review-draft' — still land on
+// the right desk. Unknown returns null; callers render the raw type rather than inventing a name.
+function agentKeyForType(type) {
+  const t = String(type || '').toLowerCase();
+  if (!t) return null;
+  if (FLEET[t]) return t;
+  if (t.includes('lead') || t.includes('plan')) return 'lead';
+  if (t.includes('coder') || t.includes('build') || t.includes('pr')) return 'coder';
+  if (t.includes('review') || t.includes('ingest') || t.includes('draft')) return 'reviews';
+  return null;
+}
+
+// worker_name → roster key. Workers are named <agent>-<n> (coder-1, boxquery-1, accountant-1,
+// finplan-1, researcher-1); the trailing index is the INSTANCE, never the identity. 'researcher'
+// is the one name that differs from its job type ('research') — mapped explicitly rather than
+// left to a fuzzy match.
+function agentKeyForWorker(workerName) {
+  const w = String(workerName || '').trim().toLowerCase();
+  if (!w) return null;
+  const base = w.replace(/-\d+$/, '');
+  if (base === 'researcher') return 'research';
+  if (FLEET[base]) return base;
+  return agentKeyForType(base);
+}
+
+/** Identity for a roster key OR a raw job type. `known:false` means we are printing the raw type
+ *  because nothing in the roster claims it — an honest "unmapped", never a made-up name. */
+function agentIdentity(keyOrType) {
+  const key = FLEET[String(keyOrType || '').toLowerCase()] ? String(keyOrType).toLowerCase() : agentKeyForType(keyOrType);
+  const a = key ? FLEET[key] : null;
+  const dept = DEPARTMENTS[(a && a.dept) || 'engine'];
+  if (!a) {
+    return {
+      key: null, known: false,
+      name: String(keyOrType || 'job'), role: 'unmapped job type',
+      initials: String(keyOrType || '?').slice(0, 2).toUpperCase(),
+      dept: dept.key, deptLabel: dept.label, deptColour: dept.colour,
+    };
+  }
+  return {
+    key: a.key, known: true, name: a.name, role: a.role, initials: a.initials,
+    dept: dept.key, deptLabel: dept.label, deptColour: dept.colour,
+  };
+}
+
+/** Epoch ms of the most recent LONDON midnight. "Today" on this board is the operator's day, not
+ *  UTC's — through a British summer evening a UTC window silently drops everything after 23:00
+ *  local, which is exactly when the fleet is often busiest. Two steps so the DST boundary is read
+ *  from the zone rather than assumed. */
+function londonMidnightMs(nowMs) {
+  const parts = (ms) => new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Europe/London', hour12: false,
+    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit',
+  }).format(new Date(ms));
+  const offsetAt = (ms) => Date.parse(parts(ms).replace(', ', 'T') + 'Z') - ms;
+  const day = parts(nowMs).slice(0, 10);
+  const guess = Date.parse(day + 'T00:00:00Z');
+  return guess - offsetAt(guess);
+}
+
+/** The department tag that rides every fleet card. Colour is inline because it is DATA (the
+ *  department's own colour), not a theme decision — one class per department would drift. */
+function deptChip(deptKey) {
+  const d = DEPARTMENTS[String(deptKey || 'engine')] || DEPARTMENTS.engine;
+  return '<span class="dept-chip" style="color:' + d.colour + ';background:' + d.colour
+    + '1F;border-color:' + d.colour + '59">' + escapeHtml(d.label) + '</span>';
+}
+
 module.exports = {
+  DEPARTMENTS,
+  FLEET,
+  agentKeyForType,
+  agentKeyForWorker,
+  agentIdentity,
+  deptChip,
+  londonMidnightMs,
   escapeHtml,
   freshness,
   fmtTime,

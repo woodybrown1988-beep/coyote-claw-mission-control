@@ -21,8 +21,12 @@ const PAGE_SIZE = 30;
 function rowsOf(res) { return res && res.ok && Array.isArray(res.rows) ? res.rows : []; }
 
 // Source chip labels — the agent speaking. Unknown sources render as-is (never hidden).
+// The agent names come from the shared roster so the chat, the board and the task pages call the
+// same agent the same thing; only the sources that are NOT fleet agents (the router, Rex's two
+// scheduled formats) are named here.
 const SOURCE_LABEL = {
-  router: 'Router', boxquery: 'Box Query', rex: 'Rex', lead: 'Lead', research: 'Researcher',
+  router: 'Router', rex: 'Rex',
+  boxquery: S.FLEET.boxquery.name, lead: S.FLEET.lead.name, research: S.FLEET.research.name,
   brief: 'Rex · morning brief', soto: 'Rex · state of the org',
 };
 // Task-agent messages (operator ask 2026-08-13): source carries life-task:<id>. Labelled by
