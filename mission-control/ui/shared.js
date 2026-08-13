@@ -1099,8 +1099,15 @@ function css() {
   .lead-role{font-family:var(--font-mono);font-size:9.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.09em}
   .lead-desc{font-size:13px;color:var(--text-2);margin-top:7px;line-height:1.5}
   .lead-desc .muted{color:var(--muted)}
-  .cos-btn{font-family:var(--font-display);font-weight:500;font-size:12px;letter-spacing:.01em;padding:8px 15px;border-radius:8px;cursor:pointer;background:var(--cyan);color:#04222A;border:none;margin-top:11px;transition:all .15s;box-shadow:0 0 16px var(--cyan-glow)}
+  /* The two Chief of Staff buttons were INLINE <a>s carrying margin-top. Vertical margin does
+     nothing on an inline box, so they rode up into the description text instead of sitting under
+     it, and the second was nudged over with an inline margin-left. They now live in their own flex
+     row with a real gap — the spacing is the container's job, not each button's. */
+  .cos-actions{display:flex;gap:9px;flex-wrap:wrap;margin-top:13px}
+  .cos-btn{display:inline-flex;align-items:center;font-family:var(--font-display);font-weight:500;font-size:12px;letter-spacing:.01em;padding:8px 15px;border-radius:8px;cursor:pointer;background:var(--cyan);color:#04222A;border:none;transition:all .15s;box-shadow:0 0 16px var(--cyan-glow)}
+  .cos-btn.ghost{background:transparent;color:var(--cyan);box-shadow:none;border:1px solid var(--cyan)}
   .cos-btn:hover{background:#5EE3F5;transform:translateY(-1px)}
+  .cos-btn.ghost:hover{background:var(--cyan-dim);color:var(--cyan)}
   .mstat{display:inline-flex;align-items:center;gap:6px;font-family:var(--font-mono);font-size:10px;font-weight:500;text-transform:uppercase;letter-spacing:.06em;padding:2px 9px;border-radius:9px}
   .mstat .sd{width:6px;height:6px;border-radius:50%}
   .mstat.idle{background:rgba(255,255,255,.04);color:var(--muted)} .mstat.idle .sd{background:#566}

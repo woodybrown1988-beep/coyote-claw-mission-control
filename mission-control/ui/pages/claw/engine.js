@@ -137,12 +137,18 @@ module.exports = {
       + `<span class="s-sep"></span><span class="s-note">${esc(failedSubcopy)}</span></div>`;
     return {
       stamp: a.stamp || hh.stamp,
-      // ONE "The fleet" heading. There were two — this one, and the flow-divider inside the board
-      // module — so the page announced the same section twice, twelve inches apart, with the whole
-      // apex and both strips sitting between them.
-      body: hero
+      // ORDER (operator ask 2026-08-13): the BOARD comes first, then the summary underneath it.
+      // The design-system default is "KPIs at the top, always", and that is right for a reporting
+      // dashboard you read. This page is not read, it is WORKED — the operator comes here to see
+      // who is stuck and act, and the tiles are the recap, not the lead. So the board leads and
+      // "Where it stands" answers the follow-up question rather than delaying the first one.
+      //
+      // ONE "The fleet" heading, too: there were two — this page's and the flow-divider inside the
+      // board module — announcing the same section twice with the whole apex sitting between them.
+      body: a.body
+        + `<div class="sec-label" style="margin-top:22px">Where it stands<span class="rule"></span></div>`
+        + hero
         + flowHtml(m.flow)
-        + a.body
         + `<div class="sec-label" style="margin-top:22px">The plumbing<span class="rule"></span></div>` + failedLine + hh.body,
     };
   },
