@@ -802,8 +802,10 @@ module.exports = {
       // 2026-08-13: "we also need to be able to talk to … the cheif of staff"). It is now a
       // link into MC Chat with the question pre-loaded; Rex answers inline there, read-only,
       // and /claw stays a read-only console (a GET link is not a write affordance).
+      '<div class="cos-actions">' +
       '<a class="cos-btn" href="/claw/chat?ask=' + encodeURIComponent('Rex, what has been done today?') + '">▸ What\'s been done today?</a>' +
-      '<a class="cos-btn" style="background:transparent;color:var(--cyan);box-shadow:none;border:1px solid var(--cyan);margin-left:8px" href="/claw/chat">▸ Talk to the fleet</a>' +
+      '<a class="cos-btn ghost" href="/claw/chat">▸ Talk to the fleet</a>' +
+      '</div>' +
       '</div></div>' +
       '</div>';
 

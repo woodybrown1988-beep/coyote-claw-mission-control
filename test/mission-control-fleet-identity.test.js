@@ -141,6 +141,36 @@ test('the department OWNS the head of the card, not just a chip', () => {
   db.close();
 });
 
+test('the BOARD leads; the summary tiles sit underneath it (operator ruling 2026-08-13)', () => {
+  const db = makeDb();
+  beat(db, 'b:1', 'coder-1');
+  job(db, { id: 'j1', type: 'boxquery', status: 'done', at: NOW - 600_000 });
+  const body = ENGINE.render(ENGINE.getSection(db, ctxFor(db)), ctxFor(db)).body;
+  const board = body.indexOf('<div class="board">');
+  const summary = body.indexOf('Where it stands');
+  const today = body.indexOf('dept-rollcall');
+  const plumbing = body.indexOf('The plumbing');
+  assert.ok(board > -1 && summary > -1 && today > -1 && plumbing > -1, 'all four sections render');
+  assert.ok(board < summary, 'the board comes before the summary — this page is worked, not read');
+  assert.ok(summary < today, 'the triage tiles and the day roll-call stay together');
+  assert.ok(today < plumbing, 'the plumbing stays last');
+  // and the section heading is announced ONCE
+  assert.equal(body.split('>The fleet<').length - 1, 1, 'one "The fleet" heading, not two');
+  db.close();
+});
+
+test('the Chief of Staff buttons are a spaced row, not inline links carrying vertical margin', () => {
+  const db = makeDb();
+  const body = AGENTS.render(AGENTS.getSection(db, ctxFor(db)), { serverRev: '' }).body;
+  assert.match(body, /<div class="cos-actions">/, 'the buttons live in their own row');
+  // The live bug: an INLINE <a> with margin-top does not push anything — the buttons rode up into
+  // the description text. Spacing belongs to the container, and the row must be a flex box.
+  assert.doesNotMatch(body, /class="cos-btn"[^>]*margin-(top|left)/, 'no per-button margin hacks');
+  assert.match(S.css(), /\.cos-actions\{display:flex;gap:/, 'the row supplies the gap');
+  assert.match(S.css(), /\.cos-btn\{display:inline-flex/, 'and the button is not an inline box');
+  db.close();
+});
+
 test('a question-shaped job shows what was ASKED, not its job type', () => {
   const db = makeDb();
   job(db, { id: 'j1', type: 'boxquery', status: 'running', payload: JSON.stringify({ question: 'How many covers yesterday?' }) });
