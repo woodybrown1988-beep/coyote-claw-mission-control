@@ -133,6 +133,11 @@ const COMMAND_SHAPES = {
     && (p.dispositions === undefined || (Array.isArray(p.dispositions) && p.dispositions.length <= 500))
     && (p.project === undefined || p.project === null || (typeof p.project === 'object' && typeof p.project.title === 'string')),
   set_route: (p) => typeof p.taskId === 'string' && ['SELF', 'AI', 'DELEGATE', 'HYBRID'].includes(p.mode),
+  // Owner→agent context (operator ask 2026-08-13). attach_task_file is DELIBERATELY not
+  // here: the browser never names inbox paths — the upload endpoint stages the bytes and
+  // posts that command server-side. These two are plain drawer buttons.
+  remove_task_file: (p) => typeof p.taskId === 'string' && typeof p.fileId === 'string' && !!p.fileId,
+  renew_dispatch: (p) => typeof p.taskId === 'string' && !!p.taskId,
   set_setting: (p) => typeof p.key === 'string' && typeof p.value === 'string',
   pause_capability: (p) => typeof p.capabilityKey === 'string',
   resume_capability: (p) => typeof p.capabilityKey === 'string',

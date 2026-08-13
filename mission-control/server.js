@@ -38,6 +38,12 @@ const AUTH = require('./ui/auth.js');
 const EXPORTS = require('./ui/exports-lib.js');
 const CC_DIR = process.env.COYOTE_CLAW_DIR || path.join(homedir(), 'coyote-claw');
 const OPENTABLE_INBOX = process.env.OPENTABLE_INBOX || path.join(CC_DIR, 'data', 'opentable-inbox');
+// TASK FILES (operator ask 2026-08-13) — the same inbox pattern, personal edition: MC
+// writes BYTES to the life writer's upload inbox and posts the small attach command over
+// the UDS; the sole writer moves the file home beside life.db and owns every DB write.
+const LIFE_TASK_INBOX = process.env.COYOTE_LIFE_TASK_INBOX || path.join(CC_DIR, 'data', 'task-files-inbox');
+const LIFE_TASK_FILES = process.env.COYOTE_LIFE_TASK_FILES || path.join(CC_DIR, 'data', 'task-files');
+const MAX_TASK_FILE_BYTES = 15 * 1024 * 1024; // matches the writer's own cap — one number, two gates
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;   // 25 MB — generous for the one-off 26-month backfill
 
 // Wave 1 auth (2026-07-31 security remediation): every response gets these headers, and a SINGLE
@@ -161,6 +167,14 @@ function handleRequest(req, res) {
   }
   if (req.method === 'POST' && url.pathname === '/api/reservations-upload') {
     handleReservationsUpload(req, res, url);
+    return;
+  }
+  if (req.method === 'POST' && url.pathname === '/api/life/task-upload') {
+    handleTaskFileUpload(req, res, url);
+    return;
+  }
+  if (req.method === 'GET' && url.pathname === '/api/life/task-file') {
+    handleTaskFileDownload(req, res, url);
     return;
   }
   if (req.method === 'POST' && url.pathname === '/api/recipe-import') {
@@ -969,6 +983,75 @@ function handleReservationsUpload(req, res, url) {
         });
       });
   });
+}
+
+// TASK-FILE UPLOAD (operator ask 2026-08-13) — the reservations-inbox pattern, personal
+// edition. MC's whole job is BYTES-to-inbox + the small attach command; the SOLE WRITER
+// sanitises again, moves the file home beside life.db (0700/0600) and writes the row +
+// FILE_ATTACHED event. A writer refusal cleans the inbox copy — nothing half-attached.
+function handleTaskFileUpload(req, res, url) {
+  const taskId = String(url.searchParams.get('taskId') || '');
+  if (!/^[0-9a-f-]{36}$/.test(taskId)) { sendJson(res, 400, { ok: false, error: 'a task id is needed' }); return; }
+  const safeName = UP.sanitizeUploadName(String(url.searchParams.get('name') || ''));
+  if (!safeName || !UP.isAllowedTaskFileName(safeName)) {
+    sendJson(res, 400, { ok: false, error: 'accepted types: .csv .tsv .txt .md .json .xlsx .docx .pdf .png .jpg' }); return;
+  }
+  const note = String(url.searchParams.get('note') || '').slice(0, 500);
+  const clen = Number(req.headers['content-length'] || 0);
+  if (clen > MAX_TASK_FILE_BYTES) { sendJson(res, 413, { ok: false, error: 'file too large — 15 MB max' }); return; }
+  readBinaryBody(req, res, MAX_TASK_FILE_BYTES, (buf) => {
+    if (!buf || !buf.length) { sendJson(res, 400, { ok: false, error: 'empty file — nothing to hand over' }); return; }
+    const inboxName = `up${Date.now().toString(36)}-${safeName}`;
+    const dest = path.join(LIFE_TASK_INBOX, inboxName);
+    if (!UP.isWithinDir(LIFE_TASK_INBOX, dest)) { sendJson(res, 400, { ok: false, error: 'invalid file name' }); return; }
+    try {
+      fs.mkdirSync(LIFE_TASK_INBOX, { recursive: true, mode: 0o700 });
+      fs.writeFileSync(dest, buf, { mode: 0o600 });
+    } catch (_) { sendJson(res, 500, { ok: false, error: 'could not save to the inbox' }); return; }
+    LIFECMD.sendCommand({
+      command: 'attach_task_file',
+      idempotencyKey: crypto.randomUUID().replace(/-/g, '').slice(0, 24),
+      payload: { taskId, inboxName, originalName: safeName, note },
+    }, (status, reply) => {
+      if (!reply || !reply.ok) { try { fs.unlinkSync(dest); } catch (_) { /* best-effort clean */ } }
+      sendJson(res, status, reply || { ok: false, error: 'the writer did not answer' });
+    });
+  });
+}
+
+/** TASK-FILE DOWNLOAD — read-only, by ROW: the path derives from the writer's own registry
+ *  (task_id + filename out of life.db), never from the URL, and the within-dir gate runs
+ *  anyway. Sits behind the auth wall like every page. */
+function handleTaskFileDownload(req, res, url) {
+  const id = String(url.searchParams.get('id') || '');
+  if (!/^[0-9a-f-]{36}$/.test(id)) { sendJson(res, 404, { ok: false, error: 'no such file' }); return; }
+  const LIFELIB = require('./ui/pages/life/life-lib.js');
+  const o = LIFELIB.openLifeReadonly();
+  if (!o.ok) { sendJson(res, 503, { ok: false, error: o.reason }); return; }
+  let row;
+  try {
+    const r = LIFELIB.lifeSelect(o.db, `SELECT task_id, filename, kind, bytes FROM life_task_files WHERE id = ? AND state = 'ATTACHED'`, [id]);
+    row = r.ok && r.rows.length ? r.rows[0] : null;
+  } finally { o.db.close(); }
+  if (!row) { sendJson(res, 404, { ok: false, error: 'no such file' }); return; }
+  const p = path.join(LIFE_TASK_FILES, String(row.task_id), String(row.filename));
+  if (!UP.isWithinDir(LIFE_TASK_FILES, p) || !fs.existsSync(p)) { sendJson(res, 404, { ok: false, error: 'the bytes are not where the record says — re-upload it' }); return; }
+  const CT = {
+    csv: 'text/csv', tsv: 'text/tab-separated-values', txt: 'text/plain', md: 'text/plain', json: 'application/json',
+    xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    pdf: 'application/pdf', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
+  };
+  const ext = (String(row.filename).match(/\.([A-Za-z0-9]+)$/) || [])[1];
+  const body = fs.readFileSync(p);
+  res.writeHead(200, {
+    'content-type': CT[String(ext || '').toLowerCase()] || 'application/octet-stream',
+    'content-length': body.length,
+    // attachment, never inline: these bytes are the owner's data, not a page to render.
+    'content-disposition': `attachment; filename="${String(row.filename).replace(/[^A-Za-z0-9._-]/g, '_')}"`,
+    'x-content-type-options': 'nosniff',
+  });
+  res.end(body);
 }
 
 /** Read one ingest outcome (+ its covers) from the ledger, read-only. Returns null if not present. */
@@ -3393,6 +3476,23 @@ function readTextBody(req, res, maxLen, cb) {
   req.on('end', () => {
     if (tooBig) { sendJson(res, 413, { ok: false, error: 'payload too large' }); return; }
     cb(raw);
+  });
+}
+
+/** readTextBody's binary twin — Buffers, never utf8 (a spreadsheet through a string
+ *  concatenation is corruption, not a file). Same streamed cap posture. */
+function readBinaryBody(req, res, maxLen, cb) {
+  const chunks = [];
+  let size = 0;
+  let tooBig = false;
+  req.on('data', (chunk) => {
+    size += chunk.length;
+    if (size > maxLen) { tooBig = true; req.destroy(); return; }
+    chunks.push(chunk);
+  });
+  req.on('end', () => {
+    if (tooBig) { sendJson(res, 413, { ok: false, error: 'file too large — 15 MB max' }); return; }
+    cb(Buffer.concat(chunks));
   });
 }
 // Life OS capture relay: validate (fail-closed), forward to the sole writer, pass the
