@@ -704,7 +704,13 @@ module.exports = {
       '<div class="lead-body">' +
       '<div class="lead-top"><span class="lead-name">Chief of Staff</span><span class="lead-role">advisor · briefings</span><span class="mstat ready"><span class="sd"></span>Ready</span></div>' +
       '<div class="lead-desc">Reads the Librarian, synthesises status, talks through next steps. <span class="muted">The one you actually talk to.</span></div>' +
-      '<button class="cos-btn" type="button">▸ What\'s been done today?</button>' +
+      // The Chief of Staff button was DEAD — a styled <button> with no handler anywhere, on
+      // the one card whose whole promise is "the one you actually talk to" (operator ask
+      // 2026-08-13: "we also need to be able to talk to … the cheif of staff"). It is now a
+      // link into MC Chat with the question pre-loaded; Rex answers inline there, read-only,
+      // and /claw stays a read-only console (a GET link is not a write affordance).
+      '<a class="cos-btn" href="/claw/chat?ask=' + encodeURIComponent('Rex, what has been done today?') + '">▸ What\'s been done today?</a>' +
+      '<a class="cos-btn" style="background:transparent;color:var(--cyan);box-shadow:none;border:1px solid var(--cyan);margin-left:8px" href="/claw/chat">▸ Talk to the fleet</a>' +
       '</div></div>' +
       '</div>';
 

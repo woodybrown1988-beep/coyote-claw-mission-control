@@ -39,10 +39,11 @@ module.exports = {
   getSection(db, ctx) {
     const q = ctx && ctx.q;
     const now = (ctx && ctx.now) || Date.now();
-    if (typeof q !== 'function') return { now, wired: false, messages: [], total: 0, cpage: 0, lastId: 0, about: null };
+    if (typeof q !== 'function') return { now, wired: false, messages: [], total: 0, cpage: 0, lastId: 0, about: null, ask: '' };
     // ?about=<jobId> — arriving from a board card (operator ask 2026-08-13: "theres no way to
     // resolve this"). The thread opens with that job named and its two exits spelled out, so
     // the card he was staring at is one keystroke from being closed or turned into a task.
+    const askText = String((ctx.query && ctx.query.ask) || '').slice(0, 300);
     const aboutId = String((ctx.query && ctx.query.about) || '').trim();
     let about = null;
     if (/^[0-9a-f-]{8,36}$/i.test(aboutId)) {
@@ -72,7 +73,7 @@ module.exports = {
     const totalRow = rowsOf(q(`SELECT COUNT(*) AS c FROM chat_messages`))[0];
     const lastRow = rowsOf(q(`SELECT MAX(id) AS m FROM chat_messages`))[0];
     return {
-      now, wired, messages, cpage, about,
+      now, wired, messages, cpage, about, ask: askText,
       total: totalRow ? Number(totalRow.c) || 0 : 0,
       lastId: lastRow && lastRow.m != null ? Number(lastRow.m) : 0,
     };
@@ -198,7 +199,7 @@ module.exports = {
     // a cleared bar means a plain message, never a silent misroute.
     parts.push(`<div id="ch-replybar" style="display:none;font-size:11.5px;color:var(--muted,#8b98a5);padding:4px 2px">↩ replying to <span id="ch-replylabel" class="mono"></span> — this goes to that task’s agent <button type="button" class="btn" id="ch-replyclear" style="padding:0 8px">✕</button></div>
     <form class="ch-form" id="ch-form">
-      <textarea name="text" id="ch-text" placeholder="data: … / research: … / plain text → the Lead / ask Rex by name · ↩ reply on a task message to brief its agent · close &lt;id&gt; · retask &lt;id&gt;" maxlength="4000" required>${m.about ? esc('retask ' + m.about.short) : ''}</textarea>
+      <textarea name="text" id="ch-text" placeholder="data: … / research: … / plain text → the Lead / ask Rex by name · ↩ reply on a task message to brief its agent · close &lt;id&gt; · retask &lt;id&gt;" maxlength="4000" required>${m.about ? esc('retask ' + m.about.short) : (m.ask ? esc(m.ask) : '')}</textarea>
       <button class="btn" type="submit" id="ch-send">Send</button>
     </form>
     <div class="ash" style="font-size:11px;margin-top:4px">Same pipeline as Telegram — plan/merge gates still tap on Telegram in Phase 1. Tailnet-only surface.</div>`);
