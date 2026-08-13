@@ -166,6 +166,9 @@ module.exports = {
                      WHERE status NOT IN ('DONE','CANCELLED') AND due_at IS NOT NULL AND due_at <= ?
                      ORDER BY due_at ASC LIMIT 12`, [new Date(now + 72 * 3_600_000).toISOString()]),
         inboxCount: q(`SELECT COUNT(*) c FROM life_tasks WHERE status = 'INBOX'`)[0]?.c ?? 0,
+        // AGENTS WAITING ON YOU (operator ask 2026-08-13): dispatch + send-back events; the
+        // live job state resolves in render from the business store (by id).
+        dispatchEvents: q(`SELECT task_id, event_type, payload_json FROM life_task_events WHERE event_type IN ('AGENT_DISPATCHED','REOPENED') ORDER BY created_at ASC`),
         waitingRows: q(`SELECT w.task_id, w.dependency_label, w.wake_type, w.fallback_at FROM life_waiting_conditions w WHERE w.state = 'ACTIVE' ORDER BY w.fallback_at IS NULL, w.fallback_at LIMIT 12`),
         activeOutcomes: q(`SELECT DISTINCT domain_key FROM life_outcomes WHERE status = 'ACTIVE'`).map((r) => r.domain_key),
         neglectedFromWork: q(`SELECT DISTINCT domain_key FROM v_life_available_work`).map((r) => r.domain_key),
@@ -181,7 +184,7 @@ module.exports = {
     } finally { o.db.close(); }
   },
 
-  render(section, _ctx) {
+  render(section, ctx) {
     const s = section || {};
     const now = s.now || Date.now();
     const head = `<style>${S.rcc.css()}${S.rcc.lifeCss()}</style><div class="rcc">`
@@ -201,6 +204,18 @@ module.exports = {
     }
 
     const t = (id) => (id && s.taskOf[id]) || null;
+    // AGENTS WAITING ON YOU: a task whose agent cannot proceed without your words. Its own
+    // panel, high on the page — the whole point of the ask was not having to open a task
+    // to discover someone is stuck. Terminal tasks are excluded (nothing to unblock).
+    const dispatchOf = LIFE.dispatchStateByTask(s.dispatchEvents || []);
+    const jobsById = LIFE.jobStates((ctx && ctx.q) || null, [...dispatchOf.values()].map((d) => d.jobId));
+    const stuck = [];
+    for (const [taskId, d] of dispatchOf) {
+      const task = t(taskId);
+      if (!task || ['DONE', 'CANCELLED'].includes(String(task.status))) continue;
+      const nu = LIFE.agentNeedsYou(d, jobsById.get(d.jobId));
+      if (nu) stuck.push({ task, nu });
+    }
     const nowIso = new Date(now).toISOString();
     const overdue = (s.waitingRows || []).filter((w) => w.fallback_at && String(w.fallback_at) < nowIso);
     const plan = s.plan;
@@ -432,6 +447,7 @@ module.exports = {
 
     // ── hero row: brief · must-win · my day ──
     const morning = `${s.captured24h ? `${s.captured24h} captured in the last day. ` : ''}`
+      + `${stuck.length ? `${stuck.length} agent${stuck.length === 1 ? '' : 's'} ${stuck.length === 1 ? 'is' : 'are'} stuck waiting on you. ` : ''}`
       + `${needs.length ? `${needs.length} decision${needs.length === 1 ? '' : 's'} need${needs.length === 1 ? 's' : ''} you. ` : 'Nothing is waiting on a decision. '}`
       + `${overdue.length ? `${overdue.length} waiting item${overdue.length === 1 ? ' has' : 's have'} passed ${overdue.length === 1 ? 'its' : 'their'} follow-up date. ` : ''}`
       + `${s.inboxCount ? `${s.inboxCount} capture${s.inboxCount === 1 ? '' : 's'} to sort in All tasks.` : ''}`;
@@ -707,6 +723,17 @@ module.exports = {
         + `<div style="font-size:12px;color:var(--rmuted);margin-top:3px">Due ${LIFE.esc(String(d.due_at).slice(0, 10))} · ${d.due_kind === 'HARD' ? 'hard deadline' : 'target date'}${d.domain_key ? ' · ' + LIFE.esc(d.domain_key) : ''}</div></div>`
         + `<div style="display:flex;gap:6px;align-items:center;flex-shrink:0">${chip}${act}</div></div>`;
     };
+    // ── AGENTS WAITING ON YOU ── rendered only when real; each row says WHO, WHY, and
+    // offers the one move that unblocks it (open the task and talk / send it back).
+    const stuckPanel = stuck.length ? S.rcc.panel({
+      title: 'Agents waiting on you', sub: 'They cannot go on until you say something — a reply is usually one line',
+      headRight: `<span class="r-pill">${stuck.length}</span>`,
+      body: stuck.map(({ task, nu }) => `<div class="r-lrow" style="${LIFE.NEEDS_YOU_ROW_STYLE}">`
+        + `<div style="min-width:0"><div style="font-weight:600">${link(task.id, task.title)}</div>`
+        + `<div style="font-size:12.5px;color:var(--rbad,#ef6b68);font-weight:600;margin-top:3px">🗣 ${LIFE.esc(nu.who)} — ${LIFE.esc(nu.reason)}</div></div>`
+        + `<a class="r-btn small primary" href="/life/task?id=${encodeURIComponent(task.id)}">Talk to it</a></div>`).join(''),
+    }) : '';
+
     const dueSoonPanel = dueSoonRows.length ? S.rcc.panel({
       title: 'Due soon', sub: 'Deadlines inside 72 hours — shown whatever today’s plan picked',
       headRight: `<span class="r-pill">${dueSoonRows.length}</span>`,
@@ -718,6 +745,7 @@ module.exports = {
     // stacks balance (Needs+Available | Waiting+Handled) instead of three narrow ones.
     const body = head.replace('__HEADBTNS__', headBtns)
       + `<div class="lt-hero">${rexCard}${mustCard}${myDay}</div>`
+      + (stuckPanel ? `<div style="margin-bottom:12px">${stuckPanel}</div>` : '')
       + (dueSoonPanel ? `<div style="margin-bottom:12px">${dueSoonPanel}</div>` : '')
       + `<div style="margin-bottom:12px">${supportsBand}</div>`
       + `<div class="lt-main">`

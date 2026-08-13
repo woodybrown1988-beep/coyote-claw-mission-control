@@ -115,10 +115,69 @@ function jobStates(bizQ, jobIds) {
   const ids = [...new Set(jobIds)].filter(Boolean).slice(0, 200);
   if (!ids.length || typeof bizQ !== 'function') return out;
   const ph = ids.map(() => '?').join(',');
-  const res = bizQ(`SELECT id, type, status, updated_at, result FROM jobs WHERE id IN (${ph})`, ids);
+  // attempts/max_attempts ride along: a 'failed' job that can still retry is NOT a give-up,
+  // and calling it one would send the owner to a task the fleet is about to pick up again.
+  const res = bizQ(`SELECT id, type, status, updated_at, result, attempts, max_attempts FROM jobs WHERE id IN (${ph})`, ids);
   if (!res || !res.ok || !Array.isArray(res.rows)) return out;
   for (const r of res.rows) out.set(String(r.id), r);
   return out;
+}
+
+// ── "THE AGENT IS STUCK UNTIL YOU SPEAK" (operator ask 2026-08-13) ───────────────────────
+// The owner asked for a light-red row wherever a task is waiting on HIM to talk to its
+// agent — "currently I have to go into the task to see this". Four honest states, all of
+// them the agent unable to proceed without words only he has:
+//   · it asked a question (a done job whose outcome is 'cant-see' — the ask rail)
+//   · it gave up (escalated, or failed with no attempts left)
+//   · its plan needs his approval (the Lead's soft gate)
+//   · it needs his sign-off
+// DELIBERATELY NOT flagged: a delivered answer awaiting accept (that is a DECISION, and
+// Today's queue owns it — colouring it red would drown the real asks), and a task he has
+// ALREADY sent back (queued to go again, not stuck — the red case in the tests).
+
+/** taskId → { jobId, jobKind, reopened } from AGENT_DISPATCHED + REOPENED rows (ASC).
+ *  A REOPENED after the last dispatch means the owner already answered: not stuck.
+ *  A newer dispatch resets it (the agent is off again on the fresh brief). */
+function dispatchStateByTask(eventRows) {
+  const m = new Map();
+  for (const r of eventRows || []) {
+    if (String(r.event_type) === 'REOPENED') {
+      const cur = m.get(r.task_id);
+      if (cur) cur.reopened = true;
+      continue;
+    }
+    let pj = {};
+    try { pj = JSON.parse(String(r.payload_json || '{}')); } catch (_) { continue; }
+    if (pj && typeof pj.jobId === 'string' && pj.jobId) {
+      m.set(r.task_id, { jobId: pj.jobId, jobKind: String(pj.jobKind || ''), reopened: false });
+    }
+  }
+  return m;
+}
+
+/** null, or why the agent cannot proceed without the owner. */
+function agentNeedsYou(entry, job) {
+  if (!entry || entry.reopened || !job) return null;
+  const s = String(job.status);
+  const who = AGENT_NAME[entry.jobKind] || entry.jobKind || 'the agent';
+  if (s === 'awaiting_plan_feedback') return { who, reason: 'its plan needs your approval before it builds' };
+  if (s === 'awaiting_signoff') return { who, reason: 'it needs your sign-off to finish' };
+  if (s === 'escalated' || (s === 'failed' && Number(job.attempts) >= Number(job.max_attempts))) {
+    return { who, reason: 'it gave up — send it back with what it was missing' };
+  }
+  if (s === 'done') {
+    let jr = {};
+    try { jr = JSON.parse(String(job.result || '{}')); } catch (_) { return null; }
+    if (jr && String(jr.outcome) === 'cant-see') return { who, reason: 'it asked you a question' };
+  }
+  return null;
+}
+
+/** The light-red row treatment + its one-line reason. ONE definition, every list. */
+const NEEDS_YOU_ROW_STYLE = 'background:rgba(239,107,104,.10);border-left:3px solid var(--rbad,#ef6b68);padding-left:9px';
+function needsYouChip(nu) {
+  if (!nu) return '';
+  return `<div style="font-size:12px;color:var(--rbad,#ef6b68);font-weight:600;margin-top:3px">🗣 ${esc(nu.who)} needs you — ${esc(nu.reason)}</div>`;
 }
 
 /** The one-line presence chip: '🤖 Box Query · working now' (empty when nothing live). */
@@ -159,4 +218,5 @@ function stageStrip(status) {
 module.exports = {
   lifeDbPath, openLifeReadonly, lifeSelect, esc, emptyCard, absentCard, freshness, FRESH_WINDOW_MIN,
   AGENT_NAME, STAGE_LABEL, IN_FLIGHT_STATUSES, latestDispatchByTask, jobStates, agentChip, stageStrip,
+  dispatchStateByTask, agentNeedsYou, needsYouChip, NEEDS_YOU_ROW_STYLE,
 };

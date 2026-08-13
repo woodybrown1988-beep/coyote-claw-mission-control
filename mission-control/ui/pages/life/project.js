@@ -38,7 +38,7 @@ module.exports = {
         waiting: q("SELECT task_id, dependency_label, fallback_at FROM life_waiting_conditions WHERE state = 'ACTIVE' AND task_id IN (SELECT id FROM life_tasks WHERE project_id = ?)", [id]),
         // AGENT PRESENCE (operator ask 2026-08-13): this project's dispatches; live stage
         // resolves in render via ctx.q (business store, by id).
-        dispatchEvents: q(`SELECT task_id, payload_json FROM life_task_events WHERE event_type = 'AGENT_DISPATCHED' AND task_id IN (SELECT id FROM life_tasks WHERE project_id = ?) ORDER BY created_at ASC`, [id]),
+        dispatchEvents: q(`SELECT task_id, event_type, payload_json FROM life_task_events WHERE event_type IN ('AGENT_DISPATCHED','REOPENED') AND task_id IN (SELECT id FROM life_tasks WHERE project_id = ?) ORDER BY created_at ASC`, [id]),
       };
     } finally { o.db.close(); }
   },
@@ -64,7 +64,7 @@ module.exports = {
       + ` ${swap} `
       + `<button class="lc-cxl" data-lc-cancel-project="${LIFE.esc(pid)}">✕ cancel project</button>`;
     // Agent presence: latest job per task, live status by id from the business store.
-    const dispatchOf = LIFE.latestDispatchByTask(s.dispatchEvents || []);
+    const dispatchOf = LIFE.dispatchStateByTask(s.dispatchEvents || []);
     const jobsById = LIFE.jobStates((ctx && ctx.q) || null, [...dispatchOf.values()].map((d) => d.jobId));
     const presenceOf = (taskId) => {
       const d = dispatchOf.get(taskId);
@@ -73,6 +73,8 @@ module.exports = {
       if (!j || !LIFE.IN_FLIGHT_STATUSES.includes(String(j.status))) return '';
       return `<div style="margin-top:3px">${LIFE.agentChip(d.jobKind, String(j.status))}</div>`;
     };
+    const needsYouOf = (taskId) => LIFE.agentNeedsYou(dispatchOf.get(taskId), jobsById.get((dispatchOf.get(taskId) || {}).jobId));
+    const stuckCount = living.filter((t) => needsYouOf(String(t.id))).length;
     // REAL progress: done over existing (cancelled excluded) — the honest %, with its
     // fraction always beside it. Plus who is on it right now, by name.
     const doneCount = finished.filter((t) => String(t.status) === 'DONE').length;
@@ -100,12 +102,14 @@ module.exports = {
       const tid = String(t.id);
       const w = waitOf[tid];
       const terminal = TERMINAL.includes(String(t.status));
+      const nu = terminal ? null : needsYouOf(tid);
       const verbs = terminal ? '' :
         `<button class="r-btn small" data-lc-rename="${LIFE.esc(JSON.stringify({ kind: 'task', id: tid, title: t.title }))}">Rename…</button>`
         + ` ${btnCmd('Remove from project', 'assign_project', { taskId: tid, projectId: null })}`
         + ` <button class="lc-cxl" data-lc-cancel="${LIFE.esc(tid)}">✕ cancel</button>`;
-      return `<div class="r-lrow"><div style="min-width:0">
+      return `<div class="r-lrow"${nu ? ` data-needs-you="1" style="${LIFE.NEEDS_YOU_ROW_STYLE}"` : ''}><div style="min-width:0">
           <div style="font-weight:600"><a href="/life/task?id=${encodeURIComponent(tid)}" style="color:inherit">${LIFE.esc(t.title)}</a></div>
+          ${LIFE.needsYouChip(nu)}
           <div style="margin-top:4px;display:flex;gap:6px;align-items:center;flex-wrap:wrap">${S.rcc.tag(String(t.status).toLowerCase().replace('_', ' '), terminal ? '' : (t.status === 'IN_PROGRESS' ? 'good' : ''))}${S.rcc.tag(t.domain_key)}${t.due_at ? S.rcc.tag(`due ${String(t.due_at).slice(0, 10)}${t.due_kind === 'HARD' ? ' · hard' : ''}`) : ''}</div>
           ${w ? `<div style="font-size:12px;color:#f5c96b;margin-top:3px">Waiting on ${LIFE.esc(w.dependency_label)}${w.fallback_at ? ` · follow-up ${LIFE.esc(String(w.fallback_at).slice(0, 10))}` : ''}</div>` : ''}
           ${presenceOf(tid)}
@@ -113,7 +117,10 @@ module.exports = {
         <div style="display:flex;gap:6px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end"><a class="r-btn small" href="/life/task?id=${encodeURIComponent(tid)}">Open</a> ${verbs}</div></div>`;
     };
     const tasksPanel = S.rcc.panel({
-      title: 'Work in this project', sub: 'Open a task for its full record — or rename, un-home and cancel right here',
+      title: 'Work in this project',
+      sub: stuckCount
+        ? `${stuckCount} task${stuckCount === 1 ? '' : 's'} waiting on YOU to talk to the agent — marked in red below`
+        : 'Open a task for its full record — or rename, un-home and cancel right here',
       headRight: living.length ? `<span class="r-pill">${living.length}</span>` : '',
       body: living.length
         ? living.map(taskRow).join('')
