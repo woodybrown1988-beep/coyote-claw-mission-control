@@ -738,6 +738,57 @@ function clientScript() {
       // so the honest line names the uncertainty and points at the only way to resolve it.
       .catch(function(){busy=false;window.__lcSay(f,'Connection lost before this was confirmed — some of it may already have happened. Reload to see where things stand; nothing here will do it twice.');});
     });
+    // BATCH DECIDE (Wave 3, 2026-08-13 audit — decision throughput). SUGAR over per-proposal
+    // audited decides, exactly the assign-bulk pattern: every tick posts its own ordinary
+    // 'decide' with its own idempotency key; the writer knows nothing of "batch" and its
+    // HUMAN-only check runs per row. Accept never rides a calendar block or a drafted reply
+    // from here (data-acceptok="0") — their accept IS placing/reading, done on their own
+    // cards — and the skip is said out loud, never silent. Reject is plain for every class.
+    // Failures do NOT reload: the out-line names each refusal and the survivors stay ticked-off.
+    // NO BACKTICKS anywhere in this block — this whole script is one template literal
+    // (mc-client-script-parse-gate: one parse error kills every button on the page).
+    document.addEventListener('click',function(e){var t4=e.target;if(!t4||!t4.closest)return;
+      var ba=t4.closest('[data-lc-batch-all]');
+      if(ba){e.preventDefault();var fa=ba.closest('.lc-batch');
+        if(fa){var cks=fa.querySelectorAll('.lc-batch-ck');for(var i=0;i<cks.length;i++){if(!cks[i].disabled)cks[i].checked=true;}}
+        return;}
+      var bb=t4.closest('[data-lc-batch]');
+      if(!bb)return;e.preventDefault();if(busy)return;
+      var form=bb.closest('.lc-batch');if(!form)return;
+      var mode=bb.getAttribute('data-lc-batch')==='accept'?'accept':'reject';
+      var noteEl=form.querySelector('[name=batchnote]');
+      var note=(noteEl&&noteEl.value?String(noteEl.value):'').trim().slice(0,500);
+      var out=form.querySelector('.lc-batch-out');
+      var picked=[];var boxes=form.querySelectorAll('.lc-batch-ck:checked');
+      for(var j=0;j<boxes.length;j++){if(!boxes[j].disabled)picked.push(boxes[j]);}
+      if(!picked.length){if(out)out.textContent='Nothing ticked — nothing was decided.';return;}
+      var skip=[],run=[];
+      for(var k=0;k<picked.length;k++){
+        if(mode==='accept'&&picked[k].getAttribute('data-acceptok')!=='1')skip.push(picked[k]);else run.push(picked[k]);
+      }
+      if(!run.length){if(out)out.textContent='Only calendar blocks / drafted replies were ticked — accept those on their own cards (their accept places the block or approves the words). Reject works from here.';return;}
+      busy=true;bb.disabled=true;
+      var okN=0,fails=[];
+      if(out)out.textContent='Deciding '+run.length+'…'+(skip.length?' ('+skip.length+' skipped — accept those on their own cards)':'');
+      var step=function(i2){
+        if(i2>=run.length){busy=false;
+          if(!fails.length){location.reload();return;}
+          bb.disabled=false;
+          if(out)out.textContent=okN+' decided · '+fails.length+' refused: '+fails.join(' | ')+(skip.length?' · '+skip.length+' skipped (own-card accepts)':'');
+          return;}
+        var ck=run[i2];
+        var payload={proposalId:ck.getAttribute('data-proposal')||'',decision:mode};
+        if(note)payload.note=note;
+        fetch('/api/life/command',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({command:'decide',idempotencyKey:hex(),payload:payload})})
+        .then(function(r){return r.json();}).then(function(r){
+          if(r&&r.ok){okN++;ck.checked=false;ck.disabled=true;var row=ck.closest('.r-lrow');if(row)row.style.opacity='.45';}
+          else{fails.push(window.__lcOwnerCopy(r&&r.error));}
+          step(i2+1);
+        })
+        .catch(function(){fails.push(window.__lcNet);step(i2+1);});
+      };
+      step(0);
+    });
     // A3: execution-route control — a [data-lc-route] <select> posts set_route on change.
     document.addEventListener('change',function(e){var el=e.target;
       if(!el||!el.classList||!el.classList.contains('lc-route-sel'))return;
