@@ -181,3 +181,84 @@ test('the Claw board: a life job shows its TASK and links to it; other jobs are 
   assert.match(out.body, /life task · boxquery/);
   assert.ok(!/href="\/life\/task\?id=[^"]*plain/.test(out.body), 'a non-life job gains no task link');
 });
+
+// ── "THE AGENT IS STUCK UNTIL YOU SPEAK" (operator ask 2026-08-13): the light-red flag ──
+test('needs-you: every stuck state flags; a sent-back task does NOT; a delivered answer does NOT', () => {
+  const entry = { jobId: 'j1', jobKind: 'boxquery', reopened: false };
+  const nu = (job) => LIFE.agentNeedsYou(entry, job);
+  assert.match(nu({ status: 'awaiting_plan_feedback' }).reason, /plan needs your approval/);
+  assert.match(nu({ status: 'awaiting_signoff' }).reason, /sign-off/);
+  assert.match(nu({ status: 'escalated' }).reason, /gave up/);
+  assert.match(nu({ status: 'failed', attempts: 1, max_attempts: 1 }).reason, /gave up/);
+  assert.match(nu({ status: 'done', result: JSON.stringify({ outcome: 'cant-see', reason: 'no supplier list' }) }).reason, /asked you a question/);
+  assert.equal(nu({ status: 'boxquery' && 'running' }), null, 'a working agent is not stuck');
+  assert.equal(nu({ status: 'queued' }), null);
+  // A retry still in the tank is NOT a give-up — the fleet will pick it up again.
+  assert.equal(nu({ status: 'failed', attempts: 1, max_attempts: 3 }), null, 'a retryable failure must not cry for help');
+  // A DELIVERED answer is a decision (Today's queue owns it), never a red "talk to me".
+  assert.equal(nu({ status: 'done', result: JSON.stringify({ outcome: 'answered', replyText: 'x' }) }), null);
+  // THE RED CASE: already sent back → queued to go again, not stuck.
+  assert.equal(LIFE.agentNeedsYou({ ...entry, reopened: true }, { status: 'escalated' }), null,
+    'a task the owner already answered must never keep shouting');
+  // and a NEWER dispatch after a send-back resets the flag state (the class, not the instance)
+  const m = LIFE.dispatchStateByTask([
+    { task_id: 't1', event_type: 'AGENT_DISPATCHED', payload_json: '{"jobId":"j1","jobKind":"boxquery"}' },
+    { task_id: 't1', event_type: 'REOPENED', payload_json: '{}' },
+    { task_id: 't1', event_type: 'AGENT_DISPATCHED', payload_json: '{"jobId":"j2","jobKind":"boxquery"}' },
+  ]);
+  assert.deepEqual(m.get('t1'), { jobId: 'j2', jobKind: 'boxquery', reopened: false }, 'the fresh dispatch is the live one again');
+});
+
+test('the light-red row reaches every list: Today panel, All tasks, project drawer + card', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-stuck-'));
+  const dbPath = lifeFixture(dir, (db) => {
+    db.prepare(`INSERT INTO life_projects (id,owner_id,domain_key,title,definition_of_done,stage,status,risk_state,visibility,created_at,updated_at)
+      VALUES ('p1','woody','business','Loyalty programme','measurable','define','ACTIVE','GREEN','OWNER_ONLY',?,?)`).run(T, T);
+    const ins = db.prepare(`INSERT INTO life_tasks (id,owner_id,project_id,domain_key,title,status,execution_mode,visibility,source_type,created_by,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`);
+    ins.run('t-stuck', 'woody', 'p1', 'business', 'Supplier cost sweep', 'READY', 'AI', 'OWNER_ONLY', 'MANUAL', 'h', T, T);
+    ins.run('t-fine', 'woody', 'p1', 'business', 'Quietly working', 'READY', 'AI', 'OWNER_ONLY', 'MANUAL', 'h', T, T);
+    dispatchEvent(db, 'e1', 't-stuck', 'j-stuck', 'boxquery', T);
+    dispatchEvent(db, 'e2', 't-fine', 'j-fine', 'research', T);
+  });
+  const jobs = [
+    { id: 'j-stuck', type: 'boxquery', status: 'done', updated_at: 1, attempts: 1, max_attempts: 1, result: JSON.stringify({ outcome: 'cant-see', reason: 'no supplier list in the catalog' }) },
+    { id: 'j-fine', type: 'research', status: 'running', updated_at: 1, attempts: 1, max_attempts: 1, result: null },
+  ];
+  withEnv(dbPath, () => {
+    const TODAY = require('../mission-control/ui/pages/life/today.js');
+    const today = TODAY.render(TODAY.getSection(null, { now: Date.parse(T) }), { now: Date.parse(T), q: bizQ(jobs) });
+    assert.match(today.body, /Agents waiting on you/, 'Today carries its own panel');
+    assert.match(today.body, /Supplier cost sweep/);
+    assert.match(today.body, /Box Query — it asked you a question/);
+    assert.match(today.body, /Talk to it/);
+    assert.match(today.body, /1 agent is stuck waiting on you/, 'the Rex line counts it');
+    assert.ok(!/Quietly working/.test(today.body.split('Agents waiting on you')[1].split('</div></div>')[0] || ''), 'a working agent is not in the stuck panel');
+
+    const tasks = TASKS.render(TASKS.getSection(null, { query: {} }), { q: bizQ(jobs) });
+    assert.match(tasks.body, /data-needs-you="1"/, 'the All-tasks row is flagged');
+    assert.match(tasks.body, /rgba\(239,107,104,\.10\)/, 'light red, one shared definition');
+    assert.match(tasks.body, /Box Query needs you/);
+    assert.equal((tasks.body.match(/data-needs-you="1"/g) || []).length, 1, 'ONLY the stuck task is red');
+
+    const drawer = PROJECT.render(PROJECT.getSection(null, { query: { id: 'p1' } }), { q: bizQ(jobs) });
+    assert.match(drawer.body, /data-needs-you="1"/);
+    assert.match(drawer.body, /1 task waiting on YOU to talk to the agent/);
+
+    const cards = PROJECTS.render(PROJECTS.getSection(null, {}), { q: bizQ(jobs) });
+    assert.match(cards.body, /1 task waiting on you to talk to the agent/, 'the project CARD says so without opening it');
+  });
+  // Once sent back, the red is gone everywhere — the same fixture plus a REOPENED.
+  const db2 = new sqlite.DatabaseSync(dbPath);
+  db2.prepare(`INSERT INTO life_task_events (id,owner_id,task_id,event_type,actor_type,actor_id,payload_json,created_at)
+    VALUES ('e3','woody','t-stuck','REOPENED','HUMAN','woody','{"via":"send_back"}','2026-08-13T13:00:00.000Z')`).run();
+  db2.close();
+  withEnv(dbPath, () => {
+    const tasks2 = TASKS.render(TASKS.getSection(null, { query: {} }), { q: bizQ(jobs) });
+    assert.ok(!/data-needs-you="1"/.test(tasks2.body), 'answered = no longer shouting');
+    const TODAY = require('../mission-control/ui/pages/life/today.js');
+    const today2 = TODAY.render(TODAY.getSection(null, { now: Date.parse(T) }), { now: Date.parse(T), q: bizQ(jobs) });
+    assert.ok(!/Agents waiting on you/.test(today2.body));
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+});

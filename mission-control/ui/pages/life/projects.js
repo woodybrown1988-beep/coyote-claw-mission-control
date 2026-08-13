@@ -23,7 +23,7 @@ module.exports = {
                           SUM(CASE WHEN status NOT IN ('DONE','CANCELLED') THEN 1 ELSE 0 END) live
                      FROM life_tasks WHERE project_id IS NOT NULL GROUP BY project_id`),
         taskProject: q(`SELECT id, project_id FROM life_tasks WHERE project_id IS NOT NULL AND status NOT IN ('DONE','CANCELLED')`),
-        dispatchEvents: q(`SELECT task_id, payload_json FROM life_task_events WHERE event_type = 'AGENT_DISPATCHED' ORDER BY created_at ASC`),
+        dispatchEvents: q(`SELECT task_id, event_type, payload_json FROM life_task_events WHERE event_type IN ('AGENT_DISPATCHED','REOPENED') ORDER BY created_at ASC`),
       };
     } finally { o.db.close(); }
   },
@@ -36,8 +36,13 @@ module.exports = {
     const riskTone = { GREEN: 'good', AMBER: 'warn', RED: 'bad' };
     // Agent presence per project: this project's tasks → their latest jobs → in-flight ones,
     // named. Live status from the business store by id; degrades to no chip.
-    const dispatchOf = LIFE.latestDispatchByTask(s.dispatchEvents || []);
+    const dispatchOf = LIFE.dispatchStateByTask(s.dispatchEvents || []);
     const jobsById = LIFE.jobStates((ctx && ctx.q) || null, [...dispatchOf.values()].map((d) => d.jobId));
+    // A project whose agent is stuck says so on the CARD — the owner should never have to
+    // open a project to find out someone is waiting on him.
+    const stuckIn = (projectId) => (s.taskProject || []).filter((t) => t.project_id === projectId)
+      .map((t) => LIFE.agentNeedsYou(dispatchOf.get(t.id), jobsById.get((dispatchOf.get(t.id) || {}).jobId)))
+      .filter(Boolean);
     const agentsOn = (projectId) => {
       const names = [];
       for (const t of s.taskProject || []) {
@@ -64,9 +69,14 @@ module.exports = {
     };
     const card = (p) => {
       const next = s.nexts.find((n) => n.project_id === p.id);
-      return `<div class="r-card r-panel"><div class="r-eyebrow">${LIFE.esc(p.stage.toLowerCase())}</div>
+      const stuck = stuckIn(p.id);
+      const stuckLine = stuck.length
+        ? `<div style="font-size:12px;color:var(--rbad,#ef6b68);font-weight:600;margin:6px 0 0">🗣 ${stuck.length} task${stuck.length === 1 ? '' : 's'} waiting on you to talk to the agent</div>`
+        : '';
+      return `<div class="r-card r-panel"${stuck.length ? ' style="border-color:rgba(239,107,104,.45)"' : ''}><div class="r-eyebrow">${LIFE.esc(p.stage.toLowerCase())}</div>
         <div style="font-size:16px;font-weight:650;line-height:1.3;margin-bottom:8px"><a href="/life/project?id=${encodeURIComponent(p.id)}" style="color:inherit">${LIFE.esc(p.title)}</a></div>
         <div>${S.rcc.tag(p.domain_key)} ${S.rcc.tag('risk ' + p.risk_state.toLowerCase(), riskTone[p.risk_state] || '')} ${p.due_date ? S.rcc.tag('due ' + String(p.due_date).slice(0, 10)) : ''}</div>
+        ${stuckLine}
         ${progressBar(p)}
         <div class="r-defbox"><small>Definition of done</small><div style="font-size:13px;line-height:1.45">${LIFE.esc(p.definition_of_done)}</div></div>
         <div style="font-size:12.5px;color:var(--rmuted)">${next ? `Next: ${link(next.id, next.title)}` : '<span style="color:#f5c96b">No executable next action — a stalled project until one exists.</span>'}</div>
