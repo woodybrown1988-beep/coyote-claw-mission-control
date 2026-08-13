@@ -65,6 +65,23 @@ function getSection(body, label) {
   return body.slice(sectionStart, sectionEnd + '</div></div>'.length);
 }
 
+// The lifetime-failure count moved OUT of the triage row in the 2026-08-13 design pass — it is a
+// number nobody can act on (95 of 126 are a dormant job type) and it was sitting in the row that
+// answers "what needs you". It now lives as a one-line strip under The plumbing. What matters has
+// not changed and is still asserted below: the total counts EVERY failed job, and the dormant
+// annotation counts only learn-validate. This reads the strip instead of the tile.
+function getFailedStrip(body) {
+  const at = body.indexOf('<span class="s-name">Failed · lifetime</span>');
+  assert.notEqual(at, -1, 'the lifetime failure line exists');
+  const end = body.indexOf('</div>', at);
+  return body.slice(at, end);
+}
+function stripNote(section) {
+  const match = section.match(/<span class="s-note">([^<]*)<\/span>/);
+  assert.ok(match, 'the line carries its explanation');
+  return match[1];
+}
+
 function getSubcopy(section) {
   const match = section.match(/<div class="sub">([^<]*)<\/div>/);
   assert.ok(match, 'hero subcopy exists');
@@ -105,11 +122,11 @@ test('engine Failed jobs hero counts only failed learn-validate jobs in its dorm
     { id: 'coder-failed', type: 'coder-build', status: 'failed' },
     { id: 'learn-done', type: 'learn-validate', status: 'done' },
   ]);
-  const failedHero = getSection(body, 'Failed jobs · lifetime');
+  const failedLine = getFailedStrip(body);
 
-  assert.match(failedHero, /<div class="val">3<\/div>/, 'the lifetime total still includes every failed job');
-  assert.equal(getSubcopy(failedHero), 'failed jobs — incl. the 2 dormant learn-validate — named, never hidden');
-  assert.doesNotMatch(failedHero, /incl\. the 95 dormant learn-validate — named, never hidden/);
+  assert.match(failedLine, /<b>3<\/b>/, 'the lifetime total still includes every failed job');
+  assert.equal(stripNote(failedLine), 'failed jobs — incl. the 2 dormant learn-validate — named, never hidden');
+  assert.doesNotMatch(failedLine, /incl\. the 95 dormant learn-validate — named, never hidden/);
   assert.equal(
     sql.filter((statement) => statement.trim().replace(/\s+/g, ' ') === 'SELECT status, type, updated_at FROM jobs').length,
     1,
@@ -122,9 +139,9 @@ test('engine Failed jobs hero omits the dormant annotation when no failed learn-
     { id: 'coder-failed', type: 'coder-build', status: 'failed' },
     { id: 'learn-done', type: 'learn-validate', status: 'done' },
   ]);
-  const failedHero = getSection(body, 'Failed jobs · lifetime');
+  const failedLine = getFailedStrip(body);
 
-  assert.match(failedHero, /<div class="val">1<\/div>/, 'the other-type failure remains in the lifetime total');
-  assert.equal(getSubcopy(failedHero), 'failed jobs — named, never hidden');
-  assert.doesNotMatch(getSubcopy(failedHero), /dormant learn-validate/);
+  assert.match(failedLine, /<b>1<\/b>/, 'the other-type failure remains in the lifetime total');
+  assert.equal(stripNote(failedLine), 'failed jobs — named, never hidden');
+  assert.doesNotMatch(stripNote(failedLine), /dormant learn-validate/);
 });

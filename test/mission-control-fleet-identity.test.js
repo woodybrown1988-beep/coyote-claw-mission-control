@@ -128,10 +128,13 @@ test('the department OWNS the head of the card, not just a chip', () => {
   const research = S.DEPARTMENTS.research.colour;
   // A tinted chip alone read as decoration (operator, 2026-08-13: "the department colours need to
   // be more obvious"). The head of the card carries the colour full-bleed.
-  assert.ok(html.includes('class="acard-head" style="background:linear-gradient(180deg,' + finance),
-    'the Finance card head is emerald');
-  assert.ok(html.includes('class="acard-head" style="background:linear-gradient(180deg,' + research),
-    'the Research card head is violet');
+  // A FLAT tint with a solid top bar, not a gradient — the Coyote design system rules out gradient
+  // backgrounds, and the hard edge reads as more deliberate than a fade.
+  assert.ok(html.includes('class="acard-head" style="background:' + finance + '26;border-top-color:' + finance),
+    'the Finance card head is emerald, flat, with a solid top bar');
+  assert.ok(html.includes('class="acard-head" style="background:' + research + '26;border-top-color:' + research),
+    'the Research card head is indigo, flat, with a solid top bar');
+  assert.doesNotMatch(html, /linear-gradient/, 'no gradient backgrounds (Coyote design system)');
   assert.ok(html.includes('background:' + finance + ';color:#0A0E16'), 'and the avatar is SOLID on the band, not a tint');
   // The kanban state rail must keep its own surface — department colour never replaces it.
   assert.match(S.css(), /\.acard::before\{[^}]*position:absolute/, 'state rail stays absolutely positioned, painting above the band');

@@ -682,13 +682,19 @@ module.exports = {
       if (!track || !track.length) return '';
       return '<div class="mini-track">' + track.map((s) => '<div class="mini-seg' + (s ? ' ' + s : '') + '"></div>').join('') + '</div>';
     }
+    // The worker's current load, INLINE. This was a boxed row on every worker card — a full band of
+    // vertical space that, on an idle fleet, said "Current in-flight: 0" six times over. A worker
+    // carrying nothing is already described by its card ("standing by"), so the pill appears only
+    // when the number is worth reading: a real load, or an honest "attribution unavailable".
+    // The data attribute stays on the card in every case — the number is still published.
     function workerGaugeHtml(gauge) {
       if (!gauge) return '';
-      const value = gauge.known ? esc(S.fmtInt(gauge.count)) : '—';
-      const note = gauge.known ? '' : '<span style="color:var(--muted);font-size:8px">attribution unavailable</span>';
-      return '<div class="worker-gauge mono" data-worker-in-flight="' + (gauge.known ? esc(String(gauge.count)) : 'unknown') + '" style="display:flex;align-items:center;justify-content:space-between;gap:7px;margin:-1px 0 8px;padding:5px 7px;border:1px solid var(--border);border-radius:7px;background:rgba(96,165,250,.06)">' +
-        '<span style="color:var(--text-2);font-size:8.5px;text-transform:uppercase;letter-spacing:.06em">Current in-flight</span>' + note +
-        '<b style="color:var(--blue);font-size:14px">' + value + '</b></div>';
+      const known = gauge.known;
+      const attr = ' data-worker-in-flight="' + (known ? esc(String(gauge.count)) : 'unknown') + '"';
+      if (known && gauge.count === 0) return '<span class="inflight-pill" hidden' + attr + ' title="Current in-flight">0</span>';
+      const label = known ? esc(S.fmtInt(gauge.count)) + ' in flight' : 'load unknown';
+      const style = known ? '' : ' style="background:rgba(137,154,177,.14);color:var(--muted);border-color:var(--border)"';
+      return '<span class="inflight-pill"' + attr + style + ' title="Current in-flight">' + label + '</span>';
     }
     function footHtml(c) {
       let btn = '';
@@ -728,15 +734,15 @@ module.exports = {
       // The head of the card IS the department colour — a gradient so it reads as a deliberate band
       // rather than a flat block, fading into the card body. Colour is inline because it is data.
       const headStyle = c.deptColour
-        ? ' style="background:linear-gradient(180deg,' + esc(c.deptColour) + '3D,' + esc(c.deptColour) + '12);border-bottom-color:' + esc(c.deptColour) + '4D"'
-        : ' style="border-bottom-color:transparent"';
+        ? ' style="background:' + esc(c.deptColour) + '26;border-top-color:' + esc(c.deptColour) + ';border-bottom-color:' + esc(c.deptColour) + '40"'
+        : ' style="border-color:transparent"';
       return (
         '<div class="' + cls + '"' + style + '>' +
         '<div class="acard-head"' + headStyle + '>' +
         '<div class="acard-top" style="margin-bottom:0"><div class="' + avCls + '"' + avStyle + '>' + esc(c.initials) + '</div>' +
-        '<div><div class="acard-namerow"><span class="acard-name"' + nameStyle + '>' + esc(c.name) + '</span>' + chip + '</div>' +
+        '<div><div class="acard-namerow"><span class="acard-name"' + nameStyle + '>' + esc(c.name) + '</span>' + chip
+        + workerGaugeHtml(c.workerGauge) + '</div>' +
         '<div class="acard-role">' + esc(c.role) + '</div></div></div></div>' +
-        workerGaugeHtml(c.workerGauge) +
         '<div class="acard-task">' + taskHtml(c.task) + '</div>' +
         pill +
         trackHtml(c.track) +
@@ -744,8 +750,20 @@ module.exports = {
         '</div>'
       );
     }
+    // A column with nothing in it is a STATE, and it should say which one. Empty columns used to
+    // render a header over dead space — and on this board "Working: 0" is the normal reading, not a
+    // fault, because a job can pass through it in under twelve seconds.
+    const EMPTY_COPY = {
+      idle: 'Every agent has work or has just finished.',
+      queued: 'Nothing waiting — the fleet is keeping up.',
+      working: 'Nothing running this second. Jobs finish in seconds, so this is usually empty — see Today above for what has actually run.',
+      blocked: 'Nothing is waiting on you. ✓',
+      done: 'Nothing finished recently.',
+    };
     function colHtml(col) {
-      const body = col.cards.length ? col.cards.map(cardHtml).join('') : '';
+      const body = col.cards.length
+        ? col.cards.map(cardHtml).join('')
+        : '<div class="col-empty">' + esc(EMPTY_COPY[col.id] || 'Nothing here.') + '</div>';
       const aging = (col.aging && col.aging.length)
         ? '<details style="margin-top:8px"><summary style="font-family:var(--font-mono,monospace);font-size:10.5px;color:var(--muted,#7a8);cursor:pointer;list-style:none">aging (' + col.aging.length + ') — held over 7 days ▸</summary>' + col.aging.map(cardHtml).join('') + '</details>'
         : '';
@@ -769,14 +787,16 @@ module.exports = {
       '<div class="lead-card boss">' +
       '<div class="lead-av boss">BO</div>' +
       '<div class="lead-body">' +
+      // Trimmed to one line: this card is a STATUS, and the two sentences explaining that a router
+      // routes were documentation sitting in the operator's most valuable screen space.
       '<div class="lead-top"><span class="lead-name">Boss</span><span class="lead-role">router · reception</span><span class="mstat idle"><span class="sd"></span>Listening</span></div>' +
-      '<div class="lead-desc">Classifies every incoming message and routes it. <span class="muted">A switchboard, not a manager — it directs, it doesn\'t reason.</span></div>' +
+      '<div class="lead-desc"><span class="muted">Classifies every incoming message and routes it — a switchboard, not a manager.</span></div>' +
       '</div></div>' +
       '<div class="lead-card cos">' +
       '<div class="lead-av cos">CS</div>' +
       '<div class="lead-body">' +
       '<div class="lead-top"><span class="lead-name">Chief of Staff</span><span class="lead-role">advisor · briefings</span><span class="mstat ready"><span class="sd"></span>Ready</span></div>' +
-      '<div class="lead-desc">Reads the Librarian, synthesises status, talks through next steps. <span class="muted">The one you actually talk to.</span></div>' +
+      '<div class="lead-desc"><span class="muted">Reads everything, synthesises status, talks through next steps — the one you actually talk to.</span></div>' +
       // The Chief of Staff button was DEAD — a styled <button> with no handler anywhere, on
       // the one card whose whole promise is "the one you actually talk to" (operator ask
       // 2026-08-13: "we also need to be able to talk to … the cheif of staff"). It is now a
@@ -787,29 +807,35 @@ module.exports = {
       '</div></div>' +
       '</div>';
 
+    // THE LIBRARIAN, and THE FLEET QUEUE, as one-line strips.
+    //
+    // Both used to be full-width bands: the Librarian spent a whole block of the page on three
+    // counters and a paragraph explaining what a database is, and the queue spent a four-tile row
+    // restating what the board's own columns say two inches lower (queued / in-flight / awaiting
+    // sign-off). Between them they pushed the actual board — the thing the page is for — below the
+    // fold. Every number survives, with the same data attributes; only the furniture is gone.
     const librarian =
-      '<div class="librarian">' +
-      '<div class="lib-av">LB</div>' +
-      '<div class="lib-text">' +
-      '<div class="lib-name">The Librarian <span class="lib-tag">state spine · source of truth</span></div>' +
-      '<div class="lib-desc">Every job state, result, and gate decision. No model — pure memory. Everyone reads and writes here; the board renders from it.</div>' +
-      '</div>' +
-      '<div class="lib-stats">' +
-      '<div class="lib-stat"><div class="v">' + esc(S.fmtInt(lib.active)) + '</div><div class="l">active jobs</div></div>' +
-      '<div class="lib-stat"><div class="v">' + esc(S.fmtInt(lib.total)) + '</div><div class="l">total run</div></div>' +
-      '<div class="lib-stat"><div class="v">' + esc(S.fmtInt(lib.events)) + '</div><div class="l">events</div></div>' +
-      '</div></div>';
+      '<div class="strip">' +
+      '<span class="s-name">The Librarian</span>' +
+      '<span class="s-item"><b>' + esc(S.fmtInt(lib.active)) + '</b> active</span>' +
+      '<span class="s-item"><b>' + esc(S.fmtInt(lib.total)) + '</b> run all-time</span>' +
+      '<span class="s-item"><b>' + esc(S.fmtInt(lib.events)) + '</b> events</span>' +
+      '<span class="s-sep"></span>' +
+      '<span class="s-note">state spine · every job, result and gate decision · the board renders from it</span>' +
+      '</div>';
 
     const queue = section.queueDepth || { queued: 0, inFlight: 0, awaitingSignoff: 0, oldestQueuedAgeMs: null };
     const oldestQueue = queue.oldestQueuedAgeMs === null
       ? (queue.queued ? 'unknown' : 'queue empty')
       : S.agoLabel(queue.oldestQueuedAgeMs);
     const queueContext =
-      '<div class="tiles" data-queue-depth="fleet" style="grid-template-columns:repeat(4,minmax(130px,1fr));margin-top:11px">' +
-      '<div class="tile blue"><div class="lab">Fleet queued · unattributed</div><div class="val" data-queue-bucket="queued">' + esc(S.fmtInt(queue.queued)) + '</div><div class="sub">not assigned to workers</div></div>' +
-      '<div class="tile green"><div class="lab">Fleet in-flight</div><div class="val" data-queue-bucket="in-flight">' + esc(S.fmtInt(queue.inFlight)) + '</div><div class="sub">preparing · dispatched · running</div></div>' +
-      '<div class="tile red"><div class="lab">Awaiting signoff</div><div class="val" data-queue-bucket="awaiting-signoff">' + esc(S.fmtInt(queue.awaitingSignoff)) + '</div><div class="sub">waiting on the operator</div></div>' +
-      '<div class="tile muted"><div class="lab">Oldest queued</div><div class="val">' + esc(oldestQueue) + '</div><div class="sub">fleet queue age</div></div>' +
+      '<div class="strip" data-queue-depth="fleet">' +
+      '<span class="s-name">Fleet queue</span>' +
+      '<span class="s-item"><b data-queue-bucket="queued">' + esc(S.fmtInt(queue.queued)) + '</b> queued · unattributed</span>' +
+      '<span class="s-item"><b data-queue-bucket="in-flight">' + esc(S.fmtInt(queue.inFlight)) + '</b> in flight</span>' +
+      '<span class="s-item"><b data-queue-bucket="awaiting-signoff">' + esc(S.fmtInt(queue.awaitingSignoff)) + '</b> awaiting your sign-off</span>' +
+      '<span class="s-sep"></span>' +
+      '<span class="s-note">oldest queued: ' + esc(oldestQueue) + '</span>' +
       '</div>';
 
     const divider =
