@@ -58,8 +58,11 @@ function agentForType(type) {
 
 // One job → its kanban bucket. activeChildParents = parent ids that have an active child (a parent
 // still in-flight while a child runs in another dept = blocked-on-dept, the only honest amber signal).
-function classify(job, activeChildParents) {
+function classify(job, activeChildParents, answeredJobIds) {
   const s = job.status;
+  // A give-up the owner has ALREADY answered is not blocked on him — it is spent work with
+  // a fresh run behind it. Leaving it in Blocked made the triage column lie (live 2026-08-13).
+  if (s === 'escalated' && answeredJobIds && answeredJobIds.has(job.id)) return 'done';
   if (s === 'awaiting_signoff' || s === 'awaiting_plan_feedback' || s === 'escalated') return 'blocked_you';
   if (s === 'preparing' || s === 'dispatched' || s === 'running') {
     return activeChildParents.has(job.id) ? 'blocked_dept' : 'working';
@@ -92,6 +95,23 @@ function describeJob(job) {
     if (typeof p.repo === 'string' && p.repo.trim()) return trunc(p.repo.trim(), 90);
   }
   return null;
+}
+
+// ANSWERED-ALREADY (live 2026-08-13): a life job that gave up stays 'escalated' FOREVER, so
+// the board went on shouting "Escalated — needs you" hours after the owner had already
+// answered on the task and re-queued the work. The job record cannot know that on its own —
+// so the DISPATCHER writes an 'owner-answered' job_event when it sees the send-back, and the
+// board reads it from the BUSINESS store like any other job fact. (/claw never reaches into
+// life.db: the boundary test is the design speaking, and the marker respects it. Exactly the
+// shape of the existing 'cancelled' marker that separates deliberate cancels from give-ups.)
+function readOwnerAnswered(q) {
+  const out = new Map(); // jobId → { mode }
+  for (const r of rows(q(`SELECT job_id, detail FROM job_events WHERE kind = 'owner-answered'`))) {
+    let d = {};
+    try { d = JSON.parse(r.detail || '{}') || {}; } catch (_) { d = {}; }
+    out.set(String(r.job_id), { mode: String(d.mode || 'unset') });
+  }
+  return out;
 }
 
 // Life-task pointer on a job (payload.lifeDispatch, written by the life dispatcher) —
@@ -196,6 +216,10 @@ module.exports = {
       }
     }
 
+    // Which give-ups has the owner ALREADY answered? (see readOwnerAnswered)
+    const lifeAnswered = readOwnerAnswered(q);
+    const answeredJobIds = new Set(lifeAnswered.keys());
+
     // group by agent
     const byAgent = { lead: [], coder: [], reviews: [] };
     const generics = [];
@@ -210,7 +234,7 @@ module.exports = {
       const found = {};
       let terminal = null;
       for (const j of sorted) {
-        const b = classify(j, activeChildParents);
+        const b = classify(j, activeChildParents, answeredJobIds);
         if (order.indexOf(b) !== -1) {
           if (!found[b]) found[b] = j;
         } else if ((b === 'done' || b === 'failed') && !terminal) {
@@ -418,8 +442,15 @@ module.exports = {
       } else if (rep.bucket === 'done') {
         c.col = 'done';
         c.variant = 'd';
-        c.task = { strong: summary, tail: ' — done.' };
-        c.time = '✓ ' + S.agoLabel(now - num(job.updated_at));
+        // Same honesty as the generic cards: an ANSWERED give-up says so (it reached 'done'
+        // only because the owner already replied — calling it "done" would be a lie).
+        const answered = answeredJobIds.has(job.id);
+        const mode = (lifeAnswered.get(job.id) || {}).mode;
+        c.task = { strong: summary, tail: answered
+          ? (mode === 'AI' ? ' — gave up; you sent it back, a fresh run follows.'
+            : ` — gave up; you sent it back, but the task is routed ${mode} and the sweep only takes AI-routed work.`)
+          : ' — done.' };
+        c.time = (answered ? '↩ answered · ' : '✓ ') + S.agoLabel(now - num(job.updated_at));
       } else if (rep.bucket === 'failed') {
         c.col = 'done';
         c.variant = '';
@@ -482,7 +513,7 @@ module.exports = {
     // Generic unmapped jobs → honest cards by their real type. Non-terminal always; cap recent terminal.
     let genTerminal = 0;
     for (const j of generics.slice().sort((x, y) => num(y.updated_at) - num(x.updated_at))) {
-      const b = classify(j, activeChildParents);
+      const b = classify(j, activeChildParents, answeredJobIds);
       const life = lifeTaskOf(j);
       const typeLabel = life ? (describeJob(j) || String(j.type || 'job')) : String(j.type || 'job');
       const fleetOnly = unattributedCoderJobIds.has(j.id);
@@ -511,7 +542,16 @@ module.exports = {
         cards.push(Object.assign(base, { col: 'queued', variant: 'q', task: { strong: typeLabel, tail: ' queued.' }, time: 'waiting ' + S.agoLabel(now - num(j.created_at)), button: lifeBtn || undefined }));
       } else if ((b === 'done' || b === 'failed') && now - num(j.updated_at) <= RECENT_MS && genTerminal < 4) {
         genTerminal++;
-        if (b === 'failed') {
+        const answered = life && answeredJobIds.has(j.id);
+        if (answered) {
+          // The owner already answered this give-up. Say what actually happened — and, when
+          // the task is not AI-routed, that the promised re-run cannot happen until he says so.
+          const mode = (lifeAnswered.get(j.id) || {}).mode;
+          const tail = mode === 'AI'
+            ? ' — gave up; you sent it back, a fresh run follows.'
+            : ` — gave up; you sent it back, but the task is routed ${mode} and the sweep only takes AI-routed work.`;
+          cards.push(Object.assign(base, { col: 'done', variant: 'd', task: { strong: typeLabel, tail }, time: '↩ answered · ' + S.agoLabel(now - num(j.updated_at)), button: lifeBtn || undefined }));
+        } else if (b === 'failed') {
           cards.push(Object.assign(base, { col: 'done', variant: '', inlineStyle: 'border-left:2.5px solid var(--amber)', task: { strong: typeLabel, tail: ' — failed.' }, time: '✕ failed · ' + S.agoLabel(now - num(j.updated_at)), button: lifeBtn || undefined }));
         } else {
           cards.push(Object.assign(base, { col: 'done', variant: 'd', task: { strong: typeLabel, tail: ' — done.' }, time: '✓ ' + S.agoLabel(now - num(j.updated_at)), button: lifeBtn || undefined }));
