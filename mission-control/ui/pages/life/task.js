@@ -158,7 +158,13 @@ module.exports = {
           ? 'Routed to AI — the sweep (09:20 / 15:20 London) picks it up with everything on this page.'
           : 'Route it AI and the sweep picks it up with everything on this page.';
       } else if (lastAgentEv && lastAgentEv.event_type === 'REOPENED') {
-        stateLine = 'Sent back — it goes out again on the next sweep with your notes and files.';
+        // A send-back only means anything on AI-routed work — the sweep's pool IS
+        // execution_mode='AI'. Saying "it goes out again" on a HYBRID task was a promise
+        // nothing could keep (live 2026-08-13: the tag dictionary sat silent for hours).
+        stateLine = mode === 'AI'
+          ? 'Sent back — it goes out again on the next sweep with your notes and files.'
+          : `Sent back — but this task is routed ${LIFE.esc(mode)}, and the sweep only picks up AI-routed work. `
+            + `Set the route to AI (above) and it goes on the next sweep; leave it and this stays yours to do.`;
       } else if (liveJob) {
         // AGENT PRESENCE: the agent by NAME and the job's real state-machine position — a
         // stage strip, never a fabricated %. A handoff shows the specialist actually working.
@@ -177,7 +183,9 @@ module.exports = {
       }
       const sendBack = everDispatched && !(lastAgentEv && lastAgentEv.event_type === 'REOPENED')
         ? `<div style="margin-top:8px">${btnCmd('Send back to the agent', 'renew_dispatch', { taskId: id })}
-           <span style="font-size:12px;color:var(--rmuted);margin-left:6px">goes again on the next sweep, carrying every note and file below</span></div>`
+           <span style="font-size:12px;color:${mode === 'AI' ? 'var(--rmuted)' : '#f5c96b'};margin-left:6px">${mode === 'AI'
+             ? 'goes again on the next sweep, carrying every note and file below'
+             : `the writer will refuse this while the route is ${LIFE.esc(mode)} — the sweep only takes AI-routed work`}</span></div>`
         : '';
       const kb = (b) => `${Math.max(1, Math.round(Number(b) / 1024))} KB`;
       const fileRow = (f) => `<div class="r-lrow"><div style="min-width:0"><div style="font-weight:600">${LIFE.esc(f.filename)} <span style="font-weight:400;font-size:11.5px;color:var(--rmuted)">${LIFE.esc(String(f.kind).toLowerCase())} · ${kb(f.bytes)}</span></div>

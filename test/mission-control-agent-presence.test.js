@@ -262,3 +262,50 @@ test('the light-red row reaches every list: Today panel, All tasks, project draw
   });
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('the board stops shouting once the owner has answered — and says whether the re-run can happen', () => {
+  // LIVE 2026-08-13: an escalated life job stays escalated forever, so the Engine room kept
+  // saying "Escalated — needs you" hours after the send-back. The dispatcher now writes an
+  // owner-answered job_event (business side — /claw never reads life.db) and the board obeys.
+  // ONE job per render: the board shows one card per agent, so a shared fixture would only
+  // ever render the highest-ranked bucket and prove nothing about the others.
+  const now = Date.parse(T);
+  const leadJob = (id, taskId, title) => ({
+    id, type: 'lead', status: 'escalated',
+    payload: JSON.stringify({ brief: 'x', lifeDispatch: { taskId, title, dispatcher: 'life-dispatcher' } }),
+    created_at: now - 7200000, updated_at: now - 3600000, attempts: 1, error: 'gave up', parent_job_id: null, owner_id: null,
+  });
+  const render = (job, events) => {
+    const q = (sql) => {
+      const s2 = String(sql);
+      if (/FROM jobs WHERE status NOT IN/.test(s2)) return { ok: true, rows: [job] };
+      if (/FROM job_events WHERE kind = 'owner-answered'/.test(s2)) return { ok: true, rows: events };
+      return { ok: true, rows: [] };
+    };
+    return AGENTS.render(AGENTS.getSection(null, { q, now, halt: { halted: false } }), { serverRev: '' });
+  };
+  const blockedCol = (body) => {
+    const i = body.indexOf('col blocked');
+    const j = body.indexOf('col done', i);
+    return i === -1 ? '' : body.slice(i, j === -1 ? body.length : j);
+  };
+
+  // 1) NOT answered → still blocked on him. (The guard can fail: this is its red case.)
+  const stuck = render(leadJob('j1', 'task-stuck', 'Genuinely stuck task'), []);
+  assert.match(blockedCol(stuck.body), /Genuinely stuck task/, 'a real give-up still blocks on you');
+  assert.match(stuck.body, /Escalated — needs you/);
+
+  // 2) Answered, AI-routed → out of Blocked, and the promise is keepable.
+  const ai = render(leadJob('j2', 'task-ai', 'Answered AI task'),
+    [{ job_id: 'j2', kind: 'owner-answered', detail: JSON.stringify({ taskId: 'task-ai', mode: 'AI' }) }]);
+  assert.ok(!/Answered AI task/.test(blockedCol(ai.body)), 'an answered give-up leaves the Blocked column');
+  assert.match(ai.body, /you sent it back, a fresh run follows/);
+  assert.match(ai.body, /↩ answered/);
+  assert.ok(!/Escalated — needs you/.test(ai.body), 'and stops claiming he owes anything');
+
+  // 3) Answered but HYBRID → the board says the promised re-run cannot happen.
+  const hy = render(leadJob('j3', 'task-hy', 'Answered HYBRID task'),
+    [{ job_id: 'j3', kind: 'owner-answered', detail: JSON.stringify({ taskId: 'task-hy', mode: 'HYBRID' }) }]);
+  assert.ok(!/Answered HYBRID task/.test(blockedCol(hy.body)));
+  assert.match(hy.body, /routed HYBRID and the sweep only takes AI-routed work/);
+});
