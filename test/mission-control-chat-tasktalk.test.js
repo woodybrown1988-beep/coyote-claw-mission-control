@@ -92,3 +92,24 @@ test('the board offers "Talk about this" on blocked cards, and it stays a GET li
   // The /claw read-only boundary: a link is a GET; no write affordance may appear.
   assert.ok(!/data-op|method="post"|fetch\(/i.test(out.body), 'the console stays read-only');
 });
+
+test('the Chief of Staff button is no longer dead — it opens chat with the question loaded', () => {
+  // It was a styled <button> with NO handler anywhere, on the one card whose promise is
+  // "the one you actually talk to" (operator ask 2026-08-13).
+  const AGENTS = require('../mission-control/ui/pages/claw/agents.js');
+  const now = 1786600000000;
+  const q = () => ({ ok: true, rows: [] });
+  const board = AGENTS.render(AGENTS.getSection(null, { q, now, halt: { halted: false } }), { serverRev: '' });
+  assert.ok(!/<button class="cos-btn"/.test(board.body), 'no dead button remains');
+  assert.match(board.body, /<a class="cos-btn" href="\/claw\/chat\?ask=[^"]+">▸ What/, 'it is a link into chat');
+  assert.match(board.body, /Talk to the fleet/, 'and a plain way through to the agents');
+
+  // Landing there, the question is pre-loaded so one keystroke sends it to Rex.
+  const db = fixtureDb();
+  const ctx = {
+    q: (sql, params) => { try { return { ok: true, rows: db.prepare(sql).all(...(params || [])) }; } catch (e) { return { ok: false, error: String(e.message) }; } },
+    now: 3000, query: { ask: 'Rex, what has been done today?' },
+  };
+  const out = CHAT.render(CHAT.getSection(db, ctx), ctx);
+  assert.match(out.body, /<textarea[^>]*>Rex, what has been done today\?<\/textarea>/);
+});
