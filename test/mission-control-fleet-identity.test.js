@@ -119,6 +119,25 @@ test('every card on the board carries a department', () => {
   db.close();
 });
 
+test('the department OWNS the head of the card, not just a chip', () => {
+  const db = makeDb();
+  beat(db, 'b:1', 'accountant-1');   // Finance, emerald
+  beat(db, 'b:2', 'researcher-1');   // Research, violet
+  const html = AGENTS.render(AGENTS.getSection(db, ctxFor(db)), { serverRev: '' }).body;
+  const finance = S.DEPARTMENTS.finance.colour;
+  const research = S.DEPARTMENTS.research.colour;
+  // A tinted chip alone read as decoration (operator, 2026-08-13: "the department colours need to
+  // be more obvious"). The head of the card carries the colour full-bleed.
+  assert.ok(html.includes('class="acard-head" style="background:linear-gradient(180deg,' + finance),
+    'the Finance card head is emerald');
+  assert.ok(html.includes('class="acard-head" style="background:linear-gradient(180deg,' + research),
+    'the Research card head is violet');
+  assert.ok(html.includes('background:' + finance + ';color:#0A0E16'), 'and the avatar is SOLID on the band, not a tint');
+  // The kanban state rail must keep its own surface — department colour never replaces it.
+  assert.match(S.css(), /\.acard::before\{[^}]*position:absolute/, 'state rail stays absolutely positioned, painting above the band');
+  db.close();
+});
+
 test('a question-shaped job shows what was ASKED, not its job type', () => {
   const db = makeDb();
   job(db, { id: 'j1', type: 'boxquery', status: 'running', payload: JSON.stringify({ question: 'How many covers yesterday?' }) });

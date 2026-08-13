@@ -717,16 +717,25 @@ module.exports = {
       // DEPARTMENT: the avatar is tinted with the department's own colour and the name carries its
       // chip. Kanban STATE keeps the left rail (green working / red blocked / blue queued), so the
       // two never share a surface and cannot be read for each other.
+      // SOLID, not tinted: the avatar now sits ON the department band, and a 14%-alpha tint on a
+      // 24%-alpha band is invisible. Dark initials on the full department colour give the card a
+      // hard anchor point — every department colour is light enough to carry near-black text.
       const avStyle = c.deptColour
-        ? ' style="background:' + esc(c.deptColour) + '24;color:' + esc(c.deptColour) + ';border-color:' + esc(c.deptColour) + '66"'
+        ? ' style="background:' + esc(c.deptColour) + ';color:#0A0E16;border-color:' + esc(c.deptColour) + '"'
         : '';
       const avCls = 'acard-av ' + c.av + (c.deptColour ? ' dept-av' : '');
       const chip = c.dept ? S.deptChip(c.dept) : '';
+      // The head of the card IS the department colour — a gradient so it reads as a deliberate band
+      // rather than a flat block, fading into the card body. Colour is inline because it is data.
+      const headStyle = c.deptColour
+        ? ' style="background:linear-gradient(180deg,' + esc(c.deptColour) + '3D,' + esc(c.deptColour) + '12);border-bottom-color:' + esc(c.deptColour) + '4D"'
+        : ' style="border-bottom-color:transparent"';
       return (
         '<div class="' + cls + '"' + style + '>' +
-        '<div class="acard-top"><div class="' + avCls + '"' + avStyle + '>' + esc(c.initials) + '</div>' +
+        '<div class="acard-head"' + headStyle + '>' +
+        '<div class="acard-top" style="margin-bottom:0"><div class="' + avCls + '"' + avStyle + '>' + esc(c.initials) + '</div>' +
         '<div><div class="acard-namerow"><span class="acard-name"' + nameStyle + '>' + esc(c.name) + '</span>' + chip + '</div>' +
-        '<div class="acard-role">' + esc(c.role) + '</div></div></div>' +
+        '<div class="acard-role">' + esc(c.role) + '</div></div></div></div>' +
         workerGaugeHtml(c.workerGauge) +
         '<div class="acard-task">' + taskHtml(c.task) + '</div>' +
         pill +
