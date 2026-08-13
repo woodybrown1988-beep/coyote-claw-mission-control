@@ -170,7 +170,7 @@ module.exports = {
           ? `<div style="font-size:12.5px;color:#ef6b68;font-weight:600;margin-top:4px">⛔ The Lead’s plan awaits YOUR approval — the gate taps on Telegram; nothing builds until you answer.</div>`
           : '';
         stateLine = `${who} is on this — ${LIFE.stageStrip(String(stageJob.status))}`
-          + ` <a class="r-btn small" href="/claw/agents" style="margin-left:8px">See the board</a>${planGate}`;
+          + ` <a class="r-btn small" href="/claw/engine" style="margin-left:8px">See the board</a>${planGate}`;
       } else {
         let pl = {}; try { pl = JSON.parse(String((lastAgentEv || {}).payload_json || '{}')); } catch (_) { /* renders generic */ }
         stateLine = `An agent has been sent (job ${LIFE.esc(String(pl.jobId || '').slice(0, 8))}, ${LIFE.esc(String(pl.jobKind || 'agent'))}) — its answer lands below as an update, and the accept stays yours on Today.`;

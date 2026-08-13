@@ -102,7 +102,7 @@ test('task drawer: the agent by NAME with its live stage; a handoff follows the 
     assert.match(working.body, /<b>The Lead<\/b> is on this/);
     assert.match(working.body, /working/);
     assert.match(working.body, /See the board/);
-    assert.match(working.body, /href="\/claw\/agents"/);
+    assert.match(working.body, /href="\/claw\/engine"/);
     const gated = render([{ id: 'job-lead-1', type: 'lead', status: 'awaiting_plan_feedback', updated_at: 1, result: null }]);
     assert.match(gated.body, /plan awaits YOUR approval/);
     const handed = render([
