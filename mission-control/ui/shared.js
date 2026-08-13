@@ -789,6 +789,28 @@ function clientScript() {
       };
       step(0);
     });
+    // TASK FILES (operator ask 2026-08-13): the picker posts the RAW file to the upload
+    // endpoint; the server stages it in the writer's inbox and the SOLE WRITER attaches it.
+    // No base64, no form element, no reload until the writer said yes. NO BACKTICKS in this
+    // block — the whole script is one template literal (mc-client-script-parse-gate).
+    document.addEventListener('change',function(e){var el=e.target;if(!el||!el.getAttribute)return;
+      var tid=el.getAttribute('data-lc-taskfile');if(!tid)return;
+      var f=el.files&&el.files[0];if(!f)return;
+      var box=el.closest('.lc-taskfile-box');
+      var out=box?box.querySelector('.lc-taskfile-out'):null;
+      if(f.size>15*1024*1024){if(out)out.textContent='Too big - 15 MB max. Nothing was attached.';el.value='';return;}
+      if(f.size===0){if(out)out.textContent='That file is empty - nothing to hand over.';el.value='';return;}
+      var noteEl=box?box.querySelector('[data-lc-taskfile-note]'):null;
+      var note=noteEl&&noteEl.value?String(noteEl.value).slice(0,500):'';
+      if(out)out.textContent='Uploading '+f.name+'…';
+      el.disabled=true;
+      fetch('/api/life/task-upload?taskId='+encodeURIComponent(tid)+'&name='+encodeURIComponent(f.name)+'&note='+encodeURIComponent(note),{method:'POST',body:f})
+      .then(function(r){return r.json();}).then(function(r){
+        if(r&&r.ok){location.reload();}
+        else{el.disabled=false;el.value='';if(out)out.textContent=window.__lcOwnerCopy(r&&r.error);}
+      })
+      .catch(function(){el.disabled=false;el.value='';if(out)out.textContent='Connection lost - nothing was attached. Safe to try again.';});
+    });
     // A3: execution-route control — a [data-lc-route] <select> posts set_route on change.
     document.addEventListener('change',function(e){var el=e.target;
       if(!el||!el.classList||!el.classList.contains('lc-route-sel'))return;

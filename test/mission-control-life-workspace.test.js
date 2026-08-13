@@ -50,12 +50,16 @@ const SANCTIONED_LC = new Set(['data-lc-cancel', 'data-lc-cmd', 'data-lc-complet
   'data-lc-mailedit', 'data-lc-due', 'data-lc-replied',
   // Batch decide (Wave 3, 2026-08-13): sugar over per-proposal audited `decide` posts —
   // the shell handler posts one allowlisted command per ticked row, same relay, same gates.
-  'data-lc-batch', 'data-lc-batch-all']);
+  'data-lc-batch', 'data-lc-batch-all',
+  // Task files (operator ask 2026-08-13): the picker posts RAW bytes to the auth-walled
+  // upload endpoint; the sole writer attaches. The note input is plain data for that post.
+  'data-lc-taskfile', 'data-lc-taskfile-note']);
 const CMD_ALLOWLIST = new Set(['note', 'decide', 'transition', 'complete', 'set_waiting', 'wake', 'reopen', 'undo', 'cancel',
   'plan_today', 'approve_plan', 'compile_week', 'approve_week', 'compile_quarter', 'approve_quarter',
   'pause_capability', 'resume_capability', 'create_outcome', 'create_project', 'set_route', 'set_setting',
   'rename_task', 'rename_project', 'cancel_project', 'import_preview', 'import_batch', 'assign_project', 'accept_standalone',
-  'calendar_sync', 'park_project', 'activate_project', 'place_block', 'remove_block', 'move_block', 'swap_block', 'mail_sync', 'set_due', 'mail_owner_replied']);
+  'calendar_sync', 'park_project', 'activate_project', 'place_block', 'remove_block', 'move_block', 'swap_block', 'mail_sync', 'set_due', 'mail_owner_replied',
+  'remove_task_file', 'renew_dispatch']);
 function assertOnlySanctionedLc(body, key) {
   for (const m of body.matchAll(/data-lc-[a-z-]+/g)) {
     assert.ok(SANCTIONED_LC.has(m[0]), `${key}: unsanctioned life affordance ${m[0]}`);

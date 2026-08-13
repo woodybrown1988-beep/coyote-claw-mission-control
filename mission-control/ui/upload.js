@@ -19,6 +19,11 @@ function isWithinDir(dir, target) {
   return path.resolve(target).startsWith(d);
 }
 
+/** Task-file extension allowlist (operator ask 2026-08-13) — must match the writer's
+ *  FILE_KINDS in coyote-claw src/life/taskFiles.ts: two gates, one list. */
+const TASK_FILE_EXT_RE = /\.(csv|tsv|txt|md|json|xlsx|docx|pdf|png|jpe?g)$/i;
+function isAllowedTaskFileName(name) { return TASK_FILE_EXT_RE.test(String(name || '').trim()); }
+
 /** Parse the reservations-ingest CLI stdout for ONE file's outcome (the child is the source of truth,
  *  immune to DB read-back timing). Lines look like:
  *    "  ok          weekly.csv — 3 rows (2026-07-20..2026-07-20)"
@@ -40,4 +45,4 @@ function parseIngestOutcome(stdout, fileName) {
   return { status: null, rows: null, from: null, to: null, detail: null };
 }
 
-module.exports = { isCsvName, sanitizeUploadName, isWithinDir, parseIngestOutcome };
+module.exports = { isCsvName, sanitizeUploadName, isWithinDir, isAllowedTaskFileName, parseIngestOutcome };

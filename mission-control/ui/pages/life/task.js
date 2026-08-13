@@ -53,6 +53,8 @@ module.exports = {
         // Living projects for the assignment select (triage ruling 2026-08-10) — parked
         // ones included ON PURPOSE: assigning into a park is a valid triage outcome.
         projects: q("SELECT id, title, status FROM life_projects WHERE status NOT IN ('CANCELLED','DONE') ORDER BY CASE status WHEN 'ACTIVE' THEN 0 ELSE 1 END, title"),
+        // Owner→agent context (operator ask 2026-08-13): the task's files, for the rail below.
+        files: q("SELECT id, filename, kind, bytes, note, created_at FROM life_task_files WHERE task_id = ? AND state = 'ATTACHED' ORDER BY created_at", [id]),
       };
     } finally { o.db.close(); }
   },
@@ -116,6 +118,53 @@ module.exports = {
       ${t.description ? `<div style="font-size:13px;margin-bottom:10px">${LIFE.esc(t.description)}</div>` : ''}
       <div class="lc-row" style="align-items:center">${focusBtn} ${acts} ${specials} ${routeControl} ${projectControl}</div></div>`;
 
+    // ── THE AGENT RAIL (operator ask 2026-08-13): talk to the agent, hand it files ──
+    // Dispatch state derives from the audited events; everything the owner writes or
+    // uploads below rides the NEXT dispatch brief (record-only notes excluded, said so).
+    const agentEvents = (s.events || []).filter((e) => ['AGENT_DISPATCHED', 'DISPATCH_REFUSED', 'REOPENED'].includes(String(e.event_type)));
+    const lastAgentEv = agentEvents[0] || null; // events arrive newest-first
+    const everDispatched = agentEvents.some((e) => e.event_type === 'AGENT_DISPATCHED');
+    const isAgentRoute = mode === 'AI' || mode === 'HYBRID';
+    let agentPanel = '';
+    if (isAgentRoute || everDispatched) {
+      let stateLine;
+      if (!everDispatched && lastAgentEv && lastAgentEv.event_type === 'DISPATCH_REFUSED') {
+        let pl = {}; try { pl = JSON.parse(String(lastAgentEv.payload_json || '{}')); } catch (_) { /* renders generic */ }
+        stateLine = `The dispatcher looked and refused: ${LIFE.esc(String(pl.reason || 'no confident shape'))}`;
+      } else if (!everDispatched) {
+        stateLine = mode === 'AI'
+          ? 'Routed to AI — the sweep (09:20 / 15:20 London) picks it up with everything on this page.'
+          : 'Route it AI and the sweep picks it up with everything on this page.';
+      } else if (lastAgentEv && lastAgentEv.event_type === 'REOPENED') {
+        stateLine = 'Sent back — it goes out again on the next sweep with your notes and files.';
+      } else {
+        let pl = {}; try { pl = JSON.parse(String((lastAgentEv || {}).payload_json || '{}')); } catch (_) { /* renders generic */ }
+        stateLine = `An agent has been sent (job ${LIFE.esc(String(pl.jobId || '').slice(0, 8))}, ${LIFE.esc(String(pl.jobKind || 'agent'))}) — its answer lands below as an update, and the accept stays yours on Today.`;
+      }
+      const sendBack = everDispatched && !(lastAgentEv && lastAgentEv.event_type === 'REOPENED')
+        ? `<div style="margin-top:8px">${btnCmd('Send back to the agent', 'renew_dispatch', { taskId: id })}
+           <span style="font-size:12px;color:var(--rmuted);margin-left:6px">goes again on the next sweep, carrying every note and file below</span></div>`
+        : '';
+      const kb = (b) => `${Math.max(1, Math.round(Number(b) / 1024))} KB`;
+      const fileRow = (f) => `<div class="r-lrow"><div style="min-width:0"><div style="font-weight:600">${LIFE.esc(f.filename)} <span style="font-weight:400;font-size:11.5px;color:var(--rmuted)">${LIFE.esc(String(f.kind).toLowerCase())} · ${kb(f.bytes)}</span></div>
+        ${f.note ? `<div style="font-size:12px;color:var(--rmuted);margin-top:2px">${LIFE.esc(f.note)}</div>` : ''}</div>
+        <div style="display:flex;gap:6px;flex-shrink:0"><a class="r-btn small" href="/api/life/task-file?id=${encodeURIComponent(f.id)}">Download</a>${btnCmd('Remove', 'remove_task_file', { taskId: id, fileId: f.id })}</div></div>`;
+      const files = (s.files || []);
+      agentPanel = `<div class="r-card r-panel"><h3>Working with the agent</h3>
+        <div style="font-size:13px;line-height:1.55;margin:4px 0 2px">${stateLine}</div>
+        ${sendBack}
+        <div style="font-size:12.5px;color:var(--rmuted);margin:10px 0 4px"><b>Talk to it</b> in the update box below — every non-record-only note on this task rides the agent's brief, yours and its own replies, as a conversation.</div>
+        <div style="font-size:12.5px;color:var(--rmuted);margin:8px 0 4px"><b>Hand it files</b> — partial work, exports, anything that helps. csv / txt / md / json content is read straight into the brief; xlsx, docx, pdf and images travel as named attachments it knows exist. 15 MB max.</div>
+        ${files.length ? files.map(fileRow).join('') : ''}
+        <div class="lc-taskfile-box" data-task="${LIFE.esc(id)}" style="margin-top:8px">
+          <div class="lc-row" style="align-items:center;gap:8px;flex-wrap:wrap">
+            <input type="file" class="lc-input" data-lc-taskfile="${LIFE.esc(id)}" accept=".csv,.tsv,.txt,.md,.json,.xlsx,.docx,.pdf,.png,.jpg,.jpeg" style="max-width:300px">
+            <input class="lc-input" data-lc-taskfile-note maxlength="500" placeholder="What is this file? (optional — the agent reads this note)" style="flex:1;min-width:200px">
+          </div>
+          <div class="lc-taskfile-out r-note" style="min-height:16px"></div>
+        </div></div>`;
+    }
+
     // add update (A6): record-only honoured — context the AI must never act on
     const noteForm = `<div class="r-card r-panel"><h3>Add update</h3>
       <form class="lc-note-form" data-task="${LIFE.esc(id)}">
@@ -175,6 +224,6 @@ module.exports = {
         <div style="font-size:12px;color:var(--rmuted);margin:2px 0 8px">Every change on this task, and who held it — you, a service, or (later) an agent. Nothing acts here without leaving a line.</div>
         <table class="data" style="width:100%"><thead><tr><th>When</th><th>What happened</th><th>Change</th><th>Handled by</th></tr></thead><tbody>${evRows}</tbody></table></div>`;
 
-    return { stamp: '', body: wrap(head + noteForm + proposals + facts + timeline) };
+    return { stamp: '', body: wrap(head + agentPanel + noteForm + proposals + facts + timeline) };
   },
 };
