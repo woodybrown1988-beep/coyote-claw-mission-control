@@ -100,8 +100,12 @@ test('agents: matches the mockup structure + counts a TEXT guard_flag (the fixed
   assert.match(out.body, /class="librarian"/, 'Librarian band');
   for (const c of ['idle', 'queued', 'working', 'blocked', 'done']) assert.match(out.body, new RegExp(`col ${c}`), `kanban ${c}`);
   assert.match(out.body, /Chief of Staff/);
-  assert.match(out.body, /Research/);            // unbuilt fleet rendered (faded), never active
-  assert.match(out.body, /faded/);
+  // The two hard-coded "Research — not yet wired" / "Accountant — not built" cards were REMOVED on
+  // 2026-08-13: both services had been running for weeks and had completed jobs that same day, so
+  // the board was asserting an agent did not exist while it was working. Agents now appear from
+  // their own heartbeats. What is pinned here is that the removed claim cannot come back.
+  assert.doesNotMatch(out.body, /Not yet wired|Planned specialist|Not built/,
+    'the board never declares a live agent nonexistent — presence comes from the heartbeat');
   // the guard_flagged TEXT bug: 'sourcing, supply' must be counted (not '=1' which never matches)
   assert.match(out.body, /1 guard-flagged/, 'TEXT guard flag counted');
 });

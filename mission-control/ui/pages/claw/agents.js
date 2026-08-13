@@ -13,12 +13,20 @@ const QUEUE_AGE_15M = 15 * 60 * 1000;
 const QUEUE_AGE_1H = 60 * 60 * 1000;
 const RECENT_MS = 36 * 60 * 60 * 1000; // a job counts as "recently done" within ~1.5× the daily cadence
 
-// Known fleet. Research + Accountant are scoped-but-unbuilt → ALWAYS faded idle, never an active state.
-const AGENTS = {
-  lead: { key: 'lead', av: 'av-lead', initials: 'LE', name: 'Lead', role: 'planner · gate' },
-  coder: { key: 'coder', av: 'av-coder', initials: 'CO', name: 'Coder', role: 'builder · cage' },
-  reviews: { key: 'reviews', av: 'av-rev', initials: 'RV', name: 'Reviews', role: 'drafting · ingest' },
+// WHO EACH AGENT IS comes from the shared roster (S.FLEET / S.agentIdentity) — see shared.js for
+// why identity has exactly one writer. This page used to hold its OWN 3-entry map, which is how
+// every live worker ended up labelled "Coder · builder · cage" and how the board printed raw job
+// types like 'cos-query' as agent names.
+const AV_CLASS = {
+  lead: 'av-lead', coder: 'av-coder', reviews: 'av-rev', research: 'av-research',
+  accountant: 'av-acct', 'cos-query': 'av-cos',
 };
+
+/** Roster identity + this page's avatar class, for a roster key or a raw job type. */
+function idOf(keyOrType) {
+  const a = S.agentIdentity(keyOrType);
+  return { ...a, av: AV_CLASS[a.key] || 'av-research' };
+}
 
 function num(v) {
   const n = Number(v);
@@ -46,15 +54,9 @@ function fmtDur(ms) {
   return Math.floor(h / 24) + 'd';
 }
 
-// job.type → fleet agent. Literal substring containment per the contract (lead/plan, coder/build/pr,
-// review/ingest/draft). Anything else → null (rendered as an honest generic worker card by real type).
-function agentForType(type) {
-  const t = String(type || '').toLowerCase();
-  if (t.includes('lead') || t.includes('plan')) return 'lead';
-  if (t.includes('coder') || t.includes('build') || t.includes('pr')) return 'coder';
-  if (t.includes('review') || t.includes('ingest') || t.includes('draft')) return 'reviews';
-  return null;
-}
+// job.type → roster key (exact, then the historic substring rule). Lives in shared.js so the board,
+// the life task pages and any future surface agree on which desk a job belongs to.
+const agentForType = S.agentKeyForType;
 
 // One job → its kanban bucket. activeChildParents = parent ids that have an active child (a parent
 // still in-flight while a child runs in another dept = blocked-on-dept, the only honest amber signal).
@@ -87,7 +89,10 @@ function describeJob(job) {
     if (p.lifeDispatch && typeof p.lifeDispatch === 'object' && typeof p.lifeDispatch.title === 'string' && p.lifeDispatch.title.trim()) {
       return trunc(p.lifeDispatch.title.trim(), 90);
     }
-    for (const f of ['title', 'summary', 'brief', 'description', 'headline', 'subject', 'task', 'name']) {
+    // 'question' added 2026-08-13: boxquery/research/cos-query jobs carry the ASK under that key, so
+    // without it the board printed the bare job type ("boxquery — done") for the one class of work
+    // whose whole content is a sentence the operator wrote.
+    for (const f of ['title', 'summary', 'brief', 'description', 'headline', 'subject', 'task', 'question', 'name']) {
       if (typeof p[f] === 'string' && p[f].trim()) return trunc(p[f].trim(), 90);
     }
     const prn = p.pr_number != null ? p.pr_number : p.pr != null ? p.pr : p.pr_id;
@@ -220,13 +225,21 @@ module.exports = {
     const lifeAnswered = readOwnerAnswered(q);
     const answeredJobIds = new Set(lifeAnswered.keys());
 
-    // group by agent
+    // group by agent. The Lead and Reviews own dedicated cards; everything else is a candidate for a
+    // WORKER slot below (the roster now covers boxquery/research/accountant/finplan, which used to
+    // fall straight through to anonymous generic cards).
     const byAgent = { lead: [], coder: [], reviews: [] };
     const generics = [];
+    const workerJobs = []; // anything a named worker could own
     for (const j of allJobs) {
       const a = agentForType(j.type);
-      if (a && byAgent[a]) byAgent[a].push(j);
-      else generics.push(j);
+      if (a === 'lead' || a === 'reviews') byAgent[a].push(j);
+      // A LIFE-DISPATCHED job keeps its OWN card and is never folded into a worker slot. It stands
+      // for a task the operator owns and tracks, so it must not disappear behind whichever job that
+      // worker happened to run most recently — which is exactly what folding it in did on the first
+      // pass here: "Create repeat-member dashboard" vanished the moment boxquery-1 ran anything else.
+      else if (lifeTaskOf(j)) generics.push(j);
+      else workerJobs.push(j);
     }
     const order = ['blocked_you', 'blocked_dept', 'working', 'queued'];
     function pickRep(jobs) {
@@ -250,19 +263,27 @@ module.exports = {
       return { bucket: 'idle', job: null };
     }
 
-    // --- Coder roster: ONE card PER live worker (named), not a single collapsed "Coder" -------------
+    // --- Worker roster: ONE card PER live worker (named), carrying its OWN identity ----------------
     // Sources (SELECT-only): worker_heartbeat (fresh non-lead rows = who's alive + their STABLE name,
-    // idle-aware because the beat fires even when idle) + coder jobs grouped by owner_id (each worker's
-    // own work — the worker mints ONE owner_id for both its beat and its claims). A worker is keyed by
-    // WORKER_NAME (stable across restarts) else owner_id; label = name ?? host:pid (never blank, never
-    // fabricated). Stale heartbeats (>120s) are dropped. In-flight jobs whose owner has no fresh beat are
-    // STILL shown (work is never hidden). With no heartbeat table at all it degrades to one card per
-    // job-owner — never losing a job (the honest in-between before workers restart with their names).
+    // idle-aware because the beat fires even when idle) + jobs grouped by owner_id (each worker mints
+    // ONE owner_id for both its beat and its claims). A worker is keyed by WORKER_NAME (stable across
+    // restarts) else owner_id; label = name ?? host:pid (never blank, never fabricated). Stale
+    // heartbeats (>120s) are dropped. In-flight jobs whose owner has no fresh beat are STILL shown
+    // (work is never hidden). With no heartbeat table at all it degrades to one card per job-owner —
+    // never losing a job (the honest in-between before workers restart with their names).
+    //
+    // THE BUG THIS FIXES (live 2026-08-13): this was `coderSlots`, and it took EVERY non-lead
+    // heartbeat as a coder. It was written when coder-1/coder-2 were the only named workers; the
+    // Researcher, Data Desk, Accountant and Financial Planner services were added later and silently
+    // inherited the Coder's name and role. The board showed four agents standing by as "builder ·
+    // cage" — the Accountant among them — while two faded cards below claimed Research and Accountant
+    // did not exist. Identity now comes from each worker's OWN name via the roster, so a new worker
+    // service is right the day it starts beating instead of being absorbed by whoever came first.
     const HEARTBEAT_FRESH_MS = 120000; // 4× the 30s beat; matches server.js getWorkerSection
     function shortOwner(id) {
       return String(id || '').replace(/:\d{10,}$/, ''); // host:pid (drop the per-restart epoch-ms tail)
     }
-    function coderSlots(coderJobs) {
+    function workerSlots(coderJobs) {
       const hb = rows(q(
         `SELECT owner_id, worker_name, last_beat_at FROM worker_heartbeat WHERE owner_id NOT LIKE 'lead:%' ORDER BY last_beat_at DESC`,
       ));
@@ -315,6 +336,10 @@ module.exports = {
             fresh: false,
             jobs: [],
             inFlightCount: workerLoad(workerName, ownerId),
+            // WHO this worker is, from its OWN name (coder-2 → Coder, accountant-1 → Accountant).
+            // null when the beat carries no name — resolved from its jobs' types in step 3, and
+            // failing that the card degrades to the honest owner-id label it already had.
+            agentKey: S.agentKeyForWorker(workerName),
           });
         }
         return slots.get(key);
@@ -353,13 +378,16 @@ module.exports = {
       const out = [];
       for (const s of slots.values()) {
         if (!s.jobs.length && !s.fresh) continue;
-        out.push({ label: s.label, rep: pickRep(s.jobs), inFlightCount: s.inFlightCount }); // pickRep([]) → idle "standing by"
+        // An unnamed beat still gets the right desk if its own work says which one.
+        const agentKey = s.agentKey || (s.jobs.length ? agentForType(s.jobs[0].type) : null);
+        out.push({ label: s.label, rep: pickRep(s.jobs), inFlightCount: s.inFlightCount, agentKey }); // pickRep([]) → idle "standing by"
       }
       if (!out.length) {
         out.push({
-          label: AGENTS.coder.name,
+          label: idOf('coder').name,
           rep: pickRep([]),
           inFlightCount: workerLoadsKnown ? 0 : null,
+          agentKey: 'coder',
         }); // never hide the role entirely
       }
       return {
@@ -392,14 +420,15 @@ module.exports = {
     function deptNameFor(parentJob) {
       const child = childOf.get(parentJob.id);
       if (!child) return 'another';
-      const ca = agentForType(child.type);
-      if (ca && AGENTS[ca]) return AGENTS[ca].name;
-      return String(child.type || 'another');
+      return idOf(child.type).name;
     }
 
     function agentCard(meta, rep, inFlightCount) {
       const job = rep.job;
-      const c = { kind: 'agent', av: meta.av, initials: meta.initials, name: meta.name, role: meta.role };
+      const c = {
+        kind: 'agent', av: meta.av, initials: meta.initials, name: meta.name, role: meta.role,
+        dept: meta.dept, deptLabel: meta.deptLabel, deptColour: meta.deptColour,
+      };
       if (inFlightCount !== undefined) {
         c.workerGauge = { known: inFlightCount !== null, count: inFlightCount };
       }
@@ -476,19 +505,24 @@ module.exports = {
 
     // Lead by job state (one Lead). Coder: ONE card PER live worker, named (Coder-1 / Coder-2), each
     // showing its own job state — replaces the single collapsed "Coder" so two workers are both visible.
-    cards.push(agentCard(AGENTS.lead, pickRep(byAgent.lead)));
-    const coderRoster = coderSlots(byAgent.coder);
-    for (const slot of coderRoster.slots) {
-      cards.push(agentCard({ ...AGENTS.coder, name: slot.label }, slot.rep, slot.inFlightCount));
+    cards.push(agentCard(idOf('lead'), pickRep(byAgent.lead)));
+    const workerRoster = workerSlots(workerJobs);
+    for (const slot of workerRoster.slots) {
+      // The INSTANCE keeps its own name (coder-1, accountant-1) — the operator needs to know which
+      // worker — while the identity underneath it comes from the roster, so each desk reads as
+      // itself. `role` is the agent's real job, never the first-registered worker's.
+      const id = idOf(slot.agentKey || 'coder');
+      cards.push(agentCard({ ...id, name: slot.label }, slot.rep, slot.inFlightCount));
     }
-    const unattributedCoderJobIds = new Set(coderRoster.unattributed.map((job) => job.id));
-    generics.push(...coderRoster.unattributed);
+    const unattributedCoderJobIds = new Set(workerRoster.unattributed.map((job) => job.id));
+    generics.push(...workerRoster.unattributed);
 
     // Reviews: a job-gate outranks the draft queue; otherwise the pending operator queue surfaces it as
     // blocked-on-you (summarised from review_drafts — the mockup's signature Reviews card).
     const revRep = pickRep(byAgent.reviews);
+    const revId = idOf('reviews');
     if (revRep.bucket === 'blocked_you') {
-      cards.push(agentCard(AGENTS.reviews, revRep));
+      cards.push(agentCard(revId, revRep));
     } else if (pendingDrafts > 0) {
       const parts = [];
       if (toApprove > 0) parts.push(toApprove + ' to approve');
@@ -497,16 +531,17 @@ module.exports = {
         kind: 'reviewsQueue',
         col: 'blocked',
         variant: 'you',
-        av: AGENTS.reviews.av,
-        initials: AGENTS.reviews.initials,
-        name: 'Reviews',
-        role: 'drafting',
+        av: revId.av,
+        initials: revId.initials,
+        name: revId.name,
+        role: revId.role,
+        dept: revId.dept, deptLabel: revId.deptLabel, deptColour: revId.deptColour,
         task: { strong: pendingDrafts + (pendingDrafts === 1 ? ' reply' : ' replies'), tail: ' drafted, in voice' + (guardFlagged > 0 ? ' · ' + guardFlagged + ' guard-flagged' : '') + '.' },
         waitPill: { tone: 'you', text: parts.join(' · ') },
         button: { label: 'Go to queue', href: '/reviews' },
       });
     } else {
-      const rc = agentCard(AGENTS.reviews, revRep);
+      const rc = agentCard(revId, revRep);
       if (revRep.bucket === 'idle') rc.task = { muted: true, tail: 'Queue clear — no drafts pending.' };
       cards.push(rc);
     }
@@ -516,14 +551,30 @@ module.exports = {
     for (const j of generics.slice().sort((x, y) => num(y.updated_at) - num(x.updated_at))) {
       const b = classify(j, activeChildParents, answeredJobIds);
       const life = lifeTaskOf(j);
-      const typeLabel = life ? (describeJob(j) || String(j.type || 'job')) : String(j.type || 'job');
+      // What the work IS, for every job — not just life-dispatched ones. This branch used to call
+      // describeJob ONLY for life jobs, so a plain fleet card could only ever say "boxquery", never
+      // the question the operator actually asked. The agent's name is on the card already; the body
+      // is for the work.
+      const typeLabel = describeJob(j) || String(j.type || 'job');
       const fleetOnly = unattributedCoderJobIds.has(j.id);
-      const role = life
-        ? 'life task · ' + String(j.type || 'job')
+      // The card is named for the AGENT that owns the work — "Rex", "Financial Planner" — not the
+      // raw job type it used to print ('cos-query', 'finplan'). An unmapped type still shows itself
+      // verbatim (identity.known === false): honest, never a fabricated name.
+      const id = idOf(j.type);
+      const where = life
+        ? 'life task'
         : fleetOnly
           ? (j.status === 'queued' ? 'fleet · unattributed queue' : (j.owner_id ? 'fleet · unrecognised ' + trunc(String(j.owner_id), 14) : 'fleet · unowned'))
           : 'worker · ' + (j.owner_id ? trunc(String(j.owner_id), 14) : 'unassigned');
-      const base = { kind: 'generic', av: 'av-research', initials: life ? 'LT' : 'JB', name: trunc(life ? String(j.type || 'job') : typeLabel, 16), role };
+      const role = id.known ? id.role + ' · ' + where : where;
+      const base = {
+        kind: 'generic', av: id.av, initials: id.initials, name: trunc(id.name, 18), role,
+        dept: id.dept, deptLabel: id.deptLabel, deptColour: id.deptColour,
+        // Explicit flags rather than sniffing the role text: the role is operator-facing copy and
+        // WILL be reworded, so anything that needs to know "is this fleet-level / a life task"
+        // should read the fact, not the sentence.
+        fleet: !!fleetOnly, lifeTask: !!life,
+      };
       // The board↔task link (operator ask 2026-08-13): a life job's card opens its task.
       // Blocked-on-you keeps its gate button (the tap is the point there).
       const lifeBtn = life ? { label: 'Open the task', href: '/life/task?id=' + encodeURIComponent(life.taskId) } : null;
@@ -560,9 +611,13 @@ module.exports = {
       }
     }
 
-    // Unbuilt fleet → always faded idle, never active.
-    cards.push({ kind: 'agent', col: 'idle', variant: 'i', faded: true, av: 'av-research', initials: 'RE', name: 'Research', role: 'precedent', task: { muted: true, tail: 'Standing by for stubborn-issue hand-offs. Not yet wired.' }, time: 'scoped · Gap C' });
-    cards.push({ kind: 'agent', col: 'idle', variant: 'i', faded: true, dim: true, av: 'av-acct', initials: 'AC', name: 'Accountant', role: 'books · tax', task: { muted: true, tail: 'Planned specialist. Not built.' }, time: 'future' });
+    // REMOVED 2026-08-13: two hard-coded cards claiming Research was "Not yet wired" and the
+    // Accountant "Planned specialist. Not built." Both were true when written and false for weeks
+    // since — coyote-researcher and coyote-accountant are running services that had each completed
+    // real jobs the same day the operator was reading this board. They now appear from their own
+    // heartbeats like every other worker, so the board can no longer assert an agent does not exist
+    // while that agent is working. A hard-coded claim about live state has no way to stop being a
+    // lie; the heartbeat does.
 
     // --- resolve mini-tracks from real milestone events -------------------------------------------
     if (trackJobIds.size) {
@@ -659,10 +714,19 @@ module.exports = {
       const style = c.inlineStyle ? ' style="' + esc(c.inlineStyle) + '"' : '';
       const nameStyle = c.dim ? ' style="color:rgba(170,195,225,.4)"' : '';
       const pill = c.waitPill ? '<div class="wait-pill ' + c.waitPill.tone + '"><span class="ar">▸</span>' + esc(c.waitPill.text) + '</div>' : '';
+      // DEPARTMENT: the avatar is tinted with the department's own colour and the name carries its
+      // chip. Kanban STATE keeps the left rail (green working / red blocked / blue queued), so the
+      // two never share a surface and cannot be read for each other.
+      const avStyle = c.deptColour
+        ? ' style="background:' + esc(c.deptColour) + '24;color:' + esc(c.deptColour) + ';border-color:' + esc(c.deptColour) + '66"'
+        : '';
+      const avCls = 'acard-av ' + c.av + (c.deptColour ? ' dept-av' : '');
+      const chip = c.dept ? S.deptChip(c.dept) : '';
       return (
         '<div class="' + cls + '"' + style + '>' +
-        '<div class="acard-top"><div class="acard-av ' + c.av + '">' + esc(c.initials) + '</div>' +
-        '<div><div class="acard-name"' + nameStyle + '>' + esc(c.name) + '</div><div class="acard-role">' + esc(c.role) + '</div></div></div>' +
+        '<div class="acard-top"><div class="' + avCls + '"' + avStyle + '>' + esc(c.initials) + '</div>' +
+        '<div><div class="acard-namerow"><span class="acard-name"' + nameStyle + '>' + esc(c.name) + '</span>' + chip + '</div>' +
+        '<div class="acard-role">' + esc(c.role) + '</div></div></div>' +
         workerGaugeHtml(c.workerGauge) +
         '<div class="acard-task">' + taskHtml(c.task) + '</div>' +
         pill +

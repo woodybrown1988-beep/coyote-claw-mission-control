@@ -85,7 +85,7 @@ test('helpers: last dispatch wins; the strip is the STATE MACHINE and never a pe
   assert.match(LIFE.stageStrip('running'), /working/);
   assert.match(LIFE.stageStrip('awaiting_plan_feedback'), /#ef6b68/, 'the plan gate is loud');
   assert.match(LIFE.stageStrip('failed'), /gave up/);
-  assert.match(LIFE.agentChip('boxquery', 'running'), /Box Query · working now/);
+  assert.match(LIFE.agentChip('boxquery', 'running'), /Data Desk · working now/);
   assert.equal(LIFE.agentChip('boxquery', null), '', 'no status, no chip — never invented');
 });
 
@@ -109,7 +109,11 @@ test('task drawer: the agent by NAME with its live stage; a handoff follows the 
       { id: 'job-lead-1', type: 'boxquery', status: 'done', updated_at: 1, result: JSON.stringify({ outcome: 'handoff', handoffJob: 'job-fin-1' }) },
       { id: 'job-fin-1', type: 'finplan', status: 'running', updated_at: 2, result: null },
     ]);
-    assert.match(handed.body, /→ <b>finplan<\/b>/, 'the specialist actually working is the one shown');
+    // The specialist actually working is the one shown — BY NAME. This assertion used to pin
+    // '<b>finplan</b>', i.e. it required the raw job type the operator called out on 2026-08-13 as
+    // meaning nothing to him. The roster now answers it, so the drawer reads "Financial Planner".
+    assert.match(handed.body, /→ <b>Financial Planner<\/b>/, 'the specialist actually working is the one shown, by name');
+    assert.doesNotMatch(handed.body, /<b>finplan<\/b>/, 'never the raw job type');
   });
   fs.rmSync(dir, { recursive: true, force: true });
 });
@@ -129,7 +133,7 @@ test('All tasks rows: an in-flight chip, and NO chip once delivered (the proposa
       { id: 'j1', type: 'boxquery', status: 'running', updated_at: 1, result: null },
       { id: 'j2', type: 'research', status: 'done', updated_at: 1, result: null },
     ]) });
-    assert.match(out.body, /Box Query · working now/);
+    assert.match(out.body, /Data Desk · working now/);
     assert.ok(!/Researcher · delivered/.test(out.body), 'a delivered job is the proposal’s story, not a presence chip');
   });
   fs.rmSync(dir, { recursive: true, force: true });
@@ -154,10 +158,10 @@ test('projects: the one honest %% — tasks done over tasks, WITH its fraction �
     const cards = PROJECTS.render(PROJECTS.getSection(null, {}), { q: bizQ(jobs) });
     assert.match(cards.body, /2 of 4 tasks done/, 'cancelled work is neither done nor owed');
     assert.match(cards.body, />50%</);
-    assert.match(cards.body, /working now: Box Query/);
+    assert.match(cards.body, /working now: Data Desk/);
     const drawer = withEnv(dbPath, () => PROJECT.render(PROJECT.getSection(null, { query: { id: 'p1' } }), { q: bizQ(jobs) }));
     assert.match(drawer.body, /2 of 4 tasks done/);
-    assert.match(drawer.body, /Box Query · working now/, 'the per-task chip rides the project drawer too');
+    assert.match(drawer.body, /Data Desk · working now/, 'the per-task chip rides the project drawer too');
   });
   fs.rmSync(dir, { recursive: true, force: true });
 });
@@ -178,7 +182,11 @@ test('the Claw board: a life job shows its TASK and links to it; other jobs are 
   const out = AGENTS.render(section, { serverRev: '' });
   assert.match(out.body, /Create repeat-member dashboard/, 'the board names the TASK, not just the lane');
   assert.match(out.body, /href="\/life\/task\?id=aaaa-task"/, 'Open the task rides the card');
-  assert.match(out.body, /life task · boxquery/);
+  // The card is named for the AGENT (Data Desk), not the raw job type it used to print, and still
+  // says plainly that this is a life task. Both facts matter; neither is the old exact wording.
+  assert.match(out.body, /Data Desk/, 'the board names the agent, never the raw type "boxquery"');
+  assert.match(out.body, /life task/, 'and still marks it as the owner\'s task');
+  assert.ok(section.columns.flatMap((c) => c.cards).some((c) => c.lifeTask), 'the life-task fact is a flag, not just copy');
   assert.ok(!/href="\/life\/task\?id=[^"]*plain/.test(out.body), 'a non-life job gains no task link');
 });
 
@@ -230,7 +238,7 @@ test('the light-red row reaches every list: Today panel, All tasks, project draw
     const today = TODAY.render(TODAY.getSection(null, { now: Date.parse(T) }), { now: Date.parse(T), q: bizQ(jobs) });
     assert.match(today.body, /Agents waiting on you/, 'Today carries its own panel');
     assert.match(today.body, /Supplier cost sweep/);
-    assert.match(today.body, /Box Query — it asked you a question/);
+    assert.match(today.body, /Data Desk — it asked you a question/);
     assert.match(today.body, /Talk to it/);
     assert.match(today.body, /1 agent is stuck waiting on you/, 'the Rex line counts it');
     assert.ok(!/Quietly working/.test(today.body.split('Agents waiting on you')[1].split('</div></div>')[0] || ''), 'a working agent is not in the stuck panel');
@@ -238,7 +246,7 @@ test('the light-red row reaches every list: Today panel, All tasks, project draw
     const tasks = TASKS.render(TASKS.getSection(null, { query: {} }), { q: bizQ(jobs) });
     assert.match(tasks.body, /data-needs-you="1"/, 'the All-tasks row is flagged');
     assert.match(tasks.body, /rgba\(239,107,104,\.10\)/, 'light red, one shared definition');
-    assert.match(tasks.body, /Box Query needs you/);
+    assert.match(tasks.body, /Data Desk needs you/);
     assert.equal((tasks.body.match(/data-needs-you="1"/g) || []).length, 1, 'ONLY the stuck task is red');
 
     const drawer = PROJECT.render(PROJECT.getSection(null, { query: { id: 'p1' } }), { q: bizQ(jobs) });

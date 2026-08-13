@@ -115,10 +115,20 @@ test('claw queue depth: fleet buckets, all in-flight statuses, worker joins, que
   assert.deepEqual(cards.find((card) => card.name === 'coder-3').workerGauge, { known: true, count: 0 }, 'a worker with no claimed work displays zero');
   assert.equal(cards.some((card) => card.name === 'ghost:4'), false, 'an owner without a heartbeat is not presented as a worker');
   assert.equal(cards.some((card) => card.name === 'Coder'), false, 'unowned work is not assigned to the fallback Coder role');
-  const fleetCards = agents.columns.flatMap((column) => column.cards).filter((card) => /^fleet ·/.test(card.role));
+  // Keyed on the card's own `fleet` flag, not on the role STRING starting with "fleet ·" — the role
+  // is operator-facing copy (it gained the agent's real job in 2026-08-13's roster work) and pinning
+  // its prefix made this assertion break on a pure wording change while proving nothing.
+  const fleetCards = agents.columns.flatMap((column) => column.cards).filter((card) => card.fleet);
   assert.ok(fleetCards.some((card) => /unrecognised ghost:4/.test(card.role)), 'an unmatched owner remains visible as fleet work');
-  assert.ok(fleetCards.some((card) => card.role === 'fleet · unowned'), 'unowned work remains visible without a worker label');
-  assert.equal(agents.columns.find((column) => column.id === 'queued').cards.filter((card) => card.av === 'av-coder').length, 0, 'queued coder work stays fleet-only');
+  assert.ok(fleetCards.some((card) => /fleet · unowned/.test(card.role)), 'unowned work remains visible without a worker label');
+  // "Queued work stays fleet-only" = it is never ATTRIBUTED TO A WORKER, even when the row carries
+  // an owner_id that matches a live heartbeat. The old form of this assertion counted avatars
+  // (av-coder), which only passed because generic cards used to hard-code an unrelated avatar — it
+  // would have gone green even if queued work HAD been attributed. Pinned on the fact now.
+  const queuedCards = agents.columns.find((column) => column.id === 'queued').cards;
+  assert.ok(queuedCards.length > 0, 'the fixture really does queue work (an empty column proves nothing)');
+  assert.ok(queuedCards.every((card) => card.fleet === true), 'queued work is fleet-level, never assigned to a worker');
+  assert.ok(queuedCards.every((card) => !card.workerGauge), 'and carries no worker gauge');
 
   const agentsHtml = AGENTS.render(agents, agentsCtx).body;
   assert.match(agentsHtml, /data-queue-depth="fleet"/);

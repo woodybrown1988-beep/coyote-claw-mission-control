@@ -50,7 +50,7 @@ test('chatUpdates: cursor + labels + job statuses; malformed job ids NEVER reach
   const r = chatUpdates(db, 1, ['aaaa1111-0000-0000-0000-000000000000', "1;DROP TABLE jobs--"]);
   assert.equal(r.ok, true);
   assert.equal(r.messages.length, 1, 'only rows after the cursor');
-  assert.equal(r.messages[0].label, 'Box Query', 'source labelled for the feed');
+  assert.equal(r.messages[0].label, 'Data Desk', 'source labelled for the feed — the roster name, shared with the board');
   assert.deepEqual(r.jobs, { 'aaaa1111-0000-0000-0000-000000000000': 'running' }, 'the injection-shaped id was ignored');
   assert.equal(db.prepare(`SELECT COUNT(*) c FROM jobs`).get().c, 1, 'jobs table intact');
   const bare = new sqlite.DatabaseSync(':memory:');

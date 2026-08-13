@@ -89,7 +89,12 @@ function freshness(sync, nowMs) {
 // task→job mapping (AGENT_DISPATCHED events, latest per task, from life.db); the BUSINESS
 // ctx.q supplies live job status from librarian.db — a cross-domain read BY REFERENCE (ids
 // only), exactly the canon shape. A missing jobs table or a stale id degrades to no chip.
-const AGENT_NAME = { boxquery: 'Box Query', research: 'Researcher', lead: 'The Lead' };
+// Agent names come from the shared roster (shared.js), so a task page and the engine board can
+// never disagree about who is on the job. This was a hand-written 3-entry map — a task dispatched
+// to the Financial Planner or the Accountant showed the raw job type ('finplan') on the task page,
+// while the board showed something else again.
+const SHARED = require('../../shared.js');
+const AGENT_NAME = Object.fromEntries(Object.keys(SHARED.FLEET).map((k) => [k, SHARED.FLEET[k].name]));
 const STAGE_LABEL = {
   queued: 'queued', preparing: 'picked up', dispatched: 'picked up', running: 'working now',
   awaiting_plan_feedback: 'plan awaits your approval', awaiting_signoff: 'in review',
@@ -180,7 +185,7 @@ function needsYouChip(nu) {
   return `<div style="font-size:12px;color:var(--rbad,#ef6b68);font-weight:600;margin-top:3px">🗣 ${esc(nu.who)} needs you — ${esc(nu.reason)}</div>`;
 }
 
-/** The one-line presence chip: '🤖 Box Query · working now' (empty when nothing live). */
+/** The one-line presence chip: '🤖 Data Desk · working now' (empty when nothing live). */
 function agentChip(jobKind, status) {
   if (!status) return '';
   const name = AGENT_NAME[jobKind] || jobKind || 'agent';
