@@ -101,7 +101,9 @@ module.exports = {
           : d.failed > 0
             ? S.fmtInt(d.failed) + ' failed'
             : d.lastAt ? 'last ' + S.agoLabel(Date.now() - Number(d.lastAt)) : 'quiet today';
-        return `<div class="dept-card${quiet ? ' quiet' : ''}" style="border-color:${d.colour}59;background:${d.colour}0F">`
+        // Solid top bar in the department's colour — same signal as the cards below, so the
+        // roll-call and the board read as one colour language rather than two.
+        return `<div class="dept-card${quiet ? ' quiet' : ''}" style="border-color:${d.colour}40;border-top-color:${d.colour};background:${d.colour}0F">`
           + `<div class="dn" style="color:${d.colour}">${esc(d.label)}</div>`
           + `<div class="dv">${S.fmtInt(d.finished)}</div>`
           + `<div class="ds">${esc(sub)}</div></div>`;

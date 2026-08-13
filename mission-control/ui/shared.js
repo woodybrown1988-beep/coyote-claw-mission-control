@@ -1160,8 +1160,16 @@ function css() {
   .dept-chip{font-family:var(--font-mono);font-size:8px;font-weight:600;text-transform:uppercase;letter-spacing:.1em;padding:1.5px 6px;border-radius:5px;border:1px solid;display:inline-block;vertical-align:middle}
   .acard-namerow{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
   .acard-av.dept-av{border-width:1.5px}
+  /* The department BAND (operator ask 2026-08-13: "the department colours need to be more obvious
+     maybe the top third could be the colour"). A tinted chip read as decoration; the head of the
+     card is now the department's colour, full-bleed to the card edges, so a desk is identifiable
+     from across the room before any text is read. Negative margins cancel the card's own padding.
+     The kanban state rail (.acard::before) is absolutely positioned and therefore paints ABOVE this
+     background — state and department still never occupy the same pixel. */
+  .acard-head{margin:-11px -12px 9px;padding:10px 12px 8px;border-bottom:1px solid}
+  .acard.faded .acard-head{opacity:.75}
   .dept-rollcall{display:flex;gap:7px;flex-wrap:wrap;margin:11px 0 0}
-  .dept-card{flex:1 1 128px;border:1px solid;border-radius:9px;padding:8px 10px;background:var(--panel-2)}
+  .dept-card{flex:1 1 128px;border:1px solid;border-top-width:3px;border-radius:9px;padding:8px 10px;background:var(--panel-2)}
   .dept-card .dn{font-family:var(--font-mono);font-size:9px;font-weight:600;text-transform:uppercase;letter-spacing:.1em}
   .dept-card .dv{font-family:var(--font-display);font-size:17px;font-weight:600;color:var(--text);margin-top:3px;line-height:1}
   .dept-card .ds{font-family:var(--font-mono);font-size:8.5px;color:var(--muted);margin-top:3px}
