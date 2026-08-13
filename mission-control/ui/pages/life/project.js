@@ -84,7 +84,7 @@ module.exports = {
     const progress = totalCount ? `<div style="margin:6px 0 10px">
         <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--rmuted)"><span>${doneCount} of ${totalCount} tasks done</span><span>${pct}%</span></div>
         <div style="height:6px;border-radius:3px;background:rgba(255,255,255,.08);overflow:hidden"><div style="height:100%;width:${pct}%;background:var(--rgood,#45c486)"></div></div>
-        ${workingNames.length ? `<div style="font-size:12px;color:var(--rmuted);margin-top:5px">🤖 working now: ${workingNames.map((n) => LIFE.esc(n)).join(', ')} · <a href="/claw/agents">see the board</a></div>` : ''}
+        ${workingNames.length ? `<div style="font-size:12px;color:var(--rmuted);margin-top:5px">🤖 working now: ${workingNames.map((n) => LIFE.esc(n)).join(', ')} · <a href="/claw/engine">see the board</a></div>` : ''}
       </div>` : '';
     const head = `<div class="r-card r-panel"><div class="r-eyebrow">${LIFE.esc(String(p.stage || '').toLowerCase())}</div>
       <h3 style="margin-bottom:6px">${LIFE.esc(p.title)}</h3>
