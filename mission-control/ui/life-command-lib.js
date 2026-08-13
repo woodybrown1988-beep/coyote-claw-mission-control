@@ -157,6 +157,14 @@ const COMMAND_SHAPES = {
   // from that row, so there is no shape of payload from this surface that reaches a message
   // we did not create. Nothing here can send, delete mail, or touch the original.
   undo_draft: (p) => typeof p.seamId === 'string' && p.seamId.length > 8 && p.seamId.length < 80,
+  // "I've replied myself" (operator ask 2026-08-12). The draftId names a row in OUR OWN draft
+  // log, never a message — so no payload from this surface can reach mail this system did not
+  // draft. taskOutcome is a CLOSED vocabulary here and again at the writer; the note is capped
+  // and may be empty, because the system cannot read what he actually sent and an absent note
+  // is the honest record of that.
+  mail_owner_replied: (p) => typeof p.draftId === 'string' && !!p.draftId.trim()
+    && (p.note === undefined || (typeof p.note === 'string' && p.note.length <= 2000))
+    && (p.taskOutcome === undefined || ['waiting', 'wake', 'complete', 'none'].includes(p.taskOutcome)),
   set_due: (p) => typeof p.taskId === 'string' && !!p.taskId
     && (p.dueAt === null || (typeof p.dueAt === 'string' && !!p.dueAt.trim()))
     && (p.dueKind === undefined || ['HARD', 'TARGET', 'NONE'].includes(p.dueKind)),

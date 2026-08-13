@@ -699,6 +699,45 @@ function clientScript() {
       .then(function(r){return r.json();}).then(function(r){busy=false;if(r&&r.ok){window.__lcDraftClear(f);location.reload();}else{window.__lcRefuse(f,r&&r.error);}})
       .catch(function(){busy=false;window.__lcSay(f,'Connection lost — the update was not saved. Try again in a moment.');});
     });
+    // "I'VE REPLIED MYSELF" (operator ask 2026-08-12). An INLINE FORM, not a prompt chain:
+    // this asks two questions and one of them has a real answer worth typing, which a modal
+    // prompt makes miserable and a cancel halfway through makes ambiguous. The button reveals
+    // the form on its own card; the form posts once.
+    //
+    // Sent Items is a refused folder, so the system can NEVER observe that he replied or read
+    // what he sent — he is the only source, which is why this exists at all and why the note
+    // is OPTIONAL. Blank note = the record says the act happened and stays silent on content.
+    document.addEventListener('click',function(e){var t3=e.target;if(!t3||!t3.closest)return;
+      var rb=t3.closest('[data-lc-replied]');
+      if(!rb)return;e.preventDefault();
+      var id=rb.getAttribute('data-lc-replied')||'';
+      var f=document.querySelector('.lc-replied-form[data-draft="'+id+'"]');
+      if(!f){window.__lcSay(rb,'That draft has no record to close — reload and try again.');return;}
+      var open=f.style.display!=='none';
+      f.style.display=open?'none':'block';
+      rb.setAttribute('aria-expanded',open?'false':'true');
+      if(!open){var ta=f.querySelector('[name=note]');if(ta)ta.focus();}
+    });
+    document.addEventListener('submit',function(e){var f=e.target;
+      if(!f||!f.classList||!f.classList.contains('lc-replied-form'))return;
+      e.preventDefault();if(busy)return;
+      var draftId=f.getAttribute('data-draft')||'';
+      if(!draftId){window.__lcSay(f,'That draft has no record to close — reload and try again.');return;}
+      var sel=f.querySelector('[name=outcome]');
+      // No task on the correspondence = no select rendered = nothing for the planner to do.
+      var outcome=sel?(sel.value||'waiting'):'none';
+      var note=((f.querySelector('[name=note]')||{}).value||'').trim();
+      busy=true;
+      fetch('/api/life/command',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({
+        command:'mail_owner_replied',idempotencyKey:hex(),
+        payload:{draftId:draftId,note:note,taskOutcome:outcome}})})
+      .then(function(r){return r.json();}).then(function(r){busy=false;if(r&&r.ok){window.__lcDraftClear(f);location.reload();}else{window.__lcRefuse(f,r&&r.error);}})
+      // NEVER "nothing was changed". The request may have reached the writer and done the
+      // irreversible half — deleted the draft, undone the filing — before the connection
+      // dropped. This is the ONE verb in the relay that mutates a mailbox before it answers,
+      // so the honest line names the uncertainty and points at the only way to resolve it.
+      .catch(function(){busy=false;window.__lcSay(f,'Connection lost before this was confirmed — some of it may already have happened. Reload to see where things stand; nothing here will do it twice.');});
+    });
     // A3: execution-route control — a [data-lc-route] <select> posts set_route on change.
     document.addEventListener('change',function(e){var el=e.target;
       if(!el||!el.classList||!el.classList.contains('lc-route-sel'))return;

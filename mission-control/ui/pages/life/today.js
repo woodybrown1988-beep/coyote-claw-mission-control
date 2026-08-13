@@ -95,10 +95,19 @@ module.exports = {
         // the drafts table arrives with the engine's migration, and MC may deploy first. A
         // missing table costs the draft body on a proposal, never the decision queue.
         draftOf: Object.fromEntries(q(
-          `SELECT proposal_id, voice, needs_judgement, judgement_reason, replying_to, commits_to, body,
+          `SELECT id, task_id, proposal_id, voice, needs_judgement, judgement_reason, replying_to, commits_to, body,
                   outlook_draft_id, seam_id, filed_move_id
              FROM life_mail_drafts WHERE state = 'PROPOSED' AND proposal_id IS NOT NULL`,
         ).map((r) => [r.proposal_id, r])),
+        // outlook_gone_at is read SEPARATELY, and the comment four lines above says why: a
+        // column folded into the SELECT above would make ONE missing column blank the entire
+        // draft rail on a life.db that predates the migration. Split, the worst case is that
+        // the "this draft has vanished" note is absent for a few minutes. I folded it in first
+        // and the fixture caught it — which is the whole reason that rule is written down.
+        goneAt: Object.fromEntries(q(
+          `SELECT proposal_id, outlook_gone_at FROM life_mail_drafts
+            WHERE state = 'PROPOSED' AND proposal_id IS NOT NULL AND outlook_gone_at IS NOT NULL`,
+        ).map((r) => [r.proposal_id, r.outlook_gone_at])),
         // APPROVED drafts stay reachable for the rest of the day. Accepting a proposal removes
         // it from the queue — which for every other shape is correct, but here the row IS the
         // deliverable: tap accept before copying and the words are simply gone. Cheap to keep,
@@ -236,17 +245,57 @@ module.exports = {
           // and offers the undo. If the Outlook draft could NOT be made, the words are all
           // there is, and it says that too rather than implying a draft that is not there.
           const inOutlook = !!dr.outlook_draft_id;
-          const whereNote = inOutlook
+          // whereNote was gated on outlook_draft_id ALONE, so a draft the reconcile pass had
+          // already found GONE still rendered "Drafted in your Outlook — read it there",
+          // directly under the note saying it is no longer there. Two statements, one screen,
+          // one of them false.
+          const gone = !!(s.goneAt || {})[p.id];
+          const whereNote = gone
+            ? ''
+            : inOutlook
             ? `<div class="r-note">✍️ Drafted in your Outlook${dr.filed_move_id
               ? ' · the email was filed to <b>Emails to Respond</b>'
               : ' · the email was <b>left in your Inbox</b>'} — read it there and send it yourself.</div>`
             : `<div class="r-note" style="color:#f5c96b">Not in Outlook — the draft could not be created there, so these words are all there is. Copy them across.</div>`;
           extraActions = `<button class="r-btn small" data-lc-draftcopy="${LIFE.esc(String(dr.body || ''))}">Copy the reply</button>`
             + ` <button class="r-btn small" data-lc-draftedit="${LIFE.esc(JSON.stringify({ proposalId: p.id, body: String(dr.body || '') }))}">Edit</button>`
+            + ` <button class="r-btn small" data-lc-replied="${LIFE.esc(String(dr.id || ''))}" aria-expanded="false">I&#39;ve replied myself</button>`
             + (inOutlook && dr.seam_id
               ? ` ${cmd('Undo the draft', 'undo_draft', { seamId: String(dr.seam_id) }, 'small')}`
               : '');
-          extra = `${flag}${whereNote}`
+          // THE DRAFT HAS VANISHED FROM OUTLOOK and this system did not remove it. He sent it
+          // or he binned it, and Sent Items is a refused folder so there is no way to tell
+          // which. That is the one moment the system genuinely knows something changed — so it
+          // asks, rather than leaving a card that invites him to read words that are not there.
+          const goneNote = (s.goneAt || {})[p.id]
+            ? `<div class="r-note" style="border-left:3px solid #f5c96b;padding-left:8px;margin:8px 0">`
+              + `<b>This draft is no longer in your Outlook.</b> You either sent it or binned it — this system cannot see which, because it never reads your Sent Items. If you sent it, say so and the email stops being treated as awaiting a reply.`
+              + `</div>`
+            : '';
+          // THE FORM, inline and hidden until asked for. Two questions, and the note is the one
+          // worth typing properly — which is why this is a form and not a modal prompt chain.
+          // The task select only exists when there IS a task; with none, the handler sends
+          // 'none' because there is nothing for the planner to be told.
+          const repliedForm = `<form class="lc-replied-form" data-draft="${LIFE.esc(String(dr.id || ''))}" style="display:none;margin:8px 0;padding:10px;border-left:3px solid #f5c96b;background:rgba(255,179,77,.05)">`
+            // The note box is offered ONLY where there is a task to hang it on. Asking for
+            // words and then discarding them is worse than not asking; with no task the form
+            // says so instead of taking dictation it will bin.
+            + (dr.task_id
+              ? `<div style="font-size:12.5px;color:var(--rmuted);margin-bottom:6px">This system never reads your Sent Items, so it can’t see what you sent — tell it as much or as little as you like. Leave it blank and the record just says you replied.</div>`
+                + `<textarea name="note" maxlength="2000" rows="3" class="lc-input" style="resize:vertical;width:100%" placeholder="What did you tell them? (optional)"></textarea>`
+              : `<div style="font-size:12.5px;color:var(--rmuted);margin-bottom:6px">This system never reads your Sent Items, so it can’t see what you sent — and there is no task on this correspondence to remember it against, so it won’t ask you to type it out.</div>`)
+            + (dr.task_id
+              ? `<div class="lc-row" style="align-items:center;margin-top:6px"><label style="font-size:12px;color:var(--rmuted)">And the task on this: `
+                + `<select name="outcome" class="lc-input" style="margin-left:6px">`
+                + `<option value="waiting">still waiting — it’s on them now</option>`
+                + `<option value="wake">wake it — it’s mine again</option>`
+                + `<option value="complete">done — that was the whole task</option>`
+                + `</select></label></div>`
+              : `<div class="r-note" style="margin-top:6px">No task is attached to this correspondence, so nothing on the board changes.</div>`)
+            + `<div class="lc-row" style="margin-top:8px"><button type="submit" class="r-btn small primary">Yes — I replied, close this off</button></div>`
+            + `<div style="font-size:11.5px;color:var(--rmuted);margin-top:6px">This deletes the draft from your Outlook and stops the email being treated as awaiting a reply.</div>`
+            + `</form>`;
+          extra = `${flag}${goneNote}${whereNote}${repliedForm}`
             + `<div class="r-note">To ${LIFE.esc(to)} · ${dr.voice === 'BRAND' ? 'brand voice' : 'plain professional'}</div>`
             + `<div class="r-note"><b>Replying to:</b> ${LIFE.esc(String(dr.replying_to || ''))}</div>`
             + `<div class="r-note"><b>Commits us to:</b> ${LIFE.esc(String(dr.commits_to || ''))}</div>`

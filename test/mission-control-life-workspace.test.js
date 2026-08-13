@@ -47,18 +47,18 @@ const T = '2026-08-05T12:00:00.000Z';
 const WRITE_AFFORDANCE = /data-op|data-log-action|fetch\(|xhr|XMLHttpRequest|method="post"/i;
 const SANCTIONED_LC = new Set(['data-lc-cancel', 'data-lc-cmd', 'data-lc-complete', 'data-lc-wait', 'data-lc-edit', 'data-lc-fab', 'data-lc-focus', 'data-lc-quiet', 'data-lc-route',
   'data-lc-rename', 'data-lc-cancel-project', 'data-lc-import', 'data-lc-recap', 'data-lc-assign-bulk',
-  'data-lc-mailedit', 'data-lc-due']);
+  'data-lc-mailedit', 'data-lc-due', 'data-lc-replied']);
 const CMD_ALLOWLIST = new Set(['note', 'decide', 'transition', 'complete', 'set_waiting', 'wake', 'reopen', 'undo', 'cancel',
   'plan_today', 'approve_plan', 'compile_week', 'approve_week', 'compile_quarter', 'approve_quarter',
   'pause_capability', 'resume_capability', 'create_outcome', 'create_project', 'set_route', 'set_setting',
   'rename_task', 'rename_project', 'cancel_project', 'import_preview', 'import_batch', 'assign_project', 'accept_standalone',
-  'calendar_sync', 'park_project', 'activate_project', 'place_block', 'remove_block', 'move_block', 'swap_block', 'mail_sync', 'set_due']);
+  'calendar_sync', 'park_project', 'activate_project', 'place_block', 'remove_block', 'move_block', 'swap_block', 'mail_sync', 'set_due', 'mail_owner_replied']);
 function assertOnlySanctionedLc(body, key) {
   for (const m of body.matchAll(/data-lc-[a-z-]+/g)) {
     assert.ok(SANCTIONED_LC.has(m[0]), `${key}: unsanctioned life affordance ${m[0]}`);
   }
   for (const m of body.matchAll(/<form\b[^>]*/g)) {
-    assert.ok(/lc-note-form|lc-create-form/.test(m[0]), `${key}: only the sanctioned form classes`);
+    assert.ok(/lc-note-form|lc-create-form|lc-replied-form/.test(m[0]), `${key}: only the sanctioned form classes`);
   }
   for (const m of body.matchAll(/data-lc-cmd="([^"]*)"/g)) {
     const decoded = m[1].replaceAll('&quot;', '"').replaceAll('&amp;', '&').replaceAll('&#39;', "'");

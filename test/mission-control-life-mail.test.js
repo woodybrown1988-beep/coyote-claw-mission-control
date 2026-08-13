@@ -463,6 +463,116 @@ test('DEPLOY ORDERING: no filing tables yet → the rail is absent, the board is
 
 // ── REPLY DRAFTS (operator GO 2026-08-11) ────────────────────────────────────────────────
 
+test('the "I\'ve replied myself" form: inline, hidden until asked for, and it says what it will do', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-mail-replied-'));
+  const out = withEnv(fixture(dir), () => renderToday());
+
+  // The button reveals; the form carries the payload. The button holds only the draft id.
+  assert.match(out.body, /data-lc-replied="[^"]+" aria-expanded="false"/, 'the toggle starts closed');
+  assert.match(out.body, /<form class="lc-replied-form" data-draft="[^"]+" style="display:none/, 'the form is inline and hidden');
+  // It is honest about the boundary that makes it necessary, in the owner's words.
+  assert.match(out.body, /never reads your Sent Items, so it can’t see what you sent/);
+  // And it says what the button will DO, before it is pressed.
+  assert.match(out.body, /deletes the draft from your Outlook and stops the email being treated as awaiting a reply/);
+
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('the task select appears only when a task exists — with none, the board is told nothing changes', () => {
+  const withTask = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-mail-rf-task-'));
+  const p1 = fixture(withTask);
+  const d1 = new sqlite.DatabaseSync(p1);
+  const taskId = (d1.prepare('SELECT id FROM life_tasks LIMIT 1').get() || {}).id || null;
+  d1.prepare('UPDATE life_mail_drafts SET task_id = ?').run(taskId);
+  d1.close();
+  const a = withEnv(p1, () => renderToday());
+  if (taskId) {
+    assert.match(a.body, /name="outcome"/, 'the planner question is asked');
+    assert.match(a.body, /still waiting — it’s on them now/, 'and "still waiting" is the first option: the wait usually moves to them');
+    assert.match(a.body, /name="note" maxlength="2000"/, 'and the note box appears, capped to match the writer');
+    assert.match(a.body, /Leave it blank and the record just says you replied/, 'the note is optional, and says so');
+  }
+
+  const noTask = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-mail-rf-notask-'));
+  const p2 = fixture(noTask);
+  const d2 = new sqlite.DatabaseSync(p2);
+  d2.prepare('UPDATE life_mail_drafts SET task_id = NULL').run();
+  d2.close();
+  const b = withEnv(p2, () => renderToday());
+  assert.ok(!/name="outcome"/.test(b.body), 'no task = no planner question');
+  // AND no note box: asking for words the verb would discard is worse than not asking.
+  assert.ok(!/name="note"/.test(b.body), 'no task = no note box');
+  assert.match(b.body, /no task on this correspondence to remember it against, so it won’t ask you to type it out/);
+  assert.match(b.body, /No task is attached to this correspondence, so nothing on the board changes/);
+
+  fs.rmSync(withTask, { recursive: true, force: true });
+  fs.rmSync(noTask, { recursive: true, force: true });
+});
+
+// ── REGRESSIONS from the adversarial review (2026-08-12) ─────────────────────
+
+test('RED: the failure copy never claims "nothing was changed" — this verb mutates the mailbox before it answers', () => {
+  const S = require('../mission-control/ui/shared.js');
+  const html = S.renderShell({ active: 'life-today', title: 't', sub: 's', stamp: '', body: '', badges: {}, foot: [] });
+  const js = (html.match(/<script>([\s\S]*?)<\/script>/) || [])[1] || '';
+  const i = js.indexOf('lc-replied-form');
+  assert.ok(i > 0, 'the handler is in the emitted script');
+  // Comments are STRIPPED before the check. A comment explaining which phrase was removed
+  // contains that phrase, and matching prose instead of emitted copy is how this test failed
+  // its first run — the same false positive that has now bitten three times in this session.
+  const handler = js.slice(i, i + 4000).split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
+  assert.ok(!/nothing was changed/.test(handler),
+    'a dropped connection cannot know the draft was not already deleted — saying so is false about an irreversible act');
+  assert.match(handler, /some of it may already have happened/, 'it names the uncertainty');
+  assert.match(handler, /Reload to see where things stand/, 'and points at the way to resolve it');
+});
+
+test('RED: a draft the reconcile pass found GONE does not also claim to be waiting in Outlook', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-mail-gone2-'));
+  const out = withEnv(fixtureWithGone(dir, '2026-08-12T09:00:00.000Z'), () => renderToday());
+  assert.match(out.body, /This draft is no longer in your Outlook/);
+  // The two statements used to render on the same card, one of them false.
+  assert.ok(!/✍️ Drafted in your Outlook/.test(out.body),
+    '"read it there and send it yourself" must not sit under "it is no longer there"');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+/** The post-migration shape: the same fixture plus outlook_gone_at, so the pair can be pinned
+ *  in BOTH directions — absent column = no note, present-and-set = the note. */
+function fixtureWithGone(dir, goneAt) {
+  const p = fixture(dir);
+  const db = new sqlite.DatabaseSync(p);
+  db.exec('ALTER TABLE life_mail_drafts ADD COLUMN outlook_gone_at TEXT');
+  db.prepare('UPDATE life_mail_drafts SET outlook_gone_at = ?').run(goneAt);
+  db.close();
+  return p;
+}
+
+test('the draft has VANISHED from Outlook: the card asks, because Sent Items can never answer', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-mail-gone-'));
+  const out = withEnv(fixtureWithGone(dir, '2026-08-12T09:00:00.000Z'), () => renderToday());
+  assert.match(out.body, /This draft is no longer in your Outlook/);
+  assert.match(out.body, /You either sent it or binned it/, 'it does not claim to know which');
+  assert.match(out.body, /never reads your Sent Items/, 'and it says WHY it cannot know');
+  // It asks — it does not decide. Nothing is retired without his word.
+  assert.ok(!/we have marked|automatically/i.test(out.body), 'no silent disposal');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+// PRE-MIGRATION SHAPE. This file's fixture deliberately has NO outlook_gone_at column — it is
+// the life.db an MC deploy can meet before the engine's migration runs, because the two ship on
+// independent taps. The draft rail must survive that; only the "vanished from Outlook" note may
+// be missing. Folding the column into the main SELECT blanked the whole rail, and this fixture
+// is what caught it.
+test('a life.db WITHOUT outlook_gone_at still renders the drafts — one column never costs the rail', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-mail-premig-'));
+  const out = withEnv(fixture(dir), () => renderToday());
+  assert.match(out.body, /Drafted in your Outlook|these words are all there is/, 'the draft rail is intact');
+  assert.ok(!/no longer in your Outlook/.test(out.body), 'and the note that needs the missing column is simply absent');
+  assert.match(out.body, /I've replied myself|I&#39;ve replied myself/, 'the escape hatch is still offered');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('a drafted reply shows the WORDS, what it replies to, and what it commits us to', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-draft-'));
   withEnv(fixture(dir), () => {
