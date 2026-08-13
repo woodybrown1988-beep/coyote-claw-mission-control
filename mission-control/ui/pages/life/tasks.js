@@ -60,6 +60,9 @@ module.exports = {
         finishedCount: q(`SELECT COUNT(*) c FROM life_tasks WHERE status IN ('DONE','CANCELLED')`)[0]?.c ?? 0,
         q: qStr, showAll,
         waitingOf: q(`SELECT task_id, dependency_label, fallback_at FROM life_waiting_conditions WHERE state = 'ACTIVE'`),
+        // AGENT PRESENCE (operator ask 2026-08-13): latest dispatch per task; live stage
+        // resolves in render via ctx.q (business store, by id — cross-domain read by reference).
+        dispatchEvents: q(`SELECT task_id, payload_json FROM life_task_events WHERE event_type = 'AGENT_DISPATCHED' ORDER BY created_at ASC`),
         // real per-task confidence: the strongest open proposal on that task (never a fabricated score).
         confOf: q(`SELECT task_id, MAX(confidence) conf FROM life_update_proposals WHERE state = 'PROPOSED' GROUP BY task_id`),
         finished: q(`SELECT id, title, status FROM life_tasks WHERE status IN ('DONE','CANCELLED') ORDER BY updated_at DESC LIMIT 12`),
@@ -69,9 +72,20 @@ module.exports = {
     } finally { o.db.close(); }
   },
 
-  render(section, _ctx) {
+  render(section, ctx) {
     const s = section || {};
     if (s.absent) return { stamp: '', body: wrap(LIFE.absentCard('All tasks')) };
+    // Agent presence chips: task → latest job → live status (in-flight only; a delivered
+    // job's presence is the proposal already on the row's confidence chip).
+    const dispatchOf = LIFE.latestDispatchByTask(s.dispatchEvents || []);
+    const jobsById = LIFE.jobStates((ctx && ctx.q) || null, [...dispatchOf.values()].map((d) => d.jobId));
+    const presenceOf = (taskId) => {
+      const d = dispatchOf.get(taskId);
+      if (!d) return '';
+      const j = jobsById.get(d.jobId);
+      if (!j || !LIFE.IN_FLIGHT_STATUSES.includes(String(j.status))) return '';
+      return ` · ${LIFE.agentChip(d.jobKind, String(j.status))}`;
+    };
     // The search is a FORM, not a DOM filter: it queries every open task in the database
     // (title + description), so "no results" finally means what it says. The old oninput
     // filter searched only the 100 fetched rows — a lie by omission on 145 open tasks.
@@ -101,7 +115,7 @@ module.exports = {
       const w = wake(t.id);
       const c = confOf(t.id);
       return `<div class="r-lrow" data-task-row data-task-id="${LIFE.esc(t.id)}"><div style="min-width:0"><div style="font-weight:600">${link(t.id, t.title)}</div>
-        <div style="font-size:12px;color:var(--rmuted);margin-top:3px">${LIFE.esc(t.domain_key)}${t.due_at ? ` · due ${LIFE.esc(String(t.due_at).slice(0, 10))}${t.due_kind === 'HARD' ? ' (hard)' : ''}` : ''}${w ? ` · waiting on ${LIFE.esc(w.dependency_label)}${w.fallback_at ? ` · follow-up ${LIFE.esc(String(w.fallback_at).slice(0, 10))}` : ''}` : ''}</div></div>
+        <div style="font-size:12px;color:var(--rmuted);margin-top:3px">${LIFE.esc(t.domain_key)}${t.due_at ? ` · due ${LIFE.esc(String(t.due_at).slice(0, 10))}${t.due_kind === 'HARD' ? ' (hard)' : ''}` : ''}${w ? ` · waiting on ${LIFE.esc(w.dependency_label)}${w.fallback_at ? ` · follow-up ${LIFE.esc(String(w.fallback_at).slice(0, 10))}` : ''}` : ''}${presenceOf(t.id)}</div></div>
         <div style="display:flex;gap:8px;align-items:center;flex-shrink:0">${pjSel(t)}${S.rcc.route(t.execution_mode)}${c != null ? S.rcc.conf(c) : ''}<a class="r-btn small" href="/life/task?id=${encodeURIComponent(t.id)}">Open</a><button class="r-btn small" title="Rename" aria-label="Rename" data-lc-rename="${LIFE.esc(JSON.stringify({ kind: 'task', id: t.id, title: t.title }))}">✎</button><button class="lc-cxl" title="Cancel — reopenable from its page" aria-label="Cancel" data-lc-cancel="${LIFE.esc(t.id)}">✕</button></div></div>`;
     };
     let body = head;

@@ -36,11 +36,14 @@ module.exports = {
         project: pj.rows[0],
         tasks: q('SELECT id, title, status, domain_key, due_kind, due_at, execution_mode FROM life_tasks WHERE project_id = ? ORDER BY created_at', [id]),
         waiting: q("SELECT task_id, dependency_label, fallback_at FROM life_waiting_conditions WHERE state = 'ACTIVE' AND task_id IN (SELECT id FROM life_tasks WHERE project_id = ?)", [id]),
+        // AGENT PRESENCE (operator ask 2026-08-13): this project's dispatches; live stage
+        // resolves in render via ctx.q (business store, by id).
+        dispatchEvents: q(`SELECT task_id, payload_json FROM life_task_events WHERE event_type = 'AGENT_DISPATCHED' AND task_id IN (SELECT id FROM life_tasks WHERE project_id = ?) ORDER BY created_at ASC`, [id]),
       };
     } finally { o.db.close(); }
   },
 
-  render(section, _ctx) {
+  render(section, ctx) {
     const s = section || {};
     if (s.err) return { stamp: '', body: wrap(LIFE.emptyCard('Project', 'Not found', s.err, '<a class="r-btn" href="/life/projects">All projects</a>')) };
     if (!s.engine || !s.engine.ok) return { stamp: '', body: wrap(LIFE.absentCard('This project')) };
@@ -60,11 +63,35 @@ module.exports = {
       `<button class="r-btn small" data-lc-rename="${LIFE.esc(JSON.stringify({ kind: 'project', id: pid, title: p.title }))}">Rename…</button>`
       + ` ${swap} `
       + `<button class="lc-cxl" data-lc-cancel-project="${LIFE.esc(pid)}">✕ cancel project</button>`;
+    // Agent presence: latest job per task, live status by id from the business store.
+    const dispatchOf = LIFE.latestDispatchByTask(s.dispatchEvents || []);
+    const jobsById = LIFE.jobStates((ctx && ctx.q) || null, [...dispatchOf.values()].map((d) => d.jobId));
+    const presenceOf = (taskId) => {
+      const d = dispatchOf.get(taskId);
+      if (!d) return '';
+      const j = jobsById.get(d.jobId);
+      if (!j || !LIFE.IN_FLIGHT_STATUSES.includes(String(j.status))) return '';
+      return `<div style="margin-top:3px">${LIFE.agentChip(d.jobKind, String(j.status))}</div>`;
+    };
+    // REAL progress: done over existing (cancelled excluded) — the honest %, with its
+    // fraction always beside it. Plus who is on it right now, by name.
+    const doneCount = finished.filter((t) => String(t.status) === 'DONE').length;
+    const totalCount = doneCount + living.length;
+    const pct = totalCount ? Math.round((doneCount / totalCount) * 100) : 0;
+    const workingNames = living
+      .map((t) => { const d = dispatchOf.get(String(t.id)); const j = d && jobsById.get(d.jobId); return j && LIFE.IN_FLIGHT_STATUSES.includes(String(j.status)) ? (LIFE.AGENT_NAME[d.jobKind] || d.jobKind) : null; })
+      .filter(Boolean);
+    const progress = totalCount ? `<div style="margin:6px 0 10px">
+        <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--rmuted)"><span>${doneCount} of ${totalCount} tasks done</span><span>${pct}%</span></div>
+        <div style="height:6px;border-radius:3px;background:rgba(255,255,255,.08);overflow:hidden"><div style="height:100%;width:${pct}%;background:var(--rgood,#45c486)"></div></div>
+        ${workingNames.length ? `<div style="font-size:12px;color:var(--rmuted);margin-top:5px">🤖 working now: ${workingNames.map((n) => LIFE.esc(n)).join(', ')} · <a href="/claw/agents">see the board</a></div>` : ''}
+      </div>` : '';
     const head = `<div class="r-card r-panel"><div class="r-eyebrow">${LIFE.esc(String(p.stage || '').toLowerCase())}</div>
       <h3 style="margin-bottom:6px">${LIFE.esc(p.title)}</h3>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:4px 0 10px">
         ${S.rcc.tag(String(p.status).toLowerCase())}${S.rcc.tag(p.domain_key)}${p.risk_state ? S.rcc.tag('risk ' + String(p.risk_state).toLowerCase(), riskTone[p.risk_state] || '') : ''}${p.due_date ? S.rcc.tag('due ' + String(p.due_date).slice(0, 10)) : ''}
       </div>
+      ${progress}
       <div class="r-defbox"><small>Definition of done</small><div style="font-size:13px;line-height:1.45">${LIFE.esc(p.definition_of_done || '')}</div></div>
       <div class="lc-row" style="align-items:center"><a class="r-btn small" href="/life/projects">← All projects</a> ${projectCtl}</div></div>`;
 
@@ -81,6 +108,7 @@ module.exports = {
           <div style="font-weight:600"><a href="/life/task?id=${encodeURIComponent(tid)}" style="color:inherit">${LIFE.esc(t.title)}</a></div>
           <div style="margin-top:4px;display:flex;gap:6px;align-items:center;flex-wrap:wrap">${S.rcc.tag(String(t.status).toLowerCase().replace('_', ' '), terminal ? '' : (t.status === 'IN_PROGRESS' ? 'good' : ''))}${S.rcc.tag(t.domain_key)}${t.due_at ? S.rcc.tag(`due ${String(t.due_at).slice(0, 10)}${t.due_kind === 'HARD' ? ' · hard' : ''}`) : ''}</div>
           ${w ? `<div style="font-size:12px;color:#f5c96b;margin-top:3px">Waiting on ${LIFE.esc(w.dependency_label)}${w.fallback_at ? ` · follow-up ${LIFE.esc(String(w.fallback_at).slice(0, 10))}` : ''}</div>` : ''}
+          ${presenceOf(tid)}
         </div>
         <div style="display:flex;gap:6px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end"><a class="r-btn small" href="/life/task?id=${encodeURIComponent(tid)}">Open</a> ${verbs}</div></div>`;
     };

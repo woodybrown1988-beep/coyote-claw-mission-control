@@ -17,21 +17,57 @@ module.exports = {
       return {
         projects: q(`SELECT id, title, domain_key, stage, status, risk_state, definition_of_done, due_date FROM life_projects ORDER BY CASE status WHEN 'ACTIVE' THEN 0 WHEN 'PARKED' THEN 1 WHEN 'WAITING' THEN 1 ELSE 2 END, created_at LIMIT 20`),
         nexts: q(`SELECT project_id, id, title FROM v_life_available_work WHERE project_id IS NOT NULL ORDER BY calculated_priority DESC`),
+        // REAL progress (operator ask 2026-08-13): tasks done over tasks that exist — the
+        // one percentage this page can say honestly, always shown WITH its fraction.
+        counts: q(`SELECT project_id, SUM(CASE WHEN status = 'DONE' THEN 1 ELSE 0 END) done,
+                          SUM(CASE WHEN status NOT IN ('DONE','CANCELLED') THEN 1 ELSE 0 END) live
+                     FROM life_tasks WHERE project_id IS NOT NULL GROUP BY project_id`),
+        taskProject: q(`SELECT id, project_id FROM life_tasks WHERE project_id IS NOT NULL AND status NOT IN ('DONE','CANCELLED')`),
+        dispatchEvents: q(`SELECT task_id, payload_json FROM life_task_events WHERE event_type = 'AGENT_DISPATCHED' ORDER BY created_at ASC`),
       };
     } finally { o.db.close(); }
   },
 
-  render(section, _ctx) {
+  render(section, ctx) {
     const s = section || {};
     if (s.absent) return { stamp: '', body: wrap(LIFE.absentCard('Projects')) };
     const active = s.projects.filter((p) => p.status === 'ACTIVE');
     const rest = s.projects.filter((p) => p.status !== 'ACTIVE');
     const riskTone = { GREEN: 'good', AMBER: 'warn', RED: 'bad' };
+    // Agent presence per project: this project's tasks → their latest jobs → in-flight ones,
+    // named. Live status from the business store by id; degrades to no chip.
+    const dispatchOf = LIFE.latestDispatchByTask(s.dispatchEvents || []);
+    const jobsById = LIFE.jobStates((ctx && ctx.q) || null, [...dispatchOf.values()].map((d) => d.jobId));
+    const agentsOn = (projectId) => {
+      const names = [];
+      for (const t of s.taskProject || []) {
+        if (t.project_id !== projectId) continue;
+        const d = dispatchOf.get(t.id);
+        if (!d) continue;
+        const j = jobsById.get(d.jobId);
+        if (j && LIFE.IN_FLIGHT_STATUSES.includes(String(j.status))) names.push(LIFE.AGENT_NAME[d.jobKind] || d.jobKind);
+      }
+      return names;
+    };
+    const progressBar = (p) => {
+      const c = (s.counts || []).find((r) => r.project_id === p.id);
+      const done = c ? Number(c.done) : 0;
+      const total = done + (c ? Number(c.live) : 0);
+      if (!total) return '';
+      const pct = Math.round((done / total) * 100);
+      const working = agentsOn(p.id);
+      return `<div style="margin:8px 0 2px">
+        <div style="display:flex;justify-content:space-between;font-size:11.5px;color:var(--rmuted)"><span>${done} of ${total} tasks done</span><span>${pct}%</span></div>
+        <div style="height:5px;border-radius:3px;background:rgba(255,255,255,.08);overflow:hidden"><div style="height:100%;width:${pct}%;background:var(--rgood,#45c486)"></div></div>
+        ${working.length ? `<div style="font-size:11.5px;color:var(--rmuted);margin-top:4px">🤖 working now: ${working.map((n) => LIFE.esc(n)).join(', ')}</div>` : ''}
+      </div>`;
+    };
     const card = (p) => {
       const next = s.nexts.find((n) => n.project_id === p.id);
       return `<div class="r-card r-panel"><div class="r-eyebrow">${LIFE.esc(p.stage.toLowerCase())}</div>
         <div style="font-size:16px;font-weight:650;line-height:1.3;margin-bottom:8px"><a href="/life/project?id=${encodeURIComponent(p.id)}" style="color:inherit">${LIFE.esc(p.title)}</a></div>
         <div>${S.rcc.tag(p.domain_key)} ${S.rcc.tag('risk ' + p.risk_state.toLowerCase(), riskTone[p.risk_state] || '')} ${p.due_date ? S.rcc.tag('due ' + String(p.due_date).slice(0, 10)) : ''}</div>
+        ${progressBar(p)}
         <div class="r-defbox"><small>Definition of done</small><div style="font-size:13px;line-height:1.45">${LIFE.esc(p.definition_of_done)}</div></div>
         <div style="font-size:12.5px;color:var(--rmuted)">${next ? `Next: ${link(next.id, next.title)}` : '<span style="color:#f5c96b">No executable next action — a stalled project until one exists.</span>'}</div>
         <div class="lc-row" style="margin-top:10px">${ctl(p)}</div></div>`;
