@@ -113,3 +113,23 @@ test('the Chief of Staff button is no longer dead — it opens chat with the que
   const out = CHAT.render(CHAT.getSection(db, ctx), ctx);
   assert.match(out.body, /<textarea[^>]*>Rex, what has been done today\?<\/textarea>/);
 });
+
+
+// ── VOICE (operator ask 2026-08-14) ─────────────────────────────────────────────────────────────
+// Mic dictates into the composer (nothing sends until HE sends — a misheard word must never become
+// a dispatched job); the speaker toggle reads NEW replies aloud. Browser-native Web Speech only:
+// the /claw readonly carve-out stands — chat's write surface is still EXACTLY its two endpoints,
+// asserted by mission-control-claw-readonly.test.js, and this adds none.
+const _sqlite = require('node:sqlite');
+const _DATA = require('../mission-control/ui/data.js');
+test('the chat composer carries the mic and speaker; replies are spoken only on arrival', () => {
+  const db = new _sqlite.DatabaseSync(':memory:');
+  db.exec('CREATE TABLE chat_messages (id INTEGER PRIMARY KEY, transport TEXT, direction TEXT, source TEXT, text TEXT, job_id TEXT, reply_to_id INTEGER, routed_at INTEGER, created_at INTEGER); CREATE TABLE jobs (id TEXT PRIMARY KEY, status TEXT, type TEXT)');
+  const ctx = { now: Date.now(), q: (s, p) => _DATA.safeSelect(db, s, p), query: {} };
+  const body = CHAT.render(CHAT.getSection(db, ctx), ctx).body;
+  assert.match(body, /id="ch-mic"/, 'the mic is in the composer');
+  assert.match(body, /id="ch-say"/, 'the speaker toggle too');
+  assert.match(body, /speakOut\(m\.text\)/, 'and ONLY newly-arriving replies are spoken (addMsg), never re-read history');
+  assert.ok(!/ch-mic[^>]*type="submit"/.test(body), 'the mic never submits — dictation lands in the box for HIM to send');
+  db.close();
+});
