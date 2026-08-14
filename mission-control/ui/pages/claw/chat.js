@@ -204,8 +204,11 @@ module.exports = {
     parts.push(`<div id="ch-replybar" style="display:none;font-size:11.5px;color:var(--muted,#8b98a5);padding:4px 2px">↩ replying to <span id="ch-replylabel" class="mono"></span> — this goes to that task’s agent <button type="button" class="btn" id="ch-replyclear" style="padding:0 8px">✕</button></div>
     <form class="ch-form" id="ch-form">
       <textarea name="text" id="ch-text" placeholder="data: … / research: … / plain text → the Lead / ask Rex by name · ↩ reply on a task message to brief its agent · close &lt;id&gt; · retask &lt;id&gt;" maxlength="4000" required>${m.about ? esc('retask ' + m.about.short) : (m.ask ? esc(m.ask) : '')}</textarea>
+      <button class="btn" type="button" id="ch-mic" title="Tap, talk, tap again — lands in the box for you to send">\u{1F3A4}</button>
+      <button class="btn" type="button" id="ch-say" title="Read replies aloud"></button>
       <button class="btn" type="submit" id="ch-send">Send</button>
     </form>
+    <style>.ch-mic-live{background:var(--red,#f87171)!important;color:#fff!important;animation:chpulse 1.2s infinite}@keyframes chpulse{50%{opacity:.55}}</style>
     <div class="ash" style="font-size:11px;margin-top:4px">Same pipeline as Telegram — plan/merge gates still tap on Telegram in Phase 1. Tailnet-only surface.</div>`);
 
     // Page-scoped script: send + 3s short-poll (choice + why in the header comment). The global 30s
@@ -213,6 +216,51 @@ module.exports = {
     parts.push(`<script>(function(){
       var last = Number(document.getElementById('ch-thread') ? document.getElementById('ch-thread').dataset.last : 0) || 0;
       var busy = false;
+      // ---- VOICE (operator ask 2026-08-14: "voice conversations through the mission control") --
+      // Browser-native Web Speech: the mic dictates into the box (nothing sends until HE sends —
+      // a misheard word must never become a dispatched job), and the speaker reads NEW replies
+      // aloud. No new endpoints, no audio leaves the machine except Chrome's own recognition.
+      var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+      var mic = document.getElementById('ch-mic');
+      var say = document.getElementById('ch-say');
+      var speaking = false;
+      try { speaking = localStorage.getItem('ch-voice') === 'on'; } catch (e) {}
+      function paintSay(){ if (say) say.textContent = speaking ? '\ud83d\udd0a' : '\ud83d\udd07'; }
+      paintSay();
+      if (say) say.addEventListener('click', function(){
+        speaking = !speaking;
+        try { localStorage.setItem('ch-voice', speaking ? 'on' : 'off'); } catch (e) {}
+        if (!speaking && window.speechSynthesis) window.speechSynthesis.cancel();
+        paintSay();
+      });
+      function speakOut(text){
+        if (!speaking || !window.speechSynthesis) return;
+        var clean = String(text)
+          .replace(/\x60\x60\x60[\s\S]*?\x60\x60\x60/g, ' The workings are in the thread. ')
+          .replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2190}-\u{21FF}]/gu, '')
+          .replace(/\s+/g, ' ').trim().slice(0, 600);
+        if (!clean) return;
+        var u = new SpeechSynthesisUtterance(clean);
+        u.lang = 'en-GB'; u.rate = 1.05;
+        window.speechSynthesis.speak(u);
+      }
+      var rec = null, listening = false;
+      if (!SR && mic) { mic.disabled = true; mic.title = 'Voice input needs Chrome (Web Speech API)'; }
+      if (SR && mic) mic.addEventListener('click', function(){
+        if (listening) { try { rec.stop(); } catch (e) {} return; }
+        rec = new SR(); rec.lang = 'en-GB'; rec.interimResults = true; rec.continuous = true;
+        var ta1 = document.getElementById('ch-text');
+        var base = ta1 ? ta1.value : '';
+        rec.onresult = function(ev){
+          var txt = '';
+          for (var i = 0; i < ev.results.length; i++) txt += ev.results[i][0].transcript;
+          if (ta1) ta1.value = (base ? base + ' ' : '') + txt;
+        };
+        rec.onend = function(){ listening = false; if (mic) mic.classList.remove('ch-mic-live'); };
+        rec.onerror = rec.onend;
+        listening = true; mic.classList.add('ch-mic-live');
+        try { rec.start(); } catch (e) { rec.onend(); }
+      });
       // reply target (task-talk 2026-08-13): set by the reply buttons, cleared by send or the bar.
       var replyTo = null;
       function setReply(id, label){
@@ -259,6 +307,7 @@ module.exports = {
       }
       function addMsg(m){
         var th = document.getElementById('ch-thread'); if (!th) return;
+        if (m.direction === 'out') speakOut(m.text);
         var d = document.createElement('div');
         d.className = 'ch-msg ' + (m.direction === 'in' ? 'ch-in' : 'ch-out');
         d.setAttribute('data-mid', String(m.id));
