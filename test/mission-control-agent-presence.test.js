@@ -139,6 +139,52 @@ test('All tasks rows: an in-flight chip, and NO chip once delivered (the proposa
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+// ── WHAT THE FLEET KNOWS HERE (fleet_memory on the project page, 2026-08-14) ─────────────
+// The class this pins: project-scoped findings live in the BUSINESS store and are read by ID
+// (project id + task ids — the presence pattern). Three states, all designed: rows → panel,
+// blockers first; empty → NO panel (a standing "no findings" placard on every quiet project is
+// furniture); table missing → NO panel ("cannot tell" must not dress as "knows nothing").
+test('project page: the fleet\'s findings for THIS project read on it — and never another\'s', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-mem-'));
+  const dbPath = lifeFixture(dir, (db) => {
+    db.prepare(`INSERT INTO life_projects (id,owner_id,domain_key,title,definition_of_done,stage,status,risk_state,visibility,created_at,updated_at)
+      VALUES ('p1','woody','business','Loyalty programme','measurable','define','ACTIVE','GREEN','OWNER_ONLY',?,?)`).run(T, T);
+    db.prepare(`INSERT INTO life_tasks (id,owner_id,project_id,domain_key,title,status,execution_mode,visibility,source_type,created_by,created_at,updated_at)
+      VALUES ('t1','woody','p1','business','Establish loyalty KPI baseline','DONE','AI','OWNER_ONLY','MANUAL','h',?,?)`).run(T, T);
+  });
+  // The business-store stub: answers fleet_memory by task/project id, like the live safeSelect.
+  const MEM = [
+    { kind: 'blocker', headline: 'Loyalty KPIs are unmeasurable — POS carries no member identifier', detail: 'Wire the field first.', source_path: 'reports/x.md', created_at: 1, task_id: 't1', project_id: null },
+    { kind: 'win', headline: 'Built and merged: loyalty dashboard scaffold', detail: null, source_path: null, created_at: 2, task_id: null, project_id: 'p1' },
+    { kind: 'finding', headline: 'A DIFFERENT project\'s fact', detail: null, source_path: null, created_at: 3, task_id: 't-other', project_id: 'p-other' },
+  ];
+  const qWithMem = (sql, params) => {
+    if (/FROM fleet_memory/.test(String(sql))) {
+      const ids = new Set(params || []);
+      return { ok: true, rows: MEM.filter((m) => ids.has(m.project_id) || ids.has(m.task_id)) };
+    }
+    return { ok: true, rows: [] };
+  };
+  withEnv(dbPath, () => {
+    const body = PROJECT.render(PROJECT.getSection(null, { query: { id: 'p1' } }), { q: qWithMem }).body;
+    assert.match(body, /What the fleet knows here/);
+    assert.match(body, /Loyalty KPIs are unmeasurable — POS carries no member identifier/, 'the task-scoped blocker reads on its project');
+    assert.match(body, /Built and merged: loyalty dashboard scaffold/, 'the project-scoped win reads too');
+    assert.ok(!/DIFFERENT project/.test(body), 'another project\'s findings never leak in');
+    const bIdx = body.indexOf('Loyalty KPIs are unmeasurable');
+    const wIdx = body.indexOf('Built and merged');
+    assert.ok(bIdx < wIdx, 'blockers lead — the wall matters more than the trophy');
+
+    // Empty result → no panel; MISSING TABLE ({ok:false}) → no panel either. Different truths,
+    // same rendering — and neither may crash the page.
+    const empty = PROJECT.render(PROJECT.getSection(null, { query: { id: 'p1' } }), { q: () => ({ ok: true, rows: [] }) }).body;
+    assert.ok(!/What the fleet knows here/.test(empty), 'no findings = no placard');
+    const blind = PROJECT.render(PROJECT.getSection(null, { query: { id: 'p1' } }), { q: () => ({ ok: false, rows: [] }) }).body;
+    assert.ok(!/What the fleet knows here/.test(blind), 'no table = no claim');
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('projects: the one honest %% — tasks done over tasks, WITH its fraction — plus who is working, by name', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-pres3-'));
   const dbPath = lifeFixture(dir, (db) => {
