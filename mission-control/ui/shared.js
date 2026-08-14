@@ -96,6 +96,11 @@ const WORKSPACES = [
     { group: 'Console', items: [
       { key: 'engine', label: 'Engine', route: '/claw/engine', ico: '<circle cx="12" cy="7" r="3"/><circle cx="5" cy="17" r="2.5"/><circle cx="19" cy="17" r="2.5"/><path d="M12 10v3M9 15l-2 1M15 15l2 1"/>' },
       { key: 'chat', label: 'Chat', route: '/claw/chat', ico: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>' },
+      // MEMORY (operator ask 2026-08-13). A third console page, added deliberately: the engine now
+      // banks findings and injects them into the specialists' prompts, and a memory nobody can READ
+      // is a memory nobody can correct. Read-only like its siblings — it shows what the agents are
+      // being told and nothing more.
+      { key: 'memory', label: 'Memory', route: '/claw/memory', ico: '<path d="M12 3a4 4 0 0 0-4 4v1a3 3 0 0 0 0 6v3a4 4 0 0 0 8 0v-3a3 3 0 0 0 0-6V7a4 4 0 0 0-4-4z"/><path d="M12 3v18"/>' },
     ] },
   ] },
   // LIFE OS — the third workspace (pack v2.0.0; Phase-0 tap 2026-08-05). The readOnly flag
@@ -1197,6 +1202,9 @@ function css() {
   .dept-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(228px,1fr));gap:10px}
   .dept-panel{border:1px solid var(--border);border-top:3px solid;border-radius:10px;padding:9px 11px 10px}
   .dept-panel-head{font-family:var(--font-mono);font-size:9.5px;font-weight:600;text-transform:uppercase;letter-spacing:.11em;display:flex;align-items:center;gap:7px;margin-bottom:8px}
+  .dept-knows{margin-left:auto;font-family:var(--font-mono);font-size:8.5px;color:var(--muted);border-bottom:1px dotted var(--border-strong);text-transform:none;letter-spacing:0}
+  .dept-knows:hover{color:var(--cyan);border-bottom-color:var(--cyan)}
+  .dept-knows + .dept-panel-n{margin-left:7px}
   .dept-panel-n{margin-left:auto;font-size:9.5px;color:var(--muted);background:rgba(255,255,255,.05);border-radius:7px;padding:0 6px}
   .dagent{display:flex;gap:8px;align-items:flex-start;padding:6px 0;border-top:1px solid var(--border)}
   .dept-panel .dagent:first-of-type{border-top:none;padding-top:0}
@@ -1210,6 +1218,16 @@ function css() {
   .dagent-line.bad{color:var(--amber)}
   .dagent-link{display:inline-block;margin-top:4px;font-family:var(--font-mono);font-size:9px;color:var(--cyan);border-bottom:1px solid rgba(34,211,238,.35)}
   .dept-quiet{font-family:var(--font-mono);font-size:9.5px;color:var(--muted);margin-top:8px}
+  /* FLEET MEMORY rows — dense, readable, one finding per line. */
+  .mem-row{display:flex;gap:9px;align-items:flex-start;padding:7px 0;border-top:1px solid var(--border)}
+  .dept-panel .mem-row:first-of-type{border-top:none;padding-top:1px}
+  .mem-mark{font-size:12px;line-height:1.3;flex-shrink:0;width:14px;text-align:center}
+  .mem-body{min-width:0;flex:1}
+  .mem-head{font-size:12.5px;color:var(--text);line-height:1.4}
+  .mem-detail{font-size:11px;color:var(--text-2);line-height:1.45;margin-top:3px}
+  .mem-foot{font-family:var(--font-mono);font-size:8.5px;color:var(--muted);margin-top:3px;text-transform:uppercase;letter-spacing:.05em}
+  .mem-src{color:var(--muted);text-transform:none;letter-spacing:0}
+  .mem-note{font-size:11.5px;color:var(--muted);line-height:1.5}
   .dept-rollcall{display:flex;gap:7px;flex-wrap:wrap;margin:11px 0 0}
   .dept-card{flex:1 1 128px;border:1px solid;border-top-width:3px;border-radius:9px;padding:8px 10px;background:var(--panel-2)}
   .dept-card .dn{font-family:var(--font-mono);font-size:9px;font-weight:600;text-transform:uppercase;letter-spacing:.1em}

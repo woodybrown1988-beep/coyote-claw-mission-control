@@ -205,6 +205,28 @@ test('going home never truncates the honesty line', () => {
   db.close();
 });
 
+// ── FLEET MEMORY on the board ───────────────────────────────────────────────────────────────────
+test('a desk shows what it KNOWS — and says nothing rather than zero when it cannot tell', () => {
+  const db = makeDb();
+  beat(db, 'b:1', 'accountant-1');
+  // No fleet_memory table at all: the honest state of a tree that has not deployed the memory
+  // build. A "knows 0" chip here would read as "this desk has learned nothing", which is a
+  // different claim from "we cannot tell" — the same lie class as the deleted "Not built" cards.
+  const noTable = AGENTS.render(AGENTS.getSection(db, ctxFor(db)), { serverRev: '' }).body;
+  assert.doesNotMatch(noTable, /knows/, 'no memory table = no claim about what the desk knows');
+
+  db.exec(`CREATE TABLE fleet_memory (id INTEGER PRIMARY KEY, scope TEXT, kind TEXT, headline TEXT,
+    department TEXT, project_id TEXT, task_id TEXT, superseded_by INTEGER)`);
+  db.prepare(`INSERT INTO fleet_memory (scope,kind,headline,department,superseded_by) VALUES
+    ('department','blocker','a',?,NULL), ('department','finding','b',?,NULL)`).run('finance', 'finance');
+  // A retired row is history, not knowledge — it must not inflate the count.
+  db.prepare(`INSERT INTO fleet_memory (scope,kind,headline,department,superseded_by) VALUES ('department','blocker','c','finance',99)`).run();
+  const withMem = AGENTS.render(AGENTS.getSection(db, ctxFor(db)), { serverRev: '' }).body;
+  assert.match(withMem, /knows 2</, 'two live findings, the retired one excluded');
+  assert.match(withMem, /href="\/claw\/memory"/, 'and it opens the full list');
+  db.close();
+});
+
 test('the BOARD leads; the summary tiles sit underneath it (operator ruling 2026-08-13)', () => {
   const db = makeDb();
   beat(db, 'b:1', 'coder-1');
