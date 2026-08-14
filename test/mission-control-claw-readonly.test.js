@@ -93,7 +93,11 @@ test('registry: /claw = console pages only, flagged read-only, all under /claw/*
   assert.ok(claw, 'claw workspace exists');
   assert.equal(claw.readOnly, true, 'claw is flagged read-only');
   const keys = claw.groups.flatMap((g) => g.items.map((i) => i.key)).sort();
-  assert.deepEqual(keys, ['chat', 'engine'], 'claw = the engine room + Chat (ruling mc-chat-approved 2026-07-21 — the frontdoor web transport)');
+  // Memory added 2026-08-13 (operator ask): the engine banks findings and injects them into the
+  // specialists' prompts, and a memory nobody can READ is a memory nobody can correct. It is a
+  // console page like its siblings — the read-only assertions below cover it unchanged, and this
+  // list stays CLOSED so a fourth page has to be argued for here before it can ship.
+  assert.deepEqual(keys, ['chat', 'engine', 'memory'], 'claw = the engine room + Chat + Memory (console pages only)');
   for (const g of claw.groups) for (const it of g.items) assert.match(it.route, /^\/claw\//, `${it.key} routes under /claw`);
 });
 

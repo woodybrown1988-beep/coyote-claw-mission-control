@@ -656,6 +656,16 @@ module.exports = {
     const homeCards = cards.filter((c) => isAgentCard(c) && atRest.has(c.col));
     const boardCards = cards.filter((c) => !(isAgentCard(c) && atRest.has(c.col)));
 
+    // WHAT EACH DESK KNOWS. The department panel is where the operator looks to see a desk, so it
+    // is where "and here is what it has already established" belongs — the full list reads on
+    // /claw/memory. A missing table (a tree that has not deployed the memory build yet, and every
+    // fixture that does not seed one) degrades to NO chip — never a zero, which would read as
+    // "this desk has learned nothing" when the truth is "we cannot tell".
+    const memByDept = new Map();
+    const memRes = q(`SELECT department, COUNT(*) c FROM fleet_memory WHERE superseded_by IS NULL AND department IS NOT NULL GROUP BY department`);
+    const memoryKnown = !!(memRes && memRes.ok);
+    for (const r of rows(memRes)) memByDept.set(String(r.department || '').toLowerCase(), num(r.c));
+
     // One panel per department that has anyone at home; the rest are named as quiet in one line, so
     // a department is never silently missing.
     const departments = [];
@@ -664,6 +674,7 @@ module.exports = {
       if (!mine.length) continue;
       departments.push({
         key: d.key, label: d.label, colour: d.colour,
+        knows: memoryKnown ? num(memByDept.get(d.key)) : null,
         // The row carries the SAME identity fields a board card does — name, role, department,
         // avatar, worker gauge. Going home must not make an agent's facts less available than
         // being on the board did; only the presentation changes.
@@ -913,9 +924,14 @@ module.exports = {
           + workerGaugeHtml(a.workerGauge) + when + '</div>'
           + role + detail + open + '</div></div>';
       }).join('');
+      // "knows N" links to the full list — the desk's own established findings, which every job it
+      // runs is given before it starts.
+      const knows = d.knows
+        ? '<a class="dept-knows" href="/claw/memory" title="what this desk has established — every job is given it before it starts">knows ' + d.knows + '</a>'
+        : '';
       return '<div class="dept-panel" style="border-top-color:' + esc(d.colour) + ';background:' + esc(d.colour) + '0A">'
         + '<div class="dept-panel-head" style="color:' + esc(d.colour) + '">' + esc(d.label)
-        + '<span class="dept-panel-n">' + d.agents.length + '</span></div>'
+        + knows + '<span class="dept-panel-n">' + d.agents.length + '</span></div>'
         + rows + '</div>';
     }
     const depts = section.departments || [];

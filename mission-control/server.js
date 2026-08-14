@@ -292,6 +292,7 @@ const PAGES = [
   require('./ui/pages/coyote/overview.js'),
   require('./ui/pages/claw/engine.js'),
   require('./ui/pages/claw/chat.js'),
+  require('./ui/pages/claw/memory.js'),
   require('./ui/pages/coyote/reviews.js'),
   require('./ui/pages/coyote/issues.js'),
   require('./ui/pages/coyote/reports.js'),
