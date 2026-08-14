@@ -132,6 +132,43 @@ module.exports = {
       body: finished.map(taskRow).join(''),
     }) : '';
 
+    // ── WHAT THE FLEET KNOWS ABOUT THIS PROJECT (fleet_memory, operator ask 2026-08-14) ──
+    // The findings the agents banked while working THIS project's tasks — the answer to "was
+    // that baseline stored somewhere for the following jobs". They live in the BUSINESS store
+    // and are read here by ID (project id + this project's task ids), the same by-reference
+    // pattern as the presence lookup above; /claw shows org+department scope and deliberately
+    // cannot name a project, so this page is where project findings read. Query failure (no
+    // fleet_memory table yet) renders NO panel — "cannot tell" must not dress as "knows
+    // nothing" — and an EMPTY result renders no panel either: on a page the owner works, a
+    // standing "no findings" placard on every quiet project is furniture, and the engine's
+    // department panels already teach that memory exists.
+    const memPanel = (() => {
+      if (!ctx || typeof ctx.q !== 'function') return '';
+      const taskIds = (s.tasks || []).map((t) => String(t.id));
+      const ph = taskIds.map(() => '?').join(',');
+      const sql = `SELECT kind, headline, detail, source_path, created_at FROM fleet_memory `
+        + `WHERE superseded_by IS NULL AND (project_id = ?${taskIds.length ? ` OR task_id IN (${ph})` : ''}) `
+        + `ORDER BY created_at DESC LIMIT 20`;
+      const r = ctx.q(sql, [pid, ...taskIds]);
+      if (!r || !r.ok || !r.rows.length) return '';
+      const ORDER = { blocker: 0, fail: 1, win: 2, finding: 3 };
+      const MARK = { blocker: '⛔', fail: '✕', win: '✓', finding: '·' };
+      const TONE = { blocker: '#f28b82', fail: '#f5c96b', win: 'var(--rgood,#45c486)', finding: 'var(--rmuted)' };
+      const rows = r.rows.slice().sort((a, b) => (ORDER[a.kind] ?? 9) - (ORDER[b.kind] ?? 9) || Number(b.created_at) - Number(a.created_at));
+      const line = (m) => `<div class="r-lrow" style="align-items:flex-start;gap:8px">
+          <span style="flex-shrink:0;color:${TONE[m.kind] || 'var(--rmuted)'}">${MARK[m.kind] || '·'}</span>
+          <div style="min-width:0"><div style="font-size:13px;line-height:1.45">${LIFE.esc(m.headline)}</div>
+          ${m.detail ? `<div style="font-size:12px;color:var(--rmuted);line-height:1.45;margin-top:2px">${LIFE.esc(String(m.detail).slice(0, 260))}</div>` : ''}
+          ${m.source_path ? `<div style="font-size:11px;color:var(--rmuted);margin-top:2px">${LIFE.esc(m.source_path)}</div>` : ''}</div>
+        </div>`;
+      return S.rcc.panel({
+        title: 'What the fleet knows here',
+        sub: 'Findings banked by this project’s own jobs — every new agent on this project is handed them before it starts',
+        headRight: `<span class="r-pill">${r.rows.length}</span>`,
+        body: rows.map(line).join(''),
+      });
+    })();
+
     // ── add a task INTO this project (operator ask 2026-08-10): capture + home in one
     // submit — the writer moves a homed Inbox task straight to READY, so nothing from
     // here ever sits in the Inbox. Living projects only (the writer refuses finished
@@ -146,6 +183,6 @@ module.exports = {
         <button type="submit" class="r-btn primary">Add task</button></div>
       </form></div>`;
 
-    return { stamp: '', body: wrap(head + tasksPanel + addForm + finishedPanel) };
+    return { stamp: '', body: wrap(head + tasksPanel + memPanel + addForm + finishedPanel) };
   },
 };
