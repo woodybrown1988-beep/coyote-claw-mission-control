@@ -145,7 +145,7 @@ module.exports = {
       // the two planner exclusions: work already holding a future block, and work already
       // carrying an open placement question, are not re-recommended.
       const tasksQ = LIFE.lifeSelect(o.db,
-        `SELECT w.id, w.title, w.due_kind, w.due_at, w.recurs, w.calculated_priority,
+        `SELECT w.id, w.title, w.due_kind, w.due_at, w.recurs, w.execution_mode, w.calculated_priority,
                 EXISTS (SELECT 1 FROM life_calendar_blocks b
                          WHERE b.task_id = w.id AND b.state IN ('PLACED','MOVED') AND b.end_at > ?) AS has_block,
                 EXISTS (SELECT 1 FROM life_update_proposals pr
@@ -401,7 +401,10 @@ module.exports = {
     // calculated priority. Schedule prefills the form — nothing is written by this list.
     const recommendPanel = () => {
       const horizon = addDays(s.today, 14);
-      const cands = (s.openTasks || []).filter((t) => !t.has_block && !t.has_proposal);
+      // AI-routed work is the dispatcher's, not calendar material (operator ask
+      // 2026-08-18: an AI-allocated task "remained in my to be scheduled tasks") —
+      // it leaves the suggestions; the form's picker still offers everything.
+      const cands = (s.openTasks || []).filter((t) => !t.has_block && !t.has_proposal && t.execution_mode !== 'AI');
       const dueSoon = (t) => t.due_at && String(t.due_at).slice(0, 10) <= horizon;
       const ranked = [
         ...cands.filter(dueSoon).sort((a, b) => {
