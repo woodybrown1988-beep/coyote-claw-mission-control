@@ -544,6 +544,23 @@ function clientScript() {
         try{rform.scrollIntoView({behavior:'smooth',block:'center'});}catch(_){rform.scrollIntoView();}
         var rst=rform.querySelector('[name=bf-start]');if(rst)rst.focus();
         return;}
+      // SNOOZE A RECOMMENDATION (2026-08-18): "lets do this in 2 weeks" — one prompt takes
+      // days-from-now or a date; the task parks on a DATE wake and the writer's tick brings
+      // it back to the suggestions on that morning. Nothing rots: the date IS the mechanism.
+      var rs=t.closest('[data-lc-recsnooze]');
+      if(rs){e.preventDefault();if(busy)return;
+        var sn;try{sn=JSON.parse(rs.getAttribute('data-lc-recsnooze'));}catch(_){return;}
+        var ans=prompt('Suggest "'+(sn.title||'this task')+'" again in how many days? (a number, or a date YYYY-MM-DD)','14');
+        if(ans===null)return;ans=String(ans).trim();
+        var when=null;
+        if(/^\\d{1,3}$/.test(ans)){when=new Date(Date.now()+Number(ans)*86400000);}
+        else if(/^\\d{4}-\\d{2}-\\d{2}$/.test(ans)){when=new Date(ans+'T07:00:00');}
+        if(!when||!isFinite(when.getTime())||when.getTime()<=Date.now()){window.__lcSay(rs,'Give a number of days or a future date — nothing was parked.');return;}
+        busy=true;rs.disabled=true;
+        fetch('/api/life/command',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({command:'set_waiting',idempotencyKey:hex(),payload:{taskId:sn.taskId,dependencyLabel:'Snoozed from the schedule page — suggest again '+when.toISOString().slice(0,10),wakeType:'DATE',fallbackAt:when.toISOString()}})})
+        .then(function(r){return r.json();}).then(function(r){if(r&&r.ok){location.reload();}else{busy=false;rs.disabled=false;window.__lcRefuse(rs,r&&r.error);}})
+        .catch(function(){busy=false;rs.disabled=false;window.__lcSay(rs,window.__lcNet);});
+        return;}
       // MOVE BLOCK button — same mover as drag-drop, no drag needed (and the touch path).
       var bm=t.closest('[data-lc-blockmove]');
       if(bm){e.preventDefault();if(busy)return;

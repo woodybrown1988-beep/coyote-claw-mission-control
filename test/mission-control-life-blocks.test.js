@@ -247,6 +247,50 @@ test('times are single 15-minute dropdowns inside 06:00–22:00 — no native ho
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('recommendation rows act in place: task link, Done, Later (DATE snooze), Schedule', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-rec2-'));
+  const dbPath = makeFixture(dir, { tasks: [{ id: 't-act', title: 'Top up the accounts' }] });
+  withEnv(dbPath, () => {
+    const body = SCHEDULE.render(SCHEDULE.getSection(null, { now: NOW }), {}).body;
+    assert.ok(body.includes('href="/life/task?id=t-act"'), 'the title opens the task page');
+    const cmds = cmdsIn(body);
+    assert.ok(cmds.some((c) => c.command === 'complete' && c.payload.taskId === 't-act'), 'Done completes in place');
+    assert.ok(/data-lc-recsnooze="[^"]*t-act[^"]*"/.test(body), 'Later carries the task for the snooze prompt');
+    const js = emittedScript();
+    assert.ok(js.includes('[data-lc-recsnooze]'), 'the snooze handler is in the ONE shared script');
+    assert.ok(js.includes("wakeType:'DATE'"), 'a snooze parks on a DATE wake — the writer tick brings it back');
+    assert.doesNotThrow(() => new Function(js), 'script still parses');
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('command lib: set_waiting accepts the DATE-wake shape', () => {
+  const ok = (payload) => LIB.validateCommand({ command: 'set_waiting', idempotencyKey: 'k'.repeat(12), payload });
+  assert.equal(ok({ taskId: 't1', dependencyLabel: 'Snoozed — suggest again 2026-09-01', wakeType: 'DATE', fallbackAt: '2026-09-01T07:00:00.000Z' }).ok, true);
+  assert.equal(ok({ taskId: 't1', dependencyLabel: 'x', fallbackAt: '2026-09-01T07:00:00.000Z' }).ok, true, 'wakeType stays optional');
+  assert.equal(ok({ taskId: 't1', dependencyLabel: 'x' }).ok, false, 'a snooze with no date is refused — nothing may rot silently');
+});
+
+test('a snoozed (WAITING) task leaves the recommendations; a lapsed block says so and its task returns', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-rec3-'));
+  const dbPath = makeFixture(dir, {
+    tasks: [{ id: 't-open', title: 'Still open task' }, { id: 't-lapsed', title: 'Scheduled but not done' }],
+    blocks: [{ id: 'b-past-open', taskId: 't-lapsed', title: 'Scheduled but not done', start: `${DAY}T08:00:00`, end: `${DAY}T09:00:00` }],
+  });
+  const db = new sqlite.DatabaseSync(dbPath);
+  db.prepare(`INSERT INTO life_tasks (id, owner_id, domain_key, title, status, visibility, created_at, updated_at)
+              VALUES ('t-snoozed', 'woody', 'business', 'Snoozed away', 'WAITING', 'OWNER_ONLY', ?, ?)`)
+    .run(new Date(NOW).toISOString(), new Date(NOW).toISOString());
+  db.close();
+  withEnv(dbPath, () => {
+    const body = SCHEDULE.render(SCHEDULE.getSection(null, { now: NOW }), {}).body;
+    assert.ok(!body.includes('Snoozed away'), 'a WAITING task is out of the list until its date wakes it');
+    assert.ok(body.includes('not done — re-suggested'), 'a passed block with an open task says the truth');
+    assert.ok(/data-lc-recfill="t-lapsed"/.test(body), 'the lapsed task is back in the suggestions — a past block never excludes');
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('the refusal copy translates the writer’s stale sentence into the owner’s words', () => {
   const copy = emittedScript();
   assert.ok(copy.includes('already passed'), 'the stale key is in the client copy table');
