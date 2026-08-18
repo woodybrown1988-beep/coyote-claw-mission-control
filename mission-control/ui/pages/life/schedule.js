@@ -273,8 +273,11 @@ module.exports = {
         const bj = LIFE.esc(JSON.stringify({ blockId: b.id, title: b.title || 'Focus block', startAt: b.start_at, endAt: b.end_at }));
         const movable = String(b.end_at) > s.localNow;
         const lapsed = !movable && b.task_id && b.task_status && b.task_status !== 'DONE' && b.task_status !== 'CANCELLED';
+        const label = b.task_id
+          ? `<a href="/life/task?id=${encodeURIComponent(String(b.task_id))}" style="color:inherit">${LIFE.esc(b.title || 'Focus block')}</a>`
+          : LIFE.esc(b.title || 'Focus block');
         return `<div class="r-lrow"${movable ? ` draggable="true" data-lc-block="${bj}" style="cursor:grab"` : ''}><div style="min-width:0"><div style="font-weight:600">`
-          + `<span style="font-family:var(--font-mono,monospace);color:#8ab4f8;font-size:12.5px;margin-right:10px">${LIFE.esc(hm(b.start_at))}–${LIFE.esc(hm(b.end_at))}</span>${LIFE.esc(b.title || 'Focus block')}</div></div>`
+          + `<span style="font-family:var(--font-mono,monospace);color:#8ab4f8;font-size:12.5px;margin-right:10px">${LIFE.esc(hm(b.start_at))}–${LIFE.esc(hm(b.end_at))}</span>${label}</div></div>`
           + `<div style="flex-shrink:0;display:flex;gap:6px">${movable ? `<button class="r-btn small" data-lc-blockmove="${bj}">Move</button>` : lapsed ? S.rcc.tag('not done — re-suggested', 'warn') : S.rcc.tag('Passed', 'warn')}</div></div>`;
       }).join(''),
     }) : '';
@@ -456,9 +459,11 @@ module.exports = {
           .format(new Date(`${day}T12:00:00Z`));
         const rel = ahead === 0 ? 'Today' : ahead === 1 ? 'Tomorrow' : '';
 
+        // `title` is escaped here; pass {html} for a title that is ALREADY safe markup
+        // (the block→task links — every interpolated value inside is esc'd at build).
         const row = (time, title, sub, tagHtml, tone) => `<div style="display:flex;gap:8px;align-items:flex-start;padding:5px 0;border-top:1px solid var(--rline)">`
           + `<div style="font-family:var(--font-mono,monospace);font-size:11.5px;color:${tone || '#f0a276'};flex-shrink:0;width:82px">${LIFE.esc(time)}</div>`
-          + `<div style="min-width:0;flex:1"><div style="font-size:12.5px;font-weight:600;overflow-wrap:anywhere">${LIFE.esc(title)}</div>`
+          + `<div style="min-width:0;flex:1"><div style="font-size:12.5px;font-weight:600;overflow-wrap:anywhere">${title != null && typeof title === 'object' && title.html != null ? title.html : LIFE.esc(title)}</div>`
           + (sub ? `<div style="font-size:11px;color:var(--rmuted);margin-top:1px">${LIFE.esc(sub)}</div>` : '')
           + `</div>${tagHtml || ''}</div>`;
 
@@ -501,7 +506,13 @@ module.exports = {
               const bj = LIFE.esc(JSON.stringify({ blockId: b.id, title: b.title || 'Focus block', startAt: b.start_at, endAt: b.end_at }));
               const movable = String(b.end_at) > s.localNow;
               const lapsed = !movable && b.task_id && b.task_status && b.task_status !== 'DONE' && b.task_status !== 'CANCELLED';
-              const inner = row(`${hm(b.start_at)}–${hm(b.end_at)}`, b.title || 'Focus block',
+              // The block's TITLE opens its task (operator ask 2026-08-18: "click on the
+              // task and update as required with notes, updates etc") — the task page holds
+              // the notes rail and every verb. A titled block with no task has nothing to open.
+              const label = b.task_id
+                ? `<a href="/life/task?id=${encodeURIComponent(String(b.task_id))}" style="color:inherit">${LIFE.esc(b.title || 'Focus block')}</a>`
+                : LIFE.esc(b.title || 'Focus block');
+              const inner = row(`${hm(b.start_at)}–${hm(b.end_at)}`, { html: label },
                 lapsed ? 'slot passed, task still open — back in the suggestions' : 'held for focused work',
                 (movable ? `<button class="r-btn small" data-lc-blockmove="${bj}">Move</button>` : '')
                 + (lapsed ? S.rcc.tag('not done — re-suggested', 'warn') : S.rcc.tag('Life OS', 'info')), '#8ab4f8');
