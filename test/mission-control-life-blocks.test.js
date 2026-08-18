@@ -50,7 +50,7 @@ function makeFixture(dir, { blocks = [], proposals = [], tasks = [] } = {}) {
     CREATE TABLE life_waiting_conditions (id TEXT PRIMARY KEY, task_id TEXT, owner_id TEXT,
       dependency_label TEXT, wake_type TEXT, fallback_at TEXT, state TEXT, created_at TEXT, updated_at TEXT);
     CREATE VIEW v_life_available_work AS
-      SELECT t.*, 0 AS calculated_priority FROM life_tasks t WHERE t.status IN ('READY','SCHEDULED','IN_PROGRESS');
+      SELECT t.*, t.importance * 10 AS calculated_priority FROM life_tasks t WHERE t.status IN ('READY','SCHEDULED','IN_PROGRESS');
     CREATE TABLE life_update_proposals (id TEXT PRIMARY KEY, owner_id TEXT, update_id TEXT, task_id TEXT,
       capability_key TEXT, command_type TEXT, command_json TEXT, reason TEXT, confidence REAL,
       risk_level TEXT, authority_class TEXT, state TEXT, created_at TEXT);
@@ -60,9 +60,9 @@ function makeFixture(dir, { blocks = [], proposals = [], tasks = [] } = {}) {
   `);
   db.prepare('INSERT INTO life_calendar_sync (id, last_sync_at) VALUES (1, ?)').run(new Date(NOW - 10 * 60_000).toISOString());
   for (const t of tasks) {
-    db.prepare(`INSERT INTO life_tasks (id, owner_id, domain_key, title, status, visibility, created_at, updated_at)
-                VALUES (?, 'woody', 'business', ?, 'READY', 'OWNER_ONLY', ?, ?)`)
-      .run(t.id, t.title, new Date(NOW).toISOString(), new Date(NOW).toISOString());
+    db.prepare(`INSERT INTO life_tasks (id, owner_id, domain_key, title, status, due_kind, due_at, importance, visibility, created_at, updated_at)
+                VALUES (?, 'woody', 'business', ?, 'READY', ?, ?, ?, 'OWNER_ONLY', ?, ?)`)
+      .run(t.id, t.title, t.dueKind || 'NONE', t.dueAt || null, t.importance ?? 3, new Date(NOW).toISOString(), new Date(NOW).toISOString());
   }
   for (const b of blocks) {
     db.prepare(`INSERT INTO life_calendar_blocks (id, owner_id, task_id, graph_event_id, calendar_id, title, start_at, end_at, state, created_at, updated_at)
@@ -190,6 +190,61 @@ test('command lib: owner-direct shapes accepted, garbage refused, remove/swap st
   // The two that did NOT relax.
   assert.equal(ok('remove_block', { blockId: 'b1' }).ok, false, 'remove stays proposal-only');
   assert.equal(ok('swap_block', { fromBlockId: 'b1', taskId: 't1', startAt: '2026-08-20T10:00:00', endAt: '2026-08-20T11:00:00' }).ok, false, 'swap stays proposal-only');
+});
+
+test('Worth scheduling next: deadlines first (soonest, hard over soft), then importance; blocked/asked work excluded; Schedule prefills', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-rec-'));
+  const dbPath = makeFixture(dir, {
+    tasks: [
+      { id: 't-imp', title: 'High importance, no deadline', importance: 5 },
+      { id: 't-hard', title: 'Hard deadline Friday', dueKind: 'HARD', dueAt: '2026-08-14T00:00:00', importance: 2 },
+      { id: 't-soft', title: 'Soft deadline Friday', dueKind: 'SOFT', dueAt: '2026-08-14T00:00:00', importance: 4 },
+      { id: 't-near', title: 'Hard deadline Wednesday', dueKind: 'HARD', dueAt: '2026-08-12T00:00:00', importance: 1 },
+      { id: 't-far', title: 'Deadline far away', dueKind: 'HARD', dueAt: '2026-12-01T00:00:00', importance: 3 },
+      { id: 't-blocked', title: 'Already holds a block', importance: 5 },
+      { id: 't-asked', title: 'Already asked as a proposal', importance: 5 },
+    ],
+    blocks: [{ id: 'b-held', taskId: 't-blocked', title: 'Held', start: `${DAY}T18:00:00`, end: `${DAY}T19:00:00` }],
+    proposals: [{ id: 'bp-open', taskId: 't-asked', type: 'place_block', command: { taskId: 't-asked', startAt: `${DAY}T18:00:00`, endAt: `${DAY}T19:00:00` } }],
+  });
+  withEnv(dbPath, () => {
+    const body = SCHEDULE.render(SCHEDULE.getSection(null, { now: NOW }), {}).body;
+    assert.match(body, /Worth scheduling next/);
+    // Order: Wed hard → Fri hard → Fri soft → then by priority (importance) with the
+    // far deadline treated as ordinary work.
+    const order = ['Hard deadline Wednesday', 'Hard deadline Friday', 'Soft deadline Friday', 'High importance, no deadline']
+      .map((t) => body.indexOf(t));
+    assert.ok(order.every((i) => i >= 0), 'all four expected rows render');
+    assert.deepEqual([...order].sort((a, b) => a - b), order, 'deadline-then-importance order holds');
+    assert.ok(body.indexOf('High importance, no deadline') < body.indexOf('Deadline far away'),
+      'a far-off deadline does not outrank importance');
+    // Exclusions: held and already-asked work is not re-recommended.
+    assert.ok(!/data-lc-recfill="t-blocked"/.test(body), 'work holding a future block is excluded');
+    assert.ok(!/data-lc-recfill="t-asked"/.test(body), 'work with an open placement question is excluded');
+    // Chips + prefill affordance.
+    assert.match(body, /due Fri 14 Aug · hard/, 'the deadline is called out in words');
+    assert.ok(/data-lc-recfill="t-near"/.test(body), 'Schedule prefill carries the task id');
+    const js = emittedScript();
+    assert.ok(js.includes('[data-lc-recfill]'), 'the prefill handler is in the ONE shared script');
+    assert.doesNotThrow(() => new Function(js), 'script still parses');
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('times are single 15-minute dropdowns inside 06:00–22:00 — no native hour/minute dials', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-rec-'));
+  const dbPath = makeFixture(dir, {});
+  withEnv(dbPath, () => {
+    const body = SCHEDULE.render(SCHEDULE.getSection(null, { now: NOW }), {}).body;
+    assert.ok(/<select name="bf-start"/.test(body), 'start is a select');
+    assert.ok(/<select name="bf-end"/.test(body), 'end is a select');
+    assert.ok(!/type="time"/.test(body), 'no native time inputs remain');
+    for (const t of ['06:00', '07:15', '13:45', '21:45']) assert.ok(body.includes(`<option value="${t}">`), `start offers ${t}`);
+    assert.ok(body.includes('<option value="22:00">'), 'end reaches 22:00');
+    assert.ok(!body.includes('<option value="22:15">'), 'nothing past quiet hours');
+    assert.ok(!body.includes('<option value="05:45">'), 'nothing before 06:00');
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
 });
 
 test('the refusal copy translates the writer’s stale sentence into the owner’s words', () => {
