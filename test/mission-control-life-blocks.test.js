@@ -219,11 +219,12 @@ test('Worth scheduling next: deadlines first (soonest, hard over soft), then imp
     assert.ok(body.indexOf('High importance, no deadline') < body.indexOf('Deadline far away'),
       'a far-off deadline does not outrank importance');
     // Exclusions: held and already-asked work is not re-recommended.
-    assert.ok(!/data-lc-recfill="t-blocked"/.test(body), 'work holding a future block is excluded');
-    assert.ok(!/data-lc-recfill="t-asked"/.test(body), 'work with an open placement question is excluded');
+    assert.ok(!body.includes('data-lc-recfill="{&quot;taskId&quot;:&quot;t-blocked'), 'work holding a future block is excluded');
+    assert.ok(!body.includes('&quot;taskId&quot;:&quot;t-asked&quot;'), 'work with an open placement question is excluded');
     // Chips + prefill affordance.
     assert.match(body, /due Fri 14 Aug · hard/, 'the deadline is called out in words');
-    assert.ok(/data-lc-recfill="t-near"/.test(body), 'Schedule prefill carries the task id');
+    assert.ok(body.includes('&quot;taskId&quot;:&quot;t-near&quot;'), 'Schedule prefill carries the task id');
+    assert.ok(body.includes('&quot;due&quot;:&quot;2026-08-12&quot;'), 'Schedule prefill carries the due date for the form (operator ask 2026-08-18)');
     const js = emittedScript();
     assert.ok(js.includes('[data-lc-recfill]'), 'the prefill handler is in the ONE shared script');
     assert.doesNotThrow(() => new Function(js), 'script still parses');
@@ -329,7 +330,7 @@ test('a snoozed (WAITING) task leaves the recommendations; a lapsed block says s
     const body = SCHEDULE.render(SCHEDULE.getSection(null, { now: NOW }), {}).body;
     assert.ok(!body.includes('Snoozed away'), 'a WAITING task is out of the list until its date wakes it');
     assert.ok(body.includes('not done — re-suggested'), 'a passed block with an open task says the truth');
-    assert.ok(/data-lc-recfill="t-lapsed"/.test(body), 'the lapsed task is back in the suggestions — a past block never excludes');
+    assert.ok(body.includes('&quot;taskId&quot;:&quot;t-lapsed&quot;'), 'the lapsed task is back in the suggestions — a past block never excludes');
   });
   fs.rmSync(dir, { recursive: true, force: true });
 });
