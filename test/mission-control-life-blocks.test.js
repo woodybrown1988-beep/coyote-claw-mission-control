@@ -69,9 +69,9 @@ function makeFixture(dir, { blocks = [], proposals = [], tasks = [], events = []
       .run(e.id, e.subject || 'Busy', e.start, e.end, e.allDay ? 1 : 0, e.showAs || 'busy');
   }
   for (const t of tasks) {
-    db.prepare(`INSERT INTO life_tasks (id, owner_id, domain_key, title, status, due_kind, due_at, recurs, importance, visibility, created_at, updated_at)
-                VALUES (?, 'woody', 'business', ?, 'READY', ?, ?, ?, ?, 'OWNER_ONLY', ?, ?)`)
-      .run(t.id, t.title, t.dueKind || 'NONE', t.dueAt || null, t.recurs || null, t.importance ?? 3, new Date(NOW).toISOString(), new Date(NOW).toISOString());
+    db.prepare(`INSERT INTO life_tasks (id, owner_id, domain_key, title, status, execution_mode, due_kind, due_at, recurs, importance, visibility, created_at, updated_at)
+                VALUES (?, 'woody', 'business', ?, 'READY', ?, ?, ?, ?, ?, 'OWNER_ONLY', ?, ?)`)
+      .run(t.id, t.title, t.mode || null, t.dueKind || 'NONE', t.dueAt || null, t.recurs || null, t.importance ?? 3, new Date(NOW).toISOString(), new Date(NOW).toISOString());
   }
   for (const b of blocks) {
     db.prepare(`INSERT INTO life_calendar_blocks (id, owner_id, task_id, graph_event_id, calendar_id, title, start_at, end_at, state, created_at, updated_at)
@@ -454,6 +454,25 @@ test('an APPROVED must-win already scheduled ahead says so on Today — never si
     const body = TODAY.render(TODAY.getSection(null, { now: NOW }), { now: NOW }).body;
     assert.match(body, /Already scheduled — Thu 13 Aug at 07:00/, 'the card names the standing future block');
     assert.match(body, /Replan to pick a fresh must-win/, 'and offers the honest way out');
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('AI-routed work leaves the suggestions (the dispatcher does it) — the form picker still offers it', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-airoute-'));
+  const dbPath = makeFixture(dir, {
+    tasks: [
+      { id: 't-mine', title: 'Renew the electricity contract', importance: 4 },
+      { id: 't-agent', title: 'Agent-run VAT audit', importance: 5, mode: 'AI' },
+    ],
+  });
+  withEnv(dbPath, () => {
+    const body = SCHEDULE.render(SCHEDULE.getSection(null, { now: NOW }), {}).body;
+    const recPanel = body.slice(body.indexOf('Worth scheduling next'), body.indexOf('Place your own block'));
+    assert.ok(recPanel.includes('Renew the electricity contract'), 'the owner’s own work is suggested');
+    assert.ok(!recPanel.includes('Agent-run VAT audit'), 'AI-routed work is the dispatcher’s — not calendar material');
+    const picker = body.slice(body.indexOf('Place your own block'));
+    assert.ok(picker.includes('Agent-run VAT audit'), 'the picker still offers everything — his choice to block time for it');
   });
   fs.rmSync(dir, { recursive: true, force: true });
 });
