@@ -151,6 +151,29 @@ function ruledChip(C, deltaPence, overWord, underWord, onWord) {
 
 // EXECUTIVE — last-full-week KPIs, 13-week control trend, attention queue, variance bridge,
 // department control, daily control strip. TRUE ruler throughout (RC never renders here).
+// Labour compliance sweep (engine timer, operator brief 2026-08-18): the latest sweep's
+// findings, read straight off labour_compliance_findings. NAMES RENDER HERE by the same
+// brief ("shifts which were not clocked in or out ... excluding Jordan Williams", sick days
+// per employee) — the centre's no-names surveillance boundary stands for performance
+// metrics (SPLH/variance); a missed punch or a sick-day total is payroll accuracy the
+// operator explicitly asked to see by name. Absent table → null → panel absent (merge
+// order across the two repos is not guaranteed).
+function buildCompliance(q) {
+  const latest = rowsOf(q(`SELECT sweep_date, run_kind FROM labour_compliance_findings ORDER BY sweep_date DESC, run_kind DESC LIMIT 1`))[0];
+  if (!latest) return null;
+  const rows = rowsOf(q(
+    `SELECT kind, business_date, user_name, role_name, detail, minutes, days, window_from, window_to
+       FROM labour_compliance_findings WHERE sweep_date = ? AND run_kind = ?
+      ORDER BY CASE kind WHEN 'missed_in' THEN 0 WHEN 'missed_out' THEN 1 WHEN 'late' THEN 2 ELSE 3 END, business_date, user_name`,
+    [latest.sweep_date, latest.run_kind],
+  ));
+  return {
+    sweepDate: String(latest.sweep_date), runKind: String(latest.run_kind),
+    clock: rows.filter((r) => r.kind !== 'sick_days'),
+    sick: rows.filter((r) => r.kind === 'sick_days').sort((a, b) => (num(b.days) || 0) - (num(a.days) || 0)),
+  };
+}
+
 function buildExecutive(q, maxDate, C) {
   if (!maxDate) return null;
   const e = { maxDate };
@@ -753,7 +776,7 @@ module.exports = {
     m.maxDate = mx && mx.d ? String(mx.d) : null;
     if (tab === 'rota-review') { m.rr = ROTA_REVIEW.getSection(db, ctx); return m; } // delegate — no ruled-constant math
     if (!C) return m; // every other tab's math depends on the ruled constants — gate, loudly
-    if (tab === 'executive') m.exec = buildExecutive(q, m.maxDate, C);
+    if (tab === 'executive') { m.exec = buildExecutive(q, m.maxDate, C); m.compliance = buildCompliance(q); }
     if (tab === 'rota') m.rota = buildRota(q, m.maxDate);
     if (tab === 'forecast') m.fc = buildForecast(q, m.maxDate, now);
     if (tab === 'kitchen' || tab === 'foh') m.dept = buildDept(q, m.maxDate, tab, now);
@@ -858,8 +881,40 @@ module.exports = {
 
     // ============================ EXECUTIVE ============================
     const renderExecutiveTab = () => {
+      // ---- compliance sweep (operator brief 2026-08-18; names by the same brief). Built
+      // FIRST and rendered on BOTH paths — sweep findings read their own table and do not
+      // depend on the labour aggregates being wired. ----
+      const comp = m.compliance;
+      let compliancePanel = '';
+      if (comp) {
+        const KINDS = { missed_in: ['missed clock-in', 'bad'], missed_out: ['missed clock-out', 'bad'], late: ['late', 'warn'] };
+        const clockBody = comp.clock.length
+          ? comp.clock.slice(0, 12).map((r) => {
+            const [lab, tone] = KINDS[r.kind] || [String(r.kind), 'warn'];
+            return `<div class="r-lrow"><div style="min-width:0"><div style="font-weight:600">${esc(r.user_name || '?')}${r.role_name ? ` <span style="color:var(--rmuted);font-weight:400">· ${esc(r.role_name)}</span>` : ''}</div>`
+              + `<div style="font-size:12px;color:var(--rmuted);margin-top:2px">${esc(r.business_date || '')} — ${esc(r.detail || '')}</div></div>${S.rcc.tag(lab, tone)}</div>`;
+          }).join('') + (comp.clock.length > 12 ? `<div class="r-mini-note">…and ${comp.clock.length - 12} more in this sweep.</div>` : '')
+          : `<div class="r-lrow" style="color:var(--rmuted);font-size:13px">Clock record clean — every completed shift clocked in and out, nobody over the lateness line.</div>`;
+        const sickBody = comp.sick.length
+          ? comp.sick.slice(0, 8).map((r) => `<div class="r-lrow"><div style="font-weight:600">${esc(r.user_name || '?')}</div>`
+            + `<div class="mono" style="font-size:12.5px">${esc(String(num(r.days) ?? '?'))}d since ${esc(String(r.window_from || ''))}</div></div>`).join('')
+          : `<div class="r-lrow" style="color:var(--rmuted);font-size:13px">No sick leave recorded this measuring year.</div>`;
+        compliancePanel = `<div class="r-grid r-two-col">`
+          + S.rcc.panel({
+            title: 'Compliance sweep — clock record',
+            sub: `latest: ${comp.runKind} · ${comp.sweepDate} — weekly Monday + payroll morning (engine timer); Jordan Williams exempt by rule`,
+            body: clockBody,
+          })
+          + S.rcc.panel({
+            title: 'Sick days — measuring year from 1 April',
+            sub: 'RotaCloud leave record, sweep-refreshed — totals, not judgements',
+            body: sickBody,
+          })
+          + `</div>`;
+      }
+
       const e = m.exec;
-      if (!e) return noWire('the executive control view');
+      if (!e) return noWire('the executive control view') + compliancePanel;
       const wk = e.week;
       const agg = e.agg && num(e.agg.days) > 0 ? e.agg : null;
       const inter = e.inter && num(e.inter.days) > 0 && num(e.inter.net) > 0 ? e.inter : null;
@@ -1055,7 +1110,7 @@ module.exports = {
 
       return `<div class="r-grid r-kpi-grid">${kpis}</div>${kpiCaption}
         <div class="r-grid r-two-col">${trendPanel}${queuePanel}</div>
-        ${deptRow}${stripPanel}`;
+        ${deptRow}${stripPanel}${compliancePanel}`;
     };
 
     // ============================ ROTA VS ACTUAL ============================
