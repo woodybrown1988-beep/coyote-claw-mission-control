@@ -664,6 +664,18 @@ function applyChatMessage(db, body, now) {
   const text = typeof body.text === 'string' ? body.text.trim() : '';
   if (!text) return { ok: false, status: 400, error: 'empty message' };
   if (text.length > 4000) return { ok: false, status: 400, error: 'message too long (4000 char cap)' };
+  // PER-AGENT CHANNELS (operator ask 2026-08-18: "within MC chat we should also have an option
+  // to chat with individual departments or agents like the mail agent"). The channel rides the
+  // row's `source` column as 'channel:<name>' — TEXT, no schema change — and the frontdoor's
+  // webAdapter maps that prefix onto CoreInbound.channel, where routing treats it as absolute:
+  // inside the mail-agent channel there are no magic words, everything is for the mail agent.
+  // ALLOWLISTED here so a crafted POST cannot invent a channel the router has never heard of.
+  const CHANNELS = ['mail-agent'];
+  let source = null;
+  if (body.channel != null) {
+    if (!CHANNELS.includes(String(body.channel))) return { ok: false, status: 400, error: 'unknown channel' };
+    source = 'channel:' + String(body.channel);
+  }
   let replyTo = null;
   if (body.reply_to_id != null) {
     const n = Number(body.reply_to_id);
@@ -672,8 +684,8 @@ function applyChatMessage(db, body, now) {
   }
   try {
     const r = db.prepare(
-      `INSERT INTO chat_messages (transport, direction, text, reply_to_id, created_at) VALUES ('web', 'in', ?, ?, ?)`
-    ).run(text, replyTo, now);
+      `INSERT INTO chat_messages (transport, direction, source, text, reply_to_id, created_at) VALUES ('web', 'in', ?, ?, ?, ?)`
+    ).run(source, text, replyTo, now);
     return { ok: true, status: 200, id: Number(r.lastInsertRowid) };
   } catch (e) {
     // table absent = the engine side has not deployed yet — honest 503, never a silent drop
