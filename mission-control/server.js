@@ -177,6 +177,12 @@ function handleRequest(req, res) {
     handleTaskFileDownload(req, res, url);
     return;
   }
+  // Capture options (rich capture, 2026-08-18): ACTIVE projects for the overlay's picker —
+  // read-only mirror, id + title + domain only, nothing else leaves the db. Below the wall.
+  if (req.method === 'GET' && url.pathname === '/api/life/capture-options') {
+    handleCaptureOptions(req, res);
+    return;
+  }
   if (req.method === 'POST' && url.pathname === '/api/recipe-import') {
     handleRecipeImport(req, res, url);
     return;
@@ -3506,6 +3512,24 @@ function readBinaryBody(req, res, maxLen, cb) {
 // Life OS capture relay: validate (fail-closed), forward to the sole writer, pass the
 // writer's verdict through untouched. A writer that never saw the command yields a NAMED
 // 503 — never a silent queue, never a fake success (writer-down honesty, ops/life-os.md).
+// The capture overlay's project picker (rich capture, 2026-08-18): ACTIVE projects from the
+// READ-ONLY life mirror — the one sanctioned handle; absent db/table = an honest empty list.
+function handleCaptureOptions(req, res) {
+  try {
+    const LIFELIB = require('./ui/pages/life/life-lib.js');
+    const o = LIFELIB.openLifeReadonly();
+    if (!o.ok) { sendJson(res, 200, { ok: true, projects: [] }); return; }
+    try {
+      const q = LIFELIB.lifeSelect(o.db,
+        `SELECT id, title, domain_key FROM life_projects WHERE status = 'ACTIVE' ORDER BY title COLLATE NOCASE`);
+      const projects = (q.ok ? q.rows : []).map((p) => ({ id: String(p.id), title: String(p.title), domain: String(p.domain_key || '') }));
+      sendJson(res, 200, { ok: true, projects });
+    } finally { o.db.close(); }
+  } catch (e) {
+    sendJson(res, 200, { ok: true, projects: [] });
+  }
+}
+
 function handleLifeCapture(req, res) {
   readJsonBody(req, res, 8192, (body) => {
     const v = LIFECMD.validateCapture(body);

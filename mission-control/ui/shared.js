@@ -218,6 +218,12 @@ function renderShell(opts) {
         <button type="submit" class="lc-btn">Capture</button>
         <button type="button" class="lc-btn lc-ghost" data-lc-close>Close</button>
       </div>
+      <div class="lc-row lc-more">
+        <select class="lc-project" aria-label="Project (optional)"><option value="">— no project (Inbox) —</option></select>
+        <input class="lc-due" type="date" aria-label="Due date (optional)" title="Due date (optional)">
+        <label class="lc-hardwrap" title="A hard deadline, not a target"><input class="lc-hard" type="checkbox"> hard</label>
+        <input class="lc-recur" type="text" maxlength="60" placeholder="repeats? e.g. monthly, every 2 weeks" aria-label="Repeats (optional)">
+      </div>
       <div class="lc-result" data-lc-result></div>
       <div class="lc-hint">Life OS → Inbox · OWNER_ONLY · via the gated command path — a failed capture says so, nothing queues silently</div>
     </form>
@@ -491,7 +497,7 @@ function clientScript() {
     var inp=ov.querySelector('.lc-input'); var dom=ov.querySelector('.lc-domain');
     var out=ov.querySelector('[data-lc-result]'); var busy=false; var key=null;
     function hex(){var a=new Uint8Array(16);crypto.getRandomValues(a);var o='';for(var i=0;i<a.length;i++){o+=('0'+a[i].toString(16)).slice(-2);}return o;}
-    function open(){ov.classList.add('lc-open');window.__lcOpen=true;out.className='lc-result';out.textContent='';setTimeout(function(){inp.focus();},50);}
+    function open(){ov.classList.add('lc-open');window.__lcOpen=true;out.className='lc-result';out.textContent='';if(window.__lcLoadProjects)window.__lcLoadProjects();setTimeout(function(){inp.focus();},50);}
     function close(){ov.classList.remove('lc-open');window.__lcOpen=false;}
     // PAGE-CONTEXT FAB (operator report 2026-08-10: "+ on Projects made a task"): a page may
     // mark ONE element [data-fab-target="label"] as what the floating + means HERE (Projects →
@@ -520,16 +526,45 @@ function clientScript() {
       if((e.ctrlKey||e.metaKey)&&(e.key==='k'||e.key==='K')){e.preventDefault();open();return;}
       if(e.key==='Escape'&&ov.classList.contains('lc-open')){close();}
     });
+    // RICH CAPTURE (operator ask 2026-08-18): project, due date and cadence ride the ONE
+    // capture — no capture-then-reopen double entry. Projects load LAZILY on first open
+    // (one read of the mirror per page-load); picking a project sets its domain and locks
+    // the domain select (the project's home wins — retyping it is the double entry this
+    // kills); the cadence is grammar-checked by the same regex the advancer parses.
+    var proj=ov.querySelector('.lc-project');var due=ov.querySelector('.lc-due');
+    var hard=ov.querySelector('.lc-hard');var rec=ov.querySelector('.lc-recur');
+    var projLoaded=false;
+    window.__lcLoadProjects=function(){
+      if(projLoaded||!proj)return;projLoaded=true;
+      fetch('/api/life/capture-options',{credentials:'same-origin'}).then(function(r){return r.json();}).then(function(j){
+        if(!j||!j.ok||!j.projects)return;
+        for(var i=0;i<j.projects.length;i++){var p=j.projects[i];var o=document.createElement('option');
+          o.value=p.id;o.textContent=p.title;o.setAttribute('data-domain',p.domain||'');proj.appendChild(o);}
+      }).catch(function(){projLoaded=false;});
+    };
+    if(proj)proj.addEventListener('change',function(){
+      var o=proj.options[proj.selectedIndex];var d=o?o.getAttribute('data-domain'):'';
+      if(proj.value&&d){dom.value=d;dom.disabled=true;}else{dom.disabled=false;}
+    });
     ov.querySelector('.lc-form').addEventListener('submit',function(e){
       e.preventDefault(); if(busy)return;
       var title=(inp.value||'').trim();
       if(!title){out.className='lc-result lc-err';out.textContent='Give it a name first.';return;}
+      var cadence=rec?String(rec.value||'').trim():'';
+      if(cadence&&!window.__lcRecurOk(cadence)){out.className='lc-result lc-err';out.textContent='Repeats reads like: monthly, weekly, quarterly, yearly, every 2 weeks, every 10 days.';return;}
+      if(hard&&hard.checked&&!(due&&due.value)){out.className='lc-result lc-err';out.textContent='A hard deadline needs a date.';return;}
       if(!key)key=hex();
       busy=true;out.className='lc-result lc-busy';out.textContent='capturing…';
-      fetch('/api/life/capture',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({title:title,domainKey:dom.value,idempotencyKey:key})})
+      var pay={title:title,domainKey:dom.value,idempotencyKey:key};
+      if(proj&&proj.value)pay.projectId=proj.value;
+      if(due&&due.value){pay.dueAt=due.value;pay.dueKind=(hard&&hard.checked)?'HARD':'TARGET';}
+      if(cadence)pay.recurs=cadence.toLowerCase();
+      fetch('/api/life/capture',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(pay)})
       .then(function(r){return r.json();}).then(function(r){busy=false;
-        if(r&&r.ok){key=null;inp.value='';window.__lcDraftClear(e.target);out.className='lc-result lc-ok';
-          out.innerHTML='captured ✓ — in your Inbox · <a href="/life/today">open Today</a>';
+        if(r&&r.ok){key=null;inp.value='';if(due)due.value='';if(hard)hard.checked=false;if(rec)rec.value='';
+          var homed=proj&&proj.value;if(proj){proj.value='';dom.disabled=false;}
+          window.__lcDraftClear(e.target);out.className='lc-result lc-ok';
+          out.innerHTML=homed?'captured ✓ — READY in its project · <a href="/life/tasks">open Tasks</a>':'captured ✓ — in your Inbox · <a href="/life/today">open Today</a>';
           if(location.pathname==='/life/today'){setTimeout(function(){window.__lcReload();},700);}
         } else {if(window.console&&console.warn)console.warn('life write refused:',r&&r.error);out.className='lc-result lc-err';out.textContent=window.__lcOwnerCopy(r&&r.error);}
       }).catch(function(){busy=false;out.className='lc-result lc-err';out.textContent='Connection lost — NOT captured. Safe to try again: a retry can never create a duplicate.';});
@@ -1484,6 +1519,11 @@ function css() {
 .lc-focus-card{width:100%;max-width:560px;background:#14181d;border:1px solid #2a3139;border-radius:16px;padding:22px;box-shadow:0 20px 60px rgba(0,0,0,.6)}
 .lc-input{width:100%;box-sizing:border-box;font-size:17px;padding:12px 14px;border-radius:8px;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.06);color:inherit}
 .lc-row{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+.lc-more{align-items:center}
+.lc-project{flex:1;min-width:180px;background:#0d1117;border:1px solid #2a3139;border-radius:8px;color:#e6edf3;padding:8px 10px;font-size:13px}
+.lc-due{background:#0d1117;border:1px solid #2a3139;border-radius:8px;color:#e6edf3;padding:7px 10px;font-size:13px;color-scheme:dark}
+.lc-hardwrap{display:flex;align-items:center;gap:5px;color:#9ea7b2;font-size:12.5px;white-space:nowrap;cursor:pointer}
+.lc-recur{flex:1;min-width:170px;background:#0d1117;border:1px solid #2a3139;border-radius:8px;color:#e6edf3;padding:8px 10px;font-size:13px}
 .lc-domain{min-height:44px;padding:0 10px;border-radius:8px;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.06);color:inherit;font-size:14px;color-scheme:dark}
 /* Native select POPUPS ignore the control's colours: without color-scheme:dark the option
    list renders on the UA's light background with our inherited light text — white-on-white,
