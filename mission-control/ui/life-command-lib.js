@@ -93,6 +93,11 @@ const COMMAND_SHAPES = {
   complete: (p) => typeof p.taskId === 'string',
   set_waiting: (p) => typeof p.taskId === 'string' && typeof p.dependencyLabel === 'string' && typeof p.fallbackAt === 'string'
     && (p.wakeType === undefined || typeof p.wakeType === 'string'),
+  // Recurrence flag (operator ask 2026-08-18): set a cadence, or null to stop repeating.
+  // The writer re-validates; the browser has already refused anything the advancer cannot
+  // roll forward (the grammar and the advancer live in one place in shared.js).
+  set_recurrence: (p) => typeof p.taskId === 'string' && !!p.taskId
+    && (p.cadence === null || (typeof p.cadence === 'string' && !!p.cadence.trim() && p.cadence.length <= 60)),
   wake: (p) => typeof p.taskId === 'string',
   reopen: (p) => typeof p.taskId === 'string',
   undo: (p) => typeof p.taskId === 'string',

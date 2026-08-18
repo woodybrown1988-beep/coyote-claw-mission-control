@@ -101,6 +101,10 @@ module.exports = {
           + `<button class="r-btn small" data-lc-due="${LIFE.esc(JSON.stringify({ id, dueAt: String(t.due_at || '').slice(0, 10), dueKind: String(t.due_kind || 'NONE') }))}">Due date…</button>` : '',
       ['INBOX', 'READY', 'SCHEDULED', 'IN_PROGRESS', 'BLOCKED', 'AWAITING_APPROVAL', 'BATCH'].includes(String(t.status))
         ? `<button class="r-btn small" data-lc-complete="${LIFE.esc(id)}"${t.recurs ? ` data-lc-recap="${LIFE.esc(JSON.stringify({ cadence: t.recurs, due: String(t.due_at || '').slice(0, 10) }))}"` : ''}>Mark done…</button>`
+          // Repeats setter (operator ask 2026-08-18): set daily/weekly/monthly/yearly or
+          // "every N days/weeks/months/years"; blank stops the repeat. Living tasks only —
+          // the writer refuses flagging a finished record.
+          + `<button class="r-btn small" data-lc-setrecur="${LIFE.esc(JSON.stringify({ taskId: id, cadence: t.recurs || '' }))}">Repeats…</button>`
           + `<button class="r-btn small" data-lc-wait="${LIFE.esc(id)}">Park waiting…</button>`
           + `<button class="lc-cxl" data-lc-cancel="${LIFE.esc(id)}">✕ cancel</button>`
         : '',
