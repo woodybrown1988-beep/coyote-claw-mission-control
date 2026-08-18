@@ -395,6 +395,20 @@ test('busy map: taken intervals per date — timed non-free commitments + standi
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('updates are not felt: the periodic refresh swaps <main> in place; action reloads restore scroll', () => {
+  const js = emittedScript();
+  // The periodic path is a background fetch + in-place swap, never a jolt.
+  assert.ok(js.includes("querySelector('main.main')"), 'the refresh swaps the content region in place');
+  assert.ok(js.includes('__lcInitContent(om)'), 'swapped-in content re-arms its initialisers');
+  assert.ok(js.includes('__lcDragging'), 'a drag in flight holds the refresh');
+  // Every ACTION reload goes through the scroll-preserving helper — exactly one raw
+  // location.reload() may exist: the helper's own definition.
+  assert.equal((js.match(/location\.reload\(\)/g) || []).length, 1, 'one raw reload — the __lcReload definition');
+  assert.ok(js.includes("sessionStorage.setItem('lcScroll:'"), 'scroll is remembered before a hard reload');
+  assert.ok(js.includes("sessionStorage.getItem("), 'and restored on the way back in');
+  assert.doesNotThrow(() => new Function(js), 'script still parses');
+});
+
 test('the refusal copy translates the writer’s stale sentence into the owner’s words', () => {
   const copy = emittedScript();
   assert.ok(copy.includes('already passed'), 'the stale key is in the client copy table');
