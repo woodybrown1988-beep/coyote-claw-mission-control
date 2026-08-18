@@ -409,6 +409,32 @@ test('updates are not felt: the periodic refresh swaps <main> in place; action r
   assert.doesNotThrow(() => new Function(js), 'script still parses');
 });
 
+test('rich capture: the overlay carries project/due/hard/repeats; the submit sends them; the lib shapes hold', () => {
+  const html = String(SHARED.renderShell({ title: 't', sub: '', body: '<div></div>', workspace: 'life', route: '/life/today', key: 'k' }));
+  for (const cls of ['lc-project', 'lc-due', 'lc-hard', 'lc-recur']) {
+    assert.ok(html.includes(`class="${cls}"`) || html.includes(`class="lc-hardwrap"`), `overlay field ${cls} present`);
+  }
+  assert.ok(html.includes('— no project (Inbox) —'), 'no-project stays the default — quick capture is untouched');
+  const js = emittedScript();
+  assert.ok(js.includes('/api/life/capture-options'), 'projects load lazily from the read-only options endpoint');
+  assert.ok(js.includes('pay.projectId=proj.value'), 'a picked project rides the capture');
+  assert.ok(js.includes("pay.dueKind=(hard&&hard.checked)?'HARD':'TARGET'"), 'the hard toggle sets the kind; a date alone is TARGET');
+  assert.ok(js.includes('dom.disabled=true'), 'picking a project locks the domain — its home wins, never retyped');
+  assert.ok(js.includes('window.__lcRecurOk(cadence)'), 'the cadence is grammar-checked before it leaves the browser');
+  assert.doesNotThrow(() => new Function(js), 'script still parses');
+
+  // The lib: new fields pass with shape checks; garbage refused; the old bare shape unchanged.
+  const okBare = LIB.validateCapture({ title: 'x', idempotencyKey: 'k'.repeat(12) });
+  assert.equal(okBare.ok, true);
+  assert.ok(!('projectId' in okBare.cmd.payload), 'bare capture payload is byte-compatible');
+  const okRich = LIB.validateCapture({ title: 'x', idempotencyKey: 'k'.repeat(12), projectId: 'p1', dueAt: '2026-09-07', dueKind: 'HARD', recurs: 'monthly' });
+  assert.equal(okRich.ok, true);
+  assert.deepEqual([okRich.cmd.payload.projectId, okRich.cmd.payload.dueAt, okRich.cmd.payload.dueKind, okRich.cmd.payload.recurs], ['p1', '2026-09-07', 'HARD', 'monthly']);
+  assert.equal(LIB.validateCapture({ title: 'x', idempotencyKey: 'k'.repeat(12), dueAt: 'next tuesday' }).ok, false, 'prose dates refused');
+  assert.equal(LIB.validateCapture({ title: 'x', idempotencyKey: 'k'.repeat(12), dueKind: 'SOFTISH' }).ok, false, 'unknown kinds refused');
+  assert.equal(LIB.validateCapture({ title: 'x', idempotencyKey: 'k'.repeat(12), recurs: '   ' }).ok, false, 'blank cadence refused');
+});
+
 test('the refusal copy translates the writer’s stale sentence into the owner’s words', () => {
   const copy = emittedScript();
   assert.ok(copy.includes('already passed'), 'the stale key is in the client copy table');

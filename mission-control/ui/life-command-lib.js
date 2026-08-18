@@ -31,6 +31,25 @@ function validateCapture(body) {
   if (b.domainKey !== undefined) payload.domainKey = b.domainKey;
   if (b.visibility !== undefined) payload.visibility = b.visibility;
   if (b.description !== undefined) payload.description = b.description;
+  // RICH CAPTURE (operator ask 2026-08-18): project + due + cadence ride the one command.
+  // Shapes refused here fail fast; the writer re-validates everything (project exists and
+  // is ACTIVE, domain agreement, the set_due date convention) — fail-closed twice.
+  if (b.projectId !== undefined) {
+    if (typeof b.projectId !== 'string' || !b.projectId.trim() || b.projectId.length > 64) return { ok: false, status: 400, error: 'projectId must be a task-system id' };
+    payload.projectId = b.projectId;
+  }
+  if (b.dueAt !== undefined) {
+    if (typeof b.dueAt !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(b.dueAt)) return { ok: false, status: 400, error: 'dueAt must be YYYY-MM-DD' };
+    payload.dueAt = b.dueAt;
+  }
+  if (b.dueKind !== undefined) {
+    if (b.dueKind !== 'HARD' && b.dueKind !== 'TARGET') return { ok: false, status: 400, error: 'dueKind must be HARD or TARGET' };
+    payload.dueKind = b.dueKind;
+  }
+  if (b.recurs !== undefined) {
+    if (typeof b.recurs !== 'string' || !b.recurs.trim() || b.recurs.length > 60) return { ok: false, status: 400, error: 'recurs must be a cadence label ≤60 chars' };
+    payload.recurs = b.recurs;
+  }
   // Anything else in the body is DROPPED here — the writer validates again (fail-closed twice).
   return { ok: true, cmd: { command: 'capture', payload, idempotencyKey: key } };
 }
