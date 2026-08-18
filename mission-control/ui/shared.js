@@ -342,6 +342,9 @@ const LIFE_REFUSAL_COPY = [
   ['task is done', 'Finished work stays finished — reopen it from its page if it truly is not done.'],
   ['not finished', 'Only finished work can be reopened.'],
   ['too long', 'That text is over the length limit — trim it and try again.'],
+  ['already passed', 'That slot has already passed — nothing was written. A fresh slot is offered at the next plan run; if you actually did the work, mark the task done instead.'],
+  ['does not take new focus blocks', 'That task is finished — finished work does not take new focus blocks.'],
+  ['name a task or a title', 'Give the block a task or a title — an unnamed block tells tomorrow-you nothing.'],
 ];
 const LIFE_REFUSAL_FALLBACK = 'That did not go through — nothing was changed. Adjust and try again.';
 function ownerRefusalCopy(raw) {
@@ -477,6 +480,31 @@ function clientScript() {
         } else {if(window.console&&console.warn)console.warn('life write refused:',r&&r.error);out.className='lc-result lc-err';out.textContent=window.__lcOwnerCopy(r&&r.error);}
       }).catch(function(){busy=false;out.className='lc-result lc-err';out.textContent='Connection lost — NOT captured. Safe to try again: a retry can never create a duplicate.';});
     });
+    // OWNER BLOCK MOVES (2026-08-18): one shared mover for the Move button AND drag-drop.
+    // A single prompt carries the times, so neither path ever writes silently; the writer
+    // re-validates everything and refuses the past by name.
+    window.__lcMoveBlock=function(near,b,day){
+      var curDay=String(b.startAt||'').slice(0,10);var toDay=day||curDay;
+      var cur=String(b.startAt||'').slice(11,16)+'-'+String(b.endAt||'').slice(11,16);
+      var ans=prompt('Move "'+(b.title||'Focus block')+'" to '+toDay+' — times (HH:MM-HH:MM):',cur);
+      if(ans===null)return;
+      var m=/^\\s*(\\d{2}:\\d{2})\\s*[-\\u2013]\\s*(\\d{2}:\\d{2})\\s*$/.exec(ans);
+      if(!m){window.__lcSay(near,'Times read as HH:MM-HH:MM — nothing was moved.');return;}
+      var startAt=toDay+'T'+m[1]+':00';var endAt=toDay+'T'+m[2]+':00';
+      if(endAt<=startAt){window.__lcSay(near,'The end must be after the start — nothing was moved.');return;}
+      fetch('/api/life/command',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({command:'move_block',idempotencyKey:hex(),payload:{blockId:b.blockId,startAt:startAt,endAt:endAt}})})
+      .then(function(r){return r.json();}).then(function(r){if(r&&r.ok){location.reload();}else{window.__lcRefuse(near,r&&r.error);}})
+      .catch(function(){window.__lcSay(near,window.__lcNet);});
+    };
+    document.addEventListener('dragstart',function(e){var b=e.target&&e.target.closest?e.target.closest('[data-lc-block]'):null;
+      if(!b||!e.dataTransfer)return;e.dataTransfer.setData('text/plain',b.getAttribute('data-lc-block')||'');e.dataTransfer.effectAllowed='move';});
+    document.addEventListener('dragover',function(e){var d=e.target&&e.target.closest?e.target.closest('[data-lc-dropday]'):null;
+      if(d){e.preventDefault();if(e.dataTransfer)e.dataTransfer.dropEffect='move';d.style.outline='2px dashed rgba(138,180,248,.7)';}});
+    document.addEventListener('dragleave',function(e){var d=e.target&&e.target.closest?e.target.closest('[data-lc-dropday]'):null;if(d)d.style.outline='';});
+    document.addEventListener('drop',function(e){var d=e.target&&e.target.closest?e.target.closest('[data-lc-dropday]'):null;
+      if(!d)return;e.preventDefault();d.style.outline='';
+      var raw=e.dataTransfer?e.dataTransfer.getData('text/plain'):'';var b;try{b=JSON.parse(raw);}catch(_){return;}
+      if(!b||!b.blockId)return;window.__lcMoveBlock(d,b,d.getAttribute('data-lc-dropday'));});
     // PLANNER ACTIONS (A6-A13): any [data-lc-cmd] button carries its full command as JSON;
     // the handler adds a fresh idempotency key, posts to the allowlisted relay, reloads on
     // success and ALERTS the writer's named error on refusal — nothing silent either way.
@@ -488,6 +516,30 @@ function clientScript() {
         fetch('/api/life/command',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(cmd)})
         .then(function(r){return r.json();}).then(function(r){if(r&&r.ok){location.reload();}else{busy=false;b.disabled=false;window.__lcRefuse(b,r&&r.error);}})
         .catch(function(){busy=false;b.disabled=false;window.__lcSay(b,window.__lcNet);});
+        return;}
+      // PROPOSE BLOCK (2026-08-18): the owner names a task (or a title), a date and times;
+      // the button assembles the direct place_block shape. The writer refuses the past.
+      var bp=t.closest('[data-lc-blockplace]');
+      if(bp){e.preventDefault();if(busy)return;
+        var bf=bp.closest('form');if(!bf)return;
+        var q=function(n){var el=bf.querySelector('[name='+n+']');return el?String(el.value||'').trim():'';};
+        var taskId=q('bf-task');var title=q('bf-title');var day=q('bf-date');var st=q('bf-start');var en=q('bf-end');
+        if(!day||!st||!en){window.__lcSay(bp,'Pick a date, a start and an end — nothing was placed.');return;}
+        if(st.length===5)st=st+':00';if(en.length===5)en=en+':00';
+        if(day+'T'+en<=day+'T'+st){window.__lcSay(bp,'The end must be after the start — nothing was placed.');return;}
+        if(!taskId&&!title){window.__lcSay(bp,'Pick a task or give the block a title — nothing was placed.');return;}
+        var pay={startAt:day+'T'+st,endAt:day+'T'+en};
+        if(taskId)pay.taskId=taskId;if(title)pay.title=title;
+        busy=true;bp.disabled=true;
+        fetch('/api/life/command',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({command:'place_block',idempotencyKey:hex(),payload:pay})})
+        .then(function(r){return r.json();}).then(function(r){if(r&&r.ok){window.__lcDraftClear(bf);location.reload();}else{busy=false;bp.disabled=false;window.__lcRefuse(bp,r&&r.error);}})
+        .catch(function(){busy=false;bp.disabled=false;window.__lcSay(bp,window.__lcNet);});
+        return;}
+      // MOVE BLOCK button — same mover as drag-drop, no drag needed (and the touch path).
+      var bm=t.closest('[data-lc-blockmove]');
+      if(bm){e.preventDefault();if(busy)return;
+        var bi;try{bi=JSON.parse(bm.getAttribute('data-lc-blockmove'));}catch(_){return;}
+        window.__lcMoveBlock(bm,bi,null);
         return;}
       // MAIL PROPOSAL EDIT (Graph Stage C 2026-08-11): the owner rewords what a mail
       // proposal would create before accepting it. The edit is MERGED engine-side over the

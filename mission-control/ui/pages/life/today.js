@@ -386,6 +386,16 @@ module.exports = {
         }[p.command_type] || { label: 'Apply', sub: String(p.reason) };
         sub = VERB.sub;
         acceptBtn = cmd(VERB.label, p.command_type, { proposalId: p.id }, 'small primary');
+        // A slot that has already passed gets the truth instead of a button that can only
+        // be refused (live failure 2026-08-18). The writer's sweep retires the card within
+        // a minute; until then: mark the work done if it happened, or dismiss.
+        const localNowT = `${new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/London', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(now))}T${new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/London', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(new Date(now))}`;
+        if (String(c.endAt || '') !== '' && String(c.endAt) <= localNowT) {
+          sub = `This slot passed before it was decided — it retires itself shortly and a fresh time gets offered at the next plan run. If the work actually happened, mark it done.`;
+          acceptBtn = (p.command_type === 'place_block' && typeof c.taskId === 'string' && c.taskId)
+            ? cmd('I did this — mark done', 'complete', { taskId: c.taskId }, 'small primary')
+            : '';
+        }
       } else {
         // THE DELIVERABLE ON THE CARD (Wave 3, audit stall-1 friction): agent deliverables
         // were the only material card class with no inline content — the reader had to
