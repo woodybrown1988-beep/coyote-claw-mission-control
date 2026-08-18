@@ -650,17 +650,42 @@ module.exports = {
         const g = groups.get(p.capability_key) || [];
         g.push(p); groups.set(p.capability_key, g);
       }
+      // WHAT ACCEPT DOES, per verb (operator ask 2026-08-18: "i cant see what I am
+      // accepting its not fully clear") — one plain sentence on every row, the same
+      // consequence-first vocabulary the full cards use; unknown verbs get the honest
+      // fallback rather than silence.
+      const BATCH_VERB = {
+        add_update: 'Accept files this on the task as evidence — nothing else moves.',
+        create_task: 'Accept creates this task in your Inbox.',
+        create_project: 'Accept creates this project.',
+        complete: 'Accept marks the task done.',
+        set_route: 'Accept changes who does the task.',
+        wake: 'Accept wakes the waiting task.',
+        set_due: 'Accept sets the due date described above.',
+      };
       const groupHtml = [...groups.entries()].map(([cap, rows]) => {
         const rowsHtml = rows.map((p) => {
           const task = t(p.task_id);
           let c = {}; try { c = JSON.parse(String(p.command_json || '{}')); } catch (_) { /* label falls back */ }
           const label = task ? task.title : String(c.title || CAP_LABEL[cap] || cap.replace(/_/g, ' '));
           const acceptOk = cap !== 'calendar_block' && cap !== 'mail_reply_draft';
-          return `<label class="r-lrow" style="cursor:pointer"><div style="min-width:0;display:flex;gap:9px;align-items:flex-start">`
+          const verbLine = acceptOk
+            ? (BATCH_VERB[p.command_type] || 'Accept applies exactly what is described above; No refuses it.')
+            : 'Accept on its own card — reject works from here.';
+          // Links live OUTSIDE the <label> so opening a task or an email never toggles
+          // the tick (operator ask: "I cant go into the tasks from there").
+          const mailId = (s.mailOf || {})[p.id];
+          const mail = mailId ? (s.mailById || {})[mailId] : null;
+          const links = [
+            task ? `<a class="r-btn small" href="/life/task?id=${encodeURIComponent(String(task.id))}">Open task</a>` : '',
+            mail && mail.web_link ? `<a class="r-btn small" href="${LIFE.esc(mail.web_link)}" target="_blank" rel="noopener noreferrer">Read email</a>` : '',
+          ].filter(Boolean).join(' ');
+          return `<div class="r-lrow"><label style="cursor:pointer;min-width:0;flex:1;display:flex;gap:9px;align-items:flex-start">`
             + `<input type="checkbox" class="lc-batch-ck" data-proposal="${LIFE.esc(p.id)}" data-acceptok="${acceptOk ? '1' : '0'}" style="margin-top:3px">`
             + `<div style="min-width:0"><div style="font-weight:600">${LIFE.esc(label)}</div>`
-            + `<div style="font-size:12px;color:var(--rmuted);margin-top:2px;line-height:1.4">${LIFE.esc(snip(p.reason, 140))}${acceptOk ? '' : ' · <i>accept on its own card — reject works from here</i>'}</div></div></div>`
-            + `<div style="flex-shrink:0">${S.rcc.conf(p.confidence)}</div></label>`;
+            + `<div style="font-size:12px;color:var(--rmuted);margin-top:2px;line-height:1.4">${LIFE.esc(snip(p.reason, 400))}</div>`
+            + `<div style="font-size:11.5px;color:#9ea7b2;margin-top:3px"><i>${LIFE.esc(verbLine)}</i></div></div></label>`
+            + `<div style="flex-shrink:0;display:flex;gap:6px;align-items:center">${links}${S.rcc.conf(p.confidence)}</div></div>`;
         }).join('');
         return `<div class="r-eyebrow" style="margin-top:10px">${LIFE.esc(CAP_LABEL[cap] || cap.replace(/_/g, ' '))} · ${rows.length}</div>${rowsHtml}`;
       }).join('');

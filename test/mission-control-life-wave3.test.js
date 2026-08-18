@@ -91,6 +91,44 @@ test('batch decide: one checkbox per open proposal, accept-safety flags, ellipsi
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('batch rows say what accept DOES and open their task/email — links outside the tick label', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-w3-clarity-'));
+  const fullReason = 'The replacement is scheduled for 19 August, but this does not confirm the awaited terms and warranty — from the supplier thread, matches the waiting dependency on the exchange agreement.';
+  const dbPath = fixture(dir, (db) => {
+    db.exec(`CREATE TABLE life_mail_messages (id TEXT PRIMARY KEY, owner_id TEXT, folder_name TEXT DEFAULT '',
+      from_name TEXT, from_address TEXT, subject TEXT, body_preview TEXT, received_at TEXT, web_link TEXT)`);
+    db.exec(`INSERT INTO life_tasks (id,owner_id,domain_key,title,status,visibility,source_type,created_by,created_at,updated_at)
+      VALUES ('t1','woody','business','Carpigiani exchange terms','READY','OWNER_ONLY','MANUAL','h','${T}','${T}')`);
+    db.exec(`INSERT INTO life_mail_messages (id,owner_id,folder_name,from_name,from_address,subject,body_preview,received_at,web_link)
+      VALUES ('m1','woody','','Carpigiani','svc@carpigiani.co.uk','Exchange','...','${T}','https://outlook.example/m1')`);
+    const ins = db.prepare(`INSERT INTO life_update_proposals (id,owner_id,task_id,capability_key,command_type,command_json,reason,confidence,risk_level,authority_class,state,source_mail_id,created_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,'PROPOSED',?,?)`);
+    ins.run('p-upd', 'woody', 't1', 'task_update', 'add_update', '{"taskId":"t1"}', fullReason, 0.65, 'LOW', 'READ', 'm1', ago(3600e3));
+    ins.run('p-new', 'woody', null, 'task_capture', 'create_task', '{"title":"Renew the LivePepper subscription"}', 'The subscription expires and needs renewal in the back office.', 0.55, 'LOW', 'READ', null, ago(3600e3));
+    ins.run('p-r2', 'woody', 't1', 'agent_dispatch', 'set_route', '{"taskId":"t1","mode":"HYBRID"}', 'r', 0.7, 'LOW', 'READ', null, ago(3600e3));
+    ins.run('p-r3', 'woody', 't1', 'agent_delivery', 'complete', '{"taskId":"t1"}', 'r', 0.8, 'LOW', 'INTERNAL_WRITE', null, ago(3600e3));
+  });
+  withEnv(dbPath, () => {
+    const body = TODAY.render(TODAY.getSection(null, { now: NOW }), { now: NOW }).body;
+    // The full evidence sentence survives — no 140-char mid-word cut (the live complaint).
+    assert.ok(body.includes('matches the waiting dependency on the exchange agreement.'), 'the whole reason is readable');
+    // Every verb says its consequence in plain words.
+    assert.match(body, /Accept files this on the task as evidence — nothing else moves\./);
+    assert.match(body, /Accept creates this task in your Inbox\./);
+    assert.match(body, /Accept changes who does the task\./);
+    assert.match(body, /Accept marks the task done\./);
+    // The row opens its task and its email — and the links sit OUTSIDE the <label>, so
+    // navigating never toggles the tick.
+    assert.ok(body.includes('href="/life/task?id=t1"'), 'Open task link present');
+    assert.ok(body.includes('https://outlook.example/m1'), 'Read email link present for mail-backed rows');
+    const labelChunk = /<label[^>]*>[\s\S]*?<\/label>/g;
+    for (const m of body.match(labelChunk) || []) {
+      assert.ok(!m.includes('href="/life/task'), 'no task link inside a tick label');
+    }
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('deadline override: a FUTURE time unfolds; a provenance (past) date stays folded', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-w3-fold-'));
   const dbPath = fixture(dir, (db) => {
