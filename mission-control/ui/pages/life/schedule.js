@@ -34,6 +34,8 @@ const FRESH_WINDOW_MIN = LIFE.FRESH_WINDOW_MIN;
 const WINDOW_BACK_DAYS = 28;
 const WINDOW_FWD_DAYS = 77;
 const WEEK_LEN = 7;
+// How far ahead the block form's busy map reaches (taken times grey in the dropdowns).
+const BUSY_HORIZON_DAYS = 28;
 
 function londonDate(nowMs) {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/London', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(nowMs));
@@ -161,6 +163,37 @@ module.exports = {
         `SELECT b.id, b.task_id, b.title, b.start_at, b.end_at, b.state, t.status AS task_status
            FROM life_calendar_blocks b LEFT JOIN life_tasks t ON t.id = b.task_id
           WHERE b.state IN ('PLACED','MOVED') AND b.start_at LIKE ? ORDER BY b.start_at`, [`${today}%`]);
+      // BUSY MAP for the block form (operator ask 2026-08-18): per-date minute intervals
+      // already TAKEN — timed non-free commitments from the mirror plus standing Life OS
+      // blocks — over the next 28 days, so the time dropdowns can grey what is occupied.
+      // This is the INVERSE of offering free time (the standing rule): the form marks what
+      // is taken and claims nothing about the rest — the mirror's staleness caption still
+      // governs how much to trust it. Beyond the horizon nothing greys (no data ≠ free).
+      const busyMap = {};
+      {
+        const horizonEnd = addDays(today, BUSY_HORIZON_DAYS);
+        const evB = LIFE.lifeSelect(o.db,
+          `SELECT start_at, end_at FROM life_calendar_events
+            WHERE is_all_day = 0 AND show_as != 'free' AND end_at > ? AND start_at < ?`,
+          [`${today}T00:00:00`, `${horizonEnd}T00:00:00`]);
+        const blB = LIFE.lifeSelect(o.db,
+          `SELECT start_at, end_at FROM life_calendar_blocks
+            WHERE state IN ('PLACED','MOVED') AND end_at > ? AND start_at < ?`,
+          [`${today}T00:00:00`, `${horizonEnd}T00:00:00`]);
+        const minuteOf = (at) => Number(String(at).slice(11, 13)) * 60 + Number(String(at).slice(14, 16));
+        for (const r of [...(evB.ok ? evB.rows : []), ...(blB.ok ? blB.rows : [])]) {
+          // Clip a spanning entry into per-day intervals — a 22:00→05:00 night shows as
+          // 22:00–24:00 on its first day and 00:00–05:00 on its second.
+          let d = String(r.start_at).slice(0, 10);
+          const endDay = String(r.end_at).slice(0, 10);
+          while (d <= endDay && d < horizonEnd) {
+            const from = d === String(r.start_at).slice(0, 10) ? minuteOf(r.start_at) : 0;
+            const to = d === endDay ? minuteOf(r.end_at) : 24 * 60;
+            if (to > from && d >= today) (busyMap[d] = busyMap[d] || []).push([from, to]);
+            d = addDays(d, 1);
+          }
+        }
+      }
       const base = {
         engine: { ok: true }, now, connected: true, sync, today, view, week, localNow,
         events: evQ2.ok ? evQ2.rows : [],
@@ -168,6 +201,7 @@ module.exports = {
         proposalTotal: propCountQ.ok ? propCountQ.rows[0].c : proposals.length,
         openTasks: tasksQ.ok ? tasksQ.rows : [],
         dayBlocks: dbQ.ok ? dbQ.rows : [],
+        busyMap,
       };
       if (view !== 'week') return base;
 
@@ -344,8 +378,8 @@ module.exports = {
     const proposeForm = () => {
       const opts = (s.openTasks || []).map((t) => `<option value="${LIFE.esc(t.id)}">${LIFE.esc(clamp(String(t.title || ''), 70))}</option>`).join('');
       return S.rcc.panel({
-        title: 'Place your own block', sub: 'Your pick, your time — written only into the Life OS calendar',
-        body: `<form data-kind="blockform" onsubmit="return false" style="display:grid;gap:8px">
+        title: 'Place your own block', sub: 'Your pick, your time — written only into the Life OS calendar; times already taken grey out',
+        body: `<form data-kind="blockform" onsubmit="return false" data-bf-busy="${LIFE.esc(JSON.stringify(s.busyMap || {}))}" style="display:grid;gap:8px">
           <select name="bf-task" class="r-input"><option value="">— pick a task (or title it below) —</option>${opts}</select>
           <input name="bf-title" class="r-input" type="text" maxlength="200" placeholder="Or a title of its own (optional when a task is picked)">
           <div style="display:flex;gap:8px;flex-wrap:wrap">

@@ -494,6 +494,35 @@ function clientScript() {
         } else {if(window.console&&console.warn)console.warn('life write refused:',r&&r.error);out.className='lc-result lc-err';out.textContent=window.__lcOwnerCopy(r&&r.error);}
       }).catch(function(){busy=false;out.className='lc-result lc-err';out.textContent='Connection lost — NOT captured. Safe to try again: a retry can never create a duplicate.';});
     });
+    // BUSY TIMES GREY OUT (2026-08-18): the block form's dropdowns disable any 15-minute
+    // option colliding with a commitment or a standing block on the chosen date (the map
+    // rides the form as data). Marking TAKEN time is the inverse of offering free time —
+    // nothing un-greyed is claimed free, and the writer still re-validates everything.
+    // Start t is taken when a busy [a,b) holds a<=t<b; an END boundary t is taken when
+    // a<t<=b would mean the span crossed INTO busy (ending exactly where busy starts is fine).
+    (function(){
+      var f=document.querySelector('form[data-kind=blockform]');if(!f)return;
+      var map;try{map=JSON.parse(f.getAttribute('data-bf-busy')||'{}');}catch(_){map={};}
+      function mins(v){return Number(v.slice(0,2))*60+Number(v.slice(3,5));}
+      function grey(sel,isEnd,busy){
+        for(var i=0;i<sel.options.length;i++){var o=sel.options[i];if(!o.value)continue;
+          var t=mins(o.value);var hit=false;
+          for(var j=0;j<busy.length;j++){var a=busy[j][0],b=busy[j][1];
+            if(isEnd?(t>a&&t<=b):(t>=a&&t<b)){hit=true;break;}}
+          if(o.getAttribute('data-bf-base')===null)o.setAttribute('data-bf-base',o.textContent);
+          o.disabled=hit;o.textContent=hit?o.getAttribute('data-bf-base')+' — busy':o.getAttribute('data-bf-base');
+          if(hit&&o.selected)sel.value='';}
+      }
+      function refresh(){
+        var bd=f.querySelector('[name=bf-date]');var day=bd?String(bd.value||''):'';
+        var busy=map[day]||[];
+        var st=f.querySelector('[name=bf-start]');var en=f.querySelector('[name=bf-end]');
+        if(st)grey(st,false,busy);if(en)grey(en,true,busy);
+      }
+      f.addEventListener('input',function(ev){if(ev.target&&ev.target.name==='bf-date')refresh();});
+      f.addEventListener('change',function(ev){if(ev.target&&ev.target.name==='bf-date')refresh();});
+      refresh();
+    })();
     // OWNER BLOCK MOVES (2026-08-18): one shared mover for the Move button AND drag-drop.
     // A single prompt carries the times, so neither path ever writes silently; the writer
     // re-validates everything and refuses the past by name.

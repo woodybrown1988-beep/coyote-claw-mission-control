@@ -33,7 +33,7 @@ function withEnv(dbPath, fn) {
 }
 
 /** Calendar mirror + tasks + blocks + proposals — the full write-side fixture. */
-function makeFixture(dir, { blocks = [], proposals = [], tasks = [] } = {}) {
+function makeFixture(dir, { blocks = [], proposals = [], tasks = [], events = [] } = {}) {
   const p = path.join(dir, 'life.db');
   const db = new sqlite.DatabaseSync(p);
   db.exec(`
@@ -59,6 +59,11 @@ function makeFixture(dir, { blocks = [], proposals = [], tasks = [] } = {}) {
       created_at TEXT, updated_at TEXT);
   `);
   db.prepare('INSERT INTO life_calendar_sync (id, last_sync_at) VALUES (1, ?)').run(new Date(NOW - 10 * 60_000).toISOString());
+  for (const e of events) {
+    db.prepare(`INSERT INTO life_calendar_events (id, owner_id, subject, start_at, end_at, is_all_day, show_as, calendar_key)
+                VALUES (?, 'woody', ?, ?, ?, ?, ?, 'default')`)
+      .run(e.id, e.subject || 'Busy', e.start, e.end, e.allDay ? 1 : 0, e.showAs || 'busy');
+  }
   for (const t of tasks) {
     db.prepare(`INSERT INTO life_tasks (id, owner_id, domain_key, title, status, due_kind, due_at, recurs, importance, visibility, created_at, updated_at)
                 VALUES (?, 'woody', 'business', ?, 'READY', ?, ?, ?, ?, 'OWNER_ONLY', ?, ?)`)
@@ -356,6 +361,36 @@ test('a placed block’s title opens its task on both views; a taskless block li
     assert.ok(!/href="\/life\/task\?id="/.test(week), 'no empty task links');
     const day = SCHEDULE.render(SCHEDULE.getSection(null, { now: NOW }), {}).body;
     assert.ok(day.includes('href="/life/task?id=t-linked"'), 'day view: same link on Life OS blocks today');
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('busy map: taken intervals per date — timed non-free commitments + standing blocks; nights clip per day; free/all-day never busy', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-busy-'));
+  const dbPath = makeFixture(dir, {
+    events: [
+      { id: 'e-am', subject: 'Meeting', start: `${DAY}T07:00:00`, end: `${DAY}T08:30:00` },
+      { id: 'e-free', subject: 'Reminder', start: `${DAY}T10:00:00`, end: `${DAY}T11:00:00`, showAs: 'free' },
+      { id: 'e-allday', subject: 'Note', start: `${DAY}T00:00:00`, end: `2026-08-11T00:00:00`, allDay: true },
+      { id: 'e-night', subject: 'Sleep', start: `${DAY}T22:00:00`, end: `2026-08-11T05:00:00` },
+    ],
+    blocks: [{ id: 'b-busy', title: 'Focus', start: `${DAY}T15:00:00`, end: `${DAY}T16:00:00` }],
+  });
+  withEnv(dbPath, () => {
+    const s = SCHEDULE.getSection(null, { now: NOW });
+    const today = s.busyMap[DAY] || [];
+    assert.ok(today.some(([a, b]) => a === 420 && b === 510), 'the 07:00–08:30 commitment is taken (his worked example)');
+    assert.ok(today.some(([a, b]) => a === 900 && b === 960), 'a standing Life OS block is taken');
+    assert.ok(today.some(([a, b]) => a === 1320 && b === 1440), 'the night clips to 22:00–24:00 on its first day');
+    assert.ok((s.busyMap['2026-08-11'] || []).some(([a, b]) => a === 0 && b === 300), '…and 00:00–05:00 on its second');
+    assert.ok(!today.some(([a, b]) => a === 600), 'a free-marked event is never taken');
+    const body = SCHEDULE.render(s, {}).body;
+    assert.ok(body.includes('data-bf-busy='), 'the form carries the map');
+    assert.match(body, /times already taken grey out/, 'the affordance is named to the owner');
+    const js = emittedScript();
+    assert.ok(js.includes('data-bf-busy'), 'the greyer is in the ONE shared script');
+    assert.ok(js.includes("' — busy'"), 'taken options say why they are off');
+    assert.doesNotThrow(() => new Function(js), 'script still parses');
   });
   fs.rmSync(dir, { recursive: true, force: true });
 });
