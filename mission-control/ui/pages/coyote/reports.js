@@ -1327,7 +1327,7 @@ module.exports = {
           if(pct!==0&&!reason){o.textContent='a non-zero override needs its reason';return;}
           busy=true;b.disabled=true;
           fetch('/api/forecast-override',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({pct:pct,reason:reason})})
-            .then(function(x){return x.json();}).then(function(j){ if(j&&j.ok){location.reload();} else {o.textContent=(j&&j.error)||'save failed';busy=false;b.disabled=false;} })
+            .then(function(x){return x.json();}).then(function(j){ if(j&&j.ok){(window.__lcReload||function(){location.reload();})();} else {o.textContent=(j&&j.error)||'save failed';busy=false;b.disabled=false;} })
             .catch(function(){o.textContent='network error';busy=false;b.disabled=false;});
         });})();</script>`;
 

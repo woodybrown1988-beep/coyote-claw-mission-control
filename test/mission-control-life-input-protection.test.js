@@ -73,12 +73,19 @@ function shellHtml() {
   return SHARED.renderShell({ active: 'life-today', title: 't', sub: '', stamp: '', body: '', badges: {}, foot: [] });
 }
 
-test('shell wiring: the 30s reload is a RE-ARMING loop guarded by the overlay flag, the hold pin AND the form guard', () => {
+test('shell wiring: the 30s refresh is a RE-ARMING in-place swap guarded by overlay + hold pin + form guard + drag', () => {
   const html = shellHtml();
-  assert.ok(html.includes('if(window.__lcOpen||window.__lcHoldRefresh||window.__lcFormBusy(document)){arm();return;}location.reload();'),
-    'the reload happens only behind the overlay + hold-pin + form-in-use guard, and a paused tick re-arms (hold pin added with the import preview, 2026-08-08)');
+  // The 2026-08-18 seamless rewrite keeps every 2026-08-08 protection: a busy tick
+  // RE-ARMS (arm(); return;) behind the same three guards plus the drag flag — and the
+  // refresh itself became a background fetch + <main> swap, never a scroll-eating reload.
+  assert.ok(html.includes('window.__lcOpen||window.__lcHoldRefresh||window.__lcDragging||window.__lcFormBusy(document)'),
+    'overlay + hold-pin + drag + form-in-use guard the tick (hold pin 2026-08-08; drag 2026-08-18)');
+  assert.ok(html.includes('if(busyNow()){arm();return;}'), 'a paused tick re-arms, never fires blind');
+  assert.ok(html.includes("querySelector('main.main')"), 'the refresh swaps <main> in place — the update is not felt');
   assert.ok(!html.includes('if(!window.__lcOpen) location.reload()'),
     'the old one-shot reload (overlay-only guard — the defect) must be gone');
+  assert.equal((html.match(/location\.reload\(\)/g) || []).length, 1,
+    'exactly one raw reload survives: inside __lcReload, which saves scroll first');
   assert.ok(html.includes("document.querySelector('[data-chat-page]')"), 'chat still opts out of auto-refresh entirely');
 });
 
