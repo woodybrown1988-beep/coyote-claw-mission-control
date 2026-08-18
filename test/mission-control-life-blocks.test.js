@@ -334,6 +334,31 @@ test('a snoozed (WAITING) task leaves the recommendations; a lapsed block says s
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('a placed block’s title opens its task on both views; a taskless block links nowhere', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-blk-link-'));
+  const dbPath = makeFixture(dir, {
+    tasks: [{ id: 't-linked', title: 'Renew the tokens' }],
+    blocks: [
+      { id: 'b-task', taskId: 't-linked', title: 'Renew the tokens', start: `${DAY}T15:00:00`, end: `${DAY}T16:00:00` },
+    ],
+  });
+  const db = new sqlite.DatabaseSync(dbPath);
+  db.prepare(`INSERT INTO life_calendar_blocks (id, owner_id, task_id, graph_event_id, calendar_id, title, start_at, end_at, state, created_at, updated_at)
+              VALUES ('b-free', 'woody', NULL, 'ev-free', 'CAL-LIFE', 'Deep <thinking> time', ?, ?, 'PLACED', ?, ?)`)
+    .run(`${DAY}T17:00:00`, `${DAY}T18:00:00`, new Date(NOW).toISOString(), new Date(NOW).toISOString());
+  db.close();
+  withEnv(dbPath, () => {
+    const ctx = { now: NOW, query: { view: 'week' } };
+    const week = SCHEDULE.render(SCHEDULE.getSection(null, ctx), ctx).body;
+    assert.ok(week.includes('href="/life/task?id=t-linked"'), 'week view: the block title opens its task (notes and updates live there)');
+    assert.ok(week.includes('Deep &lt;thinking&gt; time'), 'a taskless block renders escaped');
+    assert.ok(!/href="\/life\/task\?id="/.test(week), 'no empty task links');
+    const day = SCHEDULE.render(SCHEDULE.getSection(null, { now: NOW }), {}).body;
+    assert.ok(day.includes('href="/life/task?id=t-linked"'), 'day view: same link on Life OS blocks today');
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('the refusal copy translates the writer’s stale sentence into the owner’s words', () => {
   const copy = emittedScript();
   assert.ok(copy.includes('already passed'), 'the stale key is in the client copy table');
