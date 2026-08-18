@@ -45,7 +45,7 @@ function makeFixture(dir, { blocks = [], proposals = [], tasks = [] } = {}) {
       last_sync_at TEXT, last_error TEXT, updated_at TEXT);
     CREATE TABLE life_tasks (id TEXT PRIMARY KEY, owner_id TEXT, outcome_id TEXT, project_id TEXT, domain_key TEXT,
       title TEXT, status TEXT, execution_mode TEXT, definition_of_done TEXT DEFAULT '', due_kind TEXT DEFAULT 'NONE',
-      due_at TEXT, estimate_minutes INTEGER, importance INTEGER DEFAULT 3, consequence INTEGER DEFAULT 3,
+      due_at TEXT, recurs TEXT, estimate_minutes INTEGER, importance INTEGER DEFAULT 3, consequence INTEGER DEFAULT 3,
       risk_level TEXT, visibility TEXT, source_type TEXT, created_by TEXT, created_at TEXT, updated_at TEXT);
     CREATE TABLE life_waiting_conditions (id TEXT PRIMARY KEY, task_id TEXT, owner_id TEXT,
       dependency_label TEXT, wake_type TEXT, fallback_at TEXT, state TEXT, created_at TEXT, updated_at TEXT);
@@ -60,9 +60,9 @@ function makeFixture(dir, { blocks = [], proposals = [], tasks = [] } = {}) {
   `);
   db.prepare('INSERT INTO life_calendar_sync (id, last_sync_at) VALUES (1, ?)').run(new Date(NOW - 10 * 60_000).toISOString());
   for (const t of tasks) {
-    db.prepare(`INSERT INTO life_tasks (id, owner_id, domain_key, title, status, due_kind, due_at, importance, visibility, created_at, updated_at)
-                VALUES (?, 'woody', 'business', ?, 'READY', ?, ?, ?, 'OWNER_ONLY', ?, ?)`)
-      .run(t.id, t.title, t.dueKind || 'NONE', t.dueAt || null, t.importance ?? 3, new Date(NOW).toISOString(), new Date(NOW).toISOString());
+    db.prepare(`INSERT INTO life_tasks (id, owner_id, domain_key, title, status, due_kind, due_at, recurs, importance, visibility, created_at, updated_at)
+                VALUES (?, 'woody', 'business', ?, 'READY', ?, ?, ?, ?, 'OWNER_ONLY', ?, ?)`)
+      .run(t.id, t.title, t.dueKind || 'NONE', t.dueAt || null, t.recurs || null, t.importance ?? 3, new Date(NOW).toISOString(), new Date(NOW).toISOString());
   }
   for (const b of blocks) {
     db.prepare(`INSERT INTO life_calendar_blocks (id, owner_id, task_id, graph_event_id, calendar_id, title, start_at, end_at, state, created_at, updated_at)
@@ -253,8 +253,8 @@ test('recommendation rows act in place: task link, Done, Later (DATE snooze), Sc
   withEnv(dbPath, () => {
     const body = SCHEDULE.render(SCHEDULE.getSection(null, { now: NOW }), {}).body;
     assert.ok(body.includes('href="/life/task?id=t-act"'), 'the title opens the task page');
-    const cmds = cmdsIn(body);
-    assert.ok(cmds.some((c) => c.command === 'complete' && c.payload.taskId === 't-act'), 'Done completes in place');
+    assert.ok(/data-lc-complete="t-act"/.test(body), 'Done rides the task-page completion flow');
+    assert.ok(!/data-lc-complete="t-act"[^>]*data-lc-recap/.test(body), 'a plain task carries no recapture payload');
     assert.ok(/data-lc-recsnooze="[^"]*t-act[^"]*"/.test(body), 'Later carries the task for the snooze prompt');
     const js = emittedScript();
     assert.ok(js.includes('[data-lc-recsnooze]'), 'the snooze handler is in the ONE shared script');
@@ -262,6 +262,49 @@ test('recommendation rows act in place: task link, Done, Later (DATE snooze), Sc
     assert.doesNotThrow(() => new Function(js), 'script still parses');
   });
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('a recurring recommendation: Done offers the next date from its own cadence; the row says it repeats', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-rec4-'));
+  const dbPath = makeFixture(dir, { tasks: [{ id: 't-rec', title: 'Top up HSBC and Pleo accounts', recurs: 'monthly', dueKind: 'TARGET', dueAt: '2026-08-12T00:00:00' }] });
+  withEnv(dbPath, () => {
+    const body = SCHEDULE.render(SCHEDULE.getSection(null, { now: NOW }), {}).body;
+    const m = /data-lc-complete="t-rec" data-lc-recap="([^"]*)"/.exec(body);
+    assert.ok(m, 'the recurring Done carries the recapture payload (the live 409 case)');
+    const recap = JSON.parse(m[1].replaceAll('&quot;', '"'));
+    assert.equal(recap.cadence, 'monthly');
+    assert.equal(recap.due, '2026-08-12', 'the next date rolls from the task’s own due date');
+    assert.match(body, /repeats · monthly/, 'the row shows its cadence');
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('the cadence grammar: every-N days/weeks/months/years advance exactly; the setter grammar matches the advancer', () => {
+  assert.equal(SHARED.advanceCadence('every 10 days', '2026-08-12'), '2026-08-22');
+  assert.equal(SHARED.advanceCadence('every 2 weeks', '2026-08-12'), '2026-08-26');
+  assert.equal(SHARED.advanceCadence('every 2 months', '2026-08-12'), '2026-10-12');
+  assert.equal(SHARED.advanceCadence('every 1 year', '2026-08-12'), '2027-08-12');
+  assert.equal(SHARED.advanceCadence('monthly', '2026-01-31'), '2026-02-28', 'month-end clamps, never spills');
+  assert.equal(SHARED.advanceCadence('quarterly', '2026-08-12'), '2026-11-12');
+  for (const good of ['monthly', 'weekly', 'daily', 'quarterly', 'yearly', 'annually', 'every 2 weeks', 'every 10 days', 'every 3 months', 'every 1 year', 'fortnightly']) {
+    assert.ok(SHARED.RECUR_GRAMMAR_RE.test(good), `grammar accepts "${good}"`);
+  }
+  for (const bad of ['whenever', 'sometimes', 'every blue moon', 'x weeks']) {
+    assert.ok(!SHARED.RECUR_GRAMMAR_RE.test(bad), `grammar refuses "${bad}" — an unparseable cadence must never be stored`);
+  }
+  const js = emittedScript();
+  assert.ok(js.includes('__lcRecurOk'), 'the grammar guard ships in the client');
+  assert.ok(js.includes('[data-lc-setrecur]'), 'the Repeats setter handler is in the ONE shared script');
+  assert.doesNotThrow(() => new Function(js), 'script still parses');
+});
+
+test('command lib: set_recurrence accepts a cadence or null, refuses garbage', () => {
+  const ok = (payload) => LIB.validateCommand({ command: 'set_recurrence', idempotencyKey: 'k'.repeat(12), payload });
+  assert.equal(ok({ taskId: 't1', cadence: 'every 2 weeks' }).ok, true);
+  assert.equal(ok({ taskId: 't1', cadence: null }).ok, true, 'null clears the repeat');
+  assert.equal(ok({ taskId: 't1', cadence: '' }).ok, false);
+  assert.equal(ok({ taskId: 't1' }).ok, false);
+  assert.equal(ok({ cadence: 'monthly' }).ok, false);
 });
 
 test('command lib: set_waiting accepts the DATE-wake shape', () => {

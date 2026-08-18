@@ -53,7 +53,11 @@ const SANCTIONED_LC = new Set(['data-lc-cancel', 'data-lc-cmd', 'data-lc-complet
   'data-lc-batch', 'data-lc-batch-all',
   // Task files (operator ask 2026-08-13): the picker posts RAW bytes to the auth-walled
   // upload endpoint; the sole writer attaches. The note input is plain data for that post.
-  'data-lc-taskfile', 'data-lc-taskfile-note']);
+  'data-lc-taskfile', 'data-lc-taskfile-note',
+  // Repeats setter (operator ask 2026-08-18): one prompt sets/clears a task's cadence via
+  // the allowlisted set_recurrence relay; the grammar is refused client-side by the same
+  // regex the advancer parses, and the writer re-validates.
+  'data-lc-setrecur']);
 const CMD_ALLOWLIST = new Set(['note', 'decide', 'transition', 'complete', 'set_waiting', 'wake', 'reopen', 'undo', 'cancel',
   'plan_today', 'approve_plan', 'compile_week', 'approve_week', 'compile_quarter', 'approve_quarter',
   'pause_capability', 'resume_capability', 'create_outcome', 'create_project', 'set_route', 'set_setting',

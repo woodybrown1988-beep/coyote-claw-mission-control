@@ -143,7 +143,7 @@ module.exports = {
       // the two planner exclusions: work already holding a future block, and work already
       // carrying an open placement question, are not re-recommended.
       const tasksQ = LIFE.lifeSelect(o.db,
-        `SELECT w.id, w.title, w.due_kind, w.due_at, w.calculated_priority,
+        `SELECT w.id, w.title, w.due_kind, w.due_at, w.recurs, w.calculated_priority,
                 EXISTS (SELECT 1 FROM life_calendar_blocks b
                          WHERE b.task_id = w.id AND b.state IN ('PLACED','MOVED') AND b.end_at > ?) AS has_block,
                 EXISTS (SELECT 1 FROM life_update_proposals pr
@@ -384,12 +384,15 @@ module.exports = {
       };
       // Every row is ACTIONABLE in place (operator ask 2026-08-18: "we cant go into the
       // tasks to update or say its already completed"): the title opens the task page;
-      // Done completes it; Later asks when to suggest again and parks the task on a DATE
-      // wake (the writer's minute tick brings it back — nothing rots silently).
+      // Done rides the SAME completion flow as the task page — a recurring obligation
+      // offers its next date prefilled from its own cadence (live failure 2026-08-18: a
+      // bare complete on "Top up HSBC and Pleo" could only be refused); Later asks when to
+      // suggest again and parks the task on a DATE wake (the writer's tick brings it back).
       const rows = ranked.map((t) => `<div class="r-lrow"><div style="min-width:0;flex:1">`
-        + `<div style="font-weight:600;overflow-wrap:anywhere"><a href="/life/task?id=${encodeURIComponent(String(t.id))}" style="color:inherit">${LIFE.esc(clamp(String(t.title || ''), 90))}</a></div></div>`
+        + `<div style="font-weight:600;overflow-wrap:anywhere"><a href="/life/task?id=${encodeURIComponent(String(t.id))}" style="color:inherit">${LIFE.esc(clamp(String(t.title || ''), 90))}</a>`
+        + `${t.recurs ? ` ${S.rcc.tag(`repeats · ${LIFE.esc(String(t.recurs).toLowerCase())}`, 'info')}` : ''}</div></div>`
         + `<div style="flex-shrink:0;display:flex;gap:6px;align-items:center">${dueChip(t)}`
-        + cmd('Done', 'complete', { taskId: t.id }, 'small')
+        + `<button class="r-btn small" data-lc-complete="${LIFE.esc(String(t.id))}"${t.recurs ? ` data-lc-recap="${LIFE.esc(JSON.stringify({ cadence: t.recurs, due: String(t.due_at || '').slice(0, 10) }))}"` : ''}>Done</button>`
         + `<button class="r-btn small" data-lc-recsnooze="${LIFE.esc(JSON.stringify({ taskId: t.id, title: clamp(String(t.title || ''), 60) }))}">Later</button>`
         + `<button class="r-btn small" data-lc-recfill="${LIFE.esc(t.id)}">Schedule</button></div></div>`).join('');
       const more = cands.length > ranked.length

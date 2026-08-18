@@ -282,6 +282,11 @@ function formInUse(doc) {
 // calendar. Exported for tests AND serialized into the shell client from THIS definition
 // (the formInUse pattern: one source, byte-pinned). Unknown labels default to one month —
 // the prompt shows the date for editing, so a default is a suggestion, never a silent act.
+// The cadence grammar the client both ACCEPTS (the Repeats setter refuses anything else by
+// name) and ADVANCES (advanceCadence below). One place, so the setter and the advancer
+// cannot drift. Exported for the grammar tests.
+const RECUR_GRAMMAR_RE = /^(daily|weekly|fortnightly|monthly|quarterly|six[\s-]*monthly|annually|yearly|every\s+\d{1,3}\s+(day|week|month|year)s?)\b/i;
+
 function advanceCadence(cadence, fromDate) {
   var c = String(cadence || '').toLowerCase();
   var m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(fromDate || ''));
@@ -293,9 +298,17 @@ function advanceCadence(cadence, fromDate) {
     return new Date(Date.UTC(ty, tm, Math.min(d, last)));
   }
   function days(n) { return new Date(Date.UTC(y, mo, d + n)); }
+  // The every-N family (operator ask 2026-08-18: "every x weeks or every x days or months
+  // etc") — specific before generic, so "every 10 days" never falls through to monthly.
   var wk = /every\s*(\d+)\s*week/.exec(c);
+  var dd = /every\s*(\d+)\s*day/.exec(c);
+  var mn = /every\s*(\d+)\s*month/.exec(c);
+  var yr = /every\s*(\d+)\s*year/.exec(c);
   var out;
   if (wk) out = days(7 * Number(wk[1]));
+  else if (dd) out = days(Number(dd[1]));
+  else if (mn) out = months(Number(mn[1]));
+  else if (yr) out = months(12 * Number(yr[1]));
   else if (/fortnight/.test(c)) out = days(14);
   else if (/quarter/.test(c)) out = months(3);
   else if (/six[\s-]*month|6[\s-]*month/.test(c)) out = months(6);
@@ -372,6 +385,7 @@ function clientScript() {
   // it (the owner is still editing).
   window.__lcFormBusy=(${formInUse.toString()});
   window.__lcNextDate=(${advanceCadence.toString()});
+  window.__lcRecurOk=function(s){return ${RECUR_GRAMMAR_RE.toString()}.test(String(s||'').trim());};
   window.__lcOwnerCopy=(${ownerRefusalCopyClient()});
   window.__lcNet='Connection lost — nothing was changed. Try again in a moment.';
   window.__lcSay=function(near,msg,ok){try{var host=near&&near.closest?(near.closest('form')||near.closest('.r-card')||near.closest('.lc-focus-card')||near.closest('.lc-card')||near.parentNode):null;if(!host)return;var el=host.querySelector('[data-lc-msg]');if(!el){el=document.createElement('div');el.setAttribute('data-lc-msg','');host.appendChild(el);}el.className='lc-result '+(ok?'lc-ok':'lc-err');el.textContent=msg;}catch(_){}};
@@ -543,6 +557,31 @@ function clientScript() {
         var rsel=rform.querySelector('[name=bf-task]');if(rsel)rsel.value=rf.getAttribute('data-lc-recfill')||'';
         try{rform.scrollIntoView({behavior:'smooth',block:'center'});}catch(_){rform.scrollIntoView();}
         var rst=rform.querySelector('[name=bf-start]');if(rst)rst.focus();
+        return;}
+      // REPEATS SETTER (2026-08-18): any live task can be made recurring — daily, weekly,
+      // monthly, quarterly, yearly, or "every N days/weeks/months/years". The grammar is
+      // checked HERE against the same regex the advancer parses, so a cadence the system
+      // could not roll forward is refused by name, never silently mis-advanced. Blank
+      // clears the flag (one confirm — stopping a repeat is a decision).
+      var sr=t.closest('[data-lc-setrecur]');
+      if(sr){e.preventDefault();if(busy)return;
+        var si;try{si=JSON.parse(sr.getAttribute('data-lc-setrecur'));}catch(_){return;}
+        var cur=si.cadence||'';
+        var ans2=prompt('Repeats how often? e.g. monthly, weekly, quarterly, yearly, every 2 weeks, every 10 days — blank to STOP repeating:',cur);
+        if(ans2===null)return;ans2=String(ans2).trim();
+        var pay2;
+        if(!ans2){
+          if(!cur){window.__lcSay(sr,'It does not repeat — nothing to change.');return;}
+          if(!confirm('Stop this task repeating? The current occurrence stays; no future one will be created.'))return;
+          pay2={taskId:si.taskId,cadence:null};
+        } else {
+          if(!window.__lcRecurOk(ans2)){window.__lcSay(sr,'Say it like: monthly, weekly, quarterly, yearly, every 2 weeks, every 10 days — nothing was changed.');return;}
+          pay2={taskId:si.taskId,cadence:ans2.toLowerCase()};
+        }
+        busy=true;sr.disabled=true;
+        fetch('/api/life/command',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({command:'set_recurrence',idempotencyKey:hex(),payload:pay2})})
+        .then(function(r){return r.json();}).then(function(r){if(r&&r.ok){location.reload();}else{busy=false;sr.disabled=false;window.__lcRefuse(sr,r&&r.error);}})
+        .catch(function(){busy=false;sr.disabled=false;window.__lcSay(sr,window.__lcNet);});
         return;}
       // SNOOZE A RECOMMENDATION (2026-08-18): "lets do this in 2 weeks" — one prompt takes
       // days-from-now or a date; the task parks on a DATE wake and the writer's tick brings
@@ -1767,6 +1806,7 @@ module.exports = {
   workspaceOf,
   formInUse,
   advanceCadence,
+  RECUR_GRAMMAR_RE,
   ownerRefusalCopy,
   LIFE_REFUSAL_COPY,
   LIFE_REFUSAL_FALLBACK,
