@@ -138,10 +138,20 @@ module.exports = {
       // passed can say so INSTEAD of offering a Place tap that can only be refused (live
       // failure 2026-08-18: 15–17 Aug cards still carried Place buttons on the 18th).
       const localNow = `${today}T${new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/London', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(new Date(now))}`;
-      // Open work for the owner's own "Place a block" form (operator ask 2026-08-18) —
-      // priority order, the same availability view the planner drafts from.
+      // Open work for the owner's own "Place a block" form AND the recommendations list
+      // (operator asks 2026-08-18). Same availability view the planner drafts from, with
+      // the two planner exclusions: work already holding a future block, and work already
+      // carrying an open placement question, are not re-recommended.
       const tasksQ = LIFE.lifeSelect(o.db,
-        `SELECT id, title FROM v_life_available_work ORDER BY calculated_priority DESC, created_at ASC LIMIT 60`);
+        `SELECT w.id, w.title, w.due_kind, w.due_at, w.calculated_priority,
+                EXISTS (SELECT 1 FROM life_calendar_blocks b
+                         WHERE b.task_id = w.id AND b.state IN ('PLACED','MOVED') AND b.end_at > ?) AS has_block,
+                EXISTS (SELECT 1 FROM life_update_proposals pr
+                         WHERE pr.task_id = w.id AND pr.state = 'PROPOSED'
+                           AND pr.capability_key = 'calendar_block' AND pr.command_type = 'place_block') AS has_proposal
+           FROM v_life_available_work w
+          ORDER BY w.calculated_priority DESC, w.created_at ASC LIMIT 60`,
+        [localNow]);
       // Today's standing blocks, so the day view can offer Move on what already stands.
       const dbQ = LIFE.lifeSelect(o.db,
         `SELECT id, task_id, title, start_at, end_at, state FROM life_calendar_blocks
@@ -310,6 +320,17 @@ module.exports = {
     // The owner's own block (operator ask 2026-08-18): pick a task — or name the time
     // yourself — and it is written through the same HUMAN-gated writer, Life OS calendar
     // only. The writer refuses the past and re-validates every field.
+    // Times are ONE 15-minute dropdown each (operator ask, same day): a native time input
+    // makes the owner dial hours and minutes separately; the day runs 06:00–22:00 (the
+    // planner's own bounds), which is 64 quarter-hours — one flat list.
+    const quarterHours = (fromMin, toMin) => {
+      const out = [];
+      for (let m = fromMin; m <= toMin; m += 15) out.push(`${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`);
+      return out;
+    };
+    const timeSelect = (name, label, fromMin, toMin) =>
+      `<select name="${name}" class="r-input" style="width:110px"><option value="">${label}</option>`
+      + quarterHours(fromMin, toMin).map((t) => `<option value="${t}">${t}</option>`).join('') + `</select>`;
     const proposeForm = () => {
       const opts = (s.openTasks || []).map((t) => `<option value="${LIFE.esc(t.id)}">${LIFE.esc(clamp(String(t.title || ''), 70))}</option>`).join('');
       return S.rcc.panel({
@@ -319,11 +340,54 @@ module.exports = {
           <input name="bf-title" class="r-input" type="text" maxlength="200" placeholder="Or a title of its own (optional when a task is picked)">
           <div style="display:flex;gap:8px;flex-wrap:wrap">
             <input name="bf-date" class="r-input" type="date" value="${LIFE.esc(s.today)}" style="flex:1;min-width:130px">
-            <input name="bf-start" class="r-input" type="time" step="900" style="width:110px">
-            <input name="bf-end" class="r-input" type="time" step="900" style="width:110px">
+            ${timeSelect('bf-start', 'Start', 6 * 60, 21 * 60 + 45)}
+            ${timeSelect('bf-end', 'End', 6 * 60 + 15, 22 * 60)}
           </div>
           <div style="display:flex;justify-content:flex-end"><button type="button" class="r-btn small primary" data-lc-blockplace>Place block</button></div>
         </form>`,
+      });
+    };
+
+    // WORTH SCHEDULING NEXT (operator ask 2026-08-18: "we are getting the recommendations
+    // which are right — ordered in importance and then also by any approaching deadlines").
+    // The list is the planner's OWN candidate pool (v_life_available_work minus work that
+    // already holds a future block or an open placement question), presented rather than
+    // silently waiting for the 09:20/15:20 compile. Ordering: anything due inside 14 days
+    // first, soonest first (hard before soft on the same day); then everything else by
+    // calculated priority. Schedule prefills the form — nothing is written by this list.
+    const recommendPanel = () => {
+      const horizon = addDays(s.today, 14);
+      const cands = (s.openTasks || []).filter((t) => !t.has_block && !t.has_proposal);
+      const dueSoon = (t) => t.due_at && String(t.due_at).slice(0, 10) <= horizon;
+      const ranked = [
+        ...cands.filter(dueSoon).sort((a, b) => {
+          const da = String(a.due_at).slice(0, 10); const db = String(b.due_at).slice(0, 10);
+          if (da !== db) return da < db ? -1 : 1;
+          if ((a.due_kind === 'HARD') !== (b.due_kind === 'HARD')) return a.due_kind === 'HARD' ? -1 : 1;
+          return (b.calculated_priority || 0) - (a.calculated_priority || 0);
+        }),
+        ...cands.filter((t) => !dueSoon(t)),
+      ].slice(0, 6);
+      const dueChip = (t) => {
+        if (!t.due_at) return '';
+        const d = String(t.due_at).slice(0, 10);
+        const label = `due ${new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/London', weekday: 'short', day: 'numeric', month: 'short' }).format(new Date(`${d}T12:00:00Z`))}${t.due_kind === 'HARD' ? ' · hard' : ''}`;
+        const tone = d < s.today ? 'bad' : d <= addDays(s.today, 3) ? 'bad' : d <= addDays(s.today, 7) ? 'warn' : 'info';
+        return S.rcc.tag(d < s.today ? `overdue${t.due_kind === 'HARD' ? ' · hard' : ''}` : label, tone);
+      };
+      const rows = ranked.map((t) => `<div class="r-lrow"><div style="min-width:0;flex:1">`
+        + `<div style="font-weight:600;overflow-wrap:anywhere">${LIFE.esc(clamp(String(t.title || ''), 90))}</div></div>`
+        + `<div style="flex-shrink:0;display:flex;gap:6px;align-items:center">${dueChip(t)}`
+        + `<button class="r-btn small" data-lc-recfill="${LIFE.esc(t.id)}">Schedule</button></div></div>`).join('');
+      const more = cands.length > ranked.length
+        ? `<div class="r-note" style="margin-top:6px;font-size:11.5px">${cands.length - ranked.length} more open task${cands.length - ranked.length === 1 ? '' : 's'} wait in the form's picker, priority-ordered.</div>`
+        : '';
+      return S.rcc.panel({
+        title: 'Worth scheduling next', sub: 'Deadlines first, then importance — Schedule fills the form below; nothing is written until you place it',
+        headRight: ranked.length ? `<span class="r-pill">${ranked.length}</span>` : '',
+        body: ranked.length
+          ? rows + more
+          : `<div class="r-lrow" style="color:var(--rmuted);font-size:13px">Everything open either holds a block already or is waiting on a placement question above. Nothing is being left unscheduled.</div>`,
       });
     };
     const proposalsPanel = S.rcc.panel({
@@ -499,7 +563,7 @@ module.exports = {
     const body = wrap(head + banner + tiles + overflowNote
       + `<div class="ls-main">`
       + `<div style="display:grid;gap:12px;align-content:start">${isWeek ? weekPanel() : todayPanel + myBlocksPanel}</div>`
-      + `<div style="display:grid;gap:12px;align-content:start">${focusPanel}${isWeek ? sideProposals : proposalsPanel}${proposeForm()}${authorityPanel}</div>`
+      + `<div style="display:grid;gap:12px;align-content:start">${focusPanel}${isWeek ? sideProposals : proposalsPanel}${recommendPanel()}${proposeForm()}${authorityPanel}</div>`
       + `</div>`
       + `<style>.ls-main{display:grid;gap:12px;grid-template-columns:minmax(0,1.5fr) minmax(0,1fr)}`
       + `.ls-week{display:grid;gap:8px}`

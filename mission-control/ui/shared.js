@@ -535,6 +535,15 @@ function clientScript() {
         .then(function(r){return r.json();}).then(function(r){if(r&&r.ok){window.__lcDraftClear(bf);location.reload();}else{busy=false;bp.disabled=false;window.__lcRefuse(bp,r&&r.error);}})
         .catch(function(){busy=false;bp.disabled=false;window.__lcSay(bp,window.__lcNet);});
         return;}
+      // SCHEDULE A RECOMMENDATION (2026-08-18): prefill the block form with the task —
+      // nothing is written; the owner still names the time and taps Place.
+      var rf=t.closest('[data-lc-recfill]');
+      if(rf){e.preventDefault();
+        var rform=document.querySelector('form[data-kind=blockform]');if(!rform)return;
+        var rsel=rform.querySelector('[name=bf-task]');if(rsel)rsel.value=rf.getAttribute('data-lc-recfill')||'';
+        try{rform.scrollIntoView({behavior:'smooth',block:'center'});}catch(_){rform.scrollIntoView();}
+        var rst=rform.querySelector('[name=bf-start]');if(rst)rst.focus();
+        return;}
       // MOVE BLOCK button — same mover as drag-drop, no drag needed (and the touch path).
       var bm=t.closest('[data-lc-blockmove]');
       if(bm){e.preventDefault();if(busy)return;
