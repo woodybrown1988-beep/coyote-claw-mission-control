@@ -683,6 +683,15 @@ function applyChatMessage(db, body, now) {
     replyTo = n;
   }
   try {
+    // RAPID-DUPLICATE DEDUPE. Measured live 2026-08-18: one press produced TWO identical 'in'
+    // rows (ids 125/126) seconds apart — a client double-fire — and the router answered twice
+    // with two differently-worded parses of the same sentence. Whatever the client does, an
+    // identical text inside 90s is the same intent once; the second POST gets the FIRST row's id
+    // and ok:true, so the UI clears the box either way and the router sees exactly one message.
+    const dup = db.prepare(
+      `SELECT id FROM chat_messages WHERE direction = 'in' AND text = ? AND created_at > ? ORDER BY id DESC LIMIT 1`
+    ).get(text, now - 90_000);
+    if (dup) return { ok: true, status: 200, id: Number(dup.id), deduped: true };
     const r = db.prepare(
       `INSERT INTO chat_messages (transport, direction, source, text, reply_to_id, created_at) VALUES ('web', 'in', ?, ?, ?, ?)`
     ).run(source, text, replyTo, now);
