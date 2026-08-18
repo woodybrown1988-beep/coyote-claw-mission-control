@@ -57,6 +57,10 @@ function makeFixture(dir, { blocks = [], proposals = [], tasks = [], events = []
     CREATE TABLE life_calendar_blocks (id TEXT PRIMARY KEY, owner_id TEXT, task_id TEXT, proposal_id TEXT,
       graph_event_id TEXT, calendar_id TEXT, title TEXT, start_at TEXT, end_at TEXT, state TEXT,
       created_at TEXT, updated_at TEXT);
+    CREATE TABLE life_daily_plans (owner_id TEXT, plan_date TEXT, status TEXT, must_win_task_id TEXT,
+      support_task_1_id TEXT, support_task_2_id TEXT, decision_task_ids_json TEXT DEFAULT '[]',
+      alternative_task_ids_json TEXT DEFAULT '[]', compilation_evidence_json TEXT DEFAULT '{}',
+      approved_by TEXT, approved_at TEXT, created_at TEXT, updated_at TEXT, PRIMARY KEY (owner_id, plan_date));
   `);
   db.prepare('INSERT INTO life_calendar_sync (id, last_sync_at) VALUES (1, ?)').run(new Date(NOW - 10 * 60_000).toISOString());
   for (const e of events) {
@@ -433,6 +437,25 @@ test('rich capture: the overlay carries project/due/hard/repeats; the submit sen
   assert.equal(LIB.validateCapture({ title: 'x', idempotencyKey: 'k'.repeat(12), dueAt: 'next tuesday' }).ok, false, 'prose dates refused');
   assert.equal(LIB.validateCapture({ title: 'x', idempotencyKey: 'k'.repeat(12), dueKind: 'SOFTISH' }).ok, false, 'unknown kinds refused');
   assert.equal(LIB.validateCapture({ title: 'x', idempotencyKey: 'k'.repeat(12), recurs: '   ' }).ok, false, 'blank cadence refused');
+});
+
+test('an APPROVED must-win already scheduled ahead says so on Today — never silently re-picked', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-planfb-'));
+  const dbPath = makeFixture(dir, {
+    tasks: [{ id: 't-fb', title: 'Renew the GitHub tokens' }],
+    blocks: [{ id: 'b-thu', taskId: 't-fb', title: 'Renew the GitHub tokens', start: '2026-08-13T07:00:00', end: '2026-08-13T07:30:00' }],
+  });
+  const db = new sqlite.DatabaseSync(dbPath);
+  db.prepare(`INSERT INTO life_daily_plans (owner_id, plan_date, status, must_win_task_id, created_at, updated_at)
+              VALUES ('woody', ?, 'APPROVED', 't-fb', ?, ?)`)
+    .run(DAY, new Date(NOW).toISOString(), new Date(NOW).toISOString());
+  db.close();
+  withEnv(dbPath, () => {
+    const body = TODAY.render(TODAY.getSection(null, { now: NOW }), { now: NOW }).body;
+    assert.match(body, /Already scheduled — Thu 13 Aug at 07:00/, 'the card names the standing future block');
+    assert.match(body, /Replan to pick a fresh must-win/, 'and offers the honest way out');
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
 });
 
 test('the refusal copy translates the writer’s stale sentence into the owner’s words', () => {
