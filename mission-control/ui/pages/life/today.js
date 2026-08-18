@@ -77,9 +77,18 @@ module.exports = {
       const plan = q('SELECT * FROM life_daily_plans WHERE plan_date = ?', [today])[0] || null;
       const taskOf = {};
       for (const r of q('SELECT id, title, status, domain_key, definition_of_done FROM life_tasks')) taskOf[r.id] = r;
+      // FUTURE blocks per task (the-plan-follows-the-calendar, 2026-08-18): a PROPOSED plan
+      // re-picks when its work gets scheduled ahead — but an APPROVED plan stands, so the
+      // must-win card says the truth instead: "already scheduled Thu 07:00".
+      const futureBlockOf = {};
+      for (const b of q(`SELECT task_id, start_at FROM life_calendar_blocks
+                          WHERE state IN ('PLACED','MOVED') AND task_id IS NOT NULL AND substr(start_at,1,10) > ?
+                          ORDER BY start_at`, [today])) {
+        if (!futureBlockOf[b.task_id]) futureBlockOf[b.task_id] = String(b.start_at);
+      }
       const setting = (k, dflt) => { const r = q('SELECT value FROM life_settings WHERE key = ?', [k]); return r.length ? String(r[0].value) : dflt; };
       return {
-        engine: { ok: true }, now, today, plan, taskOf,
+        engine: { ok: true }, now, today, plan, taskOf, futureBlockOf,
         // quiet-support DEFAULT-ON (operator ruling 2026-08-05): absent row = on.
         quiet: setting('quiet_support', 'on') === 'on',
         // SILENT TRUNCATION, found on the first live mail pass (2026-08-11). This was
@@ -483,9 +492,16 @@ module.exports = {
       const dod = mw.definition_of_done && String(mw.definition_of_done).trim()
         ? LIFE.esc(mw.definition_of_done)
         : 'Not written yet — open the task and set what “won” looks like.';
+      // A must-win the owner has ALREADY scheduled onto a future day says so and offers
+      // Replan (an approved plan is his — never silently re-picked; a PROPOSED plan would
+      // have re-picked itself the moment the block landed).
+      const fb = (s.futureBlockOf || {})[mw.id];
+      const fbLine = fb
+        ? `<div style="font-size:12.5px;color:#f5c96b;margin:6px 0 2px">Already scheduled — ${LIFE.esc(new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/London', weekday: 'short', day: 'numeric', month: 'short' }).format(new Date(`${String(fb).slice(0, 10)}T12:00:00Z`)))} at ${LIFE.esc(String(fb).slice(11, 16))}. Replan to pick a fresh must-win for today.</div>`
+        : '';
       mustCard = `<div class="r-card r-panel" style="border-color:rgba(255,179,77,.4)"><div class="r-eyebrow hot">Today's must-win</div>
         <div style="font-size:19px;font-weight:650;line-height:1.3;margin-bottom:8px">${link(mw.id, mw.title)}</div>
-        <div>${S.rcc.tag(mw.status === 'IN_PROGRESS' ? 'in progress' : 'ready', mw.status === 'IN_PROGRESS' ? 'good' : '')} ${S.rcc.tag(mw.domain_key)}</div>
+        <div>${S.rcc.tag(mw.status === 'IN_PROGRESS' ? 'in progress' : 'ready', mw.status === 'IN_PROGRESS' ? 'good' : '')} ${S.rcc.tag(mw.domain_key)}</div>${fbLine}
         <div class="r-defbox"><small>Definition of done</small><div style="font-size:13px;line-height:1.45">${dod}</div></div>
         <div style="display:flex;gap:8px;flex-wrap:wrap"><a class="r-btn primary" href="/life/task?id=${encodeURIComponent(mw.id)}">Open task</a>${planIsDraft ? cmd('Approve plan', 'approve_plan', { planDate: s.today }, '') : ''}</div></div>`;
     }
