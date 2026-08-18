@@ -91,7 +91,8 @@ const COMMAND_SHAPES = {
     && (p.decision !== 'edit' || (!!p.editedCommand && typeof p.editedCommand === 'object' && !Array.isArray(p.editedCommand))),
   transition: (p) => typeof p.taskId === 'string' && typeof p.to === 'string',
   complete: (p) => typeof p.taskId === 'string',
-  set_waiting: (p) => typeof p.taskId === 'string' && typeof p.dependencyLabel === 'string' && typeof p.fallbackAt === 'string',
+  set_waiting: (p) => typeof p.taskId === 'string' && typeof p.dependencyLabel === 'string' && typeof p.fallbackAt === 'string'
+    && (p.wakeType === undefined || typeof p.wakeType === 'string'),
   wake: (p) => typeof p.taskId === 'string',
   reopen: (p) => typeof p.taskId === 'string',
   undo: (p) => typeof p.taskId === 'string',

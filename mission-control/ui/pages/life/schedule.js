@@ -153,9 +153,14 @@ module.exports = {
           ORDER BY w.calculated_priority DESC, w.created_at ASC LIMIT 60`,
         [localNow]);
       // Today's standing blocks, so the day view can offer Move on what already stands.
+      // task_status rides along so a PASSED block whose task is still open can say the
+      // truth: the slot lapsed and the task is back in the suggestions (operator ask
+      // 2026-08-18 — the exclusion above only ever counted FUTURE blocks, so the return
+      // is automatic; this is the visibility half).
       const dbQ = LIFE.lifeSelect(o.db,
-        `SELECT id, task_id, title, start_at, end_at, state FROM life_calendar_blocks
-          WHERE state IN ('PLACED','MOVED') AND start_at LIKE ? ORDER BY start_at`, [`${today}%`]);
+        `SELECT b.id, b.task_id, b.title, b.start_at, b.end_at, b.state, t.status AS task_status
+           FROM life_calendar_blocks b LEFT JOIN life_tasks t ON t.id = b.task_id
+          WHERE b.state IN ('PLACED','MOVED') AND b.start_at LIKE ? ORDER BY b.start_at`, [`${today}%`]);
       const base = {
         engine: { ok: true }, now, connected: true, sync, today, view, week, localNow,
         events: evQ2.ok ? evQ2.rows : [],
@@ -181,8 +186,9 @@ module.exports = {
       // Blocks Life OS placed, read from its OWN registry so a block still shows as ours
       // even on a legacy mirror with no calendar_key. Removed ones are gone, not greyed.
       const bQ = LIFE.lifeSelect(o.db,
-        `SELECT id, task_id, title, start_at, end_at, state, graph_event_id FROM life_calendar_blocks
-           WHERE state IN ('PLACED','MOVED') AND end_at > ? AND start_at < ? ORDER BY start_at`, [from, to]);
+        `SELECT b.id, b.task_id, b.title, b.start_at, b.end_at, b.state, b.graph_event_id, t.status AS task_status
+           FROM life_calendar_blocks b LEFT JOIN life_tasks t ON t.id = b.task_id
+          WHERE b.state IN ('PLACED','MOVED') AND b.end_at > ? AND b.start_at < ? ORDER BY b.start_at`, [from, to]);
       return { ...base, weekEvents: wQ2.ok ? wQ2.rows : [], weekBlocks: bQ.ok ? bQ.rows : [] };
     } finally { o.db.close(); }
   },
@@ -266,9 +272,10 @@ module.exports = {
       body: (s.dayBlocks || []).map((b) => {
         const bj = LIFE.esc(JSON.stringify({ blockId: b.id, title: b.title || 'Focus block', startAt: b.start_at, endAt: b.end_at }));
         const movable = String(b.end_at) > s.localNow;
+        const lapsed = !movable && b.task_id && b.task_status && b.task_status !== 'DONE' && b.task_status !== 'CANCELLED';
         return `<div class="r-lrow"${movable ? ` draggable="true" data-lc-block="${bj}" style="cursor:grab"` : ''}><div style="min-width:0"><div style="font-weight:600">`
           + `<span style="font-family:var(--font-mono,monospace);color:#8ab4f8;font-size:12.5px;margin-right:10px">${LIFE.esc(hm(b.start_at))}–${LIFE.esc(hm(b.end_at))}</span>${LIFE.esc(b.title || 'Focus block')}</div></div>`
-          + `<div style="flex-shrink:0;display:flex;gap:6px">${movable ? `<button class="r-btn small" data-lc-blockmove="${bj}">Move</button>` : S.rcc.tag('Passed', 'warn')}</div></div>`;
+          + `<div style="flex-shrink:0;display:flex;gap:6px">${movable ? `<button class="r-btn small" data-lc-blockmove="${bj}">Move</button>` : lapsed ? S.rcc.tag('not done — re-suggested', 'warn') : S.rcc.tag('Passed', 'warn')}</div></div>`;
       }).join(''),
     }) : '';
 
@@ -375,9 +382,15 @@ module.exports = {
         const tone = d < s.today ? 'bad' : d <= addDays(s.today, 3) ? 'bad' : d <= addDays(s.today, 7) ? 'warn' : 'info';
         return S.rcc.tag(d < s.today ? `overdue${t.due_kind === 'HARD' ? ' · hard' : ''}` : label, tone);
       };
+      // Every row is ACTIONABLE in place (operator ask 2026-08-18: "we cant go into the
+      // tasks to update or say its already completed"): the title opens the task page;
+      // Done completes it; Later asks when to suggest again and parks the task on a DATE
+      // wake (the writer's minute tick brings it back — nothing rots silently).
       const rows = ranked.map((t) => `<div class="r-lrow"><div style="min-width:0;flex:1">`
-        + `<div style="font-weight:600;overflow-wrap:anywhere">${LIFE.esc(clamp(String(t.title || ''), 90))}</div></div>`
+        + `<div style="font-weight:600;overflow-wrap:anywhere"><a href="/life/task?id=${encodeURIComponent(String(t.id))}" style="color:inherit">${LIFE.esc(clamp(String(t.title || ''), 90))}</a></div></div>`
         + `<div style="flex-shrink:0;display:flex;gap:6px;align-items:center">${dueChip(t)}`
+        + cmd('Done', 'complete', { taskId: t.id }, 'small')
+        + `<button class="r-btn small" data-lc-recsnooze="${LIFE.esc(JSON.stringify({ taskId: t.id, title: clamp(String(t.title || ''), 60) }))}">Later</button>`
         + `<button class="r-btn small" data-lc-recfill="${LIFE.esc(t.id)}">Schedule</button></div></div>`).join('');
       const more = cands.length > ranked.length
         ? `<div class="r-note" style="margin-top:6px;font-size:11.5px">${cands.length - ranked.length} more open task${cands.length - ranked.length === 1 ? '' : 's'} wait in the form's picker, priority-ordered.</div>`
@@ -479,11 +492,16 @@ module.exports = {
             }),
             ...dayBlocks.map((b) => {
               // Ours to move: draggable onto another day card, or the Move button for
-              // precise times (and for touch, where HTML5 drag does not exist).
+              // precise times (and for touch, where HTML5 drag does not exist). A PASSED
+              // block whose task is still open says so — the slot lapsed and the task is
+              // already back in the suggestions (the exclusion only counts future blocks).
               const bj = LIFE.esc(JSON.stringify({ blockId: b.id, title: b.title || 'Focus block', startAt: b.start_at, endAt: b.end_at }));
               const movable = String(b.end_at) > s.localNow;
+              const lapsed = !movable && b.task_id && b.task_status && b.task_status !== 'DONE' && b.task_status !== 'CANCELLED';
               const inner = row(`${hm(b.start_at)}–${hm(b.end_at)}`, b.title || 'Focus block',
-                'held for focused work', (movable ? `<button class="r-btn small" data-lc-blockmove="${bj}">Move</button>` : '') + S.rcc.tag('Life OS', 'info'), '#8ab4f8');
+                lapsed ? 'slot passed, task still open — back in the suggestions' : 'held for focused work',
+                (movable ? `<button class="r-btn small" data-lc-blockmove="${bj}">Move</button>` : '')
+                + (lapsed ? S.rcc.tag('not done — re-suggested', 'warn') : S.rcc.tag('Life OS', 'info')), '#8ab4f8');
               return {
                 at: String(b.start_at).slice(11),
                 html: movable ? `<div draggable="true" data-lc-block="${bj}" style="cursor:grab">${inner}</div>` : inner,
