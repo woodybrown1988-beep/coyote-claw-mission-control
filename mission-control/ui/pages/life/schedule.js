@@ -397,7 +397,10 @@ module.exports = {
         + `<div style="flex-shrink:0;display:flex;gap:6px;align-items:center">${dueChip(t)}`
         + `<button class="r-btn small" data-lc-complete="${LIFE.esc(String(t.id))}"${t.recurs ? ` data-lc-recap="${LIFE.esc(JSON.stringify({ cadence: t.recurs, due: String(t.due_at || '').slice(0, 10) }))}"` : ''}>Done</button>`
         + `<button class="r-btn small" data-lc-recsnooze="${LIFE.esc(JSON.stringify({ taskId: t.id, title: clamp(String(t.title || ''), 60) }))}">Later</button>`
-        + `<button class="r-btn small" data-lc-recfill="${LIFE.esc(t.id)}">Schedule</button></div></div>`).join('');
+        // Schedule carries the DUE DATE into the form (operator ask 2026-08-18) — an
+        // overdue task prefills today instead (the writer refuses the past, and overdue
+        // means "do it now", not "backdate it").
+        + `<button class="r-btn small" data-lc-recfill="${LIFE.esc(JSON.stringify({ taskId: t.id, due: t.due_at ? String(t.due_at).slice(0, 10) : null }))}">Schedule</button></div></div>`).join('');
       const more = cands.length > ranked.length
         ? `<div class="r-note" style="margin-top:6px;font-size:11.5px">${cands.length - ranked.length} more open task${cands.length - ranked.length === 1 ? '' : 's'} wait in the form's picker, priority-ordered.</div>`
         : '';

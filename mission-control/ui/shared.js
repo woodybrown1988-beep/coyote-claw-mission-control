@@ -549,12 +549,19 @@ function clientScript() {
         .then(function(r){return r.json();}).then(function(r){if(r&&r.ok){window.__lcDraftClear(bf);location.reload();}else{busy=false;bp.disabled=false;window.__lcRefuse(bp,r&&r.error);}})
         .catch(function(){busy=false;bp.disabled=false;window.__lcSay(bp,window.__lcNet);});
         return;}
-      // SCHEDULE A RECOMMENDATION (2026-08-18): prefill the block form with the task —
-      // nothing is written; the owner still names the time and taps Place.
+      // SCHEDULE A RECOMMENDATION (2026-08-18): prefill the block form with the task and,
+      // when it has one, its DUE DATE — overdue prefills today (the writer refuses the
+      // past; overdue means do it now, not backdate it). Nothing is written; the owner
+      // still names the time and taps Place. Legacy bare-id payloads still fill the task.
       var rf=t.closest('[data-lc-recfill]');
       if(rf){e.preventDefault();
         var rform=document.querySelector('form[data-kind=blockform]');if(!rform)return;
-        var rsel=rform.querySelector('[name=bf-task]');if(rsel)rsel.value=rf.getAttribute('data-lc-recfill')||'';
+        var raw3=rf.getAttribute('data-lc-recfill')||'';var rfi;
+        try{rfi=JSON.parse(raw3);}catch(_){rfi={taskId:raw3};}
+        var rsel=rform.querySelector('[name=bf-task]');if(rsel)rsel.value=rfi.taskId||'';
+        if(rfi.due){var rbd=rform.querySelector('[name=bf-date]');
+          if(rbd){var tdy=new Date().toLocaleDateString('en-CA');rbd.value=rfi.due>tdy?rfi.due:tdy;
+            try{rbd.dispatchEvent(new Event('input',{bubbles:true}));}catch(_){}}}
         try{rform.scrollIntoView({behavior:'smooth',block:'center'});}catch(_){rform.scrollIntoView();}
         var rst=rform.querySelector('[name=bf-start]');if(rst)rst.focus();
         return;}
