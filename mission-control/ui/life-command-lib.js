@@ -79,6 +79,9 @@ function validateCancel(body) {
 /** The planner command multiplexer (A6-A13 surfaces). One route, an ALLOWLIST of command
  *  names, per-command shape checks — and the writer re-validates everything (fail-closed
  *  twice). Anything not listed here cannot leave Mission Control. */
+/** London-local wall-clock text, exactly the shape the writer stores and compares. */
+function localTime(v) { return typeof v === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/.test(v); }
+
 const COMMAND_SHAPES = {
   note: (p) => typeof p.taskId === 'string' && typeof p.text === 'string' && p.text.trim() && p.text.length <= 4000,
   // An EDIT must actually carry an edit — the writer merges it over the original command, so
@@ -114,13 +117,24 @@ const COMMAND_SHAPES = {
   // rides its OWN verb — the writer places/removes the real Outlook event, then marks the
   // proposal; a generic decide-accept on one is refused engine-side (fail-closed twice).
   // HUMAN-only at the writer: any agent/service actor is refused by name.
-  place_block: (p) => typeof p.proposalId === 'string' && !!p.proposalId,
+  //
+  // OWNER-NAMED TIMES (operator ask 2026-08-18): place_block and move_block also accept a
+  // DIRECT shape — the owner typing a time ("Propose block") or dragging a block to a new
+  // day IS the feature now, so the old rule ("no payload from this surface can name a time
+  // he was never shown") is deliberately relaxed for these two owner verbs and NO others.
+  // The writer stays the enforcer: well-formed London-local times, in the future, the Life
+  // OS calendar only. swap_block and remove_block still ride a proposal id and nothing else.
+  place_block: (p) => (typeof p.proposalId === 'string' && !!p.proposalId)
+    || (localTime(p.startAt) && localTime(p.endAt) && p.endAt > p.startAt
+      && (p.taskId === undefined || (typeof p.taskId === 'string' && !!p.taskId))
+      && (p.title === undefined || (typeof p.title === 'string' && p.title.length <= 200))
+      && (typeof p.taskId === 'string' || (typeof p.title === 'string' && !!p.title.trim()))),
   remove_block: (p) => typeof p.proposalId === 'string' && !!p.proposalId,
   // Continuous replan (operator ask 2026-08-11): the compiler revisits blocks that already
-  // stand and proposes moving or swapping one when it stops being true. Both ride a
-  // PROPOSAL id and nothing else — the times and the block live in the proposal the owner is
-  // looking at, so no payload from this surface can name a time he was never shown.
-  move_block: (p) => typeof p.proposalId === 'string' && !!p.proposalId,
+  // stand and proposes moving or swapping one when it stops being true.
+  move_block: (p) => (typeof p.proposalId === 'string' && !!p.proposalId)
+    || (typeof p.blockId === 'string' && !!p.blockId
+      && localTime(p.startAt) && localTime(p.endAt) && p.endAt > p.startAt),
   swap_block: (p) => typeof p.proposalId === 'string' && !!p.proposalId,
   // Bulk import (operator brief 2026-08-08): commands carry a file NAME in the import
   // inbox plus the operator's per-row rulings — never file content (the writer reads the

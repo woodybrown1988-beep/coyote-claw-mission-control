@@ -134,11 +134,25 @@ module.exports = {
       const propCountQ = LIFE.lifeSelect(o.db,
         `SELECT COUNT(*) c FROM life_update_proposals WHERE state = 'PROPOSED' AND capability_key = 'calendar_block'`);
       const proposals = (propQ.ok ? propQ.rows : []).map((p) => ({ ...p, targetDay: proposalDay(o.db, p) }));
+      // London wall-clock now, the writer's own comparison basis — so a card whose slot has
+      // passed can say so INSTEAD of offering a Place tap that can only be refused (live
+      // failure 2026-08-18: 15–17 Aug cards still carried Place buttons on the 18th).
+      const localNow = `${today}T${new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/London', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(new Date(now))}`;
+      // Open work for the owner's own "Place a block" form (operator ask 2026-08-18) —
+      // priority order, the same availability view the planner drafts from.
+      const tasksQ = LIFE.lifeSelect(o.db,
+        `SELECT id, title FROM v_life_available_work ORDER BY calculated_priority DESC, created_at ASC LIMIT 60`);
+      // Today's standing blocks, so the day view can offer Move on what already stands.
+      const dbQ = LIFE.lifeSelect(o.db,
+        `SELECT id, task_id, title, start_at, end_at, state FROM life_calendar_blocks
+          WHERE state IN ('PLACED','MOVED') AND start_at LIKE ? ORDER BY start_at`, [`${today}%`]);
       const base = {
-        engine: { ok: true }, now, connected: true, sync, today, view, week,
+        engine: { ok: true }, now, connected: true, sync, today, view, week, localNow,
         events: evQ2.ok ? evQ2.rows : [],
         blockProposals: proposals,
         proposalTotal: propCountQ.ok ? propCountQ.rows[0].c : proposals.length,
+        openTasks: tasksQ.ok ? tasksQ.rows : [],
+        dayBlocks: dbQ.ok ? dbQ.rows : [],
       };
       if (view !== 'week') return base;
 
@@ -235,6 +249,19 @@ module.exports = {
           : `<div class="r-lrow" style="color:var(--rmuted);font-size:13px">Nothing is in the calendar today. An empty day here means Outlook shows no fixed commitments — no free time is guessed at around that.</div>`),
     });
 
+    // The day view's standing Life OS blocks, each with its Move affordance — the same
+    // mover the week's drag-and-drop uses, so both views change a block the same one way.
+    const myBlocksPanel = (s.dayBlocks || []).length ? S.rcc.panel({
+      title: 'Life OS blocks today', sub: 'Placed by your approval — movable while they are still ahead',
+      body: (s.dayBlocks || []).map((b) => {
+        const bj = LIFE.esc(JSON.stringify({ blockId: b.id, title: b.title || 'Focus block', startAt: b.start_at, endAt: b.end_at }));
+        const movable = String(b.end_at) > s.localNow;
+        return `<div class="r-lrow"${movable ? ` draggable="true" data-lc-block="${bj}" style="cursor:grab"` : ''}><div style="min-width:0"><div style="font-weight:600">`
+          + `<span style="font-family:var(--font-mono,monospace);color:#8ab4f8;font-size:12.5px;margin-right:10px">${LIFE.esc(hm(b.start_at))}–${LIFE.esc(hm(b.end_at))}</span>${LIFE.esc(b.title || 'Focus block')}</div></div>`
+          + `<div style="flex-shrink:0;display:flex;gap:6px">${movable ? `<button class="r-btn small" data-lc-blockmove="${bj}">Move</button>` : S.rcc.tag('Passed', 'warn')}</div></div>`;
+      }).join(''),
+    }) : '';
+
     const focusPanel = S.rcc.panel({
       title: 'Protected focus blocks', sub: 'Candidates for deep work — marked in Outlook, honoured here',
       body: protectedBlocks.length
@@ -261,11 +288,43 @@ module.exports = {
         ? `${String(c.startAt).slice(11, 16)}–${String(c.endAt || '').slice(11, 16)}`
         : '';
       const when = p.targetDay ? `${p.targetDay}${span ? ` · ${span}` : ''}` : 'a block already standing';
-      return `<div style="border:1px solid rgba(255,179,77,.4);background:rgba(255,179,77,.06);border-radius:10px;padding:12px;margin:8px 0">
+      // A slot that has already passed gets the TRUTH, not a Place button that can only be
+      // refused (live failure 2026-08-18). The writer's sweep retires these within a minute;
+      // this guard covers the render in between — and carries the owner's real choices:
+      // the work happened (mark it done), or let the planner offer a fresh time.
+      const slotPassed = String(c.endAt || '') !== '' && String(c.endAt) <= s.localNow;
+      const actions = slotPassed
+        ? `${(p.command_type === 'place_block' && typeof c.taskId === 'string' && c.taskId)
+          ? cmd('I did this — mark done', 'complete', { taskId: c.taskId }, 'small primary') : ''}`
+          + cmd('Dismiss', 'decide', { proposalId: p.id, decision: 'reject' }, 'small')
+        : cmd(v.action, p.command_type, { proposalId: p.id }, 'small primary')
+          + cmd('No', 'decide', { proposalId: p.id, decision: 'reject' }, 'small');
+      return `<div style="border:1px solid rgba(255,179,77,.4);background:rgba(255,179,77,.06);border-radius:10px;padding:12px;margin:8px 0${slotPassed ? ';opacity:.85' : ''}">
         <div style="font-size:11px;color:#f5c96b;font-weight:700">${LIFE.esc(when)}</div>
         <div style="font-weight:650;margin:4px 0">${LIFE.esc(String(c.title || v.fallbackTitle))}</div>
         <div style="font-size:12px;color:var(--rmuted);margin-bottom:8px">${LIFE.esc(clamp(String(p.reason), 400))} ${S.rcc.conf(p.confidence)}</div>
-        <div style="display:flex;gap:8px;justify-content:flex-end">${cmd(v.action, p.command_type, { proposalId: p.id }, 'small primary')}${cmd('No', 'decide', { proposalId: p.id, decision: 'reject' }, 'small')}</div></div>`;
+        ${slotPassed ? `<div style="font-size:12px;color:#f5c96b;margin-bottom:8px">This slot passed before it was decided — it retires itself shortly and a fresh time gets offered at the next plan run.</div>` : ''}
+        <div style="display:flex;gap:8px;justify-content:flex-end">${actions}</div></div>`;
+    };
+
+    // The owner's own block (operator ask 2026-08-18): pick a task — or name the time
+    // yourself — and it is written through the same HUMAN-gated writer, Life OS calendar
+    // only. The writer refuses the past and re-validates every field.
+    const proposeForm = () => {
+      const opts = (s.openTasks || []).map((t) => `<option value="${LIFE.esc(t.id)}">${LIFE.esc(clamp(String(t.title || ''), 70))}</option>`).join('');
+      return S.rcc.panel({
+        title: 'Place your own block', sub: 'Your pick, your time — written only into the Life OS calendar',
+        body: `<form data-kind="blockform" onsubmit="return false" style="display:grid;gap:8px">
+          <select name="bf-task" class="r-input"><option value="">— pick a task (or title it below) —</option>${opts}</select>
+          <input name="bf-title" class="r-input" type="text" maxlength="200" placeholder="Or a title of its own (optional when a task is picked)">
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <input name="bf-date" class="r-input" type="date" value="${LIFE.esc(s.today)}" style="flex:1;min-width:130px">
+            <input name="bf-start" class="r-input" type="time" step="900" style="width:110px">
+            <input name="bf-end" class="r-input" type="time" step="900" style="width:110px">
+          </div>
+          <div style="display:flex;justify-content:flex-end"><button type="button" class="r-btn small primary" data-lc-blockplace>Place block</button></div>
+        </form>`,
+      });
     };
     const proposalsPanel = S.rcc.panel({
       title: 'Proposed next block', sub: 'Not written to Outlook until you approve — and only ever into the Life OS calendar',
@@ -354,10 +413,18 @@ module.exports = {
                 html: row(sp.time, e.subject || 'Busy', detail, e.is_protected ? S.rcc.tag('Focus', 'good') : ''),
               };
             }),
-            ...dayBlocks.map((b) => ({
-              at: String(b.start_at).slice(11), html: row(`${hm(b.start_at)}–${hm(b.end_at)}`, b.title || 'Focus block',
-                'held for focused work', S.rcc.tag('Life OS', 'info'), '#8ab4f8'),
-            })),
+            ...dayBlocks.map((b) => {
+              // Ours to move: draggable onto another day card, or the Move button for
+              // precise times (and for touch, where HTML5 drag does not exist).
+              const bj = LIFE.esc(JSON.stringify({ blockId: b.id, title: b.title || 'Focus block', startAt: b.start_at, endAt: b.end_at }));
+              const movable = String(b.end_at) > s.localNow;
+              const inner = row(`${hm(b.start_at)}–${hm(b.end_at)}`, b.title || 'Focus block',
+                'held for focused work', (movable ? `<button class="r-btn small" data-lc-blockmove="${bj}">Move</button>` : '') + S.rcc.tag('Life OS', 'info'), '#8ab4f8');
+              return {
+                at: String(b.start_at).slice(11),
+                html: movable ? `<div draggable="true" data-lc-block="${bj}" style="cursor:grab">${inner}</div>` : inner,
+              };
+            }),
           ].sort((x, y) => (x.at < y.at ? -1 : x.at > y.at ? 1 : 0));
           inner += items.length
             ? items.map((i) => i.html).join('')
@@ -367,7 +434,10 @@ module.exports = {
               + dayProps.map(propCard).join('') + `</div>`;
           }
         }
-        return `<div class="r-card" style="padding:10px 12px${ahead === 0 ? ';border-color:rgba(138,180,248,.5)' : ''}">`
+        // A future (or today) day inside the synced window takes block drops — dropping IS
+        // the owner naming the day; the times ride the one confirm prompt.
+        const droppable = !beyond && day >= s.today;
+        return `<div class="r-card"${droppable ? ` data-lc-dropday="${LIFE.esc(day)}"` : ''} style="padding:10px 12px${ahead === 0 ? ';border-color:rgba(138,180,248,.5)' : ''}">`
           + `<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px">`
           + `<div style="font-weight:700;font-size:12.5px">${LIFE.esc(label)}${rel ? ` <span style="font-weight:500;color:var(--rmuted)">· ${rel}</span>` : ''}</div>`
           + `<div style="font-size:11px;color:var(--rmuted)">${beyond ? 'not read yet' : `${commitments.length} commitment${commitments.length === 1 ? '' : 's'}${dayBlocks.length ? ` · ${dayBlocks.length} block${dayBlocks.length === 1 ? '' : 's'}` : ''}`}</div>`
@@ -428,8 +498,8 @@ module.exports = {
 
     const body = wrap(head + banner + tiles + overflowNote
       + `<div class="ls-main">`
-      + `<div style="display:grid;gap:12px;align-content:start">${isWeek ? weekPanel() : todayPanel}</div>`
-      + `<div style="display:grid;gap:12px;align-content:start">${focusPanel}${isWeek ? sideProposals : proposalsPanel}${authorityPanel}</div>`
+      + `<div style="display:grid;gap:12px;align-content:start">${isWeek ? weekPanel() : todayPanel + myBlocksPanel}</div>`
+      + `<div style="display:grid;gap:12px;align-content:start">${focusPanel}${isWeek ? sideProposals : proposalsPanel}${proposeForm()}${authorityPanel}</div>`
       + `</div>`
       + `<style>.ls-main{display:grid;gap:12px;grid-template-columns:minmax(0,1.5fr) minmax(0,1fr)}`
       + `.ls-week{display:grid;gap:8px}`

@@ -187,7 +187,9 @@ test('Stage W surfaces: block proposals on Schedule + Today ride their OWN verbs
   const db = new sqlite.DatabaseSync(dbPath);
   db.prepare(`INSERT INTO life_update_proposals (id, owner_id, update_id, task_id, capability_key, command_type, command_json, reason, confidence, risk_level, authority_class, state, created_at)
               VALUES ('bp1','woody','u1','t1','calendar_block','place_block', ?, 'must-win focus block — avoids your fixed commitments', 0.75, 'LOW', 'EXTERNAL', 'PROPOSED', ?)`)
-    .run(JSON.stringify({ taskId: 't1', planDate: DAY, title: 'Focus: draft criteria', startAt: `${DAY}T10:15:00`, endAt: `${DAY}T11:45:00` }), new Date(NOW).toISOString());
+    // A FUTURE slot (NOW is 12:00 London): a passed slot now deliberately loses its Place
+    // button (operator ruling 2026-08-18, test/mission-control-life-blocks.test.js).
+    .run(JSON.stringify({ taskId: 't1', planDate: DAY, title: 'Focus: draft criteria', startAt: `${DAY}T15:15:00`, endAt: `${DAY}T16:45:00` }), new Date(NOW).toISOString());
   db.close();
   withEnv(dbPath, () => {
     const sched = SCHEDULE.render(SCHEDULE.getSection(null, { now: NOW }), {}).body;
@@ -196,7 +198,7 @@ test('Stage W surfaces: block proposals on Schedule + Today ride their OWN verbs
     assert.ok(cmds.some((c) => c.command === 'place_block' && c.payload.proposalId === 'bp1'), 'accept rides place_block, never a generic decide-accept');
     assert.ok(!cmds.some((c) => c.command === 'decide' && c.payload.decision === 'accept'), 'no generic accept exists for a calendar proposal');
     assert.ok(cmds.some((c) => c.command === 'decide' && c.payload.decision === 'reject' && c.payload.proposalId === 'bp1'), 'No = a plain reject — Outlook untouched');
-    assert.match(sched, /10:15–11:45/, 'the proposal shows its times');
+    assert.match(sched, /15:15–16:45/, 'the proposal shows its times');
     assert.match(sched, /Life OS<\/span>/, 'a mirrored block carries the Life OS pill');
     assert.match(sched, /only ever into the Life OS calendar/, 'the write cage is named to the owner');
     assert.match(sched, />1<\/div>/, 'the uncommitted-proposals tile counts the real open proposal');
