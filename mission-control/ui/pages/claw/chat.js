@@ -203,7 +203,7 @@ module.exports = {
     // a cleared bar means a plain message, never a silent misroute.
     parts.push(`<div id="ch-replybar" style="display:none;font-size:11.5px;color:var(--muted,#8b98a5);padding:4px 2px">↩ replying to <span id="ch-replylabel" class="mono"></span> — this goes to that task’s agent <button type="button" class="btn" id="ch-replyclear" style="padding:0 8px">✕</button></div>
     <form class="ch-form" id="ch-form">
-      <textarea name="text" id="ch-text" placeholder="data: … / research: … / plain text → the Lead / ask Rex by name · ↩ reply on a task message to brief its agent · close &lt;id&gt; · retask &lt;id&gt;" maxlength="4000" required>${m.about ? esc('retask ' + m.about.short) : (m.ask ? esc(m.ask) : '')}</textarea>
+      <select id="ch-to" title="Who this message is for. Router reads prefixes; the Mail agent channel needs none — everything you type there is a filing instruction." style="background:var(--panel-2);border:1px solid var(--border);border-radius:9px;color:var(--text);font-size:12px;padding:0 8px;align-self:stretch"><option value="">to: Router</option><option value="mail-agent">to: Mail agent</option></select><textarea name="text" id="ch-text" placeholder="data: … / research: … / plain text → the Lead / ask Rex by name · ↩ reply on a task message to brief its agent · close &lt;id&gt; · retask &lt;id&gt;" maxlength="4000" required>${m.about ? esc('retask ' + m.about.short) : (m.ask ? esc(m.ask) : '')}</textarea>
       <button class="btn" type="button" id="ch-mic" title="Tap, talk, tap again — lands in the box for you to send">\u{1F3A4}</button>
       <button class="btn" type="button" id="ch-say" title="Read replies aloud"></button>
       <button class="btn" type="submit" id="ch-send">Send</button>
@@ -288,6 +288,8 @@ module.exports = {
         if (!text) return;
         busy = true; document.getElementById('ch-send').disabled = true;
         var payload = { text: text };
+        var toSel = document.getElementById('ch-to');
+        if (toSel && toSel.value) payload.channel = toSel.value;   // channel outranks every prefix
         if (replyTo != null) payload.reply_to_id = replyTo;
         fetch('/api/chat-message', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) })
           .then(function(r){ return r.json(); })
