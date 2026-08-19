@@ -187,17 +187,25 @@ function buildExec(q, maxDate, rv2) {
     exec.week.walkin = num(cc.walkin) || 0;
     exec.week.lyCovers = lyComparable ? num(lc.covers) : null;
 
-    // COVERS BASIS GUARD (2026-08-19). A covers YoY is only a like-for-like if BOTH windows were
-    // parsed the same way. The GuestCenter export splits a timestamp across two columns and the bare
-    // "Visit Time" never parsed, so every reservation ingested before the fix has visit_at NULL and
-    // its distinct same-table walk-ins collapsed into one row — understating covers. Repairing the
-    // CURRENT window while history is still collapsed does not remove the error, it MOVES it into
-    // the comparison: measured on this week vs LY, the spend/cover delta swings from -3.3% to +4.3%
-    // purely on which side is repaired. A delta that changes SIGN with the basis is not a delta.
-    // So: if either window still holds a collapsed row, the LEVEL still renders (it is true) and the
-    // DELTA is withheld with its reason. It lights up by itself once the history rebuild lands.
+    // COVERS BASIS GUARD (2026-08-19). A covers YoY is only like-for-like if BOTH windows were
+    // parsed with a working dedup key. The composite key is
+    // [visit_date, visit_at, created_date, seated_date, party_size, guest, table_name, source, status]
+    // and a row can only be lost when NOTHING in it discriminates one party from another.
+    //
+    // CORRECTED SAME DAY, and the correction matters more than the guard: the first version tested
+    // `visit_at IS NULL`, which is true of ALL 65,959 rows and flagged the entire history as
+    // damaged. It is not. The bare "Visit Time" column never parsed, but until 2026-07-23 the export
+    // also carried `seated_date` as a timestamp TO THE SECOND, which discriminates on its own — all
+    // 63,915 historical rows are uniquely keyed, zero collapse. The export format then NARROWED:
+    // seated_date and created_date stopped arriving, the key lost every time component at once, and
+    // 773 of 2,812 rows collapsed. The damage was confined to that window, and it is repaired.
+    //
+    // So the honest test is "no time discriminator AT ALL", not "visit_at is null" — the difference
+    // between withholding a sound comparison and catching a broken one. Live today: 0 at-risk rows
+    // in the compared weeks, 120 across two years of history.
     const collapsedIn = (from, to) => num((rowsOf(q(
-      `SELECT COUNT(*) n FROM reservations WHERE visit_date BETWEEN ? AND ? AND visit_at IS NULL`,
+      `SELECT COUNT(*) n FROM reservations WHERE visit_date BETWEEN ? AND ?
+         AND visit_at IS NULL AND seated_date IS NULL`,
       [from, to]))[0] || {}).n) || 0;
     const curCollapsed = collapsedIn(wk.from, wk.to);
     const lyCollapsed = lyComparable ? collapsedIn(lyFrom, lyTo) : 0;
@@ -205,7 +213,7 @@ function buildExec(q, maxDate, rv2) {
       ? { ok: true }
       : { ok: false, cur: curCollapsed, ly: lyCollapsed,
           reason: lyCollapsed && !curCollapsed
-            ? 'last year’s covers are still un-reparsed, this year’s are corrected — the two are not on the same basis'
+            ? 'last year’s covers include rows with no time discriminator, so distinct visits may have collapsed — the two windows are not on the same basis'
             : (curCollapsed && !lyCollapsed
               ? 'this week’s covers are not yet re-parsed while last year’s are — not the same basis'
               : 'both windows still hold un-reparsed covers') };
@@ -1051,7 +1059,7 @@ module.exports = {
         S.rcc.kpi({ label: 'Revenue quality score', value: 'not ruled', sub: 'composite pending operator definition' }),
       ].join('');
       const kpiCaption = wk
-        ? `<div class="rv2-caption">${esc(wk.from)} → ${esc(wk.to)} (last full week, Mon–Sun) · vs same weekday-aligned week LY (−364d: ${esc(wk.lyFrom)} → ${esc(wk.lyTo)}) · per-receipt truth (day-net canon, v_sales_day_all)${wk.lyComparable ? '' : (wk.spanMismatch ? ` · LY not comparable — this week has ${int(wk.spanMismatch.cur)} recorded day(s) against LY's ${int(wk.spanMismatch.ly)}; a short window divided by a full one would read as a collapse, so deltas are omitted` : ' · LY not comparable (premises guard / no record) — deltas omitted, never a cross-site %')}${wk.covers != null ? ` · covers = OpenTable seated (covers_day): ${int(wk.covers)} = ${int(wk.reserved)} reserved + ${int(wk.walkin)} walk-in — booked covers are NEVER read as total${cptTxt ? ` · covers/transaction ${cptTxt} (sanity ~1.9–2.0; a material drift is a data finding, not a KPI)` : ''} · spend/cover = Lightspeed net ÷ covers (derived); POS guest-count is still not covers${!basisBlocked ? '' : ` · <strong>covers YoY and spend/cover YoY are withheld</strong> — ${esc(basis.reason)} (${int(basis.ly || 0)} un-reparsed LY rows, ${int(basis.cur || 0)} this week). Levels are true; only the year-on-year comparison is blocked, and it returns by itself once the reservations history is rebuilt.`}` : ' · covers stay not-wired until OpenTable lands'}</div>`
+        ? `<div class="rv2-caption">${esc(wk.from)} → ${esc(wk.to)} (last full week, Mon–Sun) · vs same weekday-aligned week LY (−364d: ${esc(wk.lyFrom)} → ${esc(wk.lyTo)}) · per-receipt truth (day-net canon, v_sales_day_all)${wk.lyComparable ? '' : (wk.spanMismatch ? ` · LY not comparable — this week has ${int(wk.spanMismatch.cur)} recorded day(s) against LY's ${int(wk.spanMismatch.ly)}; a short window divided by a full one would read as a collapse, so deltas are omitted` : ' · LY not comparable (premises guard / no record) — deltas omitted, never a cross-site %')}${wk.covers != null ? ` · covers = OpenTable seated (covers_day): ${int(wk.covers)} = ${int(wk.reserved)} reserved + ${int(wk.walkin)} walk-in — booked covers are NEVER read as total${cptTxt ? ` · covers/transaction ${cptTxt} (sanity ~1.9–2.0; a material drift is a data finding, not a KPI)` : ''} · spend/cover = Lightspeed net ÷ covers (derived); POS guest-count is still not covers${!basisBlocked ? '' : ` · <strong>covers YoY and spend/cover YoY are withheld</strong> — ${esc(basis.reason)} (${int(basis.ly || 0)} at-risk LY rows, ${int(basis.cur || 0)} this week). Levels are true; only the year-on-year comparison is blocked, and it returns by itself once the reservations history is rebuilt.`}` : ' · covers stay not-wired until OpenTable lands'}</div>`
         : `<div class="rv2-caption">No Lightspeed sales yet — the daily ingest (05:30) fills the day-grain record; covers stay not-wired until OpenTable lands.</div>`;
 
       // ---- 8-week trend (inline SVG, mock grammar: orange current+area, amber dashed target,
