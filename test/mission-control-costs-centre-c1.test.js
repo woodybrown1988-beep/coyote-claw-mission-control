@@ -129,6 +129,14 @@ function seedExec(db) {
   }
   bk.run(`b${++id}`, '2026-06-25', 500000, 'Booker'); // the beyond-day-span decoy
   bk.run(`b${++id}`, '2026-07-20', 10000, 'Zed Shop'); // sets bank max = day 20; sub-£500 noise
+  // A SECOND supplier that posts NORMALLY every month. Without it, Booker's collapse IS the whole
+  // feed collapsing, which is indistinguishable from the purchase ledger simply being un-posted —
+  // the live 2026-08 condition that produced a fabricated "£12,471 Booker saving". Steady Dairy
+  // keeps overall posting healthy (2026-08-19 gate), so a single supplier's collapse still reads as
+  // the real finding it is. Its own delta is zero, so it never out-ranks Booker.
+  for (const [ym2, d] of [['2026-04', '08'], ['2026-05', '08'], ['2026-06', '08'], ['2026-07', '08']]) {
+    bk.run(`b${++id}`, `${ym2}-${d}`, 900000, 'Steady Dairy');
+  }
   // fee-collapse journal world
   const jl = db.prepare(`INSERT INTO qb_journal_lines (realm_id, period_month, txn_date, account_id, account_name, debit_pence) VALUES ('r1',?,?,'25','Bank charges (207)',?)`);
   for (const ym of ['2025-11', '2025-12', '2026-01', '2026-02', '2026-03', '2026-04']) jl.run(ym, `${ym}-15`, 150000);
@@ -492,3 +500,39 @@ test('empty DB: the ONLY £ digits anywhere are the ENCODED rent canon; every KP
   assert.ok(body.includes('no day-net sales record yet'), 'the honest no-month state');
 });
 const TABS_ALL = ['executive', 'forecast', 'cogs', 'margins', 'suppliers', 'fixed', 'cash'];
+
+// --- PURCHASE-FEED POSTING GATE (2026-08-19, data-wiring audit) --------------------------------
+// The supplier delta is like-for-like on DAY-SPAN but was not on POSTING. Bank purchases have been
+// ~80% un-posted since 2026-07-07 (Jul £20,564 against a Feb–Jun mean of £117,023; Aug 1–18 £3,849
+// against ~£67,948 pro-rata — about £160,558 of supplier cash-out simply not in QuickBooks). With
+// the current side near-empty EVERY supplier reads as a collapse, and the queue's TOP alert became
+// a green "£12,471 Booker saving" — the absence of data wearing the costume of good news.
+//
+// THE CLASS: a delta whose `cur` side is missing is not a delta. Gate on whether the WINDOW is
+// posted, not on the individual supplier, and say so in place of the alert — a silently absent
+// alert reads as "nothing to report", which is the same lie more quietly.
+test('posting gate: an un-posted purchase window withholds the supplier delta and explains itself', () => {
+  const db = makeDb(); seedExec(db);
+  // Strip the steady supplier's CURRENT month only: overall posting collapses while the prior
+  // months stay intact — exactly the live shape.
+  db.prepare(`DELETE FROM qb_bank_txns WHERE counterparty='Steady Dairy' AND txn_date >= '2026-07-01'`).run();
+  const ctx = { q: (sql, pp) => DATA.safeSelect(db, sql, pp), now: NOW, query: {} };
+  const sp = page.getSection(db, ctx).exec.queue.supplierPosting;
+  assert.equal(sp.posted, false, 'the window must be judged un-posted');
+  assert.ok(sp.postedRatio < 0.5, `ratio ${sp.postedRatio} should be below the half-of-normal floor`);
+  assert.equal(page.getSection(db, ctx).exec.queue.supplier, null, 'and the delta must NOT be offered');
+
+  const body = render(db);
+  assert.ok(body.includes('withheld, the purchase feed is behind'), 'the queue says the alert was withheld');
+  assert.ok(body.includes('un-posted bookkeeping, not reduced spending'), 'and names what the gap really is');
+  assert.ok(!body.includes('Supplier spend delta — Booker'), 'the fabricated saving must not render');
+});
+
+test('POSITIVE CONTROL: a healthy purchase window still reports a genuine supplier collapse', () => {
+  const db = makeDb(); seedExec(db);
+  const ctx = { q: (sql, pp) => DATA.safeSelect(db, sql, pp), now: NOW, query: {} };
+  const q2 = page.getSection(db, ctx).exec.queue;
+  assert.equal(q2.supplierPosting.posted, true, 'the gate must not refuse a posted window');
+  assert.ok(q2.supplier, 'a real single-supplier delta still surfaces');
+  assert.equal(q2.supplier.cp, 'Booker');
+});

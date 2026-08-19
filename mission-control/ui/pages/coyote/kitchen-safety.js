@@ -63,8 +63,16 @@ module.exports = {
   getSection(db, ctx) {
     const now = ctx && ctx.now ? ctx.now : Date.now();
     const q = ctx.q;
-    const one = (sql, p) => { const r = q(sql, p || []); return r && r.ok && r.rows && r.rows[0] ? r.rows[0] : null; };
-    const rows = (sql, p) => { const r = q(sql, p || []); return r && r.ok && r.rows ? r.rows : []; };
+    // QUERY-FAULT TRACKING (2026-08-19, data-wiring audit). safeSelect returns {ok:false, rows:[]}
+    // for a query that THREW, which at the call site is indistinguishable from a query that found
+    // nothing — so `(one(...) || {}).n || 0` renders a confident 0 for a broken SELECT. That is
+    // exactly how two Postgres-syntax queries on this page (`category ~ 'accid|injur'`, invalid in
+    // SQLite) produced a permanent green "0 accidents" that could never become non-zero.
+    // Counting faults here means ANY future broken query announces itself instead of fabricating a
+    // zero — the guard covers the class, not just the two queries repaired below.
+    let queryFaults = 0;
+    const one = (sql, p) => { const r = q(sql, p || []); if (!r || !r.ok) { queryFaults += 1; return null; } return r.rows && r.rows[0] ? r.rows[0] : null; };
+    const rows = (sql, p) => { const r = q(sql, p || []); if (!r || !r.ok) { queryFaults += 1; return []; } return r.rows || []; };
     const num = (v) => (v == null ? null : Number(v));
 
     // ---- connection state (NEEDS-KEY vs LIVE) — read ks_sync_meta freshness ----
@@ -74,7 +82,9 @@ module.exports = {
     const totalRows = meta.reduce((a, m) => a + (Number(m.row_count) || 0), 0);
 
     if (!connected) {
-      return { now, connected: false, lastSync: null, totalRows: 0 };
+      // queryFaults travels even on the not-connected path — a fault BEFORE the gate is exactly
+      // the case that would otherwise read as "no key yet" instead of "the query is broken".
+      return { now, connected: false, lastSync: null, totalRows: 0, queryFaults };
     }
 
     // ---- thresholds (one-home: ks_app_settings) ----
@@ -151,7 +161,9 @@ module.exports = {
     const sTraining = trainingCurrency;
 
     // H&S: RIDDOR/accident-free + open non-critical incidents drag
-    const accidents = (one(`SELECT count(*) n FROM ks_incident_reports WHERE category ~ 'accid|injur' OR affected_people_count > 0`) || {}).n || 0;
+    // SQLite has no `~` regex operator (that is Postgres, where this table originates) — the old
+    // form threw and silently scored H&S as if no accident had ever happened.
+    const accidents = (one(`SELECT count(*) n FROM ks_incident_reports WHERE lower(coalesce(category,'')) LIKE '%accid%' OR lower(coalesce(category,'')) LIKE '%injur%' OR coalesce(affected_people_count,0) > 0`) || {}).n || 0;
     const openIncidentsAll = (one(`SELECT count(*) n FROM ks_incident_reports WHERE lower(coalesce(status,'')) IN ('open','in_progress','investigating','reported')`) || {}).n || 0;
     const sHs = Math.max(0, 100 - accidents * 25 - openIncidentsAll * 8);
 
@@ -192,7 +204,7 @@ module.exports = {
     const incidents = rows(`SELECT reference_number, title, category, severity, status, occurred_at, reported_to_authority
         FROM ks_incident_reports ORDER BY occurred_at DESC LIMIT 8`);
     const incTotals = one(`SELECT count(*) n,
-        sum(CASE WHEN category ~ 'accid|injur' OR affected_people_count>0 THEN 1 ELSE 0 END) accidents,
+        sum(CASE WHEN lower(coalesce(category,'')) LIKE '%accid%' OR lower(coalesce(category,'')) LIKE '%injur%' OR coalesce(affected_people_count,0)>0 THEN 1 ELSE 0 END) accidents,
         sum(CASE WHEN reported_to_authority=1 THEN 1 ELSE 0 END) riddor FROM ks_incident_reports`) || {};
     // RIDDOR rate joins the labour-hours record already on the box (cross-source)
     const labourHours = (one(`SELECT sum(actual_minutes)/60.0 h FROM labour_day`) || {}).h || null;
@@ -212,7 +224,7 @@ module.exports = {
     const site = one(`SELECT name, local_authority, registration_number FROM ks_sites LIMIT 1`) || {};
 
     return {
-      now, connected: true, lastSync, totalRows, meta,
+      now, connected: true, lastSync, totalRows, meta, queryFaults,
       thresholds, fridgeStorageMax, fridgeCalibrationFlag,
       cap: { active: capActive, reasons: capReasons },
       score: { blended, status, components },
@@ -384,6 +396,15 @@ module.exports = {
     const stamp = sec.cap.active
       ? `kitchen safety · RED-CAP ACTIVE (${sec.cap.reasons.map((r) => r.kind).join(', ')}) · synced ${ago} ago · from the Kitchen Safety App`
       : `kitchen safety · score ${sc.blended == null ? '—' : sc.blended}/100 (cap clear) · ${sec.totalRows.toLocaleString()} rows · synced ${ago} ago`;
-    return { stamp, body };
+    // A failed SELECT renders as 0 everywhere on this page, so if ANY query faulted the figures
+    // below cannot be trusted — say so at the top rather than let a zero pass for a measurement.
+    let bodyOut = body;
+    if (sec && sec.queryFaults) {
+      bodyOut = `<div class="rcc"><div class="r-card" style="border-left:3px solid #DC2626;padding:14px 16px;margin-bottom:14px">`
+        + `<div style="font-weight:800;color:#EF5350">${sec.queryFaults} query on this page failed to run</div>`
+        + `<div style="color:#B0B0B0;font-size:13px;margin-top:4px">A query that throws returns no rows, and every count below turns that into a confident <strong>0</strong>. Treat the zeros on this page as UNKNOWN until this is fixed.</div>`
+        + `</div></div>` + body;
+    }
+    return { stamp, body: bodyOut };
   },
 };

@@ -295,7 +295,24 @@ function buildExecutive(q, now) {
       const delta = curP - avg;
       if (!best || Math.abs(delta) > Math.abs(best.delta)) best = { cp, cur: curP, avg, delta };
     }
-    queue.supplier = best ? { ...best, month: curYm, dd } : null;
+    // POSTING-COMPLETENESS GATE (2026-08-19, data-wiring audit). The comparison above is
+    // like-for-like on DAY-SPAN but not on POSTING. Bank purchases have been ~80% un-posted since
+    // 2026-07-07: Jul actual £20,564 against a Feb–Jun mean of £117,023, and Aug 1–18 £3,849
+    // against ~£67,948 pro-rata — about £160,558 of supplier cash-out simply not in QuickBooks yet.
+    // With the current side near-empty every supplier reads as a collapse, so the queue's TOP alert
+    // was a green "£12,471 Booker saving" that is not a saving at all: it is the absence of data
+    // wearing the costume of good news, and it is the first thing the owner sees on this page.
+    //
+    // So measure whether the current window is POSTED before letting any delta off it render:
+    // compare this month-to-date's total purchase spend against the same day-span in the prior
+    // three months. Below half, the window is un-posted — suppress the alert and say why, rather
+    // than report the gap as a business result. A delta whose `cur` side is missing is not a delta.
+    const curTotal = [...curBy.values()].reduce((a, b) => a + b, 0);
+    const prevTotalAvg = [...prevAgg.values()].reduce((a, b) => a + b, 0) / 3;
+    const postedRatio = prevTotalAvg > 0 ? curTotal / prevTotalAvg : null;
+    const posted = postedRatio == null || postedRatio >= 0.5;
+    queue.supplierPosting = { curTotal, prevTotalAvg, postedRatio, posted };
+    queue.supplier = posted && best ? { ...best, month: curYm, dd } : null;
     queue.bankMax = bankMax;
   }
   // fee-collapse: 'Bank charges' journal account — the last-2-months average vs the preceding
@@ -799,6 +816,17 @@ module.exports = {
       // ---- (3) owner attention queue — REAL findings only ----
       const qd = ex.queue || {};
       const alerts = [];
+      // The supplier delta is suppressed when the purchase feed is un-posted (see the gate in
+      // buildExec). Say so in its place — an absent alert with no explanation reads as "nothing to
+      // report", which is the same lie in quieter clothes.
+      if (!qd.supplier && qd.supplierPosting && !qd.supplierPosting.posted) {
+        const sp = qd.supplierPosting;
+        alerts.push(S.rcc.alert({
+          title: 'Supplier spend delta — withheld, the purchase feed is behind',
+          text: `Bank purchases for this window total ${gbp0(sp.curTotal)} against ${gbp0(sp.prevTotalAvg)} over the same day-span of the prior three months (${Math.round((sp.postedRatio || 0) * 100)}% of normal). That gap is un-posted bookkeeping, not reduced spending, so any supplier "saving" computed from it would be fabricated. The comparison returns once purchases are posted.`,
+          impact: 'not measurable yet', tone: 'warn',
+        }));
+      }
       if (qd.supplier) {
         const s2 = qd.supplier;
         alerts.push(S.rcc.alert({
