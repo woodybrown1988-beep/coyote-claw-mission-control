@@ -109,10 +109,12 @@ test('SITTINGS + covers: per-cover = FULL dine-in receipts net ÷ covers (NOT th
 // so the value itself is withheld — not annotated.
 test('CAPTURE gate: a thin, unevenly-sampled window withholds the per-sitting £ and says why', () => {
   const db = baseDb();
-  // Push most dine-in net onto "Order N" (the POS counter, unclusterable) so capture collapses,
-  // exactly as real weekend service does.
-  db.prepare(`INSERT INTO sales_receipts_api VALUES ('R20', ?, 'SALE', 0, 'LOCAL', 'Order 20', 90000, 1)`).run(shift(APIMAX, -2));
-  db.prepare(`INSERT INTO sales_receipts_api VALUES ('R21', ?, 'SALE', 0, 'storekit_orderpay', 'Order 21', 90000, 1)`).run(shift(APIMAX, -2));
+  // Push most dine-in net onto receipts carrying NO location at all. (Until 2026-08-19 this test
+  // used "Order N" — but a closed tab is now clusterable as one party, so the unclusterable case
+  // is a receipt with no table and no tab. The gate must still fire for whatever CANNOT be formed
+  // into a sitting, whatever that turns out to be next.)
+  db.prepare(`INSERT INTO sales_receipts_api VALUES ('R20', ?, 'SALE', 0, 'LOCAL', '', 90000, 1)`).run(shift(APIMAX, -2));
+  db.prepare(`INSERT INTO sales_receipts_api VALUES ('R21', ?, 'SALE', 0, 'storekit_orderpay', NULL, 90000, 1)`).run(shift(APIMAX, -2));
   addSittings(db); addCovers(db);
   const body = render(db);
   // tileOf() returns a fixed slice that can spill into the NEXT tile, and the neighbouring
