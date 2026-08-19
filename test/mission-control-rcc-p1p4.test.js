@@ -43,6 +43,11 @@ CREATE TABLE sales_api_ingest_runs (business_date TEXT, source TEXT, status TEXT
 CREATE TABLE sales_channel_map_api (account_profile_code TEXT PRIMARY KEY, profile_name TEXT, delivery_mode TEXT, channel_label TEXT, first_seen INTEGER, updated_at INTEGER, label_source TEXT);
 CREATE TABLE acct_groups_api (code TEXT PRIMARY KEY, name TEXT, statistic_group TEXT, updated_at INTEGER);
 CREATE TABLE rota_ahead_budget (business_date TEXT, department TEXT, labour_pct REAL, revenue_target_pence INTEGER, as_of INTEGER, PRIMARY KEY (business_date, department));
+-- The trend target moved to labour_budget on 2026-08-19: rota_ahead_budget is delete-all +
+-- FUTURE-only, so a trailing 8-week window could never intersect it and "vs target" was
+-- structurally incapable of ever plotting. labour_budget carries the same per-day figure and
+-- RETAINS history, so the trend can be judged against the target that was set at the time.
+CREATE TABLE labour_budget (business_date TEXT, department TEXT, labour_pct REAL, revenue_target_pence INTEGER, updated_at INTEGER, PRIMARY KEY (business_date, department));
 CREATE TABLE rota_review_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, mode TEXT, week_monday TEXT, ran_at INTEGER, status TEXT, trigger TEXT, report_json TEXT);
 CREATE TABLE sales_reconciliation (business_date TEXT, check_name TEXT, api_pence INTEGER, playwright_pence INTEGER, delta_pence INTEGER, passed INTEGER, finding TEXT, computed_at INTEGER, PRIMARY KEY (business_date, check_name));
 CREATE TABLE forecast_overrides (id INTEGER PRIMARY KEY AUTOINCREMENT, pct REAL NOT NULL CHECK (pct BETWEEN -50 AND 50), reason TEXT NOT NULL, created_at INTEGER NOT NULL);
@@ -70,7 +75,7 @@ function seedExecutive(db) {
   for (let d = 1; d <= 15; d++) hist.run(`2025-07-${pad(d)}`, 100000, 120000, 50);
   // trend target: both dept rows carry the SAME per-day figure — DISTINCT dedup must hold (a
   // doubled target would show −50% vs target; the dedup shows +0.0%)
-  const bud = db.prepare(`INSERT INTO rota_ahead_budget VALUES (?,?,0.13,110000,1)`);
+  const bud = db.prepare(`INSERT INTO labour_budget VALUES (?,?,0.13,110000,1)`);
   for (let d = 6; d <= 12; d++) { bud.run(`2026-07-${pad(d)}`, 'kitchen'); bud.run(`2026-07-${pad(d)}`, 'foh'); }
   // rota verdicts: kitchen £830 UNDER (good) forward; foh £124.18 OVER (bad) hindsight
   db.prepare(`INSERT INTO rota_review_runs (mode, week_monday, ran_at, status, trigger, report_json) VALUES ('forward','2026-07-13',1,'ok','manual',?)`)

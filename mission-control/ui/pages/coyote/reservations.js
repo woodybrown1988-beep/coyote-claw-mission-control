@@ -249,8 +249,19 @@ module.exports = {
     const now = (ctx && ctx.now) || Date.now();
     const query = (ctx && ctx.query) || {};
     const tab = TAB_KEYS.includes(String(query.tab || '')) ? String(query.tab) : 'executive';
-    const m = { now, tab, rev: null, exec: null, cov: null };
+    const m = { now, tab, rev: null, exec: null, cov: null, ingest: null };
     if (typeof q !== 'function') return m;
+    // PAGE-STAMP FRESHNESS, loaded on EVERY tab (2026-08-19, data-wiring audit). The stamp used to
+    // be the literal string "pending" on five of six tabs — a freshness signal that could not change.
+    // It read "pending" while the export was demonstrably live, and would have read exactly the same
+    // had the feed died. It now derives from the ledger's own last ok run, like every other freshness
+    // line on the board, and is loaded here rather than inside a per-tab builder BECAUSE the stamp
+    // shows on every tab — which is how it came to be a constant in the first place.
+    {
+      const res = q(`SELECT ingested_at, date_to FROM reservations_ingest_runs WHERE status='ok' ORDER BY ingested_at DESC LIMIT 1`, []);
+      const row = res && res.ok && res.rows && res.rows[0] ? res.rows[0] : null;
+      m.ingest = { at: row ? num(row.ingested_at) : null, to: row && row.date_to ? String(row.date_to) : null };
+    }
     if (tab === 'reviews') m.rev = buildReviews(q, now);
     if (tab === 'executive') m.exec = buildExecutive(q);
     // Phase 2 PR1: the covers feed lights the Executive, Behaviour and Capacity tabs (day-grain covers
@@ -897,7 +908,17 @@ module.exports = {
     } else if (tab === 'reviews') {
       stamp = 'review snapshot · <span class="none">not yet ingested</span>';
     } else {
-      stamp = 'OpenTable weekly export · <span class="none">pending</span>';
+      // The stamp used to be the literal string "pending" on every non-review tab — a freshness
+      // signal that could not change, so it read "pending" while the export was demonstrably live
+      // and would have read "pending" just the same if the feed had died. Derive it from the
+      // ledger's own last ok run, like every other freshness line on the board.
+      const ing = section && section.ingest;
+      if (ing && ing.at) {
+        const fr = S.freshness(ing.at, now);
+        stamp = `OpenTable export · ${fr.cls === 'fresh' ? `<b>${fr.label}</b>` : `<span class="${fr.cls}">${fr.label}</span>`}${ing.to ? ` · through ${esc(ing.to)}` : ''}`;
+      } else {
+        stamp = 'OpenTable export · <span class="none">no ingest recorded</span>';
+      }
     }
     return { stamp, body };
   },
