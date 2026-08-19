@@ -25,6 +25,10 @@ function greenDb() {
     CREATE TABLE ks_sync_meta(table_name TEXT PRIMARY KEY,row_count INTEGER,synced_at INTEGER);
     CREATE TABLE ks_app_settings(id TEXT,key TEXT,value TEXT,category TEXT);
     CREATE TABLE ks_incident_reports(id TEXT,reference_number TEXT,title TEXT,category TEXT,severity TEXT,status TEXT,occurred_at TEXT,reported_to_authority INTEGER,affected_people_count INTEGER);
+    -- ks_audits exists in the live mirror but was missing from this fixture, so the audit-trail
+    -- count query silently failed here and that path was never exercised. Added 2026-08-19 when the
+    -- new query-fault counter surfaced it.
+    CREATE TABLE ks_audits(id TEXT,entity_type TEXT,action TEXT,actor_name_snapshot TEXT,created_at TEXT);
     CREATE TABLE ks_allergen_incidents(id TEXT,incident_report_id TEXT,allergen TEXT,menu_item_name_snapshot TEXT,medical_attention_required INTEGER,created_at TEXT);
     CREATE TABLE ks_checklist_items(id TEXT,is_critical INTEGER);
     CREATE TABLE ks_checklist_responses(id TEXT,item_id TEXT,is_pass INTEGER,corrective_action_required INTEGER,is_corrected INTEGER);
@@ -155,4 +159,37 @@ test('connected render carries real numbers with zero fabricated £, and the app
   assert.match(r.body, /Critical-limit first-pass/, 'executive KPI present');
   assert.match(r.body, /pass\/borderline\/fail/, 'surfaces the app verdict, does not re-judge');
   assert.match(r.stamp, /cap clear/, 'green board stamp says cap clear');
+});
+
+// --- QUERY FAULTS (2026-08-19, data-wiring audit) ----------------------------------------------
+// Two queries here used `category ~ 'accid|injur'`. `~` is the POSTGRES regex operator (this table
+// originates in a Supabase mirror); in SQLite it is bitwise-NOT, so the statement THREW. safeSelect
+// turns a throw into {ok:false, rows:[]}, which at the call site is indistinguishable from "found
+// nothing" — so `(one(...) || {}).n || 0` rendered a confident green "0 accidents" that could never
+// have become non-zero, no matter how many were logged.
+//
+// THE CLASS: a silently-failing query is worse than a missing one, because it produces a NUMBER.
+// Hence a fault counter, so any FUTURE broken query announces itself instead of fabricating a zero.
+test('a logged accident is COUNTED — the Postgres-regex form could never see one', () => {
+  const db = greenDb();
+  db.prepare(`INSERT INTO ks_incident_reports VALUES('a','INC-A','Burn to forearm','accident','high','closed','2026-07-18',1,1)`).run();
+  const s = sectionOf(db);
+  assert.equal(s.queryFaults, 0, 'no query should fault against a real schema');
+  assert.equal(Number(s.incTotals.accidents), 1, 'the accident row must be counted');
+});
+
+test('NEGATIVE CONTROL: no accident logged is a REAL zero, and still scores clean', () => {
+  const s = sectionOf(greenDb());
+  assert.equal(s.queryFaults, 0);
+  assert.equal(Number(s.incTotals.accidents) || 0, 0, 'a true zero still reads zero');
+});
+
+test('THE CLASS: a query that throws is counted and announced, never rendered as 0', () => {
+  const db = greenDb();
+  db.exec('DROP TABLE ks_incident_reports');          // stand-in for ANY future broken query
+  const s = sectionOf(db);
+  assert.ok(s.queryFaults > 0, 'the failure must be COUNTED, not silently become "no rows"');
+  const body = render(db).body;
+  assert.match(body, /query on this page failed to run/, 'and stated at the top of the page');
+  assert.match(body, /Treat the zeros on this page as UNKNOWN/, 'naming what the reader must not trust');
 });
