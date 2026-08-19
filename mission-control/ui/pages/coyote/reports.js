@@ -65,6 +65,41 @@ const TAB_KEYS = TABS.map((t) => t.key);
 // non-cancelled, type not VOID/CANCEL/RECALL; net = net_without_tax_pence (ex-VAT).
 const SALE_WHERE = `r.cancelled = 0 AND (r.type IS NULL OR r.type NOT IN ('VOID','CANCEL','RECALL'))`;
 
+// ---- SITTINGS CAPTURE GATE (2026-08-19, from a live wrong-number report) ----------------------
+// A sitting can only be formed from a receipt carrying a PHYSICAL table ("… Table N"). The POS
+// records "Order N" — a per-order counter, not a location — for most service, and those are
+// deliberately NOT clustered (an "Order 3" an hour later is a different party; clustering it would
+// be fabrication). So the sittings population is a SUBSET of dine-in — and it is not drawn evenly:
+// measured over the 28 days to 2026-08-18, MON-FRI DEAL was ~100% captured by net, EAT IN ~9% and
+// QR ~19%. "Net per served sitting" is therefore mostly the MON-FRI DEAL price, and setting it
+// against QR compares two channels sampled at very different rates.
+//
+// The arithmetic was never wrong — a biased sample was being presented as a channel verdict. So the
+// panel must STATE the capture rate and REFUSE the comparison when the sample cannot carry it.
+// Thresholds are named here so a test can pin them, and the verdict is pure so it can go red.
+const SITTING_MIN_CAPTURE = 0.50;   // a channel's per-sitting figure stands only if >= half its net is clusterable
+const SITTING_MAX_SPREAD = 0.20;    // ...and the two compared channels are sampled within 20pp of each other
+
+function sittingCaptureVerdict(cap) {
+  const qr = cap && typeof cap.QR === 'number' ? cap.QR : null;
+  const served = cap && typeof cap.served === 'number' ? cap.served : null;
+  if (qr == null || served == null) return { ok: false, reason: 'capture rate unknown — cannot say how much of each channel these sittings represent' };
+  const pct = (x) => `${Math.round(x * 100)}%`;
+  const low = [];
+  if (qr < SITTING_MIN_CAPTURE) low.push(`QR ${pct(qr)}`);
+  if (served < SITTING_MIN_CAPTURE) low.push(`served ${pct(served)}`);
+  const spread = Math.abs(qr - served);
+  if (low.length) {
+    return { ok: false, qr, served, spread,
+      reason: `only ${low.join(' and ')} of that channel's net sits on a numbered table — too little of it is captured to read a per-party figure` };
+  }
+  if (spread > SITTING_MAX_SPREAD) {
+    return { ok: false, qr, served, spread,
+      reason: `the channels are captured at different rates (QR ${pct(qr)} vs served ${pct(served)}) — the comparison would measure table-assignment habit, not channel value` };
+  }
+  return { ok: true, qr, served, spread };
+}
+
 const QR_LABEL = 'STOREKIT ORDER & PAY';
 // The £38/order QR target is RETIRED (operator ruling 2026-07-31): a QR sitting places several
 // orders, so per-order ATV structurally understates QR spend. The decision feed renders spend
@@ -404,7 +439,27 @@ function buildDrivers(q, maxDate, rv2) {
            FROM sales_receipts_api r JOIN sales_channel_map_api m ON m.account_profile_code = COALESCE(r.account_profile_code,'')
           WHERE r.business_date BETWEEN ? AND ? AND ${SALE_WHERE}
             AND m.channel_label IN ('EAT IN','MON-FRI DEAL','STOREKIT ORDER & PAY')`, [from, apiMax]))[0];
-      d.sit = { from, to: apiMax, by, totNet, totSit, dineNet: dn ? num(dn.net) : null, covers: covers != null && covers > 0 ? covers : null };
+      // How much of each channel's net can actually FORM a sitting (see SITTING_MIN_CAPTURE above).
+      // Denominator = all dine-in net for the channel; numerator = the part on a physical table.
+      const capRows = rowsOf(q(
+        `SELECT m.channel_label lbl, SUM(r.net_without_tax_pence) net,
+                SUM(CASE WHEN r.table_name LIKE '%Table %' THEN r.net_without_tax_pence ELSE 0 END) cnet
+           FROM sales_receipts_api r JOIN sales_channel_map_api m ON m.account_profile_code = COALESCE(r.account_profile_code,'')
+          WHERE r.business_date BETWEEN ? AND ? AND ${SALE_WHERE}
+            AND m.channel_label IN ('EAT IN','MON-FRI DEAL','STOREKIT ORDER & PAY')
+          GROUP BY m.channel_label`, [from, apiMax]));
+      const pool = { QR: { net: 0, cnet: 0 }, served: { net: 0, cnet: 0 } };
+      const byLabel = {};
+      for (const r of capRows) {
+        const lbl = String(r.lbl); const net = num(r.net) || 0; const cnet = num(r.cnet) || 0;
+        const grp = lbl === 'STOREKIT ORDER & PAY' ? 'QR' : 'served';
+        pool[grp].net += net; pool[grp].cnet += cnet;
+        if (net > 0) byLabel[lbl] = cnet / net;
+      }
+      const cap = {};
+      for (const k of ['QR', 'served']) if (pool[k].net > 0) cap[k] = pool[k].cnet / pool[k].net;
+      d.sit = { from, to: apiMax, by, totNet, totSit, dineNet: dn ? num(dn.net) : null, covers: covers != null && covers > 0 ? covers : null,
+                capture: cap, captureByLabel: byLabel, verdict: sittingCaptureVerdict(cap) };
     }
   }
 
@@ -633,6 +688,7 @@ function channelMonthStats(rv2) {
 }
 
 module.exports = {
+  SITTING_MIN_CAPTURE, SITTING_MAX_SPREAD, sittingCaptureVerdict,
   key: 'revenue', route: '/coyote/revenue', workspace: 'coyote', title: 'Revenue',
   sub: 'Revenue Command Centre — all five tabs live · contribution gated on recipe costing · covers live via OpenTable (spend/cover derived)',
 
@@ -1466,16 +1522,26 @@ module.exports = {
       const perSit = (x) => (x && x.sittings > 0 ? gbp(Math.round(x.net / x.sittings)) : '—');
       const chOf = (k) => (sit && sit.by[k] && sit.by[k].sittings > 0 ? sit.by[k] : null);
       const qrSit = chOf('QR'), servedSit = chOf('served'), mixedSit = chOf('mixed');
+      // The per-party figures only stand if enough of each channel actually lands on a numbered
+      // table (SITTING_MIN_CAPTURE). When it does not, the value is WITHHELD rather than shown with
+      // a caveat underneath — a number on a KPI tile gets read, whatever the small print says.
+      const sitV = sit && sit.verdict ? sit.verdict : null;
+      const capBlocked = !!(sit && sitV && !sitV.ok);
+      const capPct = (x) => (typeof x === 'number' ? `${Math.round(x * 100)}%` : '—');
       const sitTiles = [
         S.rcc.kpi({
-          label: 'Net / QR sitting', value: perSit(qrSit),
-          sub: qrSit ? `${int(qrSit.sittings)} QR sittings · ${(qrSit.rcpts / qrSit.sittings).toFixed(2)} receipts/sitting`
-            : (sit ? 'no QR sittings in the window' : 'no sittings yet — run: lightspeed-api -- sittings-backfill'),
+          label: 'Net / QR sitting', value: capBlocked ? '—' : perSit(qrSit),
+          sub: capBlocked
+            ? `withheld — only ${capPct(sit.capture && sit.capture.QR)} of QR net sits on a numbered table`
+            : (qrSit ? `${int(qrSit.sittings)} QR sittings · ${(qrSit.rcpts / qrSit.sittings).toFixed(2)} receipts/sitting`
+              : (sit ? 'no QR sittings in the window' : 'no sittings yet — run: lightspeed-api -- sittings-backfill')),
         }),
         S.rcc.kpi({
-          label: 'Net / served sitting', value: perSit(servedSit),
-          sub: servedSit ? `${int(servedSit.sittings)} served sittings (EAT IN + MON-FRI DEAL)`
-            : (sit ? 'no served sittings in the window' : 'dine_in_sittings not populated'),
+          label: 'Net / served sitting', value: capBlocked ? '—' : perSit(servedSit),
+          sub: capBlocked
+            ? `withheld — only ${capPct(sit.capture && sit.capture.served)} of served net sits on a numbered table`
+            : (servedSit ? `${int(servedSit.sittings)} served sittings (EAT IN + MON-FRI DEAL)`
+              : (sit ? 'no served sittings in the window' : 'dine_in_sittings not populated')),
         }),
         S.rcc.kpi({
           label: 'Net / cover (overall)', value: (sit && sit.covers && sit.dineNet != null ? gbp(Math.round(sit.dineNet / sit.covers)) : '—'),
@@ -1484,8 +1550,13 @@ module.exports = {
         }),
       ].join('');
       const mixNote = mixedSit ? ` MIXED (both channels in one sitting): ${int(mixedSit.sittings)} (${(mixedSit.sittings / sit.totSit * 100).toFixed(1)}% — immaterial, hybrid ordering).` : '';
+      const labelCap = sit && sit.captureByLabel
+        ? Object.entries(sit.captureByLabel).map(([k, v]) => `${esc(k)} ${capPct(v)}`).join(' · ') : '';
+      const capLine = sit && sit.capture
+        ? `<div class="rv2-caption"><strong>Capture:</strong> a sitting can only form from a receipt carrying a numbered table; the POS books most service against "Order N", which is a counter, not a place — clustering those would invent parties. Over this window ${labelCap ? `that is ${labelCap} of each channel's net.` : 'capture could not be measured.'}${capBlocked ? ` <strong>The per-party comparison is withheld:</strong> ${esc(sitV.reason)}. It becomes readable when tables are assigned on the POS for ordinary service — nothing in the data can substitute for that.` : ''}</div>`
+        : '';
       const sitCaption = sit
-        ? `<div class="rv2-caption">Sittings 28d to ${esc(sit.to)} · a sitting = one party at a physical table (dine_in_sittings — 20-min cluster of receipts, ex-VAT; the honest QR-vs-served unit — a per-order ATV under-counts QR). Per-cover is OVERALL: OpenTable covers are day-total + channel-agnostic, so it is not split by channel.${mixNote}</div>`
+        ? capLine + `<div class="rv2-caption">Sittings 28d to ${esc(sit.to)} · a sitting = one party at a physical table (dine_in_sittings — 20-min cluster of receipts, ex-VAT). Figures here describe the table-served subset ONLY, never the whole day. Per-cover is OVERALL: OpenTable covers are day-total + channel-agnostic, so it is not split by channel.${mixNote}</div>`
         : `<div class="rv2-caption">dine_in_sittings not populated yet — after the derivation deploys, run <code>npm run lightspeed-api -- sittings-backfill</code> (ongoing days fill at ingest); until then this gates honestly.</div>`;
       const sitPanel = S.rcc.panel({
         title: 'Sittings — net per party by channel',
