@@ -176,6 +176,29 @@ function buildExec(q, maxDate, rv2) {
     exec.week.walkin = num(cc.walkin) || 0;
     exec.week.lyCovers = lyComparable ? num(lc.covers) : null;
 
+    // COVERS BASIS GUARD (2026-08-19). A covers YoY is only a like-for-like if BOTH windows were
+    // parsed the same way. The GuestCenter export splits a timestamp across two columns and the bare
+    // "Visit Time" never parsed, so every reservation ingested before the fix has visit_at NULL and
+    // its distinct same-table walk-ins collapsed into one row — understating covers. Repairing the
+    // CURRENT window while history is still collapsed does not remove the error, it MOVES it into
+    // the comparison: measured on this week vs LY, the spend/cover delta swings from -3.3% to +4.3%
+    // purely on which side is repaired. A delta that changes SIGN with the basis is not a delta.
+    // So: if either window still holds a collapsed row, the LEVEL still renders (it is true) and the
+    // DELTA is withheld with its reason. It lights up by itself once the history rebuild lands.
+    const collapsedIn = (from, to) => num((rowsOf(q(
+      `SELECT COUNT(*) n FROM reservations WHERE visit_date BETWEEN ? AND ? AND visit_at IS NULL`,
+      [from, to]))[0] || {}).n) || 0;
+    const curCollapsed = collapsedIn(wk.from, wk.to);
+    const lyCollapsed = lyComparable ? collapsedIn(lyFrom, lyTo) : 0;
+    exec.week.coversBasis = (curCollapsed + lyCollapsed) === 0
+      ? { ok: true }
+      : { ok: false, cur: curCollapsed, ly: lyCollapsed,
+          reason: lyCollapsed && !curCollapsed
+            ? 'last year’s covers are still un-reparsed, this year’s are corrected — the two are not on the same basis'
+            : (curCollapsed && !lyCollapsed
+              ? 'this week’s covers are not yet re-parsed while last year’s are — not the same basis'
+              : 'both windows still hold un-reparsed covers') };
+
     // ---- 8-week trend: trailing 8 full weeks ending at the KPI week; LY −364d; target =
     // the rota-ahead forecast basis (DISTINCT dedups the per-dept duplicate target rows).
     // A week without published targets simply has NO target point (honest gap in the dash). ----
@@ -949,6 +972,16 @@ module.exports = {
       const resShare = wk && covSeated > 0 ? `${Math.round((100 * wk.reserved) / covSeated)}%` : '—';
       const walkShare = wk && covSeated > 0 ? `${Math.round((100 * wk.walkin) / covSeated)}%` : '—';
       const cptTxt = wk && wk.covers != null && wk.txn ? (wk.covers / wk.txn).toFixed(2) : null;
+      // Spend per cover, this year and LY, plus the basis guard that decides whether the two may be
+      // compared at all (see COVERS BASIS GUARD where exec.week.coversBasis is built).
+      const spc = wk && wk.net != null && wk.covers ? Math.round(wk.net / wk.covers) : null;
+      const lySpc = wk && wk.lyNet != null && wk.lyCovers ? Math.round(wk.lyNet / wk.lyCovers) : null;
+      const basis = (wk && wk.coversBasis) || { ok: true };
+      // Two DIFFERENT reasons a YoY can be absent, and they must not wear each other's clothes:
+      // "LY not comparable" (premises guard / no LY record) is the pre-existing, correct state and
+      // keeps its own wording; a BASIS block is new and means the two sides were parsed differently.
+      const basisBlocked = !!(wk && wk.lyComparable && !basis.ok);
+      const canCompare = !!(wk && wk.lyComparable && basis.ok);
       const kpis = [
         S.rcc.kpi({
           label: 'Net revenue · ex-VAT', value: wk && wk.net != null ? gbp(wk.net) : '—',
@@ -965,13 +998,20 @@ module.exports = {
         // Covers are LIVE (OpenTable → covers_day). POS guest-count is STILL not covers (canon).
         S.rcc.kpi({
           label: 'Covers', value: wk && wk.covers != null ? int(wk.covers) : '—',
-          delta: wk ? deltaFor(wk.covers, wk.lyCovers) : null,
-          sub: wk && wk.covers != null ? `OpenTable seated · ${resShare} reserved / ${walkShare} walk-in` : 'no covers this week (OpenTable)',
-          barPct: wk ? barFor(wk.covers, wk.lyCovers) : null,
+          delta: canCompare ? deltaFor(wk.covers, wk.lyCovers) : null,
+          sub: wk && wk.covers != null
+            ? `OpenTable seated · ${resShare} reserved / ${walkShare} walk-in${basisBlocked ? ` · YoY withheld — ${esc(basis.reason)}` : ''}`
+            : 'no covers this week (OpenTable)',
+          barPct: canCompare ? barFor(wk.covers, wk.lyCovers) : null,
         }),
         S.rcc.kpi({
-          label: 'Average spend / cover', value: wk && wk.net != null && wk.covers ? gbp(Math.round(wk.net / wk.covers)) : '—',
-          sub: 'Lightspeed net ÷ OpenTable covers · ex-VAT (derived join)',
+          label: 'Average spend / cover', value: spc != null ? gbp(spc) : '—',
+          delta: canCompare ? deltaFor(spc, lySpc) : null,
+          sub: basisBlocked
+            ? `Lightspeed net ÷ OpenTable covers · YoY withheld — ${esc(basis.reason)}`
+            : (canCompare && lySpc != null ? 'Lightspeed net ÷ OpenTable covers · ex-VAT · vs same week LY'
+              : 'Lightspeed net ÷ OpenTable covers · ex-VAT (derived join)'),
+          barPct: canCompare ? barFor(spc, lySpc) : null,
         }),
         S.rcc.kpi({
           label: 'Average transaction', value: atv != null ? gbp(atv) : '—',
@@ -982,7 +1022,7 @@ module.exports = {
         S.rcc.kpi({ label: 'Revenue quality score', value: 'not ruled', sub: 'composite pending operator definition' }),
       ].join('');
       const kpiCaption = wk
-        ? `<div class="rv2-caption">${esc(wk.from)} → ${esc(wk.to)} (last full week, Mon–Sun) · vs same weekday-aligned week LY (−364d: ${esc(wk.lyFrom)} → ${esc(wk.lyTo)}) · per-receipt truth (day-net canon, v_sales_day_all)${wk.lyComparable ? '' : ' · LY not comparable (premises guard / no record) — deltas omitted, never a cross-site %'}${wk.covers != null ? ` · covers = OpenTable seated (covers_day): ${int(wk.covers)} = ${int(wk.reserved)} reserved + ${int(wk.walkin)} walk-in — booked covers are NEVER read as total${cptTxt ? ` · covers/transaction ${cptTxt} (sanity ~1.9–2.0; a material drift is a data finding, not a KPI)` : ''} · spend/cover = Lightspeed net ÷ covers (derived); POS guest-count is still not covers` : ' · covers stay not-wired until OpenTable lands'}</div>`
+        ? `<div class="rv2-caption">${esc(wk.from)} → ${esc(wk.to)} (last full week, Mon–Sun) · vs same weekday-aligned week LY (−364d: ${esc(wk.lyFrom)} → ${esc(wk.lyTo)}) · per-receipt truth (day-net canon, v_sales_day_all)${wk.lyComparable ? '' : ' · LY not comparable (premises guard / no record) — deltas omitted, never a cross-site %'}${wk.covers != null ? ` · covers = OpenTable seated (covers_day): ${int(wk.covers)} = ${int(wk.reserved)} reserved + ${int(wk.walkin)} walk-in — booked covers are NEVER read as total${cptTxt ? ` · covers/transaction ${cptTxt} (sanity ~1.9–2.0; a material drift is a data finding, not a KPI)` : ''} · spend/cover = Lightspeed net ÷ covers (derived); POS guest-count is still not covers${!basisBlocked ? '' : ` · <strong>covers YoY and spend/cover YoY are withheld</strong> — ${esc(basis.reason)} (${int(basis.ly || 0)} un-reparsed LY rows, ${int(basis.cur || 0)} this week). Levels are true; only the year-on-year comparison is blocked, and it returns by itself once the reservations history is rebuilt.`}` : ' · covers stay not-wired until OpenTable lands'}</div>`
         : `<div class="rv2-caption">No Lightspeed sales yet — the daily ingest (05:30) fills the day-grain record; covers stay not-wired until OpenTable lands.</div>`;
 
       // ---- 8-week trend (inline SVG, mock grammar: orange current+area, amber dashed target,
