@@ -485,7 +485,15 @@ module.exports = {
         <div style="font-size:15px;line-height:1.5;padding:4px 0 10px">No plan yet. It builds itself at 06:50 each morning — or build it now and adjust anything you disagree with.</div>
         ${cmd('Plan my day', 'plan_today', {}, 'primary')}</div>`;
     } else if (!mw) {
-      mustCard = `<div class="r-card r-panel" style="border-color:rgba(255,179,77,.4)"><div class="r-eyebrow hot">Today's must-win</div>
+      // TWO honest empty states (operator, twice on 2026-08-19): a fully-scheduled week is
+      // NOT an empty pool — when the compiler withheld the title on purpose (a must-win
+      // must be earned), say that, not "nothing is available".
+      mustCard = ev.no_must_win_reason
+        ? `<div class="r-card r-panel" style="border-color:rgba(69,196,134,.45)"><div class="r-eyebrow" style="color:var(--rgood,#45c486)">No must-win today — on purpose</div>
+        <div style="font-size:15px;line-height:1.5;padding:4px 0 6px">${LIFE.esc(String(ev.no_must_win_reason))}.</div>
+        <div style="font-size:12.5px;color:var(--rmuted);padding-bottom:8px">Work the schedule on the right; the supporting wins below are optional extras, not obligations.</div>
+        <button class="r-btn" data-lc-fab>Capture something new</button></div>`
+        : `<div class="r-card r-panel" style="border-color:rgba(255,179,77,.4)"><div class="r-eyebrow hot">Today's must-win</div>
         <div style="font-size:15px;line-height:1.5;padding:4px 0 10px">Nothing is available to win today — everything is waiting, parked or finished. If that's wrong, capture the thing on your mind.</div>
         <button class="r-btn primary" data-lc-fab>Capture it</button></div>`;
     } else {

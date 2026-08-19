@@ -494,6 +494,25 @@ test('the must-win says WHY it was picked — a reach-down is never a mystery', 
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('a withheld must-win renders the on-purpose state, never "nothing is available"', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-nmw-'));
+  const dbPath = makeFixture(dir, { tasks: [{ id: 't-left', title: 'Confirmation statement' }] });
+  const db = new sqlite.DatabaseSync(dbPath);
+  db.prepare(`INSERT INTO life_daily_plans (owner_id, plan_date, status, must_win_task_id, support_task_1_id, compilation_evidence_json, created_at, updated_at)
+              VALUES ('woody', ?, 'PROPOSED', NULL, 't-left', ?, ?, ?)`)
+    .run(DAY, JSON.stringify({ no_must_win_reason: "your week's pressing work already holds its own slots (6 higher-priority tasks scheduled or with an agent) and nothing left carries due-pressure — the schedule is the plan today" }),
+      new Date(NOW).toISOString(), new Date(NOW).toISOString());
+  db.close();
+  withEnv(dbPath, () => {
+    const body = TODAY.render(TODAY.getSection(null, { now: NOW }), { now: NOW }).body;
+    assert.match(body, /No must-win today — on purpose/, 'the withholding is a state, not an absence');
+    assert.match(body, /the schedule is the plan today\./, 'the compiler’s reason renders');
+    assert.match(body, /optional extras, not obligations/, 'supports are framed honestly');
+    assert.ok(!body.includes('Nothing is available to win today'), 'never the empty-pool copy for a full week');
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('the refusal copy translates the writer’s stale sentence into the owner’s words', () => {
   const copy = emittedScript();
   assert.ok(copy.includes('already passed'), 'the stale key is in the client copy table');
