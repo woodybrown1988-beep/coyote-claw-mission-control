@@ -70,6 +70,14 @@ module.exports = {
     // SQLite) produced a permanent green "0 accidents" that could never become non-zero.
     // Counting faults here means ANY future broken query announces itself instead of fabricating a
     // zero — the guard covers the class, not just the two queries repaired below.
+    // SCORING WINDOW (2026-08-19, data-wiring audit). Every KPI below used to score over the
+    // table's WHOLE LIFETIME, so a bad week in March still dragged today's number and a recent
+    // collapse could barely move it — a "safety control score" that reports the average of all time
+    // is not a control, it is a memorial. Bounded and STATED, so the reader knows what period the
+    // number describes.
+    const KS_WINDOW_DAYS = 90;
+    const winFrom = new Date(now - KS_WINDOW_DAYS * 86400000).toISOString();
+    const winFromDate = winFrom.slice(0, 10);
     let queryFaults = 0;
     const one = (sql, p) => { const r = q(sql, p || []); if (!r || !r.ok) { queryFaults += 1; return null; } return r.rows && r.rows[0] ? r.rows[0] : null; };
     const rows = (sql, p) => { const r = q(sql, p || []); if (!r || !r.ok) { queryFaults += 1; return []; } return r.rows || []; };
@@ -127,11 +135,13 @@ module.exports = {
     const tp = one(`SELECT
         sum(CASE WHEN lower(status)='pass' THEN 1 ELSE 0 END) p,
         sum(CASE WHEN lower(status)='borderline' THEN 1 ELSE 0 END) b,
-        count(*) n FROM ks_temp_log_entries`) || {};
+        count(*) n FROM ks_temp_log_entries WHERE logged_at >= '${winFrom}'`) || {};
     const tempFirstPass = pct(num(tp.p) || 0, num(tp.n) || 0);
     const ccrit = one(`SELECT
         sum(CASE WHEN r.is_pass=1 THEN 1 ELSE 0 END) p, count(*) n
-        FROM ks_checklist_responses r JOIN ks_checklist_items i ON i.id=r.item_id WHERE i.is_critical=1`) || {};
+        FROM ks_checklist_responses r JOIN ks_checklist_items i ON i.id=r.item_id
+             JOIN ks_checklist_runs cr ON cr.id=r.run_id
+        WHERE i.is_critical=1 AND cr.scheduled_date >= '${winFromDate}'`) || {};
     const critCheckPass = pct(num(ccrit.p) || 0, num(ccrit.n) || 0);
     const sCritical = tempFirstPass == null ? (critCheckPass == null ? null : critCheckPass) : (critCheckPass == null ? tempFirstPass : 0.6 * tempFirstPass + 0.4 * critCheckPass);
 
@@ -177,8 +187,11 @@ module.exports = {
     // ---- executive KPIs ----
     const runs = one(`SELECT count(*) n,
         sum(CASE WHEN lower(coalesce(status,'')) IN ('completed','signed_off','complete') THEN 1 ELSE 0 END) done,
-        sum(CASE WHEN signed_off_at IS NOT NULL THEN 1 ELSE 0 END) signed FROM ks_checklist_runs`) || {};
-    const respAll = one(`SELECT count(*) n, sum(CASE WHEN is_pass=1 THEN 1 ELSE 0 END) pass FROM ks_checklist_responses`) || {};
+        sum(CASE WHEN signed_off_at IS NOT NULL THEN 1 ELSE 0 END) signed FROM ks_checklist_runs
+        WHERE scheduled_date >= '${winFromDate}'`) || {};
+    const respAll = one(`SELECT count(*) n, sum(CASE WHEN r.is_pass=1 THEN 1 ELSE 0 END) pass
+        FROM ks_checklist_responses r JOIN ks_checklist_runs cr ON cr.id=r.run_id
+       WHERE cr.scheduled_date >= '${winFromDate}'`) || {};
     const checksCompleted = pct(num(runs.done) || 0, num(runs.n) || 0);
     const correctiveOpen = corrN - corrDone;
 
@@ -224,7 +237,7 @@ module.exports = {
     const site = one(`SELECT name, local_authority, registration_number FROM ks_sites LIMIT 1`) || {};
 
     return {
-      now, connected: true, lastSync, totalRows, meta, queryFaults,
+      now, connected: true, lastSync, totalRows, meta, queryFaults, windowDays: KS_WINDOW_DAYS, windowFrom: winFromDate,
       thresholds, fridgeStorageMax, fridgeCalibrationFlag,
       cap: { active: capActive, reasons: capReasons },
       score: { blended, status, components },
@@ -300,7 +313,7 @@ module.exports = {
     // Executive KPIs
     const kpiStrip = `<div class="r-grid r-kpi-grid">
       ${S.rcc.kpi({ label: 'Safety control score', value: sc.blended == null ? '—' : `${sc.blended} / 100`, sub: sec.cap.active ? 'capped RED by critical rules' : 'blended, uncapped', barPct: sc.blended || 0 })}
-      ${S.rcc.kpi({ label: 'Required checks completed', value: fmtPct(k.checksCompleted), sub: `${k.checksN} runs`, barPct: k.checksCompleted || 0 })}
+      ${S.rcc.kpi({ label: 'Required checks completed', value: fmtPct(k.checksCompleted), sub: `${k.checksN} runs · last ${sec.windowDays || 90}d`, barPct: k.checksCompleted || 0 })}
       ${S.rcc.kpi({ label: 'Check pass rate', value: fmtPct(k.respPass), sub: `${k.respN} responses`, barPct: k.respPass || 0 })}
       ${S.rcc.kpi({ label: 'Critical-limit first-pass', value: fmtPct(k.tempFirstPass), sub: `${k.tempN} temperature readings`, barPct: k.tempFirstPass || 0 })}
       ${S.rcc.kpi({ label: 'Corrective actions open', value: String(k.correctiveOpen), sub: k.corrOverdue ? `${k.corrOverdue} overdue` : 'none overdue', barPct: k.correctiveOpen ? 60 : 8 })}
@@ -316,7 +329,7 @@ module.exports = {
       ? `<div class="ks capban"><b>RED-CAP ACTIVE — the score cannot render green.</b> ${sec.cap.reasons.map((r) => `${esc(r.kind)}${r.n > 1 ? ` ×${r.n}` : ''} (${esc(r.detail)})`).join(' · ')}.<div class="ks r-mini-note">A hard override, not a weighting: any unresolved critical breach / open allergen incident / overdue critical action forces RED regardless of the blended number. Resolve in the app to clear it.</div></div>`
       : `<div class="ks greenban">No unresolved critical breaches, allergen incidents or overdue critical actions — the cap is clear, the blended score stands on its own.</div>`;
     const scorePanel = S.rcc.panel({
-      title: 'Safety control score', sub: 'Weighted position with the hard critical-rules cap over the top',
+      title: 'Safety control score', sub: `Weighted position with the hard critical-rules cap over the top · scored over the last ${sec.windowDays || 90} days (from ${S.escapeHtml(String(sec.windowFrom || ''))}) — not over all time`,
       headRight: S.rcc.tag(sec.cap.active ? 'capped red' : (sc.status === 'good' ? 'controlled' : sc.status === 'warn' ? 'watch' : 'action'), sec.cap.active ? 'bad' : sc.status),
       body: `<div class="ks scorewrap"><div class="ks ring ${sec.cap.active ? 'bad' : sc.status}"><b style="color:${sec.cap.active ? T.bad : tint(sc.blended)}">${sc.blended == null ? '—' : sc.blended}</b><small>/ 100</small></div>
         <div style="flex:1;min-width:0"><div class="ks scomp">${compRows}</div></div></div>${capBanner}` });

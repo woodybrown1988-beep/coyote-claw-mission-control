@@ -200,7 +200,10 @@ test('executive KPIs: prime cost 45.0% = COGS 20.0% + labour 25.0%; contribution
 test('executive caption states the month + BOTH bases (COGS base + labour base) — pinned', () => {
   const db = makeDb(); seedExec(db);
   const body = render(db);
-  assert.ok(body.includes('month = Jun 2026 (the latest complete month on the day-net record)'), 'the month is stated');
+  // 2026-08-19: the reference month must be calendar-complete AND POSTED. Jul 2026 was
+  // calendar-complete on 1 Aug but only ~40% booked, and the executive rendered COGS 5.3% against a
+  // ~28% run rate off it. The wording changed with the rule.
+  assert.ok(body.includes('month = Jun 2026 (the latest complete AND posted month on the day-net record)'), 'the month is stated');
   assert.ok(body.includes('COGS = QB Cost-of-Goods-Sold accounts, qb_pl_monthly ÷ that net'), 'the COGS basis is stated');
   assert.ok(body.includes('labour = labour_day TRUE month £25,000.00 (locked rates × burden + salaried/365'), 'the labour basis is stated with the TRUE ruler');
   assert.ok(body.includes('prime cost = COGS % + labour % on the ONE net base'), 'the one-net-base rule is stated');
