@@ -466,7 +466,14 @@ function buildDrivers(q, maxDate, rv2) {
       // Denominator = all dine-in net for the channel; numerator = the part on a physical table.
       const capRows = rowsOf(q(
         `SELECT m.channel_label lbl, SUM(r.net_without_tax_pence) net,
-                SUM(CASE WHEN r.table_name LIKE '%Table %' THEN r.net_without_tax_pence ELSE 0 END) cnet
+                -- CLUSTERABLE = whatever the engine can actually form a sitting from. Since
+                -- 2026-08-19 that is a physical table OR a closed "Order N" tab (a tab is already
+                -- one party's whole visit; only the RECYCLING of the counter ever made Order-N
+                -- unclusterable, and tabs are still never grouped with each other). Keeping this
+                -- predicate in step with src/lightspeed-api/sittings.ts is the whole point of the
+                -- gate: if the two drift apart, the capture rate reported here stops describing
+                -- the population the sittings were actually drawn from.
+                SUM(CASE WHEN r.table_name LIKE '%Table %' OR r.table_name LIKE 'Order %' THEN r.net_without_tax_pence ELSE 0 END) cnet
            FROM sales_receipts_api r JOIN sales_channel_map_api m ON m.account_profile_code = COALESCE(r.account_profile_code,'')
           WHERE r.business_date BETWEEN ? AND ? AND ${SALE_WHERE}
             AND m.channel_label IN ('EAT IN','MON-FRI DEAL','STOREKIT ORDER & PAY')
