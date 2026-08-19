@@ -29,7 +29,7 @@ function db_(lyCollapsed) {
     CREATE TABLE sales_day (business_date TEXT PRIMARY KEY, net_sales_pence INT, gross_sales_pence INT, transactions INT, discounts_pence INT, refunds_pence INT, voids_pence INT);
     CREATE TABLE v_sales_day_all (business_date TEXT, net_sales_pence INT, gross_sales_pence INT, transactions INT, premises TEXT);
     CREATE TABLE covers_day (business_date TEXT PRIMARY KEY, reserved_covers INT, walkin_covers INT, total_covers INT);
-    CREATE TABLE reservations (reservation_key TEXT PRIMARY KEY, visit_date TEXT, visit_at TEXT, party_size INT);
+    CREATE TABLE reservations (reservation_key TEXT PRIMARY KEY, visit_date TEXT, visit_at TEXT, party_size INT, seated_date TEXT);
     CREATE TABLE labour_day (business_date TEXT, actual_minutes INT, actual_cost_pence INT, salaried_cost_pence INT);
     CREATE TABLE sales_receipts_api (receipt_id TEXT, business_date TEXT, net_without_tax_pence INT, cancelled INT, type TEXT, account_profile_code TEXT, table_name TEXT);
     CREATE TABLE sales_receipt_lines_api (receipt_id TEXT, time_of_sale_ms INT, net_without_tax_pence INT, accounting_group TEXT);
@@ -39,18 +39,21 @@ function db_(lyCollapsed) {
   const sd = db.prepare('INSERT INTO sales_day VALUES (?,?,?,?,?,?,?)');
   const va = db.prepare('INSERT INTO v_sales_day_all VALUES (?,?,?,?,?)');
   const cd = db.prepare('INSERT INTO covers_day VALUES (?,?,?,?)');
-  const rs = db.prepare('INSERT INTO reservations VALUES (?,?,?,?)');
+  const rs = db.prepare('INSERT INTO reservations VALUES (?,?,?,?,?)');
   // CURRENT: 500 covers/day @ £5,000 net → spend/cover £10.00
   for (const d of range('2026-06-20', '2026-07-19')) {
     sd.run(d, 500000, 600000, 250, 0, 0, 0); va.run(d, 500000, 600000, 250, 'current');
     cd.run(d, 200, 300, 500);
-    rs.run('c' + d, d, d + 'T19:00:00', 4);       // current rows are re-parsed (visit_at present)
+    rs.run('c' + d, d, d + 'T19:00:00', 4, d + 'T19:05:00');   // current rows carry a time discriminator
   }
   // LY: 400 covers/day @ £5,000 net → spend/cover £12.50 (so a real delta exists to withhold)
   for (const d of range('2025-07-10', '2025-07-24')) {
     sd.run(d, 500000, 600000, 250, 0, 0, 0); va.run(d, 500000, 600000, 250, 'current');
     cd.run(d, 150, 250, 400);
-    rs.run('l' + d, d, lyCollapsed ? null : d + 'T19:00:00', 4);
+    // AT RISK = no time discriminator AT ALL. visit_at alone is not the test: until 2026-07-23 the
+    // export carried seated_date as a timestamp to the second, which discriminates on its own — all
+    // 63,915 historical rows are uniquely keyed. Only when BOTH are absent can a row collapse.
+    rs.run('l' + d, d, lyCollapsed ? null : d + 'T19:00:00', 4, lyCollapsed ? null : d + 'T19:05:00');
   }
   return db;
 }
@@ -80,6 +83,34 @@ test('LY still collapsed → BOTH covers YoY and spend/cover YoY are withheld, l
 
 test('the guard counts the un-reparsed rows it found, so the claim is checkable', () => {
   const body = render(db_(true));
-  assert.match(body, /un-reparsed LY rows/);
-  assert.doesNotMatch(body, /\(0 un-reparsed LY rows/, 'it must report the real count, not zero');
+  assert.match(body, /at-risk LY rows/);
+  assert.doesNotMatch(body, /\(0 at-risk LY rows/, 'it must report the real count, not zero');
+});
+
+// --- THE CORRECTION THAT MATTERS MORE THAN THE GUARD (2026-08-19) -------------------------------
+// The first version of this guard tested `visit_at IS NULL`, which is true of ALL 65,959 rows, and
+// so declared the entire reservations history damaged. It was not. The bare "Visit Time" column
+// never parsed — but until 2026-07-23 the export ALSO carried seated_date as a timestamp to the
+// second, which discriminates one party from another on its own: all 63,915 historical rows are
+// uniquely keyed, zero collapse. The export format then narrowed, the key lost every time component
+// at once, and 773 of 2,812 rows collapsed.
+//
+// An over-broad guard is not the safe direction. It withheld a spend-per-cover YoY that was sound
+// all along, and pointed at a full-history rebuild that was never needed.
+test('a window with seated_date but no visit_at is NOT at risk — it is uniquely keyed', () => {
+  const db = db_(false);
+  // Strip visit_at from the LY window, leaving seated_date — the real historical shape.
+  db.prepare(`UPDATE reservations SET visit_at = NULL WHERE visit_date < '2026-01-01'`).run();
+  const body = render(db);
+  const spc = tile(body, 'Average spend / cover');
+  assert.doesNotMatch(spc, /withheld/,
+    'seated_date alone discriminates — the comparison must NOT be blocked by a missing visit_at');
+  assert.match(spc, /vs same week LY/, 'and the delta renders');
+});
+
+test('a window with NEITHER discriminator is still caught', () => {
+  const db = db_(false);
+  db.prepare(`UPDATE reservations SET visit_at = NULL, seated_date = NULL WHERE visit_date < '2026-01-01'`).run();
+  const spc = tile(render(db), 'Average spend / cover');
+  assert.match(spc, /withheld/, 'no time component at all is the shape that genuinely collapses');
 });
