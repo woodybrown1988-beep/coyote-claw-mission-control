@@ -499,9 +499,14 @@ module.exports = {
       const fbLine = fb
         ? `<div style="font-size:12.5px;color:#f5c96b;margin:6px 0 2px">Already scheduled — ${LIFE.esc(new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/London', weekday: 'short', day: 'numeric', month: 'short' }).format(new Date(`${String(fb).slice(0, 10)}T12:00:00Z`)))} at ${LIFE.esc(String(fb).slice(11, 16))}. Replan to pick a fresh must-win for today.</div>`
         : '';
+      // WHY THIS (operator ask 2026-08-19: a far-dated filing topped Today and read as a
+      // mystery). The compiler records its own reason — a reach-down says it is one.
+      const whyLine = ev.must_win_why
+        ? `<div style="font-size:12px;color:var(--rmuted);margin:4px 0 2px">Why this: ${LIFE.esc(String(ev.must_win_why))}.</div>`
+        : '';
       mustCard = `<div class="r-card r-panel" style="border-color:rgba(255,179,77,.4)"><div class="r-eyebrow hot">Today's must-win</div>
         <div style="font-size:19px;font-weight:650;line-height:1.3;margin-bottom:8px">${link(mw.id, mw.title)}</div>
-        <div>${S.rcc.tag(mw.status === 'IN_PROGRESS' ? 'in progress' : 'ready', mw.status === 'IN_PROGRESS' ? 'good' : '')} ${S.rcc.tag(mw.domain_key)}</div>${fbLine}
+        <div>${S.rcc.tag(mw.status === 'IN_PROGRESS' ? 'in progress' : 'ready', mw.status === 'IN_PROGRESS' ? 'good' : '')} ${S.rcc.tag(mw.domain_key)}</div>${whyLine}${fbLine}
         <div class="r-defbox"><small>Definition of done</small><div style="font-size:13px;line-height:1.45">${dod}</div></div>
         <div style="display:flex;gap:8px;flex-wrap:wrap"><a class="r-btn primary" href="/life/task?id=${encodeURIComponent(mw.id)}">Open task</a>${planIsDraft ? cmd('Approve plan', 'approve_plan', { planDate: s.today }, '') : ''}</div></div>`;
     }
