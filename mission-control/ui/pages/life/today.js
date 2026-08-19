@@ -178,6 +178,19 @@ module.exports = {
         // AGENTS WAITING ON YOU (operator ask 2026-08-13): dispatch + send-back events; the
         // live job state resolves in render from the business store (by id).
         dispatchEvents: q(`SELECT task_id, event_type, payload_json FROM life_task_events WHERE event_type IN ('AGENT_DISPATCHED','REOPENED') ORDER BY created_at ASC`),
+        // NEW UPDATE (operator ask 2026-08-19: "the task is marked somewhere on the today
+        // sheet advising new update … flashing to show me its returned or has a 'New Update'
+        // banner or both"). UNSEEN = the agent has spoken more recently than the owner has
+        // acted on that task. No new write, no read-receipt to maintain, and no stale flag:
+        // answering, deciding or completing clears it because those ARE the owner acting.
+        // Merely opening the page does not clear it — deliberately: a returned answer stays
+        // flagged until it is dealt with.
+        agentSaidAt: q(`SELECT task_id, MAX(created_at) at FROM life_task_updates WHERE actor_type = 'AGENT' GROUP BY task_id`),
+        ownerActedAt: q(`SELECT task_id, MAX(at) at FROM (
+                           SELECT task_id, MAX(created_at) at FROM life_task_updates WHERE actor_type = 'HUMAN' GROUP BY task_id
+                           UNION ALL
+                           SELECT task_id, MAX(created_at) at FROM life_task_events WHERE actor_type = 'HUMAN' GROUP BY task_id
+                         ) GROUP BY task_id`),
         waitingRows: q(`SELECT w.task_id, w.dependency_label, w.wake_type, w.fallback_at FROM life_waiting_conditions w WHERE w.state = 'ACTIVE' ORDER BY w.fallback_at IS NULL, w.fallback_at LIMIT 12`),
         activeOutcomes: q(`SELECT DISTINCT domain_key FROM life_outcomes WHERE status = 'ACTIVE'`).map((r) => r.domain_key),
         neglectedFromWork: q(`SELECT DISTINCT domain_key FROM v_life_available_work`).map((r) => r.domain_key),
@@ -216,6 +229,13 @@ module.exports = {
     // AGENTS WAITING ON YOU: a task whose agent cannot proceed without your words. Its own
     // panel, high on the page — the whole point of the ask was not having to open a task
     // to discover someone is stuck. Terminal tasks are excluded (nothing to unblock).
+    const ownerAt = Object.fromEntries((s.ownerActedAt || []).map((r) => [r.task_id, String(r.at || '')]));
+    const unseen = (s.agentSaidAt || [])
+      .filter((r) => String(r.at || '') > (ownerAt[r.task_id] || ''))
+      .map((r) => ({ id: r.task_id, at: String(r.at || ''), title: (t(r.task_id) || {}).title || null }))
+      .filter((r) => r.title && !['DONE', 'CANCELLED'].includes(String((t(r.id) || {}).status || '')))
+      .sort((a, b) => (a.at < b.at ? 1 : -1));
+    const newUpdateIds = new Set(unseen.map((u) => u.id));
     const dispatchOf = LIFE.dispatchStateByTask(s.dispatchEvents || []);
     const jobsById = LIFE.jobStates((ctx && ctx.q) || null, [...dispatchOf.values()].map((d) => d.jobId));
     const stuck = [];
@@ -793,7 +813,7 @@ module.exports = {
       title: 'Agents waiting on you', sub: 'They cannot go on until you say something — a reply is usually one line',
       headRight: `<span class="r-pill">${stuck.length}</span>`,
       body: stuck.map(({ task, nu }) => `<div class="r-lrow" style="${LIFE.NEEDS_YOU_ROW_STYLE}">`
-        + `<div style="min-width:0"><div style="font-weight:600">${link(task.id, task.title)}</div>`
+        + `<div style="min-width:0"><div style="font-weight:600">${link(task.id, task.title)}${newUpdateIds.has(task.id) ? ' <span class="lt-newtag">New update</span>' : ''}</div>`
         + `<div style="font-size:12.5px;color:var(--rbad,#ef6b68);font-weight:600;margin-top:3px">🗣 ${LIFE.esc(nu.who)} — ${LIFE.esc(nu.reason)}</div></div>`
         + `<a class="r-btn small primary" href="/life/task?id=${encodeURIComponent(task.id)}">Talk to it</a></div>`).join(''),
     }) : '';
@@ -807,7 +827,22 @@ module.exports = {
     // LAYOUT (operator feedback 2026-08-05: cover the page, kill the dead space): the golden's
     // grammar — hero gives the must-win the widest column; below, TWO wide columns whose card
     // stacks balance (Needs+Available | Waiting+Handled) instead of three narrow ones.
+    // NEW UPDATES BANNER — the top of the page, because a returned answer the owner never
+    // notices is the same as no answer at all. Unseen = the agent spoke after the owner last
+    // acted (see agentSaidAt/ownerActedAt). It pulses ONCE per render, and respects
+    // prefers-reduced-motion; the count and the titles are the message, the motion is only
+    // what catches the eye.
+    const updatesBanner = unseen.length
+      ? `<div class="lt-newup"><div class="lt-newup-dot"></div><div style="min-width:0">`
+        + `<div style="font-weight:700;font-size:13.5px">${unseen.length} new agent update${unseen.length === 1 ? '' : 's'} — an agent has come back to you</div>`
+        + `<div style="font-size:12.5px;color:var(--rmuted);margin-top:3px;overflow-wrap:anywhere">`
+        + unseen.slice(0, 4).map((u) => `<a href="/life/task?id=${encodeURIComponent(u.id)}" style="color:inherit">${LIFE.esc(String(u.title).slice(0, 70))}</a>`).join(' · ')
+        + (unseen.length > 4 ? ` · and ${unseen.length - 4} more` : '')
+        + `</div></div><div style="flex-shrink:0;font-size:11.5px;color:var(--rmuted)">clears when you reply, decide or complete</div></div>`
+      : '';
+
     const body = head.replace('__HEADBTNS__', headBtns)
+      + updatesBanner
       + `<div class="lt-hero">${rexCard}${mustCard}${myDay}</div>`
       + (stuckPanel ? `<div style="margin-bottom:12px">${stuckPanel}</div>` : '')
       + (dueSoonPanel ? `<div style="margin-bottom:12px">${dueSoonPanel}</div>` : '')
@@ -817,6 +852,14 @@ module.exports = {
       + `<div style="display:grid;gap:12px;align-content:start">${waitingPanel}${guardrails}${handled}</div>`
       + `</div>`
       + `<style>
+      /* NEW UPDATE (2026-08-19). The pulse is the ONLY animation on this page and it stops
+         after three passes — a permanently flashing page is noise, not a signal — and it is
+         removed entirely for anyone who asked their system for reduced motion. */
+      .lt-newup{display:flex;gap:12px;align-items:center;margin:0 0 12px;padding:11px 14px;border:1px solid rgba(255,179,77,.55);border-left:3px solid var(--raccent2,#ffb34d);border-radius:12px;background:linear-gradient(90deg,rgba(255,179,77,.13),rgba(255,179,77,.04))}
+      .lt-newup-dot{width:9px;height:9px;border-radius:50%;background:var(--raccent2,#ffb34d);flex-shrink:0;animation:ltpulse 1.6s ease-in-out 3}
+      .lt-newtag{display:inline-block;margin-left:7px;padding:1px 7px;border-radius:999px;font-size:10.5px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;color:#12161a;background:var(--raccent2,#ffb34d);animation:ltpulse 1.6s ease-in-out 3;vertical-align:middle}
+      @keyframes ltpulse{0%,100%{opacity:1}50%{opacity:.35}}
+      @media (prefers-reduced-motion: reduce){.lt-newup-dot,.lt-newtag{animation:none}}
         .lt-hero{display:grid;gap:12px;grid-template-columns:minmax(0,1.05fr) minmax(0,1.4fr) minmax(0,1fr);margin-bottom:12px}
         .lt-main{display:grid;gap:12px;grid-template-columns:repeat(2,minmax(0,1fr))}
         @media(max-width:1100px){.lt-hero{grid-template-columns:1fr}}
