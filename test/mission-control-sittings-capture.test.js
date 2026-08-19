@@ -57,3 +57,17 @@ test('unknown capture is refused, never silently treated as fine', () => {
   assert.equal(sittingCaptureVerdict({ QR: 0.9 }).ok, false, 'one arm known is not enough to compare two');
   assert.match(sittingCaptureVerdict({}).reason, /capture rate unknown/);
 });
+
+// --- RULERS AND GUARDS THAT CAN ACTUALLY FAIL (2026-08-19, data-wiring audit) -------------------
+// Three gates were found that could not go red for the thing they existed to catch. A stated
+// tolerance nobody evaluates is decoration: the reader assumes a number shown without alarm is a
+// number inside the band.
+const { CPT_BAND } = reports;
+
+test('the covers/transaction band is a NAMED, readable value — not a phrase in a caption', () => {
+  assert.deepEqual(CPT_BAND, [1.9, 2.0]);
+  // The band sat in prose ("sanity ~1.9–2.0") where no code could read it, so the tile rendered
+  // whatever came out in plain type. It was outside the band for the entire covers-collapse window
+  // and said nothing. Exporting it is what makes judging it possible at all.
+  assert.ok(CPT_BAND[0] < CPT_BAND[1], 'a band with the bounds the wrong way round can never fire');
+});

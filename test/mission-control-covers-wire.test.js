@@ -121,7 +121,11 @@ test('Revenue Drivers — Covers/transaction sanity tile + per-day scorecard cov
   const ctx = { q: q(db), now: Date.parse('2026-07-20T09:00:00Z'), query: { tab: 'drivers' } };
   const body = revPage.render(revPage.getSection(db, ctx), ctx).body;
   assert.match(body, /Covers \/ transaction<\/div><div class="r-kpi-value">1\.91/);
-  assert.match(body, /sanity ~1\.9–2\.0 \(drift = data finding, not a KPI\)/);
+  // 2026-08-19: the band is now JUDGED, not just quoted. 1.91 sits inside 1.9–2.0, so the tile must
+  // say so plainly and must NOT raise the out-of-band state — a ruler that flags everything is as
+  // useless as one that flags nothing.
+  assert.match(body, /inside the 1\.9–2 sanity band/, 'an in-band value is stated as in-band');
+  assert.doesNotMatch(body, /OUT OF BAND/, 'and must not cry wolf on a healthy value');
   assert.match(body, /spend\/cover = net ÷ covers/, 'the scorecard note names the derivation');
 });
 

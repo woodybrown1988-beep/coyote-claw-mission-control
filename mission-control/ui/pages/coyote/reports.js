@@ -65,6 +65,10 @@ const TAB_KEYS = TABS.map((t) => t.key);
 // non-cancelled, type not VOID/CANCEL/RECALL; net = net_without_tax_pence (ex-VAT).
 const SALE_WHERE = `r.cancelled = 0 AND (r.type IS NULL OR r.type NOT IN ('VOID','CANCEL','RECALL'))`;
 
+// The covers-per-transaction sanity band. Named and exported so the tile can be JUDGED against it
+// and a test can pin it — it was previously a phrase inside a caption, which no code could read.
+const CPT_BAND = [1.9, 2.0];
+
 // ---- SITTINGS CAPTURE GATE (2026-08-19, from a live wrong-number report) ----------------------
 // A sitting can only be formed from a receipt carrying a PHYSICAL table ("… Table N"). The POS
 // records "Order N" — a per-order counter, not a location — for most service, and those are
@@ -154,13 +158,20 @@ function buildExec(q, maxDate, rv2) {
          FROM v_sales_day_all WHERE business_date BETWEEN ? AND ?`, [from, to]))[0] || {};
     const cur = agg(wk.from, wk.to);
     const ly = agg(lyFrom, lyTo);
-    // premises guard: any old-site day on either side → no raw YoY delta, the caption says why
-    const lyComparable = num(ly.days) > 0 && num(ly.curdays) === num(ly.days) && num(cur.curdays) === num(cur.days);
+    // premises guard: any old-site day on either side → no raw YoY delta, the caption says why.
+    // DAY-COUNT guard (2026-08-19, data-wiring audit): the premises test alone never compared the
+    // two windows' SIZES, so a week missing a day would have been divided against a full LY week —
+    // a 1/7 hole reads as a 14% collapse. No realised error to date (zero missing days across the
+    // whole 1,641-day record) — which is exactly why it needed pinning rather than leaving to luck:
+    // an ingest gap is a WHEN, not an IF, and the first one would have arrived as a business story.
+    const sameSpan = num(cur.days) === num(ly.days);
+    const lyComparable = num(ly.days) > 0 && num(ly.curdays) === num(ly.days) && num(cur.curdays) === num(cur.days) && sameSpan;
     exec.week = {
       from: wk.from, to: wk.to, lyFrom, lyTo, days: num(cur.days) || 0,
       net: num(cur.net), gross: num(cur.gross), txn: num(cur.txn),
       lyNet: lyComparable ? num(ly.net) : null, lyGross: lyComparable ? num(ly.gross) : null,
       lyTxn: lyComparable ? num(ly.txn) : null, lyComparable,
+      spanMismatch: sameSpan ? null : { cur: num(cur.days), ly: num(ly.days) },
     };
 
     // ---- covers (OpenTable → covers_day, Phase 2 PR1): the covers denominator + reserved/walk-in
@@ -215,7 +226,17 @@ function buildExec(q, maxDate, rv2) {
       if (w) { w.lyNet = (w.lyNet || 0) + (num(r.n) || 0); if (String(r.p) !== 'current') w.lyPrev = true; }
     }
     for (const w of weeks) if (w.lyPrev) w.lyNet = null; // premises guard — no cross-site LY point
-    for (const r of rowsOf(q(`SELECT DISTINCT business_date d, revenue_target_pence t FROM rota_ahead_budget WHERE business_date BETWEEN ? AND ?`, [from8, wk.to]))) {
+    // TARGET SOURCE (2026-08-19, data-wiring audit). This read rota_ahead_budget, which is
+    // delete-all + FUTURE-ONLY by construction — today it holds 2026-08-20..30 and nothing else. A
+    // trailing 8-week window can therefore NEVER intersect it, so the amber Target series and the
+    // "vs target" callout were structurally incapable of ever producing a number: not a gap in the
+    // data, a comparison that could not exist. It rendered "no rota-ahead forecast published in the
+    // window" forever, which reads as an operator omission rather than a wiring fault.
+    //
+    // labour_budget keeps the same per-day revenue_target_pence but RETAINS history (886 rows from
+    // 2025-06-02), so the trend can actually be judged against the target that was set at the time.
+    // DISTINCT because both departments carry the same day-level revenue target.
+    for (const r of rowsOf(q(`SELECT DISTINCT business_date d, revenue_target_pence t FROM labour_budget WHERE business_date BETWEEN ? AND ?`, [from8, wk.to]))) {
       const w = byFrom.get(K.weekMonday(String(r.d)));
       if (w && num(r.t) != null) w.target = (w.target || 0) + num(r.t);
     }
@@ -718,6 +739,7 @@ function channelMonthStats(rv2) {
 }
 
 module.exports = {
+  CPT_BAND,
   SITTING_MIN_CAPTURE, SITTING_MAX_SPREAD, sittingCaptureVerdict,
   key: 'revenue', route: '/coyote/revenue', workspace: 'coyote', title: 'Revenue',
   sub: 'Revenue Command Centre — all five tabs live · contribution gated on recipe costing · covers live via OpenTable (spend/cover derived)',
@@ -1029,7 +1051,7 @@ module.exports = {
         S.rcc.kpi({ label: 'Revenue quality score', value: 'not ruled', sub: 'composite pending operator definition' }),
       ].join('');
       const kpiCaption = wk
-        ? `<div class="rv2-caption">${esc(wk.from)} → ${esc(wk.to)} (last full week, Mon–Sun) · vs same weekday-aligned week LY (−364d: ${esc(wk.lyFrom)} → ${esc(wk.lyTo)}) · per-receipt truth (day-net canon, v_sales_day_all)${wk.lyComparable ? '' : ' · LY not comparable (premises guard / no record) — deltas omitted, never a cross-site %'}${wk.covers != null ? ` · covers = OpenTable seated (covers_day): ${int(wk.covers)} = ${int(wk.reserved)} reserved + ${int(wk.walkin)} walk-in — booked covers are NEVER read as total${cptTxt ? ` · covers/transaction ${cptTxt} (sanity ~1.9–2.0; a material drift is a data finding, not a KPI)` : ''} · spend/cover = Lightspeed net ÷ covers (derived); POS guest-count is still not covers${!basisBlocked ? '' : ` · <strong>covers YoY and spend/cover YoY are withheld</strong> — ${esc(basis.reason)} (${int(basis.ly || 0)} un-reparsed LY rows, ${int(basis.cur || 0)} this week). Levels are true; only the year-on-year comparison is blocked, and it returns by itself once the reservations history is rebuilt.`}` : ' · covers stay not-wired until OpenTable lands'}</div>`
+        ? `<div class="rv2-caption">${esc(wk.from)} → ${esc(wk.to)} (last full week, Mon–Sun) · vs same weekday-aligned week LY (−364d: ${esc(wk.lyFrom)} → ${esc(wk.lyTo)}) · per-receipt truth (day-net canon, v_sales_day_all)${wk.lyComparable ? '' : (wk.spanMismatch ? ` · LY not comparable — this week has ${int(wk.spanMismatch.cur)} recorded day(s) against LY's ${int(wk.spanMismatch.ly)}; a short window divided by a full one would read as a collapse, so deltas are omitted` : ' · LY not comparable (premises guard / no record) — deltas omitted, never a cross-site %')}${wk.covers != null ? ` · covers = OpenTable seated (covers_day): ${int(wk.covers)} = ${int(wk.reserved)} reserved + ${int(wk.walkin)} walk-in — booked covers are NEVER read as total${cptTxt ? ` · covers/transaction ${cptTxt} (sanity ~1.9–2.0; a material drift is a data finding, not a KPI)` : ''} · spend/cover = Lightspeed net ÷ covers (derived); POS guest-count is still not covers${!basisBlocked ? '' : ` · <strong>covers YoY and spend/cover YoY are withheld</strong> — ${esc(basis.reason)} (${int(basis.ly || 0)} un-reparsed LY rows, ${int(basis.cur || 0)} this week). Levels are true; only the year-on-year comparison is blocked, and it returns by itself once the reservations history is rebuilt.`}` : ' · covers stay not-wired until OpenTable lands'}</div>`
         : `<div class="rv2-caption">No Lightspeed sales yet — the daily ingest (05:30) fills the day-grain record; covers stay not-wired until OpenTable lands.</div>`;
 
       // ---- 8-week trend (inline SVG, mock grammar: orange current+area, amber dashed target,
@@ -1075,7 +1097,7 @@ module.exports = {
             ${callout('vs target', tgtPct != null ? pctStr(tgtPct) : '—', tgtPct != null ? `${tgtPairs.length} week(s) with a published forecast` : 'no rota-ahead forecast published in the window', tgtPct != null ? (tgtPct >= 0 ? 'r-up' : 'r-down') : '')}
             ${callout('Last week', lastWeek && lastWeek.net != null ? gbp(lastWeek.net) : '—', lastWeek ? `w/c ${lastWeek.from}` : '')}
           </div>
-          <div class="r-mini-note">target = rota-ahead forecast basis (rota_ahead_budget, per-day, dept rows deduplicated) — weeks without a published forecast show no target point.</div>`;
+          <div class="r-mini-note">target = the per-day revenue target set at the time (labour_budget, dept rows deduplicated). It was read from rota_ahead_budget until 2026-08-19 — that table is future-only, so a trailing window could never intersect it and this line could never plot.</div>`;
       } else {
         trendBody = S.rcc.emptyState({ title: '8-week trend', blocker: 'No day-grain sales record in the trailing 8 weeks.', unlock: 'the daily Lightspeed ingest fills v_sales_day_all' });
       }
@@ -1475,10 +1497,22 @@ module.exports = {
         }),
         // Covers / transaction: LIVE (OpenTable covers ÷ Lightspeed transactions) — a SANITY metric,
         // not a KPI. POS guest-count is still not covers (canon).
-        S.rcc.kpi({
-          label: 'Covers / transaction', value: dv.cpt ? (dv.cpt.covers / dv.cpt.txn).toFixed(2) : '—',
-          sub: dv.cpt ? 'OpenTable covers ÷ txns · sanity ~1.9–2.0 (drift = data finding, not a KPI)' : 'no covers in the window (OpenTable)',
-        }),
+        // A RULER THAT CAN ACTUALLY FAIL (2026-08-19, data-wiring audit). This tile declared the
+        // band "~1.9–2.0" and then rendered whatever number came out, in plain type, with no state
+        // — so it sat outside its own band for the whole covers-collapse window and said nothing.
+        // A stated tolerance that is never evaluated is decoration; the reader assumes a number
+        // shown without alarm is a number inside the band. Now it judges itself.
+        (() => {
+          const v = dv.cpt ? dv.cpt.covers / dv.cpt.txn : null;
+          const out = v != null && (v < CPT_BAND[0] || v > CPT_BAND[1]);
+          return S.rcc.kpi({
+            label: 'Covers / transaction', value: v != null ? v.toFixed(2) : '—',
+            delta: out ? { dir: 'down', text: 'OUT OF BAND ' } : null,
+            sub: v == null ? 'no covers in the window (OpenTable)'
+              : out ? `OpenTable covers ÷ txns · OUTSIDE the ${CPT_BAND[0]}–${CPT_BAND[1]} sanity band — treat as a DATA finding, not a KPI move`
+                : `OpenTable covers ÷ txns · inside the ${CPT_BAND[0]}–${CPT_BAND[1]} sanity band`,
+          });
+        })(),
         attachKpi('Drink attachment', att.drink, 'receipts with ≥1 drink-class line'),
         attachKpi('Side attachment', att.side, 'sides = FRYER-station classes'),
       ].join('');
