@@ -31,8 +31,11 @@ function greenDb() {
     CREATE TABLE ks_audits(id TEXT,entity_type TEXT,action TEXT,actor_name_snapshot TEXT,created_at TEXT);
     CREATE TABLE ks_allergen_incidents(id TEXT,incident_report_id TEXT,allergen TEXT,menu_item_name_snapshot TEXT,medical_attention_required INTEGER,created_at TEXT);
     CREATE TABLE ks_checklist_items(id TEXT,is_critical INTEGER);
-    CREATE TABLE ks_checklist_responses(id TEXT,item_id TEXT,is_pass INTEGER,corrective_action_required INTEGER,is_corrected INTEGER);
-    CREATE TABLE ks_checklist_runs(id TEXT,status TEXT,signed_off_at TEXT);
+    -- run_id + scheduled_date exist in the live mirror. They were missing here, so once the KPIs were
+    -- bounded to a 90-day window (2026-08-19) the joins failed silently — caught by the query-fault
+    -- counter added the same day. A fixture that does not mirror production tests nothing.
+    CREATE TABLE ks_checklist_responses(id TEXT,run_id TEXT,item_id TEXT,is_pass INTEGER,corrective_action_required INTEGER,is_corrected INTEGER);
+    CREATE TABLE ks_checklist_runs(id TEXT,status TEXT,scheduled_date TEXT,signed_off_at TEXT);
     CREATE TABLE ks_corrective_actions(id TEXT,title TEXT,status TEXT,priority TEXT,due_date TEXT);
     CREATE TABLE ks_temp_log_entries(id TEXT,mode TEXT,status TEXT,logged_at TEXT);
     CREATE TABLE ks_allergen_menu_items(id TEXT,celery INTEGER,is_active INTEGER);
@@ -50,10 +53,10 @@ function greenDb() {
     INSERT INTO ks_haccp_documents VALUES('hd','Cook plan','plan',1,'2026-01-01');
     INSERT INTO labour_day VALUES(120000);
     INSERT INTO ks_checklist_items VALUES('crit',1),('norm',0);
-    INSERT INTO ks_checklist_runs VALUES('run','completed','2026-07-22');
+    INSERT INTO ks_checklist_runs VALUES('run','completed','2026-07-20','2026-07-22');
   `);
   // 1000 passing critical checks + 200 passing temperature readings + full allergen matrix + current training
-  const rr = db.prepare(`INSERT INTO ks_checklist_responses VALUES(?,?,1,0,0)`);
+  const rr = db.prepare(`INSERT INTO ks_checklist_responses VALUES(?,'run',?,1,0,0)`);
   for (let i = 0; i < 1000; i++) rr.run('r' + i, 'crit');
   const tp = db.prepare(`INSERT INTO ks_temp_log_entries VALUES(?,?,'pass','2026-07-22')`);
   for (let i = 0; i < 200; i++) tp.run('t' + i, i % 2 ? 'cooking' : null);
@@ -103,7 +106,7 @@ test('THE NEGATIVE CONTROL — 1000 green checks + 1 OPEN CRITICAL incident = RE
 test('all four cap triggers force RED; a green board clears the cap', () => {
   // (a) open critical checklist breach
   let db = greenDb();
-  db.prepare(`INSERT INTO ks_checklist_responses VALUES('brk','crit',0,1,0)`).run();
+  db.prepare(`INSERT INTO ks_checklist_responses VALUES('brk','run','crit',0,1,0)`).run();
   assert.equal(sectionOf(db).cap.active, true, 'uncorrected critical breach → RED');
   // (b) open allergen incident
   db = greenDb();

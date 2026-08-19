@@ -51,6 +51,48 @@ function refMonthOf(maxIso) {
   if (K.shiftDays(maxIso, 1).slice(8, 10) === '01') return maxIso.slice(0, 7);
   return monthShift(maxIso.slice(0, 7), -1);
 }
+
+// POSTING COMPLETENESS (2026-08-19, data-wiring audit). refMonthOf answers "is this month over?" —
+// a CALENDAR question. Nobody was asking the accrual one: "has it been BOOKED?" Jul 2026 was
+// calendar-complete on 1 Aug but held 359 of ~620 journal lines and 16 of ~24 expense accounts, so
+// the Costs executive rendered COGS 5.3% against a ~28% run rate, prime cost 32.5% and a
+// contribution of £96,881 — every figure fiction, and every one of them presented without caveat.
+//
+// A month is SETTLED when its journal-line count and its expense-account count are each at least
+// this share of the median of the six preceding months. Both, because either alone can look healthy:
+// a month can carry plenty of lines from one busy supplier while most cost accounts are still empty.
+const SETTLED_FLOOR = 0.7;
+
+/** The latest month that is BOTH calendar-complete and posted, walking back from `startYm`.
+ *  Returns { ym, unsettled: [months skipped] } so the surface can say what it stepped over —
+ *  silently choosing an older month would be its own kind of lie. */
+function settledMonthFrom(q, startYm, rowsOf, num) {
+  if (!startYm) return { ym: null, unsettled: [] };
+  const stat = (ym) => {
+    const r = rowsOf(q(
+      `SELECT (SELECT COUNT(*) FROM qb_journal_lines WHERE period_month = ?) lines,
+              (SELECT COUNT(DISTINCT account_name) FROM qb_pl_monthly WHERE month = ?) accts`,
+      [ym, ym]))[0] || {};
+    return { lines: num(r.lines) || 0, accts: num(r.accts) || 0 };
+  };
+  const unsettled = [];
+  let ym = startYm;
+  for (let step = 0; step < 6; step += 1) {              // bounded: never walks off into history
+    const cur = stat(ym);
+    const prior = [];
+    for (let i = 1; i <= 6; i += 1) prior.push(stat(monthShift(ym, -i)));
+    const medLines = median(prior.map((p) => p.lines).filter((n) => n > 0));
+    const medAccts = median(prior.map((p) => p.accts).filter((n) => n > 0));
+    // No baseline to judge against → accept rather than invent a verdict.
+    if (medLines == null || medAccts == null) return { ym, unsettled };
+    if (cur.lines >= medLines * SETTLED_FLOOR && cur.accts >= medAccts * SETTLED_FLOOR) {
+      return { ym, unsettled };
+    }
+    unsettled.push({ ym, lines: cur.lines, medLines: Math.round(medLines), accts: cur.accts, medAccts: Math.round(medAccts) });
+    ym = monthShift(ym, -1);
+  }
+  return { ym, unsettled };
+}
 function median(arr) {
   if (!arr.length) return null;
   const a = [...arr].sort((x, y) => x - y);
@@ -223,7 +265,11 @@ function monthLabour(q, ym) {
 function buildExecutive(q, now) {
   const mx = rowsOf(q(`SELECT MAX(business_date) d FROM v_sales_day_all WHERE premises = 'current'`))[0];
   const salesMax = mx && mx.d ? String(mx.d) : null;
-  const e = { salesMax, refMonth: refMonthOf(salesMax), months: [], recipeLines: null };
+  // The reference month must be calendar-complete AND posted — see settledMonthFrom. Stepping back
+  // to the last settled month is stated on the panel, never silent.
+  const calRef = refMonthOf(salesMax);
+  const settled = settledMonthFrom(q, calRef, rowsOf, num);
+  const e = { salesMax, refMonth: settled.ym, calRefMonth: calRef, unsettled: settled.unsettled, months: [], recipeLines: null };
   const rl = rowsOf(q(`SELECT COUNT(*) n FROM recipe_lines`))[0];
   e.recipeLines = rl ? (num(rl.n) || 0) : null;
   // the rent step + recipe gate are standing facts (encoded canon / a live gate) — they queue
@@ -780,7 +826,13 @@ module.exports = {
         const netLine = cur.net != null
           ? `net = ${gbp(cur.net)} (v_sales_day_all, ${int(cur.netDays)} day(s), ex-VAT) — imported; the revenue story lives in <a href="/coyote/revenue" style="color:${S.rcc.tokens.blue}">the Revenue Centre</a>`
           : 'no sales record for the month';
-        kpiCaption = `<div class="rv2-caption">month = ${esc(refLabel)} (the latest complete month on the day-net record) · ${netLine} · COGS = QB Cost-of-Goods-Sold accounts, qb_pl_monthly ÷ that net · ${labourLine} · prime cost = COGS % + labour % on the ONE net base (both bases stated — its one home is this strip) · contribution = net − COGS − labour − variable-classified overheads (classification = presentation judgment) · break-even week = (fixed + semi-fixed overheads ÷ contribution-margin ratio) × 12⁄52 — a derivation, not a wire fact.</div>`;
+        // If a calendar-complete month was SKIPPED for being under-posted, say so — silently
+        // choosing an older month is its own kind of lie, and the reader needs to know the newest
+        // month is not yet readable rather than assume it was fine and boring.
+        const unsettledNote = (ex.unsettled || []).length
+          ? ` · <strong>${esc(monthLabel(ex.unsettled[0].ym))} is calendar-complete but NOT yet posted</strong> — ${int(ex.unsettled[0].lines)} journal lines against a ${int(ex.unsettled[0].medLines)} six-month median and ${int(ex.unsettled[0].accts)} of ~${int(ex.unsettled[0].medAccts)} expense accounts, so every ratio built on it would be fiction (COGS would read a fraction of its true rate). It becomes the reference month by itself once the bookkeeping lands.`
+          : '';
+        kpiCaption = `<div class="rv2-caption">month = ${esc(refLabel)} (the latest complete AND posted month on the day-net record)${unsettledNote} · ${netLine} · COGS = QB Cost-of-Goods-Sold accounts, qb_pl_monthly ÷ that net · ${labourLine} · prime cost = COGS % + labour % on the ONE net base (both bases stated — its one home is this strip) · contribution = net − COGS − labour − variable-classified overheads (classification = presentation judgment) · break-even week = (fixed + semi-fixed overheads ÷ contribution-margin ratio) × 12⁄52 — a derivation, not a wire fact.</div>`;
       } else {
         kpiCaption = `<div class="rv2-caption">no day-net sales record yet (v_sales_day_all) — no reference month, no derived figure; the strip stays empty rather than guessing.</div>`;
       }

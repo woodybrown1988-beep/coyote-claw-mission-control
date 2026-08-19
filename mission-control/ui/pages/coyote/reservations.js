@@ -237,6 +237,19 @@ function buildCovers(q) {
     `SELECT party_size sz, COUNT(*) n, ROUND(AVG(actual_duration_min),0) avg_min FROM reservations
       WHERE visit_date BETWEEN ? AND ? AND status IN ('seated','finished') AND actual_duration_min > 0 AND party_size > 0
       GROUP BY party_size ORDER BY party_size`, [from13, maxD]));
+  // TURN COVERAGE (2026-08-19, data-wiring audit). `actual_duration_min > 0` silently drops every
+  // booking the export gave no duration for — about a THIRD of them — while the caption claimed the
+  // full window. An average over the two-thirds that happen to carry a duration is not the average
+  // turn time, and nothing on the panel said which two-thirds. Measure the drop so it can be stated.
+  const tc = rowsOf(q(
+    `SELECT COUNT(*) all_n,
+            SUM(CASE WHEN actual_duration_min > 0 THEN 1 ELSE 0 END) with_dur
+       FROM reservations
+      WHERE visit_date BETWEEN ? AND ? AND status IN ('seated','finished') AND party_size > 0`,
+    [from13, maxD]))[0] || {};
+  const allN = num(tc.all_n) || 0;
+  const withDur = num(tc.with_dur) || 0;
+  c.turnCoverage = allN > 0 ? { all: allN, measured: withDur, pct: withDur / allN } : null;
   return c;
 }
 
@@ -670,9 +683,9 @@ module.exports = {
       if (covLive && cov.turn.length) {
         const trows = cov.turn.map((r) => `<tr><td>Party of ${num(r.sz)}</td><td class="r-num">${int(r.n)}</td><td class="r-num">${r.avg_min != null ? int(r.avg_min) + ' min' : '—'}</td></tr>`).join('');
         turnPanel = S.rcc.panel({
-          title: 'Table-turn performance', sub: `actual dine duration by party size · ${esc(cov.winFrom)}→${esc(cov.max)}`,
+          title: 'Table-turn performance', sub: `actual dine duration by party size · ${esc(cov.winFrom)}→${esc(cov.max)}${cov.turnCoverage && cov.turnCoverage.pct < 0.98 ? ` · ${Math.round(cov.turnCoverage.pct * 100)}% of bookings measured` : ''}`,
           body: `<div style="overflow:auto"><table><thead><tr><th>Party size</th><th class="r-num">Seated bookings</th><th class="r-num">Avg actual duration</th></tr></thead><tbody>${trows}</tbody></table></div>
-            <div class="r-mini-note">actual seated→finished duration (Total Actual Duration) by party size · targets + on-target/peak variance stay gated until a turn-time target is ruled and daypart lands (covers_slot).</div>`,
+            <div class="r-mini-note">${cov.turnCoverage && cov.turnCoverage.pct < 0.98 ? `<strong>Measured on ${int(cov.turnCoverage.measured)} of ${int(cov.turnCoverage.all)} seated bookings (${Math.round(cov.turnCoverage.pct * 100)}%)</strong> — the rest carry no duration in the export and are silently absent from these averages, not counted as fast. ` : ''}actual seated→finished duration (Total Actual Duration) by party size · targets + on-target/peak variance stay gated until a turn-time target is ruled and daypart lands (covers_slot).</div>`,
         });
       } else {
         turnPanel = S.rcc.panel({
