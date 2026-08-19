@@ -477,6 +477,23 @@ test('AI-routed work leaves the suggestions (the dispatcher does it) — the for
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('the must-win says WHY it was picked — a reach-down is never a mystery', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-why-'));
+  const dbPath = makeFixture(dir, { tasks: [{ id: 't-why', title: 'Confirmation statement' }] });
+  const db = new sqlite.DatabaseSync(dbPath);
+  db.prepare(`INSERT INTO life_daily_plans (owner_id, plan_date, status, must_win_task_id, compilation_evidence_json, created_at, updated_at)
+              VALUES ('woody', ?, 'PROPOSED', 't-why', ?, ?, ?)`)
+    .run(DAY, JSON.stringify({ must_win_why: 'top of what is not already scheduled or with an agent — 6 higher-priority tasks hold their own slots this week' }),
+      new Date(NOW).toISOString(), new Date(NOW).toISOString());
+  db.close();
+  withEnv(dbPath, () => {
+    const body = TODAY.render(TODAY.getSection(null, { now: NOW }), { now: NOW }).body;
+    assert.match(body, /Why this: top of what is not already scheduled or with an agent — 6 higher-priority tasks hold their own slots this week\./,
+      'the compiler’s own reason renders on the card');
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('the refusal copy translates the writer’s stale sentence into the owner’s words', () => {
   const copy = emittedScript();
   assert.ok(copy.includes('already passed'), 'the stale key is in the client copy table');
