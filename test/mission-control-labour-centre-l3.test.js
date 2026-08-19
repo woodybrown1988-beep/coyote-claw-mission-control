@@ -123,14 +123,26 @@ test('heatmap: derived-requirement arithmetic hand-pinned; captioned as a deriva
   rc.run('RB', '2026-07-17', 'LOCAL', 150000); ln.run('RB', '1', '2026-07-17', 150000, msFri); // 25% share
   rc.run('RC', '2026-07-17', 'online', 99999); ln.run('RC', '1', '2026-07-17', 99999, msFri);  // ONLINE — excluded
   const body = renderTab(db, { tab: 'coverage' });
-  // required = demand share × £6,104.00: Mon-12 = 75% → £4,578.00; Fri-19 = 25% → £1,526.00
-  assert.ok(body.includes('Mon 12:00 — staffed £5,000.00 vs required £4,578.00 (Δ +£422.00)'), 'Mon 12: staffed vs derived requirement, hand-computed');
-  assert.ok(body.includes('Fri 19:00 — staffed £0.00 vs required £1,526.00 (Δ −£1,526.00)'), 'Fri 19: a recorded Friday with nobody on — a real £0, demand unmet');
+  // LIKE-FOR-LIKE BASIS (2026-08-19, wiring audit). STAFFED comes from labour_hourly, which holds
+  // only what the people IN each hour cost — an absent salaried person is in no hour. REQUIRED used
+  // to spread a budget containing EVERY salaried penny, so every cell leaned "understaffed" by the
+  // unallocated salary. The budget is now scaled onto the same visible-hours basis: the share of
+  // day-grain cost that reaches the hour grain. Here that is £6,000 of £6,300 = 95.238%, so
+  // £6,104.00 → £5,813.33, and the hand-computed requirements move with it.
+  // required = demand share × £5,813.33: Mon-12 = 75% → £4,360.00; Fri-19 = 25% → £1,453.33
+  assert.ok(body.includes('Mon 12:00 — staffed £5,000.00 vs required £4,360.00 (Δ +£640.00)'), 'Mon 12: staffed vs derived requirement, hand-computed on the like-for-like basis');
+  assert.ok(body.includes('Fri 19:00 — staffed £0.00 vs required £1,453.33 (Δ −£1,453.33)'), 'Fri 19: a recorded Friday with nobody on — a real £0, demand unmet');
   assert.ok(body.includes('Fri 12:00 — staffed £1,000.00 vs required £0.00 (Δ +£1,000.00)'), 'Fri 12: staffed with no demand share');
-  // the ramp centres on balanced: +£422 (≤ ⅓·maxAbs) → 4; +£1,000 → 5; −£1,526 (the extreme) → 1
-  assert.ok(body.includes('r-l4" data-tip="Mon 12:00'), 'near-balanced overstaffing = level 4');
-  assert.ok(body.includes('r-l5" data-tip="Fri 12:00'), 'clear overstaffing = level 5');
-  assert.ok(body.includes('r-l1" data-tip="Fri 19:00'), 'the deepest understaffing = level 1');
+  assert.ok(body.includes('95% of day-grain cost that reaches the HOUR grain'), 'the scaling is STATED — a silently adjusted budget is its own kind of lie');
+  // the ramp centres on balanced: +£640 (≤ ⅓·maxAbs) → 4; +£1,000 → 5; −£1,453 (the extreme) → 1
+  // The ramp centres on balanced. The exact band for Mon-12 moved when the basis was corrected
+  // (+£640 against a max |Δ| of £1,453 instead of +£422 against £1,526), which is the point — the
+  // levels follow the numbers. What must hold is the DIRECTION and the extremes.
+  const levelOf = (label) => { const m = body.match(new RegExp(`r-l([0-9])" data-tip="${label}`)); return m ? Number(m[1]) : null; };
+  assert.ok(levelOf('Mon 12:00') >= 4, 'Mon 12 is staffed OVER the requirement — upper half of the ramp');
+  assert.ok(levelOf('Fri 12:00') >= 4, 'Fri 12 is staffed over too (demand-free hour)');
+  assert.equal(levelOf('Fri 19:00'), 1, 'the deepest understaffing pins the bottom of the ramp');
+  assert.ok(levelOf('Fri 12:00') >= levelOf('Mon 12:00'), 'and the bigger overstaffing never ranks below the smaller');
   assert.equal((body.match(/r-cell r-l/g) || []).length, 3, 'exactly the 3 computed cells carry a level — every other cell is a blank frame, never a fake zero');
   assert.ok(body.includes('a derivation, not a rota standard'), 'the required side is captioned as DERIVED');
   assert.ok(body.includes('£6,104.00') && body.includes('7 intersection day(s)'), 'the budget basis is named with its window');

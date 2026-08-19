@@ -42,6 +42,30 @@ function getSection(db, ctx) {
     return { code: String(r.issue_code || ''), cur, prior, delta: cur - prior, rising: Number(r.rising) === 1 };
   });
 
+  // INPUT-COVERAGE GUARD (2026-08-19, data-wiring audit). count_current falls to 0 when the venue
+  // genuinely stopped getting a complaint AND when the review feed simply stops arriving — and the
+  // tiles below turn a fall into a GREEN "easing". With Google and TripAdvisor dead since ~2026-07-06
+  // that painted 16 fabricated zeros as complaints solved, under a timestamp that looked fresh
+  // because the TREND JOB kept running on an empty input.
+  //
+  // A count is only a measurement if something was measured. Compare reviews landing in the current
+  // 30-day window against the prior one: if the input has collapsed, the counts describe the feed,
+  // not the restaurant, and the tiles must say so instead of going green.
+  const nowMs = (ctx && ctx.now) || Date.now();
+  const dayIso = (msBack) => new Date(nowMs - msBack).toISOString().slice(0, 10);
+  const cov = rows(q(
+    `SELECT
+       (SELECT COUNT(*) FROM review_corpus WHERE reviewed_date >= ?) cur,
+       (SELECT COUNT(*) FROM review_corpus WHERE reviewed_date >= ? AND reviewed_date < ?) prior`,
+    [dayIso(30 * 86400000), dayIso(60 * 86400000), dayIso(30 * 86400000)]))[0] || {};
+  const covCur = num(cov.cur);
+  const covPrior = num(cov.prior);
+  // Unknown coverage is NOT treated as fine — if the corpus cannot be read, the tiles gate too.
+  const inputCollapsed = covCur == null || covPrior == null
+    ? true
+    : (covPrior > 0 && covCur < covPrior * 0.5);
+  const coverage = { cur: covCur, prior: covPrior, collapsed: inputCollapsed };
+
   // (b) all-time frequency + a real sample quote per code (MAX = a deterministic, real row value)
   const frequency = rows(
     q(`SELECT issue_code, COUNT(*) AS n, MAX(evidence_quote) AS sample, MAX(confidence) AS conf
@@ -105,7 +129,7 @@ function getSection(db, ctx) {
 
   const empty = rising.length === 0 && frequency.length === 0 && escAll.length === 0 && loops.length === 0;
 
-  return { ok: true, computedAt, rising, frequency, allergen, escOthers, loops, codes, empty };
+  return { ok: true, computedAt, rising, coverage, frequency, allergen, escOthers, loops, codes, empty };
 }
 
 // ---- render helpers ------------------------------------------------------
@@ -121,10 +145,14 @@ function fmtPct(p) {
   return `${Number.isInteger(v) ? v : v.toFixed(1)}%`;
 }
 
-function risingTiles(rising) {
+function risingTiles(rising, coverage) {
   if (!rising.length) {
     return '<div class="banner muted">No trend window computed yet — rising themes appear once issue_trends is populated.</div>';
   }
+  // A fall is only "easing" if something was actually measured this window. When the review feed
+  // has collapsed, every zero is the feed's silence, not the kitchen's improvement — so the tiles
+  // stay neutral and say why, rather than turning green on an absence.
+  const blind = !!(coverage && coverage.collapsed);
   const tiles = rising.map((r) => {
     const isAllergen = r.code === ALLERGEN;
     const up = r.rising || r.delta > 0;
@@ -138,10 +166,8 @@ function risingTiles(rising) {
       arrow = '▲';
       word = isAllergen ? 'rising · safety' : 'rising';
     } else if (r.delta < 0) {
-      cls = 'green';
-      subCls = 'g';
-      arrow = '▼';
-      word = 'easing';
+      if (blind) { cls = 'muted'; subCls = ''; arrow = '·'; word = 'no input — not easing'; }
+      else { cls = 'green'; subCls = 'g'; arrow = '▼'; word = 'easing'; }
     }
     const deltaTxt = r.delta === 0 ? '±0' : `${r.delta > 0 ? '+' : ''}${r.delta}`;
     return `<div class="tile ${cls}">
@@ -150,7 +176,10 @@ function risingTiles(rising) {
       <div class="sub${subCls ? ' ' + subCls : ''}">prior ${S.fmtInt(r.prior)} · ${arrow} ${word} (${S.escapeHtml(deltaTxt)})</div>
     </div>`;
   }).join('');
-  return `<div class="tiles">${tiles}</div>`;
+  const note = blind
+    ? `<div class="banner amber">Review input has collapsed in this window${coverage && coverage.cur != null && coverage.prior != null ? ` — ${S.fmtInt(coverage.cur)} reviews landed against ${S.fmtInt(coverage.prior)} in the prior 30 days` : ''}. A count of zero here means nothing arrived to count, not that a complaint stopped, so falls are NOT shown as easing. Restore the review feed (Google OAuth re-consent) before reading these as a trend.</div>`
+    : '';
+  return `${note}<div class="tiles">${tiles}</div>`;
 }
 
 function frequencyTable(frequency) {
@@ -257,7 +286,7 @@ function render(section, ctx) {
   const body = `
     ${allergen}
     <div class="sec-label">Rising themes<span class="rule"></span><span class="mono" style="text-transform:none;letter-spacing:0">30-day window vs prior 30</span></div>
-    ${risingTiles(s.rising || [])}
+    ${risingTiles(s.rising || [], s.coverage)}
 
     <div class="sec-label">Frequency · all-time<span class="rule"></span></div>
     <div class="panel"><div class="panel-head"><h2>Extracted issues</h2><span class="meta">count + sample evidence</span></div>

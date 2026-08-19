@@ -713,8 +713,29 @@ function buildCoverage(q, maxDate, C) {
       }
     }
     if (c.week && c.inter && num(c.inter.net) > 0 && num(c.inter.sal) != null) {
+      // LIKE-FOR-LIKE BASIS (2026-08-19, data-wiring audit). The two sides of this heatmap were
+      // measured over different populations. STAFFED comes from labour_hourly, which by design
+      // holds only what the people IN each hour cost — a salaried person who is OFF is in no hour,
+      // so their fixed daily cost never reaches the grain. REQUIRED spread a budget containing
+      // EVERY salaried penny. So every cell was short by the unallocated salary and the whole grid
+      // leaned "understaffed" — measured at £1,637 over 28 days, diverging on 407 of 505 days.
+      //
+      // Rather than push absent salary into labour_hourly (which would redefine what that table has
+      // always meant for every consumer), scale the required side onto the same visible-hours basis:
+      // the share of day-grain cost that actually reaches the hour grain over the same window. Both
+      // sides then describe the hours the grid can see. The ratio is stated on the panel, because a
+      // silently adjusted budget is its own kind of lie.
+      const alloc = rowsOf(q(
+        `SELECT (SELECT COALESCE(SUM(actual_cost_pence),0) FROM labour_hourly WHERE business_date BETWEEN ? AND ?) hourly,
+                (SELECT COALESCE(SUM(actual_cost_pence),0) FROM labour_day    WHERE business_date BETWEEN ? AND ?) day`,
+        [c.week.from, c.week.to, c.week.from, c.week.to]))[0] || {};
+      const dayCost = num(alloc.day) || 0;
+      const hourCost = num(alloc.hourly) || 0;
+      const ratio = dayCost > 0 ? Math.min(1, hourCost / dayCost) : null;
+      const raw = Math.round(num(c.inter.sal) + C.varRate * num(c.inter.net));
       c.heat.budget = {
-        pence: Math.round(num(c.inter.sal) + C.varRate * num(c.inter.net)),
+        pence: ratio != null ? Math.round(raw * ratio) : raw,
+        rawPence: raw, allocRatio: ratio,
         days: num(c.inter.days) || 0, from: c.week.from, to: c.week.to,
       };
     }
@@ -1770,7 +1791,7 @@ module.exports = {
             : 'ONLINE ORDER lines excluded — no true hour (the online-order ruling)';
           heatLegend = `<div class="r-legend"><span><i style="background:${S.rcc.tokens.heat[0]}"></i>Staffed under required</span><span><i style="background:${S.rcc.tokens.heat[5]}"></i>Staffed over required</span></div>`;
           heatBody = `<div class="r-heatmap">${head}${grid}</div>
-            <div class="r-mini-note"><b>required = formula budget spread by demand share — a derivation, not a rota standard.</b> budget = Σ salaried + ${vTxt} × net over the last settled week ${esc(B.from)} → ${esc(B.to)} (${gbp(B.pence)}, ${int(B.days)} intersection day(s)) · demand share = line-grain net by weekday × LOCAL London hour, 28d to ${esc(D.apiMax)} · ${esc(onlineNote)} · staffed hours include rota-as-worked for no-clock salaried.</div>
+            <div class="r-mini-note"><b>required = formula budget spread by demand share — a derivation, not a rota standard.</b> budget = Σ salaried + ${vTxt} × net over the last settled week ${esc(B.from)} → ${esc(B.to)} (${gbp(B.rawPence != null ? B.rawPence : B.pence)}, ${int(B.days)} intersection day(s))${B.allocRatio != null && B.allocRatio < 0.999 ? `, scaled to ${gbp(B.pence)} — the ${Math.round(B.allocRatio * 100)}% of day-grain cost that reaches the HOUR grain, so both sides describe the same hours (labour_hourly holds only what the people IN an hour cost; an absent salaried person is in no hour)` : ''} · demand share = line-grain net by weekday × LOCAL London hour, 28d to ${esc(D.apiMax)} · ${esc(onlineNote)} · staffed hours include rota-as-worked for no-clock salaried.</div>
             <div class="r-mini-note">staffed = labour_hourly TRUE £ (hourly × ${bTxt} burden + the ingest's salaried hour share) averaged per weekday occurrence, 28d to ${esc(H.to)} · SITE-level — labour_hourly carries no department key (checked) · levels centre on balanced: 1–3 staffed under the derived requirement, 4–6 over · a weekday with no hourly record renders blank, never zero${missNote}${uncNote}. This grid ABSORBED the old staffing-shape panel — one home.</div>`;
         } else {
           // staffing-only fallback — the honest half while the required side is underivable
