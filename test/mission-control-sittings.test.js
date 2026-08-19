@@ -18,7 +18,7 @@ const shift = (d, n) => new Date(Date.parse(`${d}T12:00:00Z`) + n * 86400000).to
 function baseDb() {
   const db = new sqlite.DatabaseSync(':memory:');
   db.exec(`
-    CREATE TABLE sales_receipts_api (receipt_id TEXT PRIMARY KEY, business_date TEXT, type TEXT, cancelled INTEGER, account_profile_code TEXT, net_without_tax_pence INTEGER, updated_at INTEGER);
+    CREATE TABLE sales_receipts_api (receipt_id TEXT PRIMARY KEY, business_date TEXT, type TEXT, cancelled INTEGER, account_profile_code TEXT, table_name TEXT, net_without_tax_pence INTEGER, updated_at INTEGER);
     CREATE TABLE sales_channel_map_api (account_profile_code TEXT PRIMARY KEY, profile_name TEXT, delivery_mode TEXT, channel_label TEXT, first_seen INTEGER, updated_at INTEGER, label_source TEXT);
   `);
   db.prepare(`INSERT INTO sales_channel_map_api VALUES ('LOCAL','Local','NONE','EAT IN',1,1,'operator'),('storekit_orderpay','SK','NONE','STOREKIT ORDER & PAY',1,1,'operator'),('TAKEAWAY','TA','TAKE_AWAY',NULL,1,1,NULL)`).run();
@@ -26,11 +26,15 @@ function baseDb() {
   // = 12000. R1 is dated APIMAX so rv2.maxApiDate = APIMAX (the drivers window anchor). The takeaway
   // receipt (9999) must be EXCLUDED from dine-in net. Deliberately ≠ the sittings subset net so the test
   // guards the exact bug: per-cover must use RECEIPTS dine-in net, never dine_in_sittings.totNet.
-  const ins = db.prepare(`INSERT INTO sales_receipts_api VALUES (?, ?, 'SALE', 0, ?, ?, 1)`);
-  ins.run('R1', APIMAX, 'LOCAL', 3000);
-  ins.run('R2', shift(APIMAX, -3), 'storekit_orderpay', 3000);
-  ins.run('R3', shift(APIMAX, -3), 'LOCAL', 6000);
-  ins.run('R9', APIMAX, 'TAKEAWAY', 9999); // takeaway — NOT dine-in, excluded from net/cover
+  // table_name matters since the capture gate (2026-08-19): a sitting can only form from a receipt on
+  // a PHYSICAL table, so these dine-in receipts sit on numbered tables — a REPRESENTATIVE sample, which
+  // is what lets the per-sitting tiles render below. The thin-sample case is pinned separately in
+  // mission-control-sittings-capture.test.js and by the withholding test at the end of this file.
+  const ins = db.prepare(`INSERT INTO sales_receipts_api VALUES (?, ?, 'SALE', 0, ?, ?, ?, 1)`);
+  ins.run('R1', APIMAX, 'LOCAL', '27 Bank Street, Table 3', 3000);
+  ins.run('R2', shift(APIMAX, -3), 'storekit_orderpay', '27 Bank Street, Table 1', 3000);
+  ins.run('R3', shift(APIMAX, -3), 'LOCAL', '27 Bank Street, Table 5', 6000);
+  ins.run('R9', APIMAX, 'TAKEAWAY', 'Order 12', 9999); // takeaway — NOT dine-in, excluded from net/cover
   return db;
 }
 function addSittings(db) {
@@ -97,4 +101,28 @@ test('SITTINGS + covers: per-cover = FULL dine-in receipts net ÷ covers (NOT th
   assert.doesNotMatch(cover, /£0\.50/, 'must NOT divide the physical-table sittings subset by all covers');
   assert.match(cover, /300 OpenTable covers/);
   assert.match(cover, /not channel-split/, 'per-cover is honestly labelled overall, not by channel');
+});
+
+// --- CAPTURE GATE (2026-08-19): the same panel must WITHHOLD when the sittings sample is too thin.
+// The live defect: QR was 19% captured and served 29%, yet both tiles showed a confident £ figure and
+// the two were read against each other. A number on a KPI tile gets read whatever the caption says,
+// so the value itself is withheld — not annotated.
+test('CAPTURE gate: a thin, unevenly-sampled window withholds the per-sitting £ and says why', () => {
+  const db = baseDb();
+  // Push most dine-in net onto "Order N" (the POS counter, unclusterable) so capture collapses,
+  // exactly as real weekend service does.
+  db.prepare(`INSERT INTO sales_receipts_api VALUES ('R20', ?, 'SALE', 0, 'LOCAL', 'Order 20', 90000, 1)`).run(shift(APIMAX, -2));
+  db.prepare(`INSERT INTO sales_receipts_api VALUES ('R21', ?, 'SALE', 0, 'storekit_orderpay', 'Order 21', 90000, 1)`).run(shift(APIMAX, -2));
+  addSittings(db); addCovers(db);
+  const body = render(db);
+  // tileOf() returns a fixed slice that can spill into the NEXT tile, and the neighbouring
+  // per-cover tile legitimately prints a £ — so cut each tile at the following label.
+  const justTile = (label) => { const t = tileOf(body, label); const nxt = t.indexOf('r-kpi-label', 20); return nxt < 0 ? t : t.slice(0, nxt); };
+  const qr = justTile('Net / QR sitting');
+  const served = justTile('Net / served sitting');
+  assert.doesNotMatch(qr, /£\d/, 'a thin sample must not print a confident per-QR-sitting £');
+  assert.doesNotMatch(served, /£\d/, 'a thin sample must not print a confident per-served-sitting £');
+  assert.match(qr, /withheld/, 'the tile says it is withheld');
+  assert.match(body, /numbered table/, 'the caption explains the capture limit in plain words');
+  assert.match(body, /tables are assigned on the POS/, 'and names the operational fix, not a data fix');
 });
