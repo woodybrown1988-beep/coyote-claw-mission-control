@@ -261,3 +261,59 @@ test('a GATING pipeline fault still closes with the restore instruction', () => 
   assert.match(body, /Restore the route named above before reading these as a trend\./,
     'the tail belongs to this banner because this platform gated');
 });
+
+// --- THE CONTRADICTION, ONE LEVEL DOWN AGAIN (round-three audit) -------------------------------
+// Separating gating from non-gating killed the contradiction across that boundary — and it
+// reappeared INSIDE it when TWO platforms gated with different verdicts: one joined string, one
+// union-derived tail, and the deployed banner read "Nothing in our delivery to fix. ... Restore
+// the route named above" again. The rule was never "gating vs not": a sentence may only share a
+// banner with a tail that matches its own verdict, all the way down. Each verdict group now closes
+// its own banner, pipeline first because it is the only one the operator can act on tonight.
+test('two gating platforms with different verdicts each close their own banner', () => {
+  const body = render(db_({
+    opentable: { 'api-v1': [3, 12], email: [2, 11] },   // collapsed, verdict 'platform'
+    google: { 'gmb-api': [0, 14], mail: [6, 11] },      // collapsed AND 'pipeline' (6/25 gates)
+  }));
+  // Each group self-closes inside one div…
+  assert.match(body, /delivery fault in our pipeline[^<]*Restore it\.[^<]*Restore the route named above/,
+    'the pipeline group carries the restore tail');
+  assert.match(body, /Nothing in our delivery to fix\.[^<]*Read these again once the written reviews return\./,
+    'the platform group carries the return tail');
+  // …and no text run may both stand down and order a repair, in either order.
+  assert.doesNotMatch(body, /Nothing in our delivery to fix\.[^<]*Restore the route named above/);
+  assert.doesNotMatch(body, /Restore it\.[^<]*Read these again once the written reviews return/);
+});
+
+// --- A SIGNAL GATED BEHIND SOMEONE ELSE'S ALARM (round-three audit) ----------------------------
+// covNote was rendered only when NOT blind (a #200 shape), on the theory that the collapse banner
+// carried it — which stopped being true when the banner became derived. So a feed silent for
+// weeks lost its one warning whenever an UNRELATED platform collapsed.
+test('a silent-feed warning still renders while an unrelated collapse is firing', () => {
+  const db = db_({ opentable: { 'api-v1': [3, 12], email: [2, 11] } });  // the collapse
+  // A tripadvisor feed with a real cadence that stopped 43 days ago — silent by its own history.
+  const ins = db.prepare('INSERT INTO review_corpus VALUES (?,?,?,?,?)');
+  let i = 500;
+  for (let d = 200; d >= 43; d -= 2) ins.run(`ta${i++}`, 'tripadvisor', 'api-v1', day(d), 'w');
+  const body = render(db);
+  assert.match(body, /have collapsed in this window/, 'the collapse fires');
+  assert.match(body, /tripadvisor has delivered no review since/,
+    'and the silent feed is STILL named — its warning is not hostage to another platform\'s alarm');
+});
+
+// --- A BANNER DOES NOT NEED TILES TO EXIST (round-three audit) ---------------------------------
+// Banners were composed below an early return for an empty issue_trends, so on a fresh trend
+// table a live "Restore it." was computed and never rendered — the round-one render gap in its
+// third outfit. What a banner says has nothing to do with whether there are tiles to gate.
+test('a route fault renders even when no trend window has ever been computed', () => {
+  const db = db_(
+    { opentable: { 'api-v1': [1, 12], email: [11, 11] }, google: { 'gmb-direct': [21, 11] } },
+    { trends: [] },
+  );
+  // The auditor's exact shape: issue_trends empty but review_issues populated, so the page is not
+  // in its all-empty state — it renders the tiles section, whose early return was eating banners.
+  db.prepare(`INSERT INTO review_issues VALUES ('c0', 'FOOD_QUALITY', 'cold food', 0.9)`).run();
+  const body = render(db);
+  assert.match(body, /No trend window computed yet/, 'the empty state still shows');
+  assert.match(body, /delivery fault in our pipeline[^<]*Restore it\./,
+    'and the actionable verdict renders above it rather than dying with the tiles');
+});
