@@ -129,7 +129,8 @@ function getSection(db, ctx) {
 
   const empty = rising.length === 0 && frequency.length === 0 && escAll.length === 0 && loops.length === 0;
 
-  return { ok: true, computedAt, rising, coverage, frequency, allergen, escOthers, loops, codes, empty };
+  const coverageNote = S.coverageSentence(S.reviewCoverage(q, ctx.now || Date.now()));
+  return { ok: true, computedAt, rising, coverage, coverageNote, frequency, allergen, escOthers, loops, codes, empty };
 }
 
 // ---- render helpers ------------------------------------------------------
@@ -145,7 +146,10 @@ function fmtPct(p) {
   return `${Number.isInteger(v) ? v : v.toFixed(1)}%`;
 }
 
-function risingTiles(rising, coverage) {
+// The blind-window guard was RIGHT; its REMEDY was a hard-coded guess that outlived the fault. It
+// told the operator to re-consent an OAuth he had already re-consented, while the actual silence
+// was a different feed. A remedy that names a cause must derive it — see data.js reviewCoverage.
+function risingTiles(rising, coverage, coverageNote) {
   if (!rising.length) {
     return '<div class="banner muted">No trend window computed yet — rising themes appear once issue_trends is populated.</div>';
   }
@@ -177,7 +181,7 @@ function risingTiles(rising, coverage) {
     </div>`;
   }).join('');
   const note = blind
-    ? `<div class="banner amber">Review input has collapsed in this window${coverage && coverage.cur != null && coverage.prior != null ? ` — ${S.fmtInt(coverage.cur)} reviews landed against ${S.fmtInt(coverage.prior)} in the prior 30 days` : ''}. A count of zero here means nothing arrived to count, not that a complaint stopped, so falls are NOT shown as easing. Restore the review feed (Google OAuth re-consent) before reading these as a trend.</div>`
+    ? `<div class="banner amber">Review input has collapsed in this window${coverage && coverage.cur != null && coverage.prior != null ? ` — ${S.fmtInt(coverage.cur)} reviews landed against ${S.fmtInt(coverage.prior)} in the prior 30 days` : ''}. A count of zero here means nothing arrived to count, not that a complaint stopped, so falls are NOT shown as easing. ${coverageNote ? S.escapeHtml(coverageNote) + ' ' : ''}Restore the feed before reading these as a trend.</div>`
     : '';
   return `${note}<div class="tiles">${tiles}</div>`;
 }
@@ -286,7 +290,7 @@ function render(section, ctx) {
   const body = `
     ${allergen}
     <div class="sec-label">Rising themes<span class="rule"></span><span class="mono" style="text-transform:none;letter-spacing:0">30-day window vs prior 30</span></div>
-    ${risingTiles(s.rising || [], s.coverage)}
+    ${risingTiles(s.rising || [], s.coverage, s.coverageNote)}
 
     <div class="sec-label">Frequency · all-time<span class="rule"></span></div>
     <div class="panel"><div class="panel-head"><h2>Extracted issues</h2><span class="meta">count + sample evidence</span></div>

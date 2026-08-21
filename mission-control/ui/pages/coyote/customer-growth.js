@@ -24,8 +24,11 @@ function dateOnly(v) { if (v == null) return null; const s = String(v); const m 
 const VERDICT = {
   degraded: {
     tag: 'wired · degraded', tone: 'warn',
-    blocker: 'the source is wired but BOTH review engines are down — ingestion (Google OAuth expired) and the issue/sentiment extractor (Anthropic credit, since 03 Jul). Anything reading fresh reviews or issue tags renders stale-since-a-date, not current.',
-    unlock: 'the two standing operator items: re-auth Google OAuth + top up Anthropic credit',
+    // Generic ON PURPOSE. This class describes a SHAPE (wired but not delivering); the specific
+    // cause belongs to whatever observes it at render time. Naming causes here is how it came to
+    // assert two that were no longer true, in a constant no tab even rendered.
+    blocker: 'the source is wired but not delivering current data — anything reading it renders stale-since-a-date, not current. The panel that surfaces this names which feed and since when.',
+    unlock: 'restore the feed named in the panel; the state clears by itself on the next ingest that carries new rows',
   },
   integration: {
     tag: 'needs integration', tone: 'info',
@@ -178,6 +181,7 @@ module.exports = {
 
   getSection(db, ctx) {
     const q = ctx.q;
+    const now = ctx.now || Date.now();
     // LIVE reputation read (the one real slice) — counts/dates from the reviews corpus; STAR
     // RATINGS from review_snapshot (the engine-stored, PLATFORM-REPORTED ratings). Rating-path
     // unification, operator ruling 2026-08-10: the engine computes/stores, MC reads — the 07-31
@@ -195,7 +199,21 @@ module.exports = {
       rep.overall = snap ? rating(snap.overall_rating) : null;
       rep.backlog = tableExists(q, 'review_drafts') ? ((one(q, `SELECT count(*) n FROM review_drafts WHERE draft_status='draft'`) || {}).n || 0) : null;
       rep.googleLatest = dateOnly((one(q, `SELECT max(reviewed_date) d FROM review_corpus WHERE platform='google'`) || {}).d);
-      rep.extractorLatest = tableExists(q, 'review_issues') ? dateOnly((one(q, `SELECT max(extracted_at) d FROM review_issues`) || {}).d) : null;
+      // DERIVED, NOT ASSERTED (2026-08-21). What used to sit here was a hard-coded story about two
+      // named causes. Both were false by the time the operator read them: he had re-consented the
+      // Google OAuth on 08-19, and the extractor moved off Anthropic to flat-rate Codex on 08-04.
+      // A banner that states a cause it cannot observe will eventually state a cause that is wrong,
+      // and it sends the operator to fix something that is not broken.
+      rep.coverage = S.reviewCoverage(q, now);
+      rep.coverageNote = S.coverageSentence(rep.coverage);
+      // Extractor freshness must be a BACKLOG, not a last-run timestamp: max(extracted_at) cannot
+      // advance when there is nothing left to extract, so a healthy idle extractor and a dead one
+      // look identical. The count of has-text reviews with no ledger row can only be non-zero when
+      // there is real work going undone.
+      rep.extractorBacklog = tableExists(q, 'issue_extractions')
+        ? ((one(q, `SELECT count(*) n FROM review_corpus c WHERE c.text IS NOT NULL AND trim(c.text) <> ''
+             AND NOT EXISTS (SELECT 1 FROM issue_extractions e WHERE e.review_id = c.review_id)`) || {}).n || 0)
+        : null;
     }
     // channel share (live, aggregate) — one-home to Revenue; here only a presence flag.
     const channelWired = tableExists(q, 'sales_by_channel');
@@ -207,7 +225,9 @@ module.exports = {
 
     // source register state (per SOURCES; reviews reflects real wired-ness)
     const sources = SOURCES.map((s) => {
-      if (s.key === 'reviews') return { ...s, state: rep.wired ? 'degraded' : 'integration' };
+      // Keyed on COVERAGE, not on the table merely existing — otherwise this row can never go
+      // green again once the feed is repaired, which is exactly what happened here.
+      if (s.key === 'reviews') return { ...s, state: !rep.wired ? 'integration' : (rep.coverage && rep.coverage.silent.length ? 'degraded' : 'live') };
       if (s.key === 'channel') return { ...s, state: channelWired ? 'live' : 'integration' };
       if (s.key === 'opentable') return { ...s, state: ret ? 'live' : 'integration', role: ret ? 'Covers / repeat diners — LIVE (identified ' + Math.round(ret.idCoveragePct) + '% of covers)' : s.role };
       if (s.key === 'crm') return { ...s, state: identityWired ? 'degraded' : 'nosource', role: ret ? 'Guest identity via OpenTable (35% ceiling); a full CRM/loyalty is still a business call' : s.role };
@@ -275,7 +295,13 @@ module.exports = {
     const tabsNav = `<div class="r-tabs">${TABS.map(([k, lbl]) => `<a class="r-tab${k === tab ? ' active' : ''}" href="/coyote/customer-growth?tab=${k}">${esc(lbl)}</a>`).join('')}</div>`;
 
     // degradation banner (used on any tab surfacing reviews)
-    const degradeBanner = `<div class="cg-degrade"><b>Two review engines are down (standing operator items):</b> ingestion — Google OAuth expired (Google reviews stale since ${esc(rep.googleLatest || '—')}); issue/sentiment extractor — Anthropic credit dead (tags stale since ${esc(rep.extractorLatest || '—')}). Reputation figures below are real but frozen at those dates until both are restored.</div>`;
+    // Renders ONLY when a feed is actually silent, and says which one. No banner is the correct
+    // output of a healthy pipeline — the old one was unconditional, so it kept announcing an outage
+    // for two days after the outage ended.
+    const backlogNote = rep.extractorBacklog ? ` Issue extraction has ${rep.extractorBacklog} review(s) waiting.` : '';
+    const degradeBanner = rep.coverageNote
+      ? `<div class="cg-degrade"><b>A review feed has gone quiet:</b> ${esc(rep.coverageNote)}${esc(backlogNote)} Figures below are real but frozen for that platform.${rep.coverage.google && rep.coverage.google.missing ? ` Google's own profile reports ${Number(rep.coverage.google.getTotal).toLocaleString('en-GB')} reviews against ${Number(rep.coverage.google.corpusTotal).toLocaleString('en-GB')} in our corpus — ${Number(rep.coverage.google.missing).toLocaleString('en-GB')} have not reached us.` : ''}</div>`
+      : '';
 
     // LIVE reputation panel (the heart) — one home for ratings: stars = the engine-stored
     // PLATFORM-REPORTED ratings (review_snapshot); counts/dates = corpus facts. No corpus
@@ -292,7 +318,7 @@ module.exports = {
 
     // source register (the mock's "recommended growth data architecture", made honest)
     const regBody = `<div class="cg-src">${sec.sources.map((s) => `<div class="s ${s.state}"><h4>${esc(s.label)}</h4><p>${esc(s.role)}</p><div class="st">${{ live: '● LIVE', degraded: '◐ WIRED · DEGRADED', integration: '○ NEEDS INTEGRATION', nosource: '○ NO SOURCE' }[s.state]}</div></div>`).join('')}</div>
-      <div class="r-mini-note">${sec.counts.live} live · ${sec.counts.degraded} wired-degraded · ${sec.counts.integration} needs-integration · ${sec.counts.nosource} no-source. The two cheapest unlocks — Google OAuth re-auth + Anthropic credit — revive the whole reputation slice AND the Google discovery data.</div>`;
+      <div class="r-mini-note">${sec.counts.live} live · ${sec.counts.degraded} wired-degraded · ${sec.counts.integration} needs-integration · ${sec.counts.nosource} no-source. ${rep.coverageNote ? esc(rep.coverageNote) + " " : ""}Google Business Profile discovery data (views, searches, actions) is still a separate un-wired source.</div>`;
     const regPanel = S.rcc.panel({ title: 'Growth data architecture', sub: 'Each source and its real state on this box', headRight: S.rcc.tag(`${sec.counts.live} live · ${sec.counts.nosource} no-source`, sec.counts.live ? 'warn' : 'bad'), body: regBody });
 
     let body;
@@ -379,7 +405,7 @@ module.exports = {
       <div class="r-two">${S.rcc.panel({ title: 'What capturing identity would unlock', sub: 'The adoption decision that lights up ~75% of this centre (a plan, not data)', headRight: S.rcc.tag('adoption plan', 'info'), body: `${S.rcc.formula(['Pick an identity capture: loyalty app / CRM / booking-with-login /', 'QR order-and-pay with sign-in / opt-in receipt email.', '', 'Once ANY of these runs, these light up:', '· Retention & Loyalty (cohorts, RFM, second-visit rate)', '· Campaign + partner attribution (spend → identified revenue)', '· Email / SMS reach + consent (this tab)', '', 'Until then every panel above stays NO-SOURCE — honestly.'])}` })}${vPanel('Permitted-contact logic & consent', 'Email / SMS reachability, suppression', 'nosource', 'there is no contactable list and no consent record to govern.')}</div>`;
     }
 
-    const stamp = `customer growth · build-ahead scaffold · ${sec.counts.live} live · ${sec.counts.degraded} degraded · ${sec.counts.nosource} no-source · reputation real (stale since ${esc(rep.googleLatest || '—')}), the rest awaits sources`;
+    const stamp = `customer growth · build-ahead scaffold · ${sec.counts.live} live · ${sec.counts.degraded} degraded · ${sec.counts.nosource} no-source · reputation ${rep.coverageNote ? 'real but a feed is quiet — ' + esc(rep.coverageNote) : 'live across all platforms'}, the rest awaits sources`;
     return { stamp, body: `<div class="rcc">${styles}${tabsNav}${body}</div>` };
   },
 };

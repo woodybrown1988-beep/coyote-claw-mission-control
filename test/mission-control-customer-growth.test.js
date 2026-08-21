@@ -8,7 +8,7 @@
 //       anchor 0 / ~100% — never the mock's marketing fictions (3,284 customers, £31.6k, 11,842 CRM).
 //   (c) FOUR-WAY VERDICT: the four tags appear; no-source/integration panels name their source/unlock.
 //   (d) LIVE reputation heart: real counts/ratings from a seeded corpus, one-home link to Reviews,
-//       and the degradation banner naming BOTH operator items with dates drawn FROM the data.
+//       and a degradation banner DERIVED from per-platform coverage — never asserting a cause.
 //   (e) CRM anchor: 0 unified profiles + ~100% unknown revenue + the identity-capture adoption unlock.
 const assert = require('node:assert/strict');
 const test = require('node:test');
@@ -104,10 +104,20 @@ test('LIVE reputation heart: PLATFORM-REPORTED ratings (review_snapshot) + corpu
   assert.match(body, /4 reviews across platforms/, 'real corpus total (4 seeded)');
   assert.match(body, /2 unposted reply drafts/, 'real reply backlog (2 drafts)');
   assert.match(body, /\/coyote\/reviews/, 'one-home link to the Reviews page');
-  // degradation banner names BOTH operator items with dates DRAWN FROM the data
-  assert.match(body, /Google OAuth/); assert.match(body, /Anthropic credit/);
-  assert.match(body, /stale since 2026-07-06/, 'Google stale date from the seeded latest google review');
-  assert.match(body, /stale since 2026-07-05/, 'extractor stale date from the seeded latest issue');
+  // --- THE BANNER MUST NOT ASSERT A CAUSE IT CANNOT OBSERVE (2026-08-21) ---------------------
+  // This banner used to name two standing causes in prose: "Google OAuth expired" and "Anthropic
+  // credit dead". By the time the operator read them, he had re-consented the OAuth two days
+  // earlier and the extractor had been off Anthropic since 2026-08-04. It was unconditional, so it
+  // announced an outage that had ended and sent him to fix two things that were not broken —
+  // while the REAL silence (a third-party feed) went unnamed for 22 days.
+  //
+  // THE CLASS: any banner stating WHY must derive the why. A hard-coded cause is a claim with no
+  // way to become false, and it will outlive the fault it describes.
+  assert.ok(!/Google OAuth/.test(body), 'no hard-coded cause');
+  assert.ok(!/Anthropic/.test(body), 'and certainly not one the system stopped using');
+  // This fixture holds 4 reviews — too little history to judge a cadence against, so the honest
+  // output is NO banner at all. A healthy pipeline renders nothing here.
+  assert.ok(!/has gone quiet/.test(body), 'a thin corpus is not evidence of an outage');
   // NEGATIVE CONTROL: corpus present but NO review_snapshot → ratings '—' + the explicit
   // unavailability line; the corpus average must NOT stand in
   const noSnap = new sqlite.DatabaseSync(':memory:');
@@ -133,7 +143,10 @@ test('CRM anchor: 0 unified profiles + ~100% unknown revenue + the identity-capt
 test('source register: reviews degraded, CRM no-source, counts reflect real box state', () => {
   const sec = sectionOf(reviewsDb());
   const byKey = Object.fromEntries(sec.sources.map((s) => [s.key, s.state]));
-  assert.equal(byKey.reviews, 'degraded', 'reviews present → wired-degraded');
+  // Keyed on COVERAGE, not on the table existing. Under the old rule this row was pinned to
+  // 'degraded' for as long as review_corpus existed — it could never go green again once the feed
+  // was repaired, so the board could report a fixed pipeline as permanently broken.
+  assert.equal(byKey.reviews, 'live', 'present AND no platform silent → live');
   assert.equal(byKey.channel, 'live', 'sales_by_channel present → live');
   assert.equal(byKey.crm, 'nosource', 'no identity tables → no-source');
   assert.ok(sec.counts.nosource >= 1 && sec.counts.integration >= 3, 'the split is mostly integration/no-source');
@@ -219,4 +232,58 @@ test('PR-B NO-SOURCE fallback: with no guest_profiles the retention tab keeps it
   const body = render(reviewsDb(), 'retention').body;
   assert.match(body, /no source|not captured/i, 'reverts to the nosource verdict');
   assert.doesNotMatch(body, /identified guests only —/, 'no ceiling caption without identity data');
+});
+
+
+// --- COVERAGE DRIVES THE BANNER, END TO END (2026-08-21) --------------------------------------
+// The thin fixture above proves the quiet case. This proves the LOUD one: with enough history to
+// establish a cadence, a feed that stops must be named — platform, date, and the gap it has beaten
+// — and the healthy platforms must be named as healthy rather than smeared with it.
+function silentGoogleDb() {
+  const db = new sqlite.DatabaseSync(':memory:');
+  db.exec(`
+    CREATE TABLE review_corpus(platform TEXT, overall REAL, reviewed_date TEXT, has_reply INTEGER);
+    CREATE TABLE review_drafts(draft_status TEXT);
+    CREATE TABLE review_snapshot(overall_rating REAL, google_rating REAL, tripadvisor_rating REAL,
+      opentable_rating REAL, total INTEGER, awaiting_recent_text INTEGER, fetched_at INTEGER);
+    CREATE TABLE sales_by_channel(channel TEXT);
+    INSERT INTO sales_by_channel VALUES ('EAT IN');`);
+  const now = Date.now();
+  const day = (n) => new Date(now - n * 86400000).toISOString().slice(0, 10) + 'T00:00:00Z';
+  const ins = db.prepare('INSERT INTO review_corpus VALUES (?,?,?,?)');
+  // google: every 2 days for two months, then NOTHING for 22 days. tripadvisor: still current.
+  for (let d = 80; d >= 22; d -= 2) ins.run('google', 4.5, day(d), 0);
+  for (let d = 80; d >= 0; d -= 2) ins.run('tripadvisor', 4.5, day(d), 0);
+  // Google's own profile count vs what reached us — the cross-check the board never made.
+  db.prepare('INSERT INTO review_snapshot VALUES (?,?,?,?,?,?,?)').run(4.7, 3.86, 4.5, 4.8, 1386, 21, now);
+  return db;
+}
+
+test('a genuinely silent feed IS named — platform, date, and the gap it beat', () => {
+  const ctx = { q: (s, p) => DATA.safeSelect(silentGoogleDb(), s, p), now: Date.now(), query: { tab: 'executive' } };
+  const db = silentGoogleDb();
+  const c = { q: (s, p) => DATA.safeSelect(db, s, p), now: Date.now(), query: { tab: 'executive' } };
+  const body = page.render(page.getSection(db, c), c).body;
+  assert.match(body, /has gone quiet/, 'the outage is announced');
+  assert.match(body, /google has delivered no review since/, 'and the platform is named');
+  assert.match(body, /longest gap in the last year was 2/, 'it shows its working');
+  assert.match(body, /tripadvisor is current to/, 'healthy platforms are not smeared');
+  assert.ok(!/Anthropic/.test(body), 'still no invented cause');
+  // The cross-check: 1,386 on the profile against what arrived.
+  assert.match(body, /1,386 reviews against/, "Google's own count is compared to ours");
+  void ctx;
+});
+
+test('the source register goes DEGRADED on silence and back to LIVE on repair', () => {
+  const db = silentGoogleDb();
+  const sec = page.getSection(db, { q: (s, p) => DATA.safeSelect(db, s, p), now: Date.now(), query: {} });
+  assert.equal(Object.fromEntries(sec.sources.map((s) => [s.key, s.state])).reviews, 'degraded',
+    'a silent feed degrades the row');
+  // NEGATIVE CONTROL — and it must be able to come BACK. This is the half the old code could not do.
+  const fixed = silentGoogleDb();
+  const now = Date.now();
+  fixed.prepare('INSERT INTO review_corpus VALUES (?,?,?,?)').run('google', 5, new Date(now).toISOString(), 0);
+  const sec2 = page.getSection(fixed, { q: (s, p) => DATA.safeSelect(fixed, s, p), now, query: {} });
+  assert.equal(Object.fromEntries(sec2.sources.map((s) => [s.key, s.state])).reviews, 'live',
+    'one fresh review restores it — the state is reversible, which is the whole point');
 });
