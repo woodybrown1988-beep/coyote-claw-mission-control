@@ -66,28 +66,19 @@ function getSection(db, ctx) {
   //
   // THE CLASS: a guard evaluated on a SUM cannot see a change that one term conceals in another. If
   // the thing being protected is composed of independent sources, the guard belongs at source grain.
-  const perPlatform = rows(q(
-    `SELECT platform,
-       SUM(CASE WHEN reviewed_date >= ? AND text IS NOT NULL AND TRIM(text) <> '' THEN 1 ELSE 0 END) cur,
-       SUM(CASE WHEN reviewed_date >= ? AND reviewed_date < ? AND text IS NOT NULL AND TRIM(text) <> '' THEN 1 ELSE 0 END) prior
-     FROM review_corpus GROUP BY platform`,
-    [dayIso(30 * 86400000), dayIso(60 * 86400000), dayIso(30 * 86400000)]));
-  const covCur = perPlatform.reduce((a, r) => a + (num(r.cur) || 0), 0);
-  const covPrior = perPlatform.reduce((a, r) => a + (num(r.prior) || 0), 0);
-  // A platform counts as collapsed only when it had enough history to judge (>=5 text reviews last
-  // window) AND supplied a material share of it (>=20%) — so a platform that was always marginal
-  // cannot gate the whole page, and a genuine contributor going quiet always does.
-  const collapsedPlatforms = perPlatform
-    .filter((r) => {
-      const c = num(r.cur) || 0, pr = num(r.prior) || 0;
-      return pr >= 5 && covPrior > 0 && pr / covPrior >= 0.2 && c < pr * 0.5;
-    })
-    .map((r) => ({ platform: String(r.platform), cur: num(r.cur) || 0, prior: num(r.prior) || 0 }));
+  // Window volumes, per platform AND per delivery route — see data.js reviewInputWindows. The
+  // per-route split is what lets the banner say whether a fall is guests writing less or our own
+  // pipeline dropping reviews, instead of asserting one and being wrong.
+  const win = S.reviewInputWindows(q, nowMs);
+  const covCur = win.cur;
+  const covPrior = win.prior;
+  const collapsedPlatforms = win.collapsed.map((p) => ({ platform: p.platform, cur: p.cur, prior: p.prior, verdict: p.verdict }));
   // Unknown coverage is NOT treated as fine — if the corpus cannot be read, the tiles gate too.
-  const inputCollapsed = !perPlatform.length
+  const inputCollapsed = !win.present
     ? true
     : (covPrior > 0 && covCur < covPrior * 0.5) || collapsedPlatforms.length > 0;
-  const coverage = { cur: covCur, prior: covPrior, collapsed: inputCollapsed, perPlatform, collapsedPlatforms };
+  const inputNote = S.inputDropSentence(win);
+  const coverage = { cur: covCur, prior: covPrior, collapsed: inputCollapsed, collapsedPlatforms, inputNote };
 
   // (b) all-time frequency + a real sample quote per code (MAX = a deterministic, real row value)
   const frequency = rows(
@@ -238,10 +229,11 @@ function risingTiles(rising, coverage, coverageNote) {
       <div class="sub${subCls ? ' ' + subCls : ''}">prior ${S.fmtInt(r.prior)} · ${arrow} ${word} (${S.escapeHtml(deltaTxt)})</div>
     </div>`;
   }).join('');
-  const which = (coverage && coverage.collapsedPlatforms) || [];
-  const named = which.length
-    ? ` The fall is ${which.map((c) => `${S.escapeHtml(c.platform)} ${S.fmtInt(c.prior)} → ${S.fmtInt(c.cur)}`).join(', ')}, so these counts describe a feed, not the kitchen.`
-    : '';
+  // DERIVED, never asserted. This used to end "so these counts describe a feed, not the kitchen" —
+  // which was a claim about CAUSE that nothing in the data supported, and on 2026-08-21 it was
+  // wrong: every one of OpenTable's delivery routes had fallen together, which is guests writing
+  // less, not a broken feed. The sentence now comes from comparing the routes against each other.
+  const named = coverage && coverage.inputNote ? ` ${S.escapeHtml(coverage.inputNote)}` : '';
   const note = blind
     ? `<div class="banner amber">Reviews WITH TEXT have collapsed in this window — ${S.fmtInt(curBase)} against ${S.fmtInt(priorBase)} in the prior 30 days. Only a review with text can produce a tag, so a count of zero here means nothing arrived to count, not that a complaint stopped: falls are NOT shown as easing.${named} Restore the feed before reading these as a trend.</div>`
     : '';

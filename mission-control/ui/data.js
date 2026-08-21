@@ -245,4 +245,110 @@ function coverageSentence(cov) {
   return null;
 }
 
-module.exports = { safeSelect, toInt, intOrNull, ratingOrNull, ms, navBadges, footModel, reviewCoverage, coverageSentence };
+// -----------------------------------------------------------------------------------------------
+// reviewInputWindows — did the PLATFORM change, or did our PIPELINE break? (2026-08-21)
+//
+// The collapse guard on the issues page correctly refuses to read falling complaint counts as
+// improvement when the text-bearing input has halved. But it then told the operator "these counts
+// describe a feed, not the kitchen" — asserting a CAUSE it had no way to see. On 2026-08-21 that
+// was wrong: OpenTable's written reviews fell 23 -> 5, and checking its two delivery legs
+// separately showed BOTH had dropped (hub 12 -> 3, Gmail 11 -> 2). Two independent sources falling
+// together is not a delivery fault; it is guests writing less while still leaving ratings.
+//
+// THE CLASS — and it is the one this file keeps re-learning: a guard may state WHAT it observed
+// without stating WHY, and the why is only knowable when something in the data can distinguish the
+// candidates. Here something can: a platform that arrives by more than one INDEPENDENT route
+// carries its own control group. If every route fell, the change is upstream of all of them. If one
+// fell while its sibling held, the fault is in that route. If there is only one route, the two
+// explanations are indistinguishable and the honest verdict is UNKNOWN — which this returns rather
+// than guessing, because a confident wrong cause is worse than an admitted absent one.
+const INPUT_WINDOW_DAYS = 30;
+const LEG_DROP_RATIO = 0.5;      // a leg counts as dropped below half its prior window
+const LEG_MIN_PRIOR = 3;         // below this it has no baseline worth judging against
+
+function reviewInputWindows(q, now) {
+  const dayIso = (msBack) => new Date(now - msBack).toISOString().slice(0, 10);
+  const curFrom = dayIso(INPUT_WINDOW_DAYS * 86400000);
+  const priorFrom = dayIso(2 * INPUT_WINDOW_DAYS * 86400000);
+  // Text-bearing only: a review with no words cannot produce an issue tag, so it is not input.
+  const legRows = q(
+    `SELECT platform, source_ingest AS src,
+       SUM(CASE WHEN reviewed_date >= ? AND text IS NOT NULL AND TRIM(text) <> '' THEN 1 ELSE 0 END) cur,
+       SUM(CASE WHEN reviewed_date >= ? AND reviewed_date < ? AND text IS NOT NULL AND TRIM(text) <> '' THEN 1 ELSE 0 END) prior
+     FROM review_corpus GROUP BY platform, source_ingest`,
+    [curFrom, priorFrom, curFrom],
+  ).rows || [];
+  if (!legRows.length) return { present: false, platforms: [], cur: 0, prior: 0, collapsed: [] };
+
+  const byPlatform = new Map();
+  for (const r of legRows) {
+    const p = String(r.platform);
+    const entry = byPlatform.get(p) || { platform: p, cur: 0, prior: 0, legs: [] };
+    const cur = toInt(r.cur) || 0;
+    const prior = toInt(r.prior) || 0;
+    entry.cur += cur;
+    entry.prior += prior;
+    entry.legs.push({ source: String(r.src || 'unknown'), cur, prior, dropped: prior >= LEG_MIN_PRIOR && cur < prior * LEG_DROP_RATIO });
+    byPlatform.set(p, entry);
+  }
+  const totalPrior = [...byPlatform.values()].reduce((a, p) => a + p.prior, 0);
+  const totalCur = [...byPlatform.values()].reduce((a, p) => a + p.cur, 0);
+
+  const platforms = [...byPlatform.values()].map((p) => {
+    // Only legs with a real baseline can vote. A leg that delivered almost nothing last window
+    // cannot tell you whether anything changed.
+    const judged = p.legs.filter((l) => l.prior >= LEG_MIN_PRIOR);
+    const dropped = judged.filter((l) => l.dropped);
+    const steady = judged.filter((l) => !l.dropped);
+    // A platform collapsed when it had enough history to judge AND supplied a material share of the
+    // total, so a marginal platform cannot gate the page and a real contributor always does.
+    const collapsed = p.prior >= 5 && totalPrior > 0 && p.prior / totalPrior >= 0.2 && p.cur < p.prior * LEG_DROP_RATIO;
+    // A ROUTE DYING IS NEWS WHETHER OR NOT THE PLATFORM TOTAL COLLAPSED. Judging only collapsed
+    // platforms reproduces, one level down, the exact masking this check was built to end: with two
+    // routes of 12 and 11, one can fail COMPLETELY and the total still falls only 48% — under the
+    // collapse threshold, so nothing is said, while half the delivery is gone. A sibling holding
+    // steady is what makes that diagnosable, and it is the case most worth reporting because it is
+    // the only one the operator can actually fix.
+    let verdict = null;
+    if (dropped.length > 0 && judged.length >= 2 && steady.length > 0) {
+      verdict = 'pipeline';                                // one route fell, a sibling held
+    } else if (collapsed) {
+      if (judged.length < 2) verdict = 'unknown';          // one route: the two causes look identical
+      else if (dropped.length === judged.length) verdict = 'platform';   // every route fell together
+      else verdict = 'unknown';                            // the total fell but no single route did
+    }
+    return { ...p, judged, dropped, steady, collapsed, verdict };
+  });
+  return {
+    present: true, platforms, cur: totalCur, prior: totalPrior,
+    // What GATES the trend tiles: the input for a material platform genuinely collapsed.
+    collapsed: platforms.filter((p) => p.collapsed),
+    // What is worth SAYING: that, plus any route failure a sibling makes diagnosable even where
+    // the platform total held up.
+    reportable: platforms.filter((p) => p.collapsed || p.verdict === 'pipeline'),
+  };
+}
+
+/**
+ * One sentence per collapsed platform, saying what fell and — only where the data can support it —
+ * whether the cause is upstream of us or inside our own delivery.
+ */
+function inputDropSentence(win) {
+  if (!win || !win.present || !(win.reportable || win.collapsed || []).length) return null;
+  const leg = (l) => `${l.source} ${l.cur} of ${l.prior}`;
+  return (win.reportable || win.collapsed)
+    .map((p) => {
+      const head = `${p.platform} written reviews fell ${p.prior} → ${p.cur}`;
+      if (p.verdict === 'platform') {
+        return `${head}, and EVERY source fell with it (${p.dropped.map(leg).join(', ')}) — independent routes do not break together, so guests are writing less while still leaving ratings. Nothing to fix; there is simply less to count.`;
+      }
+      if (p.verdict === 'pipeline') {
+        // Worth naming even when the platform total held: a route is gone and it can be restored.
+        return `${head}, but only ${p.dropped.map((l) => l.source).join(', ')} fell (${p.dropped.map(leg).join(', ')}) while ${p.steady.map(leg).join(', ')} held — that is a delivery fault in our pipeline, not a change in what guests are writing. Restore it.`;
+      }
+      return `${head}. It arrives by a single route, so a delivery fault and a genuine drop in written reviews cannot be told apart from here — cause unknown.`;
+    })
+    .join(' ');
+}
+
+module.exports = { safeSelect, toInt, intOrNull, ratingOrNull, ms, navBadges, footModel, reviewCoverage, coverageSentence, reviewInputWindows, inputDropSentence };

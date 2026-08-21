@@ -1922,6 +1922,8 @@ function deptChip(deptKey) {
 module.exports = {
   reviewCoverage: COV.reviewCoverage,
   coverageSentence: COV.coverageSentence,
+  reviewInputWindows: COV.reviewInputWindows,
+  inputDropSentence: COV.inputDropSentence,
   DEPARTMENTS,
   FLEET,
   agentKeyForType,

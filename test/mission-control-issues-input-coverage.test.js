@@ -33,16 +33,18 @@ function db_(curReviews, priorReviews, opts = {}) {
   db.exec(`
     CREATE TABLE issue_trends (issue_code TEXT, count_current INTEGER, count_prior INTEGER, rising INTEGER, computed_at INTEGER);
     CREATE TABLE review_issues (review_id TEXT, issue_code TEXT, evidence_quote TEXT, confidence REAL);
-    CREATE TABLE review_corpus (review_id TEXT PRIMARY KEY, platform TEXT, reviewed_date TEXT, text TEXT);
+    CREATE TABLE review_corpus (review_id TEXT PRIMARY KEY, platform TEXT, source_ingest TEXT, reviewed_date TEXT, text TEXT);
   `);
   // Themes that have FALLEN to zero — the shape that used to render green unconditionally.
   const trends = opts.trends || [['FOOD_QUALITY', 0, 4], ['SERVICE_SPEED', 0, 3]];
   for (const [code, cur, prior] of trends) {
     db.prepare(`INSERT INTO issue_trends VALUES (?, ?, ?, 0, ?)`).run(code, cur, prior, NOW);
   }
-  const rc = db.prepare(`INSERT INTO review_corpus VALUES (?,?,?,?)`);
-  const add = (n, back, plat, tag, withText) => {
-    for (let i = 0; i < n; i++) rc.run(`${tag}${plat}${i}`, plat, iso(back), withText ? 'some words' : null);
+  const rc = db.prepare(`INSERT INTO review_corpus VALUES (?,?,?,?,?)`);
+  // A single delivery route per platform unless a test says otherwise — enough for these cases,
+  // which are about VOLUME. Route-level diagnosis has its own file (mission-control-source-drop).
+  const add = (n, back, plat, tag, withText, src = 'api-v1') => {
+    for (let i = 0; i < n; i++) rc.run(`${tag}${plat}${i}`, plat, src, iso(back), withText ? 'some words' : null);
   };
   if (opts.platforms) {
     for (const [plat, v] of Object.entries(opts.platforms)) {
@@ -104,9 +106,13 @@ test('a per-platform collapse is caught even when the TOTAL looks fine', () => {
     tripadvisor: { cur: 4, curText: 4, prior: 11, priorText: 11 },  // collapsed (-64%)
   } }));
   assert.doesNotMatch(body, /▼ easing/, 'THE POINT: the total fell only 35%, and it still must not go green');
-  assert.match(body, /opentable 23 → 3/, 'the banner names which feed, with its numbers');
-  assert.match(body, /tripadvisor 11 → 4/);
-  assert.doesNotMatch(body, /google/, 'and does not smear the platform that is healthy');
+  // Wording now comes from data.js inputDropSentence, which names the platform, its numbers, and —
+  // where the routes can tell them apart — whether the cause is upstream or ours. This fixture
+  // gives each platform ONE route, so the honest verdict is "cause unknown", and it says so.
+  assert.match(body, /opentable written reviews fell 23 → 3/, 'the banner names which feed, with its numbers');
+  assert.match(body, /tripadvisor written reviews fell 11 → 4/);
+  assert.match(body, /cause unknown/, 'a single route cannot distinguish a fault from a real drop');
+  assert.doesNotMatch(body, /google written reviews fell/, 'and does not smear the platform that is healthy');
 });
 
 // NEGATIVE CONTROL — the per-platform rule must not fire on a platform that was always marginal,
