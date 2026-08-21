@@ -347,11 +347,19 @@ function reviewInputWindows(q, now) {
 }
 
 /**
- * One sentence per collapsed platform, saying what fell and — only where the data can support it —
- * whether the cause is upstream of us or inside our own delivery.
+ * One entry per reportable platform: its verdict, whether it GATES the tiles (a genuine collapse)
+ * or merely deserves saying (a non-collapsing route failure), and the sentence for it.
+ *
+ * PER-PLATFORM ON PURPOSE (2026-08-21, round-two audit). The single joined string let a
+ * non-gating pipeline sentence be interpolated into the collapse banner, whose closing line is
+ * derived from the GATING platforms — so one banner could read "Nothing in our delivery to fix.
+ * Restore the route named above": the exact self-contradiction the closing-line fix existed to
+ * kill, reintroduced by joining sentences whose banners have different tails. A sentence can only
+ * be composed safely with the tail that belongs to ITS platform's verdict, which means the caller
+ * needs the pieces, not the join.
  */
-function inputDropSentence(win) {
-  if (!win || !win.present || !(win.reportable || win.collapsed || []).length) return null;
+function inputDropVerdicts(win) {
+  if (!win || !win.present || !(win.reportable || win.collapsed || []).length) return [];
   const leg = (l) => `${l.source} ${l.cur} of ${l.prior}`;
   return (win.reportable || win.collapsed)
     .map((p) => {
@@ -373,7 +381,17 @@ function inputDropSentence(win) {
       }
       return `${head}. It arrives by a single route, so a delivery fault and a genuine drop in written reviews cannot be told apart from here — cause unknown.`;
     })
-    .join(' ');
+    .map((sentence, i) => {
+      const p = (win.reportable || win.collapsed)[i];
+      return { platform: p.platform, verdict: p.verdict, gating: !!p.collapsed, sentence };
+    });
 }
 
-module.exports = { safeSelect, toInt, intOrNull, ratingOrNull, ms, navBadges, footModel, reviewCoverage, coverageSentence, reviewInputWindows, inputDropSentence };
+/** The joined form, kept for callers that want one string. Prefer inputDropVerdicts for anything
+ *  that composes a banner — see its comment for why the join is unsafe there. */
+function inputDropSentence(win) {
+  const v = inputDropVerdicts(win);
+  return v.length ? v.map((x) => x.sentence).join(' ') : null;
+}
+
+module.exports = { safeSelect, toInt, intOrNull, ratingOrNull, ms, navBadges, footModel, reviewCoverage, coverageSentence, reviewInputWindows, inputDropVerdicts, inputDropSentence };

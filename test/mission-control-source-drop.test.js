@@ -224,3 +224,40 @@ test('a genuine collapse still gates, even with no route failure to report', () 
   assert.match(body, /have collapsed in this window/);
   assert.doesNotMatch(body, /▼ easing/, 'the tiles ARE gated when the input genuinely thinned');
 });
+
+// --- THE MIXED STATE (2026-08-21, round-two audit) ---------------------------------------------
+// One platform genuinely collapsed with verdict 'platform'; an UNRELATED platform carries a
+// non-gating route failure. The first fix joined every reportable sentence into one string and
+// dropped it into the collapse banner — whose closing line comes from the GATING verdicts — so the
+// deployed page rendered "Nothing in our delivery to fix. Restore the route named above" in ONE
+// banner: the exact self-contradiction the closing-line fix existed to kill, rebuilt from its own
+// parts. A sentence may only share a banner with a tail that belongs to its platform's verdict.
+test('a non-gating route fault cannot borrow the collapse banner or its tail', () => {
+  const body = render(db_({
+    opentable: { 'api-v1': [3, 12], email: [2, 11] },      // collapsed, verdict 'platform'
+    google: { 'gmb-api': [1, 12], 'gmb-direct': [11, 11] }, // route dead, total 12/23 — above the gate
+  }));
+  // The collapse banner speaks only for the platform that gated, and closes to match ITS verdict.
+  assert.match(body, /opentable written reviews fell[^<]*Nothing in our delivery to fix\.[^<]*Read these again once the written reviews return\./,
+    'the blind banner and its tail agree, platform-scoped');
+  // The route fault renders in its own banner with its own instruction.
+  assert.match(body, /google written reviews fell[^<]*delivery fault in our pipeline[^<]*Restore it\./,
+    'the pipeline fault still reaches the operator, separately');
+  // And the two never share a text run — the contradiction is unrepresentable, not just absent.
+  assert.doesNotMatch(body, /Nothing in our delivery to fix\.[^<]*Restore the route named above/,
+    'one banner may not both stand down and order a repair');
+  assert.doesNotMatch(body, /Restore it\.[^<]*Read these again once the written reviews return/,
+    'nor may the route banner inherit the collapse tail');
+});
+
+// NEGATIVE CONTROL — when the pipeline fault itself GATES, the restore tail is exactly right and
+// must survive: the separation is between banners, not a ban on the word "restore".
+test('a GATING pipeline fault still closes with the restore instruction', () => {
+  const body = render(db_({
+    opentable: { 'api-v1': [0, 14], email: [11, 11] },  // collapsed AND pipeline: 11/25 is past the gate
+    google: { 'gmb-direct': [4, 20] },
+  }));
+  assert.match(body, /delivery fault in our pipeline[^<]*Restore it\./);
+  assert.match(body, /Restore the route named above before reading these as a trend\./,
+    'the tail belongs to this banner because this platform gated');
+});
