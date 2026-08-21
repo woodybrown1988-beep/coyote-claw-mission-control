@@ -182,10 +182,42 @@ function buildExec(q, maxDate, rv2) {
          FROM covers_day WHERE business_date BETWEEN ? AND ?`, [from, to]))[0] || {};
     const cc = covAgg(wk.from, wk.to);
     const lc = covAgg(lyFrom, lyTo);
-    exec.week.covers = num(cc.covers);
-    exec.week.reserved = num(cc.reserved) || 0;
-    exec.week.walkin = num(cc.walkin) || 0;
-    exec.week.lyCovers = lyComparable ? num(lc.covers) : null;
+
+    // COVERS WINDOW GUARD (2026-08-21). The SPLH intersection discipline (see ~L455) applied to the
+    // one feed that never got it — the same class as the day-count guard above, one feed along.
+    //
+    // Sales and covers arrive by DIFFERENT wires at DIFFERENT rates: Lightspeed lands nightly at
+    // 05:30, covers only when an OpenTable export is dropped by hand. Summing both over one nominal
+    // window silently divides a WHOLE week of net by a PART week of covers. Today the two happen to
+    // align (sales to 08-20, covers to 08-18, KPI week 08-10..16 fully covered on both sides), which
+    // is exactly why this needed pinning rather than leaving to luck: next Monday the KPI week
+    // becomes 08-17..23, where covers hold 2 of 7 days. Unguarded that renders a ~75% covers
+    // "collapse" and a ~3.5x spend/cover "surge" as the page's headline — a fabricated business
+    // story with no warning attached, from data that is individually correct on both sides.
+    //
+    // A part-week total is not a smaller version of the truth, so covers gate to '—' rather than
+    // render partial, and every ratio built on them (spend/cover, covers/transaction, both YoYs)
+    // gates with them. Net, gross and ATV are untouched — they are complete and stay true.
+    const covDaysIn = (from, to) => num((rowsOf(q(
+      `SELECT COUNT(*) n FROM covers_day WHERE business_date BETWEEN ? AND ? AND total_covers IS NOT NULL`,
+      [from, to]))[0] || {}).n) || 0;
+    const curCovDays = covDaysIn(wk.from, wk.to);
+    const lyCovDays = covDaysIn(lyFrom, lyTo);
+    const curSalesDays = num(cur.days) || 0;
+    const lySalesDays = num(ly.days) || 0;
+    const coversWhole = curCovDays > 0 && curCovDays >= curSalesDays;
+    const lyCoversWhole = lyCovDays > 0 && lyCovDays >= lySalesDays;
+    // Absent (no export ever reached this window) and PARTIAL (some days arrived) are different
+    // states and must not wear each other's wording — "no covers this week" sent to the operator
+    // while 2 of 7 days are sitting in the table is the failure this guard exists to prevent.
+    exec.week.coversWindow = coversWhole ? null : {
+      have: curCovDays, need: curSalesDays,
+      kind: curCovDays === 0 ? 'absent' : 'partial',
+    };
+    exec.week.covers = coversWhole ? num(cc.covers) : null;
+    exec.week.reserved = coversWhole ? num(cc.reserved) || 0 : 0;
+    exec.week.walkin = coversWhole ? num(cc.walkin) || 0 : 0;
+    exec.week.lyCovers = lyComparable && lyCoversWhole ? num(lc.covers) : null;
 
     // COVERS BASIS GUARD (2026-08-19). A covers YoY is only like-for-like if BOTH windows were
     // parsed with a working dedup key. The composite key is
@@ -460,13 +492,26 @@ function buildDrivers(q, maxDate, rv2) {
         WHERE s.business_date BETWEEN ? AND ? AND s.net_sales_pence > 0`, [from, apiMax]))[0];
     if (spl && num(spl.days) > 0 && num(spl.mins) > 0) d.splh = { net: num(spl.net) || 0, mins: num(spl.mins), days: num(spl.days) };
 
-    // ---- covers-per-transaction (Phase 2 PR1): OpenTable covers ÷ Lightspeed transactions over the
-    // same 28d window — a SANITY metric (~1.9-2.0), NOT a KPI. Null if either side is absent. ----
+    // ---- covers-per-transaction (Phase 2 PR1): OpenTable covers ÷ Lightspeed transactions — a
+    // SANITY metric (~1.9-2.0), NOT a KPI. Null if either side is absent.
+    //
+    // INTERSECTION (2026-08-21, same guard as COVERS WINDOW above): this summed the two feeds over
+    // one nominal 28d window as two independent sub-SELECTs, so every day sales had and covers
+    // lacked pushed the ratio down. Covers currently trail sales by two days — enough to drift a
+    // ~1.95 ratio below its own sanity band and have the tile report a DATA finding whose stated
+    // cause (a real covers/transaction shift) would not be the actual one (a late export). Joining
+    // the two makes the numerator and denominator structurally the same days, and the tile reports
+    // the window it actually used rather than the one it was asked for. ----
     const cpt = rowsOf(q(
-      `SELECT (SELECT SUM(total_covers) FROM covers_day WHERE business_date BETWEEN ? AND ?) covers,
-              (SELECT SUM(transactions) FROM v_sales_day_all WHERE business_date BETWEEN ? AND ?) txn`,
-      [from, apiMax, from, apiMax]))[0];
-    if (cpt && num(cpt.covers) != null && num(cpt.txn) > 0) d.cpt = { covers: num(cpt.covers), txn: num(cpt.txn), from, to: apiMax };
+      `SELECT SUM(c.total_covers) covers, SUM(s.transactions) txn, COUNT(*) days,
+              MIN(c.business_date) f, MAX(c.business_date) t
+         FROM covers_day c JOIN v_sales_day_all s ON s.business_date = c.business_date
+        WHERE c.business_date BETWEEN ? AND ? AND c.total_covers IS NOT NULL`,
+      [from, apiMax]))[0];
+    if (cpt && num(cpt.covers) != null && num(cpt.txn) > 0) {
+      d.cpt = { covers: num(cpt.covers), txn: num(cpt.txn), days: num(cpt.days) || 0,
+                from: String(cpt.f), to: String(cpt.t), asked: { from, to: apiMax } };
+    }
 
     // ---- SITTINGS (2026-07-31): the honest per-PARTY QR-vs-served basis. dine_in_sittings clusters
     // receipts by physical table (20-min window); net_pence is ex-VAT. Absent/empty table → d.sit
@@ -481,7 +526,15 @@ function buildDrivers(q, maxDate, rv2) {
         by[String(r.channel)] = { sittings: num(r.sittings), net: num(r.net) || 0, rcpts: num(r.rcpts) || 0 };
         totNet += num(r.net) || 0; totSit += num(r.sittings) || 0;
       }
-      const cov = rowsOf(q(`SELECT SUM(total_covers) c FROM covers_day WHERE business_date BETWEEN ? AND ?`, [from, apiMax]))[0];
+      // Per-cover is a cross-feed ratio, so it takes the intersection too (2026-08-21): covers over
+      // the days that have them, net over those SAME days. Summing a full 28d of dine-in net over a
+      // 26d covers total overstates spend per cover by the ratio of the two spans.
+      const covDays = `(SELECT business_date FROM covers_day
+                         WHERE business_date BETWEEN ? AND ? AND total_covers IS NOT NULL)`;
+      const cov = rowsOf(q(
+        `SELECT SUM(total_covers) c, COUNT(*) days, MIN(business_date) f, MAX(business_date) t
+           FROM covers_day WHERE business_date BETWEEN ? AND ? AND total_covers IS NOT NULL`,
+        [from, apiMax]))[0];
       const covers = cov ? num(cov.c) : null;
       // Per-cover numerator must be the FULL dine-in net (all dine-in receipts, every table), NOT the
       // physical-table sittings subset — dividing a ~34% subset by ALL OpenTable covers understates
@@ -489,7 +542,7 @@ function buildDrivers(q, maxDate, rv2) {
       const dn = rowsOf(q(
         `SELECT SUM(r.net_without_tax_pence) net
            FROM sales_receipts_api r JOIN sales_channel_map_api m ON m.account_profile_code = COALESCE(r.account_profile_code,'')
-          WHERE r.business_date BETWEEN ? AND ? AND ${SALE_WHERE}
+          WHERE r.business_date IN ${covDays} AND ${SALE_WHERE}
             AND m.channel_label IN ('EAT IN','MON-FRI DEAL','STOREKIT ORDER & PAY')`, [from, apiMax]))[0];
       // How much of each channel's net can actually FORM a sitting (see SITTING_MIN_CAPTURE above).
       // Denominator = all dine-in net for the channel; numerator = the part on a physical table.
@@ -518,6 +571,7 @@ function buildDrivers(q, maxDate, rv2) {
       const cap = {};
       for (const k of ['QR', 'served']) if (pool[k].net > 0) cap[k] = pool[k].cnet / pool[k].net;
       d.sit = { from, to: apiMax, by, totNet, totSit, dineNet: dn ? num(dn.net) : null, covers: covers != null && covers > 0 ? covers : null,
+                coversDays: cov ? num(cov.days) || 0 : 0, coversFrom: cov && cov.f ? String(cov.f) : null, coversTo: cov && cov.t ? String(cov.t) : null,
                 capture: cap, captureByLabel: byLabel, verdict: sittingCaptureVerdict(cap) };
     }
   }
@@ -1014,6 +1068,7 @@ module.exports = {
       const spc = wk && wk.net != null && wk.covers ? Math.round(wk.net / wk.covers) : null;
       const lySpc = wk && wk.lyNet != null && wk.lyCovers ? Math.round(wk.lyNet / wk.lyCovers) : null;
       const basis = (wk && wk.coversBasis) || { ok: true };
+      const covGap = (wk && wk.coversWindow) || null;
       // Two DIFFERENT reasons a YoY can be absent, and they must not wear each other's clothes:
       // "LY not comparable" (premises guard / no LY record) is the pre-existing, correct state and
       // keeps its own wording; a BASIS block is new and means the two sides were parsed differently.
@@ -1038,7 +1093,9 @@ module.exports = {
           delta: canCompare ? deltaFor(wk.covers, wk.lyCovers) : null,
           sub: wk && wk.covers != null
             ? `OpenTable seated · ${resShare} reserved / ${walkShare} walk-in${basisBlocked ? ` · YoY withheld — ${esc(basis.reason)}` : ''}`
-            : 'no covers this week (OpenTable)',
+            : (covGap && covGap.kind === 'partial'
+              ? `withheld — OpenTable covers reach only ${int(covGap.have)} of this week's ${int(covGap.need)} trading days; a part week beside a whole one reads as a collapse`
+              : 'no covers this week (OpenTable)'),
           barPct: canCompare ? barFor(wk.covers, wk.lyCovers) : null,
         }),
         S.rcc.kpi({
@@ -1046,8 +1103,10 @@ module.exports = {
           delta: canCompare ? deltaFor(spc, lySpc) : null,
           sub: basisBlocked
             ? `Lightspeed net ÷ OpenTable covers · YoY withheld — ${esc(basis.reason)}`
-            : (canCompare && lySpc != null ? 'Lightspeed net ÷ OpenTable covers · ex-VAT · vs same week LY'
-              : 'Lightspeed net ÷ OpenTable covers · ex-VAT (derived join)'),
+            : (covGap && covGap.kind === 'partial'
+              ? `withheld — a whole week of net over ${int(covGap.have)} of ${int(covGap.need)} days of covers would read as a surge`
+              : (canCompare && lySpc != null ? 'Lightspeed net ÷ OpenTable covers · ex-VAT · vs same week LY'
+                : 'Lightspeed net ÷ OpenTable covers · ex-VAT (derived join)')),
           barPct: canCompare ? barFor(spc, lySpc) : null,
         }),
         S.rcc.kpi({
@@ -1059,7 +1118,9 @@ module.exports = {
         S.rcc.kpi({ label: 'Revenue quality score', value: 'not ruled', sub: 'composite pending operator definition' }),
       ].join('');
       const kpiCaption = wk
-        ? `<div class="rv2-caption">${esc(wk.from)} → ${esc(wk.to)} (last full week, Mon–Sun) · vs same weekday-aligned week LY (−364d: ${esc(wk.lyFrom)} → ${esc(wk.lyTo)}) · per-receipt truth (day-net canon, v_sales_day_all)${wk.lyComparable ? '' : (wk.spanMismatch ? ` · LY not comparable — this week has ${int(wk.spanMismatch.cur)} recorded day(s) against LY's ${int(wk.spanMismatch.ly)}; a short window divided by a full one would read as a collapse, so deltas are omitted` : ' · LY not comparable (premises guard / no record) — deltas omitted, never a cross-site %')}${wk.covers != null ? ` · covers = OpenTable seated (covers_day): ${int(wk.covers)} = ${int(wk.reserved)} reserved + ${int(wk.walkin)} walk-in — booked covers are NEVER read as total${cptTxt ? ` · covers/transaction ${cptTxt} (sanity ~1.9–2.0; a material drift is a data finding, not a KPI)` : ''} · spend/cover = Lightspeed net ÷ covers (derived); POS guest-count is still not covers${!basisBlocked ? '' : ` · <strong>covers YoY and spend/cover YoY are withheld</strong> — ${esc(basis.reason)} (${int(basis.ly || 0)} at-risk LY rows, ${int(basis.cur || 0)} this week). Levels are true; only the year-on-year comparison is blocked, and it returns by itself once the reservations history is rebuilt.`}` : ' · covers stay not-wired until OpenTable lands'}</div>`
+        ? `<div class="rv2-caption">${esc(wk.from)} → ${esc(wk.to)} (last full week, Mon–Sun) · vs same weekday-aligned week LY (−364d: ${esc(wk.lyFrom)} → ${esc(wk.lyTo)}) · per-receipt truth (day-net canon, v_sales_day_all)${wk.lyComparable ? '' : (wk.spanMismatch ? ` · LY not comparable — this week has ${int(wk.spanMismatch.cur)} recorded day(s) against LY's ${int(wk.spanMismatch.ly)}; a short window divided by a full one would read as a collapse, so deltas are omitted` : ' · LY not comparable (premises guard / no record) — deltas omitted, never a cross-site %')}${wk.covers != null ? ` · covers = OpenTable seated (covers_day): ${int(wk.covers)} = ${int(wk.reserved)} reserved + ${int(wk.walkin)} walk-in — booked covers are NEVER read as total${cptTxt ? ` · covers/transaction ${cptTxt} (sanity ~1.9–2.0; a material drift is a data finding, not a KPI)` : ''} · spend/cover = Lightspeed net ÷ covers (derived); POS guest-count is still not covers${!basisBlocked ? '' : ` · <strong>covers YoY and spend/cover YoY are withheld</strong> — ${esc(basis.reason)} (${int(basis.ly || 0)} at-risk LY rows, ${int(basis.cur || 0)} this week). Levels are true; only the year-on-year comparison is blocked, and it returns by itself once the reservations history is rebuilt.`}` : (covGap && covGap.kind === 'partial'
+          ? ` · <strong>covers, spend/cover and covers/transaction are withheld this week</strong> — the OpenTable export reaches ${int(covGap.have)} of the week's ${int(covGap.need)} trading days. Sales are whole, covers are not, and a ratio across the two would invent a collapse (covers) and a surge (spend/cover). Drop the export and all three return with no other change.`
+          : ' · covers stay not-wired until OpenTable lands')}</div>`
         : `<div class="rv2-caption">No Lightspeed sales yet — the daily ingest (05:30) fills the day-grain record; covers stay not-wired until OpenTable lands.</div>`;
 
       // ---- 8-week trend (inline SVG, mock grammar: orange current+area, amber dashed target,
@@ -1517,8 +1578,8 @@ module.exports = {
             label: 'Covers / transaction', value: v != null ? v.toFixed(2) : '—',
             delta: out ? { dir: 'down', text: 'OUT OF BAND ' } : null,
             sub: v == null ? 'no covers in the window (OpenTable)'
-              : out ? `OpenTable covers ÷ txns · OUTSIDE the ${CPT_BAND[0]}–${CPT_BAND[1]} sanity band — treat as a DATA finding, not a KPI move`
-                : `OpenTable covers ÷ txns · inside the ${CPT_BAND[0]}–${CPT_BAND[1]} sanity band`,
+              : `${out ? `OUTSIDE the ${CPT_BAND[0]}–${CPT_BAND[1]} sanity band — treat as a DATA finding, not a KPI move`
+                : `inside the ${CPT_BAND[0]}–${CPT_BAND[1]} sanity band`} · OpenTable covers ÷ txns over the ${int(dv.cpt.days)} day(s) holding BOTH (${esc(dv.cpt.from)}→${esc(dv.cpt.to)})`,
           });
         })(),
         attachKpi('Drink attachment', att.drink, 'receipts with ≥1 drink-class line'),
@@ -1634,7 +1695,7 @@ module.exports = {
         }),
         S.rcc.kpi({
           label: 'Net / cover (overall)', value: (sit && sit.covers && sit.dineNet != null ? gbp(Math.round(sit.dineNet / sit.covers)) : '—'),
-          sub: (sit && sit.covers && sit.dineNet != null) ? `full dine-in net ÷ ${int(sit.covers)} OpenTable covers · sanity cross-check · not channel-split (POS guest-count is never covers)`
+          sub: (sit && sit.covers && sit.dineNet != null) ? `full dine-in net ÷ ${int(sit.covers)} OpenTable covers, both over the ${int(sit.coversDays)} day(s) holding covers (${esc(sit.coversFrom)}→${esc(sit.coversTo)}) · sanity cross-check · not channel-split (POS guest-count is never covers)`
             : 'no covers in the window (OpenTable)',
         }),
       ].join('');

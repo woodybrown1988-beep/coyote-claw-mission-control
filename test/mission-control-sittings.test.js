@@ -46,9 +46,19 @@ function addSittings(db) {
   ins.run(d, 't3#1', 'served', 'Table 3', 1, 3000, 1, 1);  // served £30 → net/served sitting = £30.00
   ins.run(d, 't4#1', 'mixed', 'Table 4', 2, 5000, 1, 1);   // mixed (both channels)
 }
+// Covers land on the days that actually carry the dine-in receipts (APIMAX and APIMAX-3), 150 each
+// → 300 total, the figure the assertions below are written against.
+//
+// They used to sit on APIMAX-5, a day with no receipts at all — which made the per-cover ratio a
+// numerator and denominator from two disjoint sets of days. It still produced £0.40 because both
+// sides were summed over one nominal window, and that is exactly the defect the COVERS WINDOW
+// GUARD (2026-08-21) closes: per-cover is now taken over the days holding BOTH feeds, so a fixture
+// with no overlap correctly gates. Realigning the fixture keeps this test's own subject — that the
+// numerator is FULL dine-in receipts net, not the sittings subset — testable.
 function addCovers(db) {
   db.exec(`CREATE TABLE covers_day (business_date TEXT PRIMARY KEY, total_covers INTEGER, updated_at INTEGER);`);
-  db.prepare(`INSERT INTO covers_day VALUES (?, 300, 1)`).run(shift(APIMAX, -5));
+  const ins = db.prepare(`INSERT INTO covers_day VALUES (?, 150, 1)`);
+  ins.run(APIMAX); ins.run(shift(APIMAX, -3));
 }
 function render(db) {
   const ctx = { q: (sql, p) => DATA.safeSelect(db, sql, p), now: NOW, query: { tab: 'drivers' } };
