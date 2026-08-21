@@ -29,11 +29,11 @@ const day = (n) => new Date(NOW - n * 86400000).toISOString().slice(0, 10) + 'T0
 function db_(spec, extra = {}) {
   const db = new sqlite.DatabaseSync(':memory:');
   db.exec(`
-    CREATE TABLE review_corpus (review_id TEXT PRIMARY KEY, platform TEXT, source_ingest TEXT, reviewed_date TEXT, text TEXT);
+    CREATE TABLE review_corpus (review_id TEXT PRIMARY KEY, platform TEXT, source_ingest TEXT, reviewed_date TEXT, text TEXT, withdrawn_at INTEGER);
     CREATE TABLE issue_trends (issue_code TEXT, count_current INTEGER, count_prior INTEGER, rising INTEGER, computed_at INTEGER);
     CREATE TABLE review_issues (review_id TEXT, issue_code TEXT, evidence_quote TEXT, confidence REAL);
   `);
-  const ins = db.prepare('INSERT INTO review_corpus VALUES (?,?,?,?,?)');
+  const ins = db.prepare('INSERT INTO review_corpus VALUES (?,?,?,?,?,NULL)');
   let i = 0;
   for (const [platform, sources] of Object.entries(spec)) {
     for (const [source, [cur, prior]] of Object.entries(sources)) {
@@ -291,9 +291,9 @@ test('two gating platforms with different verdicts each close their own banner',
 test('a silent-feed warning still renders while an unrelated collapse is firing', () => {
   const db = db_({ opentable: { 'api-v1': [3, 12], email: [2, 11] } });  // the collapse
   // A tripadvisor feed with a real cadence that stopped 43 days ago — silent by its own history.
-  const ins = db.prepare('INSERT INTO review_corpus VALUES (?,?,?,?,?)');
+  const ins = db.prepare('INSERT INTO review_corpus VALUES (?,?,?,?,?,?)');
   let i = 500;
-  for (let d = 200; d >= 43; d -= 2) ins.run(`ta${i++}`, 'tripadvisor', 'api-v1', day(d), 'w');
+  for (let d = 200; d >= 43; d -= 2) ins.run(`ta${i++}`, 'tripadvisor', 'api-v1', day(d), 'w', null);
   const body = render(db);
   assert.match(body, /have collapsed in this window/, 'the collapse fires');
   assert.match(body, /tripadvisor has delivered no review since/,
@@ -316,4 +316,56 @@ test('a route fault renders even when no trend window has ever been computed', (
   assert.match(body, /No trend window computed yet/, 'the empty state still shows');
   assert.match(body, /delivery fault in our pipeline[^<]*Restore it\./,
     'and the actionable verdict renders above it rather than dying with the tiles');
+});
+
+// --- A PLATFORM TOTAL COUNTS REVIEWS, NOT DELIVERIES (2026-08-21) ------------------------------
+// The ledger exists so a review can exist ONCE while being credited to both routes that brought it.
+// The platform total was then taken by adding those credits back up — so every dual-route review
+// counted twice. Live: OpenTable's 2 written reviews in the current window read as 4, and the
+// board's headline said 31 against 46 where the truth is 29 against 35.
+//
+// Worse than the inflation: a platform whose ROUTE COVERAGE changes between windows moves this
+// total with no change in reviews at all — a collapse verdict fired by bookkeeping. Per-route
+// counts come from the ledger; per-platform counts come from the corpus, where one review is one
+// row.
+test('a review delivered by two routes counts ONCE in its platform total', () => {
+  const db = new sqlite.DatabaseSync(':memory:');
+  db.exec(`CREATE TABLE review_corpus (review_id TEXT PRIMARY KEY, platform TEXT, source_ingest TEXT, reviewed_date TEXT, text TEXT, withdrawn_at INTEGER);
+           CREATE TABLE review_deliveries (review_id TEXT, source TEXT, first_delivered_at INTEGER, last_delivered_at INTEGER);
+           CREATE TABLE issue_trends (issue_code TEXT, count_current INTEGER, count_prior INTEGER, rising INTEGER, computed_at INTEGER);
+           CREATE TABLE review_issues (review_id TEXT, issue_code TEXT, evidence_quote TEXT, confidence REAL);`);
+  const rc = db.prepare('INSERT INTO review_corpus VALUES (?,?,?,?,?,?)');
+  const rd = db.prepare('INSERT INTO review_deliveries VALUES (?,?,1,1)');
+  // Three OpenTable reviews this window, EACH delivered by both routes.
+  for (let i = 0; i < 3; i++) {
+    rc.run(`r${i}`, 'opentable', 'api-v1', day(2 + i), 'words', null);
+    rd.run(`r${i}`, 'api-v1'); rd.run(`r${i}`, 'email');
+  }
+  // Six last window, same shape — so the ratio is unchanged and nothing should look collapsed.
+  for (let i = 10; i < 16; i++) {
+    rc.run(`r${i}`, 'opentable', 'api-v1', day(35 + i), 'words', null);
+    rd.run(`r${i}`, 'api-v1'); rd.run(`r${i}`, 'email');
+  }
+  const w = DATA.reviewInputWindows(q(db), NOW);
+  const p = w.platforms.find((x) => x.platform === 'opentable');
+  assert.equal(p.cur, 3, 'three reviews, not six delivery rows');
+  assert.equal(p.prior, 6, 'six reviews, not twelve');
+  assert.equal(w.cur, 3, 'and the board headline counts reviews too');
+  // The per-route view is unchanged — that IS what the ledger is for.
+  assert.deepEqual(p.legs.map((l) => `${l.source}:${l.prior}->${l.cur}`).sort(), ['api-v1:6->3', 'email:6->3']);
+});
+
+// NEGATIVE CONTROL — a withdrawn review is not input either, whichever routes delivered it.
+test('withdrawn reviews carry no weight in the platform total', () => {
+  const db = new sqlite.DatabaseSync(':memory:');
+  db.exec(`CREATE TABLE review_corpus (review_id TEXT PRIMARY KEY, platform TEXT, source_ingest TEXT, reviewed_date TEXT, text TEXT, withdrawn_at INTEGER);
+           CREATE TABLE review_deliveries (review_id TEXT, source TEXT, first_delivered_at INTEGER, last_delivered_at INTEGER);
+           CREATE TABLE issue_trends (issue_code TEXT, count_current INTEGER, count_prior INTEGER, rising INTEGER, computed_at INTEGER);
+           CREATE TABLE review_issues (review_id TEXT, issue_code TEXT, evidence_quote TEXT, confidence REAL);`);
+  const rc = db.prepare('INSERT INTO review_corpus VALUES (?,?,?,?,?,?)');
+  rc.run('live', 'google', 'gmb-direct', day(3), 'words', null);
+  rc.run('gone', 'google', 'gmb-direct', day(4), 'words', 1_700_000_000_000);
+  const w = DATA.reviewInputWindows(q(db), NOW);
+  assert.equal(w.platforms.find((x) => x.platform === 'google').cur, 1,
+    'a review the platform no longer carries is not input');
 });

@@ -297,14 +297,43 @@ function reviewInputWindows(q, now) {
       ).rows || []);
   if (!legRows.length) return { present: false, platforms: [], cur: 0, prior: 0, collapsed: [] };
 
+  // A PLATFORM TOTAL IS A COUNT OF REVIEWS, NOT OF DELIVERIES. Summing the legs double-counts every
+  // review that arrived by more than one route: OpenTable's 2 written reviews in the current window
+  // became 4, and the board's headline read 31 against 46 where the truth is 29 against 35.
+  //
+  // The irony is the point — the ledger was built so a review could exist ONCE while being credited
+  // to both routes, and then the total was taken by adding the credits back up. Per-route counts
+  // come from the ledger (that is what it is for); per-platform counts come from the corpus, where
+  // one review is one row. Worse than the inflation: a platform whose ROUTE COVERAGE changes
+  // between windows would move this total with no change in reviews at all — a collapse verdict
+  // fired by bookkeeping.
+  const platformSql = (withdrawnClause) =>
+    `SELECT platform,
+       SUM(CASE WHEN reviewed_date >= ? AND text IS NOT NULL AND TRIM(text) <> '' THEN 1 ELSE 0 END) cur,
+       SUM(CASE WHEN reviewed_date >= ? AND reviewed_date < ? AND text IS NOT NULL AND TRIM(text) <> '' THEN 1 ELSE 0 END) prior
+     FROM review_corpus ${withdrawnClause}
+     GROUP BY platform`;
+  const params = [curFrom, priorFrom, curFrom];
+  // A database predating withdrawn_at must degrade, not zero. safeSelect swallows the error and
+  // returns ok:false, and an unnoticed ok:false is indistinguishable from "no reviews at all" —
+  // which would gate every tile on the board and call it a collapse. Falling back explicitly is
+  // the difference between a missing column and a missing feed.
+  const withWithdrawn = q(platformSql('WHERE withdrawn_at IS NULL'), params);
+  const platformRows = (withWithdrawn.ok ? withWithdrawn.rows : (q(platformSql(''), params).rows)) || [];
+
   const byPlatform = new Map();
+  for (const r of platformRows) {
+    byPlatform.set(String(r.platform), {
+      platform: String(r.platform), cur: toInt(r.cur) || 0, prior: toInt(r.prior) || 0, legs: [],
+    });
+  }
   for (const r of legRows) {
     const p = String(r.platform);
+    // A route may report for a platform the corpus query did not (a withdrawn-only platform); keep
+    // it visible rather than dropping the row on the floor.
     const entry = byPlatform.get(p) || { platform: p, cur: 0, prior: 0, legs: [] };
     const cur = toInt(r.cur) || 0;
     const prior = toInt(r.prior) || 0;
-    entry.cur += cur;
-    entry.prior += prior;
     entry.legs.push({ source: String(r.src || 'unknown'), cur, prior, dropped: prior >= LEG_MIN_PRIOR && cur < prior * LEG_DROP_RATIO });
     byPlatform.set(p, entry);
   }
