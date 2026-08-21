@@ -270,7 +270,13 @@ test('a genuinely silent feed IS named — platform, date, and the gap it beat',
   assert.match(body, /tripadvisor is current to/, 'healthy platforms are not smeared');
   assert.ok(!/Anthropic/.test(body), 'still no invented cause');
   // The cross-check: 1,386 on the profile against what arrived.
-  assert.match(body, /1,386 reviews against/, "Google's own count is compared to ours");
+  // The cross-check still renders — but it no longer attributes the number to Google. That figure
+  // is what OUR ingest paginated; review_snapshot.total is not Google's own totalReviewCount, which
+  // the codebase never reads. Naming it "Google's own profile reports" was a board lie of exactly
+  // the kind this file exists to catch, and it survived one round of fixing because it lived on a
+  // second page.
+  assert.match(body, /Our last fetch from Google returned 1,386 reviews/, 'our count is compared to our corpus');
+  assert.doesNotMatch(body, /Google's own profile reports/, 'and it is not dressed up as Google\'s own figure');
   void ctx;
 });
 

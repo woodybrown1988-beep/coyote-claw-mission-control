@@ -66,8 +66,11 @@ test('EVERY route fell together → the platform changed, and it says so', () =>
   assert.equal(p.verdict, 'platform');
   const s = sentence(db);
   assert.match(s, /EVERY source fell with it/);
-  assert.match(s, /guests are writing less while still leaving ratings/);
-  assert.match(s, /Nothing to fix/, 'the operator must not be sent hunting a fault that does not exist');
+  assert.match(s, /upstream of us rather than in our pipeline/);
+  assert.match(s, /the ratings still arrive, the words do not/, 'it states the observation, not a motive');
+  assert.doesNotMatch(s, /guests are writing less/,
+    'the routes cannot separate guests writing less from the platform withholding the words — both look identical from here');
+  assert.match(s, /Nothing in our delivery to fix/, 'the operator must not be sent hunting a fault that does not exist');
   assert.doesNotMatch(s, /describe a feed/, 'the old asserted cause is gone');
 });
 
@@ -101,7 +104,7 @@ test('a single-route platform returns UNKNOWN rather than guessing', () => {
   const s = sentence(db);
   assert.match(s, /single route/);
   assert.match(s, /cause unknown/);
-  assert.doesNotMatch(s, /guests are writing less/, 'it must not claim the platform changed');
+  assert.doesNotMatch(s, /upstream of us/, 'it must not claim the change is upstream');
   assert.doesNotMatch(s, /delivery fault in our pipeline/, 'nor that we broke — naming both possibilities to say they are indistinguishable is the point');
 });
 
@@ -165,21 +168,59 @@ test('an empty corpus gates the tiles and asserts nothing', () => {
 // teaches the operator to read none of it.
 test('the banner does not tell you to fix something it just said needs no fixing', () => {
   const body = render(db_({ opentable: { 'api-v1': [3, 12], email: [2, 11] }, google: { 'gmb-direct': [21, 11] } }));
-  assert.match(body, /Nothing to fix/);
+  assert.match(body, /Nothing in our delivery to fix/);
   assert.doesNotMatch(body, /Restore the feed/, 'the two cannot both be true');
-  assert.match(body, /Read these again once written reviews recover/, 'the tail follows the verdict');
+  assert.match(body, /Read these again once the written reviews return/, 'the tail follows the verdict');
 });
 
 test('a pipeline verdict DOES close by telling you to restore it', () => {
   const body = render(db_({ opentable: { 'api-v1': [0, 14], email: [11, 11] }, google: { 'gmb-direct': [4, 20] } }));
   assert.match(body, /delivery fault in our pipeline/);
   assert.match(body, /Restore the route named above/);
-  assert.doesNotMatch(body, /Nothing to fix/);
+  assert.doesNotMatch(body, /Nothing in our delivery to fix/);
 });
 
 test('an unknown cause closes by asking for one, not by asserting either', () => {
   const body = render(db_({ tripadvisor: { 'api-v1': [2, 14] }, google: { 'gmb-direct': [4, 20] } }));
   assert.match(body, /cause unknown/);
   assert.match(body, /Establish the cause/);
-  assert.doesNotMatch(body, /Nothing to fix/);
+  assert.doesNotMatch(body, /Nothing in our delivery to fix/);
+});
+
+// THE RENDER IS WHERE THE OPERATOR MEETS IT (2026-08-21, found by audit).
+// data.js separates `collapsed` (what gates the tiles) from `reportable` (that, plus any route
+// failure a sibling makes diagnosable). issues.js read only `collapsed`, so the PIPELINE verdict —
+// the one verdict the operator can act on — was computed on every request and shown on none. The
+// model test passed throughout, which is exactly why it survived: a model assertion cannot see a
+// page that throws the answer away.
+test('a route failure reaches the operator even when the tiles are not gated', () => {
+  const body = render(db_({
+    opentable: { 'api-v1': [1, 12], email: [11, 11] },   // total falls 48% — under the gate
+    google: { 'gmb-direct': [21, 11] },
+  }));
+  assert.match(body, /delivery fault in our pipeline/, 'the actionable verdict is on the page');
+  assert.match(body, /only api-v1 fell/, 'naming the route to restore');
+  assert.match(body, /▼ easing/, 'while the tiles themselves are NOT gated — the total held up');
+});
+
+// NEGATIVE CONTROL for the separation above, and the reason it exists: fixing the render gap by
+// feeding `reportable` into the GATE made a route failure silence tiles that were perfectly
+// readable — the same conflation in the opposite direction, introduced while fixing it.
+test('a route failure is reported WITHOUT gating tiles the input can still carry', () => {
+  const body = render(db_({
+    opentable: { 'api-v1': [1, 12], email: [11, 11] },   // one route dead, total holds at 48%
+    google: { 'gmb-direct': [21, 11] },
+  }));
+  assert.match(body, /delivery fault in our pipeline/, 'the route failure speaks');
+  assert.match(body, /▼ easing/, 'and the readable tiles are still read');
+  assert.doesNotMatch(body, /have collapsed in this window/, 'nothing collapsed, so nothing claims it did');
+});
+
+test('a genuine collapse still gates, even with no route failure to report', () => {
+  const body = render(db_({
+    opentable: { 'api-v1': [2, 12], email: [2, 11] },    // both routes fell: collapse, no fault
+    google: { 'gmb-direct': [4, 11] },
+  }));
+  assert.match(body, /have collapsed in this window/);
+  assert.doesNotMatch(body, /▼ easing/, 'the tiles ARE gated when the input genuinely thinned');
 });

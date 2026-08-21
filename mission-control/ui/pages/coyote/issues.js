@@ -72,11 +72,28 @@ function getSection(db, ctx) {
   const win = S.reviewInputWindows(q, nowMs);
   const covCur = win.cur;
   const covPrior = win.prior;
-  const collapsedPlatforms = win.collapsed.map((p) => ({ platform: p.platform, cur: p.cur, prior: p.prior, verdict: p.verdict }));
+  // REPORTABLE, not just COLLAPSED. data.js deliberately separates the two: `collapsed` is what
+  // GATES the trend tiles, `reportable` adds any route failure a sibling makes diagnosable even
+  // where the platform total held up. Reading only `collapsed` here meant the pipeline verdict —
+  // the ONE verdict the operator can act on — was computed on every request and shown on none.
+  //
+  // The model was right and the page threw the answer away. A test on the model passed throughout,
+  // which is why it survived: the render is where the operator meets it, so the render is where it
+  // has to be asserted.
+  const asRow = (p) => ({ platform: p.platform, cur: p.cur, prior: p.prior, verdict: p.verdict });
+  // TWO DIFFERENT QUESTIONS, AND CONFLATING THEM IS HOW THIS WENT WRONG TWICE.
+  //   gatingPlatforms  — is the input too thin to read the tiles at all?  (genuine collapse only)
+  //   reportedPlatforms — is there anything worth SAYING?                 (that, plus route failures)
+  // A broken delivery route is worth naming even when the totals held up, but it must not silence
+  // tiles that are perfectly readable. Reading only `collapsed` hid the actionable verdict; reading
+  // only `reportable` gagged the tiles. They are separate because they answer separate questions.
+  const gatingPlatforms = win.collapsed.map(asRow);
+  const reportedPlatforms = (win.reportable || win.collapsed).map(asRow);
+  const collapsedPlatforms = reportedPlatforms;
   // Unknown coverage is NOT treated as fine — if the corpus cannot be read, the tiles gate too.
   const inputCollapsed = !win.present
     ? true
-    : (covPrior > 0 && covCur < covPrior * 0.5) || collapsedPlatforms.length > 0;
+    : (covPrior > 0 && covCur < covPrior * 0.5) || gatingPlatforms.length > 0;
   const inputNote = S.inputDropSentence(win);
   const coverage = { cur: covCur, prior: covPrior, collapsed: inputCollapsed, collapsedPlatforms, inputNote };
 
@@ -242,8 +259,14 @@ function risingTiles(rising, coverage, coverageNote) {
   const tail = verdicts.has('pipeline')
     ? ' Restore the route named above before reading these as a trend.'
     : verdicts.size === 1 && verdicts.has('platform')
-      ? ' Read these again once written reviews recover.'
+      ? ' Read these again once the written reviews return.'
       : ' Establish the cause before reading these as a trend.';
+  // A ROUTE FAILURE IS NEWS EVEN WHEN THE TILES ARE NOT GATED. `blind` decides whether the counts
+  // can be read at all; a broken delivery route is worth saying either way, and if it only spoke
+  // when something else had already collapsed it would never be the thing that told you first.
+  const routeOnly = !blind && named
+    ? `<div class="banner amber">${named.trim()}</div>`
+    : '';
   const note = blind
     ? `<div class="banner amber">Reviews WITH TEXT have collapsed in this window — ${S.fmtInt(curBase)} against ${S.fmtInt(priorBase)} in the prior 30 days. Only a review with text can produce a tag, so a count of zero here means nothing arrived to count, not that a complaint stopped: falls are NOT shown as easing.${named}${tail}</div>`
     : '';
@@ -256,7 +279,7 @@ function risingTiles(rising, coverage, coverageNote) {
     : '';
   // The denominator travels with the numbers, always — this is what makes a fall readable.
   const base = `<div class="r-mini-note">Counts are over reviews WITH TEXT: ${S.fmtInt(curBase)} classified this window vs ${S.fmtInt(priorBase)} in the prior 30 days. A fall is only marked easing when it is unlikely (&lt;${Math.round(NOISE_P * 100)}%) to happen by chance at this sample size.</div>`;
-  return `${note}${covNote}<div class="tiles">${tiles}</div>${base}`;
+  return `${note}${routeOnly}${covNote}<div class="tiles">${tiles}</div>${base}`;
 }
 
 function frequencyTable(frequency) {
