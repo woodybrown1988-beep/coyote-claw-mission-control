@@ -223,8 +223,12 @@ function renderRatings(snap, ratingTrend, cov) {
   // screen, for three weeks. The comparison costs nothing and is the loudest thing on the page.
   const g = cov && cov.google;
   const gapBanner = g && g.missing > 0
-    ? `<div class="banner amber">Google's profile reports ${S.fmtInt(g.getTotal)} reviews; ${S.fmtInt(g.corpusTotal)} have reached our corpus — <b>${S.fmtInt(g.missing)} are missing</b>, so the queue below cannot be complete and the 30-day rating is computed over what did arrive.</div>`
-    : '';
+    ? `<div class="banner amber">Our last fetch from Google returned ${S.fmtInt(g.fetchedTotal)} reviews; ${S.fmtInt(g.corpusTotal)} are in our corpus — <b>${S.fmtInt(g.missing)} have not reached us</b>, so the queue below cannot be complete and the 30-day rating is computed over what did arrive.</div>`
+    : g && g.surplus > 0
+      // THE OTHER DIRECTION, which had no branch at all. Holding MORE rows than the fetch returned
+      // means duplicates, not extra reviews — every count and mean over this platform is inflated.
+      ? `<div class="banner amber">We hold ${S.fmtInt(g.corpusTotal)} google rows but the last fetch returned only ${S.fmtInt(g.fetchedTotal)} reviews — <b>${S.fmtInt(g.surplus)} rows are duplicates or belong to a retired feed</b>, so counts and averages over this platform are inflated until they are reconciled.</div>`
+      : '';
   return `${gapBanner}<div class="tiles">
     <div class="tile blue"><div class="lab">Google</div><div class="val">${fmtRating(snap.google)}</div><div class="sub">${winSub('google')}</div></div>
     <div class="tile green"><div class="lab">TripAdvisor</div><div class="val">${fmtRating(snap.tripadvisor)}</div><div class="sub">${winSub('tripadvisor')}</div></div>

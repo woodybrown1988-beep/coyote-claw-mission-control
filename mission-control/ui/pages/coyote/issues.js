@@ -53,18 +53,41 @@ function getSection(db, ctx) {
   // not the restaurant, and the tiles must say so instead of going green.
   const nowMs = (ctx && ctx.now) || Date.now();
   const dayIso = (msBack) => new Date(nowMs - msBack).toISOString().slice(0, 10);
-  const cov = rows(q(
-    `SELECT
-       (SELECT COUNT(*) FROM review_corpus WHERE reviewed_date >= ?) cur,
-       (SELECT COUNT(*) FROM review_corpus WHERE reviewed_date >= ? AND reviewed_date < ?) prior`,
-    [dayIso(30 * 86400000), dayIso(60 * 86400000), dayIso(30 * 86400000)]))[0] || {};
-  const covCur = num(cov.cur);
-  const covPrior = num(cov.prior);
+  //
+  // TWO CORRECTIONS (2026-08-21), both found by adversarially reviewing the google-feed fix:
+  //
+  //  (1) IT COUNTED ROWS, NOT TEXT. Only reviews WITH TEXT can produce an issue tag — that is what
+  //      the extractor consumes. A window can hold plenty of rows and almost no text, and the
+  //      counts would look healthy while the thing that generates tags had stopped.
+  //  (2) IT AGGREGATED ACROSS PLATFORMS, so one platform's recovery hides another's collapse. Live
+  //      today: OpenTable's text-bearing input fell 23 -> 3 and TripAdvisor's 11 -> 4, both far past
+  //      this guard's own 50% rule — while Google went 12 -> 23 and carried the total to 46 -> 30,
+  //      a 35% fall that does not trip it. The fix that restored Google is what masks the other two.
+  //
+  // THE CLASS: a guard evaluated on a SUM cannot see a change that one term conceals in another. If
+  // the thing being protected is composed of independent sources, the guard belongs at source grain.
+  const perPlatform = rows(q(
+    `SELECT platform,
+       SUM(CASE WHEN reviewed_date >= ? AND text IS NOT NULL AND TRIM(text) <> '' THEN 1 ELSE 0 END) cur,
+       SUM(CASE WHEN reviewed_date >= ? AND reviewed_date < ? AND text IS NOT NULL AND TRIM(text) <> '' THEN 1 ELSE 0 END) prior
+     FROM review_corpus GROUP BY platform`,
+    [dayIso(30 * 86400000), dayIso(60 * 86400000), dayIso(30 * 86400000)]));
+  const covCur = perPlatform.reduce((a, r) => a + (num(r.cur) || 0), 0);
+  const covPrior = perPlatform.reduce((a, r) => a + (num(r.prior) || 0), 0);
+  // A platform counts as collapsed only when it had enough history to judge (>=5 text reviews last
+  // window) AND supplied a material share of it (>=20%) — so a platform that was always marginal
+  // cannot gate the whole page, and a genuine contributor going quiet always does.
+  const collapsedPlatforms = perPlatform
+    .filter((r) => {
+      const c = num(r.cur) || 0, pr = num(r.prior) || 0;
+      return pr >= 5 && covPrior > 0 && pr / covPrior >= 0.2 && c < pr * 0.5;
+    })
+    .map((r) => ({ platform: String(r.platform), cur: num(r.cur) || 0, prior: num(r.prior) || 0 }));
   // Unknown coverage is NOT treated as fine — if the corpus cannot be read, the tiles gate too.
-  const inputCollapsed = covCur == null || covPrior == null
+  const inputCollapsed = !perPlatform.length
     ? true
-    : (covPrior > 0 && covCur < covPrior * 0.5);
-  const coverage = { cur: covCur, prior: covPrior, collapsed: inputCollapsed };
+    : (covPrior > 0 && covCur < covPrior * 0.5) || collapsedPlatforms.length > 0;
+  const coverage = { cur: covCur, prior: covPrior, collapsed: inputCollapsed, perPlatform, collapsedPlatforms };
 
   // (b) all-time frequency + a real sample quote per code (MAX = a deterministic, real row value)
   const frequency = rows(
@@ -149,6 +172,36 @@ function fmtPct(p) {
 // The blind-window guard was RIGHT; its REMEDY was a hard-coded guess that outlived the fault. It
 // told the operator to re-consent an OAuth he had already re-consented, while the actual silence
 // was a different feed. A remedy that names a cause must derive it — see data.js reviewCoverage.
+// A FALL IS ONLY NEWS IF THE SAMPLE COULD HAVE SHOWN IT (2026-08-21).
+//
+// The tiles turned green on any negative delta. With 30 classified reviews this window against 46
+// last, four codes went green on a CURRENT COUNT OF ZERO — and under no change at all, seeing zero
+// was likely: ORDER_ACCURACY p=13%, FOOD_TEMP p=26%, PAYMENT_CASH p=26%, CLEANLINESS p=52%. The
+// board was calling a coin flip an improvement, in the one place the operator looks to decide
+// whether something he changed worked.
+//
+// THE CLASS: a count rendered as a DIRECTION needs the sample behind it to be capable of carrying
+// one. This asks the only question that matters — if nothing had changed, how often would we see a
+// number this low anyway? — and stays neutral when the answer is "often".
+//
+// Exact binomial tail: P(X <= cur) where X ~ B(curBase, priorCount/priorBase). Computed
+// iteratively so it stays exact for the sizes involved and never overflows on a factorial.
+function noChangeTailProb(cur, prior, curBase, priorBase) {
+  if (!(priorBase > 0) || !(curBase > 0) || !(prior > 0)) return 1; // nothing to test against
+  const p = Math.min(1, prior / priorBase);
+  if (!(p > 0)) return 1;
+  let term = Math.pow(1 - p, curBase); // P(X = 0)
+  if (!Number.isFinite(term)) return 1;
+  let acc = term;
+  for (let k = 1; k <= cur && k <= curBase; k++) {
+    term *= ((curBase - k + 1) / k) * (p / (1 - p));
+    acc += term;
+  }
+  return Math.min(1, acc);
+}
+// Above this, a fall is not distinguishable from noise and must not be rendered as easing.
+const NOISE_P = 0.10;
+
 function risingTiles(rising, coverage, coverageNote) {
   if (!rising.length) {
     return '<div class="banner muted">No trend window computed yet — rising themes appear once issue_trends is populated.</div>';
@@ -157,6 +210,9 @@ function risingTiles(rising, coverage, coverageNote) {
   // has collapsed, every zero is the feed's silence, not the kitchen's improvement — so the tiles
   // stay neutral and say why, rather than turning green on an absence.
   const blind = !!(coverage && coverage.collapsed);
+  // The denominators the counts are drawn from — reviews WITH TEXT, the only ones that can be tagged.
+  const curBase = (coverage && coverage.cur) || 0;
+  const priorBase = (coverage && coverage.prior) || 0;
   const tiles = rising.map((r) => {
     const isAllergen = r.code === ALLERGEN;
     const up = r.rising || r.delta > 0;
@@ -170,7 +226,9 @@ function risingTiles(rising, coverage, coverageNote) {
       arrow = '▲';
       word = isAllergen ? 'rising · safety' : 'rising';
     } else if (r.delta < 0) {
+      const tail = noChangeTailProb(r.cur, r.prior, curBase, priorBase);
       if (blind) { cls = 'muted'; subCls = ''; arrow = '·'; word = 'no input — not easing'; }
+      else if (tail > NOISE_P) { cls = 'muted'; subCls = ''; arrow = '·'; word = `down, but within normal variation (${Math.round(tail * 100)}% likely anyway)`; }
       else { cls = 'green'; subCls = 'g'; arrow = '▼'; word = 'easing'; }
     }
     const deltaTxt = r.delta === 0 ? '±0' : `${r.delta > 0 ? '+' : ''}${r.delta}`;
@@ -180,10 +238,23 @@ function risingTiles(rising, coverage, coverageNote) {
       <div class="sub${subCls ? ' ' + subCls : ''}">prior ${S.fmtInt(r.prior)} · ${arrow} ${word} (${S.escapeHtml(deltaTxt)})</div>
     </div>`;
   }).join('');
-  const note = blind
-    ? `<div class="banner amber">Review input has collapsed in this window${coverage && coverage.cur != null && coverage.prior != null ? ` — ${S.fmtInt(coverage.cur)} reviews landed against ${S.fmtInt(coverage.prior)} in the prior 30 days` : ''}. A count of zero here means nothing arrived to count, not that a complaint stopped, so falls are NOT shown as easing. ${coverageNote ? S.escapeHtml(coverageNote) + ' ' : ''}Restore the feed before reading these as a trend.</div>`
+  const which = (coverage && coverage.collapsedPlatforms) || [];
+  const named = which.length
+    ? ` The fall is ${which.map((c) => `${S.escapeHtml(c.platform)} ${S.fmtInt(c.prior)} → ${S.fmtInt(c.cur)}`).join(', ')}, so these counts describe a feed, not the kitchen.`
     : '';
-  return `${note}<div class="tiles">${tiles}</div>`;
+  const note = blind
+    ? `<div class="banner amber">Reviews WITH TEXT have collapsed in this window — ${S.fmtInt(curBase)} against ${S.fmtInt(priorBase)} in the prior 30 days. Only a review with text can produce a tag, so a count of zero here means nothing arrived to count, not that a complaint stopped: falls are NOT shown as easing.${named} Restore the feed before reading these as a trend.</div>`
+    : '';
+  // ALWAYS RENDERED, not only inside the blind banner. The per-platform coverage sentence was
+  // computed on every request and then interpolated only into the branch above, so it could never
+  // reach the operator unless the collapse guard had ALREADY fired — i.e. it could only ever speak
+  // when it was no longer the news. A signal gated behind the alarm it was meant to precede.
+  const covNote = coverageNote && !blind
+    ? `<div class="banner amber">${S.escapeHtml(coverageNote)}</div>`
+    : '';
+  // The denominator travels with the numbers, always — this is what makes a fall readable.
+  const base = `<div class="r-mini-note">Counts are over reviews WITH TEXT: ${S.fmtInt(curBase)} classified this window vs ${S.fmtInt(priorBase)} in the prior 30 days. A fall is only marked easing when it is unlikely (&lt;${Math.round(NOISE_P * 100)}%) to happen by chance at this sample size.</div>`;
+  return `${note}${covNote}<div class="tiles">${tiles}</div>${base}`;
 }
 
 function frequencyTable(frequency) {

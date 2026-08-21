@@ -111,14 +111,85 @@ function reviewCoverage(q, now) {
       silent: ageDays != null && maxGap > 0 && dates.length >= 5 && ageDays > maxGap,
     };
   });
+  // TWO MASKING LAYERS THIS MODEL ORIGINALLY HAD (2026-08-21, found by adversarial review).
+  //
+  // (a) A PLATFORM CAN HAVE TWO LEGS, AND ONE CAN DIE BEHIND THE OTHER. OpenTable arrives by two
+  //     independent paths: the upstream app's feed ('api-v1') and a Gmail parser ('email'). The
+  //     api-v1 leg stopped on 2026-07-28 — 23 days against its own longest gap of 13 — and the
+  //     platform still read "current to 2026-08-16" because the email leg kept delivering. Grouping
+  //     at PLATFORM grain made a dead source invisible behind a live sibling.
+  //
+  // (b) A ROW IS NOT NECESSARILY A REVIEW YOU CAN READ. Rating-only rows carry no text, so a
+  //     platform can deliver steadily and supply nothing the extractor can classify. OpenTable's
+  //     last row WITH TEXT is weeks older than its last row.
+  //
+  // THE CLASS: freshness must be measured at the grain that can independently fail, and on the
+  // payload the consumer actually needs. Anything coarser lets a live sibling or an empty payload
+  // stand in for a source that has stopped.
+  const legRows = q(
+    `SELECT platform, source_ingest AS src, COUNT(*) n, MAX(reviewed_date) latest
+       FROM review_corpus GROUP BY platform, source_ingest`,
+  ).rows || [];
+  const gapFor = (where, params) => {
+    const dates = (q(
+      `SELECT DISTINCT substr(reviewed_date,1,10) d FROM review_corpus WHERE ${where} AND reviewed_date >= ? ORDER BY d`,
+      params.concat([new Date(now - 365 * DAY).toISOString().slice(0, 10)]),
+    ).rows || []).map((x) => Date.parse(x.d + 'T00:00:00Z')).filter(Number.isFinite);
+    let g = 0;
+    for (let i = 1; i < dates.length; i++) g = Math.max(g, Math.round((dates[i] - dates[i - 1]) / DAY));
+    return { maxGap: g, n: dates.length };
+  };
+  const legs = legRows.map((r) => {
+    const latestMs = Date.parse(String(r.latest || ''));
+    const ageDays = Number.isFinite(latestMs) ? Math.floor((now - latestMs) / DAY) : null;
+    const { maxGap, n } = gapFor('platform = ? AND source_ingest = ?', [r.platform, r.src]);
+    return {
+      platform: r.platform, source: r.src, n: toInt(r.n),
+      latest: r.latest ? String(r.latest).slice(0, 10) : null, ageDays, maxGap,
+      silent: ageDays != null && maxGap > 0 && n >= 5 && ageDays > maxGap,
+    };
+  });
+  // Text-bearing freshness per platform: the payload the issue extractor actually consumes.
+  const textRows = q(
+    `SELECT platform, MAX(reviewed_date) latest FROM review_corpus
+      WHERE text IS NOT NULL AND TRIM(text) <> '' GROUP BY platform`,
+  ).rows || [];
+  for (const p of platforms) {
+    const t = textRows.find((x) => x.platform === p.platform);
+    const tMs = t ? Date.parse(String(t.latest || '')) : NaN;
+    p.latestWithText = t && t.latest ? String(t.latest).slice(0, 10) : null;
+    p.textAgeDays = Number.isFinite(tMs) ? Math.floor((now - tMs) / DAY) : null;
+    p.legs = legs.filter((l) => l.platform === p.platform);
+    p.silentLegs = p.legs.filter((l) => l.silent && p.legs.length > 1);
+  }
+  const silentLegs = legs.filter((l) => l.silent);
+
   // The cross-check the board already had the numbers for.
   const snap = (q(`SELECT total, awaiting_recent_text FROM review_snapshot ORDER BY fetched_at DESC LIMIT 1`).rows || [])[0] || null;
   const g = platforms.find((p) => p.platform === 'google') || null;
+  // NAMED HONESTLY (corrected 2026-08-21). `review_snapshot.total` is the number of review objects
+  // OUR ingest paginated, not Google's own `totalReviewCount` — that field exists on the API
+  // response and is never read anywhere in the codebase. Calling it "Google's profile reports N"
+  // was a board lie of exactly the kind this file exists to prevent: a number labelled with an
+  // authority it does not have.
+  //
+  // AND IT NOW COMPARES IN BOTH DIRECTIONS. The original only asked "does the platform have more
+  // than we hold?" — so when the corpus held MORE than the fetch returned (1,432 rows against 1,386
+  // reviews, because a retired writer's duplicates were still in place) the check returned 0 and
+  // the banner stayed silent. Right outcome, wrong reason, and no branch existed for the direction
+  // that was actually true. A discrepancy check with only one sign is half a check.
+  const fetched = snap ? toInt(snap.total) : null;
   const google = g
-    ? { ...g, getTotal: snap ? toInt(snap.total) : null, corpusTotal: g.n,
-        missing: snap && toInt(snap.total) > g.n ? toInt(snap.total) - g.n : 0 }
+    ? {
+        ...g,
+        fetchedTotal: fetched,          // reviews OUR ingest paginated from Google
+        getTotal: fetched,              // retained name for existing callers
+        corpusTotal: g.n,               // rows we hold for this platform
+        missing: fetched != null && fetched > g.n ? fetched - g.n : 0,
+        surplus: fetched != null && g.n > fetched ? g.n - fetched : 0,
+      }
     : null;
-  return { present: true, platforms, silent: platforms.filter((p) => p.silent), google };
+  return { present: true, platforms, silent: platforms.filter((p) => p.silent), silentLegs, legs, google };
 }
 
 // One sentence naming exactly which feeds are silent and which are current — so no page has to
@@ -127,11 +198,40 @@ function reviewCoverage(q, now) {
 // system stopped using on 2026-08-04.
 function coverageSentence(cov) {
   if (!cov || !cov.present) return null;
-  if (!cov.silent.length) return null;
   const say = (p) => `${p.platform} has delivered no review since ${p.latest} (${p.ageDays} days; its longest gap in the last year was ${p.maxGap})`;
-  const ok = cov.platforms.filter((p) => !p.silent && p.latest);
-  const tail = ok.length ? ` ${ok.map((p) => `${p.platform} is current to ${p.latest}`).join(', ')}.` : '';
-  return `${cov.silent.map(say).join('; ')}.${tail}`;
+  if (cov.silent.length) {
+    const ok = cov.platforms.filter((p) => !p.silent && p.latest);
+    const tail = ok.length ? ` ${ok.map((p) => `${p.platform} is current to ${p.latest}`).join(', ')}.` : '';
+    return `${cov.silent.map(say).join('; ')}.${tail}`;
+  }
+  // NO PLATFORM IS SILENT, BUT A LEG MAY BE. Reported separately and in different words, because
+  // the operator action is different: the platform is still delivering, so nothing is missing from
+  // the board today — but one of the two ways it arrives has stopped, and when the surviving leg
+  // goes too there will be no warning left to give.
+  // A RETIRED LEG IS NOT A DEAD LEG. google's 'api-v1' source stopped on purpose when the ingest
+  // took over the fetch itself — reporting that as an outage every day is exactly the noise that
+  // teaches an operator to stop reading these warnings. The distinguishing fact is in the data: a
+  // sibling with MORE rows has taken the platform over (gmb-direct 1,386 vs api-v1 13), whereas
+  // OpenTable's surviving 'email' leg is a small side-channel (34) next to the api-v1 leg that
+  // stopped (251) and cannot be standing in for it.
+  //
+  // So: a silent leg is reported only when nothing bigger replaced it. Handover, silence.
+  const deadLegs = (cov.silentLegs || []).filter((l) => {
+    const p = cov.platforms.find((x) => x.platform === l.platform);
+    if (!p || p.silent || !p.legs || p.legs.length <= 1) return false;
+    const supersededBy = p.legs.some((o) => o.source !== l.source && !o.silent && o.n > l.n);
+    return !supersededBy;
+  });
+  if (deadLegs.length) {
+    return deadLegs
+      .map((l) => {
+        const p = cov.platforms.find((x) => x.platform === l.platform);
+        const alive = p.legs.filter((o) => o.source !== l.source && !o.silent).map((o) => `${o.source} (latest ${o.latest})`).join(', ');
+        return `${l.platform} still looks current because its ${alive || 'other'} source is delivering, but its ${l.source} source has produced nothing since ${l.latest} — ${l.ageDays} days, against a longest-ever gap of ${l.maxGap}`;
+      })
+      .join('; ') + '.';
+  }
+  return null;
 }
 
 module.exports = { safeSelect, toInt, intOrNull, ratingOrNull, ms, navBadges, footModel, reviewCoverage, coverageSentence };
