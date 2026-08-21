@@ -146,31 +146,58 @@ test('drawer: a structured description KEEPS its structure — pre-wrap, newline
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test('drawer: the pay run gets a Paid button per priced invoice — and none where no folder is recorded', () => {
-  // The verb existed (mail_paid) but was reachable only from a CLI on the box, and the owner is
-  // not on the box. The armed event carries the priced lines; each row gets its own button whose
-  // payload is ONLY the moveId — a row in our own move log, never a message id.
+test('drawer: the pay queue is the primary surface — grouped, totaled, every row actionable', () => {
+  // Play-through findings (operator, 2026-08-21): the first cut showed the same 18 invoices
+  // twice — a wall of description text, then flat button rows below it — with unpriced rows
+  // indistinguishable and "file by hand" a dead end. Pinned here: the block is grouped like the
+  // run text, the raw description folds behind a <details>, the total keeps its gate, and a row
+  // with no recorded home gets a PICKER of real folders, not a shrug.
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-tf-'));
   withEnv(fixture(dir, (db) => {
+    db.exec(`CREATE TABLE life_mail_folders (id TEXT PRIMARY KEY, owner_id TEXT, display_name TEXT, path TEXT,
+      parent_id TEXT, enabled INTEGER, refused INTEGER, refused_reason TEXT, full_history INTEGER,
+      move_target INTEGER, item_count INTEGER, discovered_at TEXT, updated_at TEXT);
+      INSERT INTO life_mail_folders VALUES
+        ('f1','woody','Drinks','03 SUPPLIERS/Drinks',NULL,1,0,'',0,1,0,'${T}','${T}'),
+        ('f2','woody','Other suppliers','03 SUPPLIERS/Other suppliers',NULL,0,0,'',0,1,0,'${T}','${T}'),
+        ('f3','woody','Pay','00 INVOICES TO PAY',NULL,1,0,'',0,1,0,'${T}','${T}'),
+        ('f4','woody','Bin','Deleted Items/Active Bills - To Pay',NULL,1,0,'',0,1,0,'${T}','${T}');`);
+    db.prepare('UPDATE life_tasks SET description = ? WHERE id = ?').run('18 invoices queued.\n\n1) X', 't1');
     db.prepare(`INSERT INTO life_task_events (id, owner_id, task_id, event_type, actor_type, payload_json, created_at)
-                VALUES ('ev1','woody','t1','INVOICE_RUN_ARMED','HUMAN', ?, '${'2026-08-21T06:40:00.000Z'}')`).run(
-      JSON.stringify({ moves: ['mv-a', 'mv-b'], queued: 2, lines: [
-        { moveId: 'mv-a', supplier: 'George Cockburn & Son Ltd', subject: 's1', ref: '15072', totalPence: 18590, onwardPath: '03 SUPPLIERS/Other suppliers' },
-        { moveId: 'mv-b', supplier: 'QSR Automations, LLC', subject: 's2', ref: null, totalPence: null, onwardPath: null },
+                VALUES ('ev1','woody','t1','INVOICE_RUN_ARMED','HUMAN', ?, '2026-08-21T06:40:00.000Z')`).run(
+      JSON.stringify({ moves: ['mv-a', 'mv-b', 'mv-c'], queued: 3, lines: [
+        { moveId: 'mv-a', supplier: 'George Cockburn & Son Ltd', subject: 's1', ref: '15072', totalPence: 18590, onwardPath: '03 SUPPLIERS/Other suppliers', ageDays: 7 },
+        { moveId: 'mv-b', supplier: 'George Cockburn & Son Ltd', subject: 's2', ref: '15453', totalPence: 27040, onwardPath: '03 SUPPLIERS/Other suppliers', ageDays: 15 },
+        { moveId: 'mv-c', supplier: 'Cartmel Sticky Toffee Pudding Co. Ltd', subject: 'Statement from Cartmel for COYOTE', ref: null, totalPence: null, onwardPath: null, ageDays: 9 },
       ] }));
   }), () => {
     const out = render();
-    assert.match(out.body, /PAY QUEUE/, 'the block renders');
-    assert.match(out.body, /George Cockburn &amp; Son Ltd<\/b> · invoice 15072 — £185\.90/, 'supplier, ref, price');
+    // Grouped like the run text: one supplier header carrying the subtotal, rows beneath it.
+    assert.match(out.body, /1\) George Cockburn &amp; Son Ltd/, 'grouped, biggest first');
+    assert.match(out.body, /£456\.30/, 'the group subtotal (185.90 + 270.40)');
+    assert.equal((out.body.match(/George Cockburn &amp; Son Ltd/g) || []).length, 1, 'the name prints ONCE, not once per invoice');
+    // An unpriced row is identifiable: its subject and age travel with it.
+    assert.match(out.body, /Statement from Cartmel for COYOTE/, 'the subject is the identifier when there is no ref');
+    assert.match(out.body, /15d/, 'ages render');
+    // The total keeps its gate: something unread → no payment label.
+    assert.ok(!/TOTAL INVOICES TO PAY/.test(out.body), 'the payment label is withheld while anything is unread');
+    assert.match(out.body, /TOTAL OF THE 2 READ = £456\.30/, 'what IS known is stated');
+    // The recorded-home rows: one-tap button, moveId only.
     const btn = /data-lc-cmd="([^"]*mail_paid[^"]*)"/.exec(out.body);
-    assert.ok(btn, 'the Paid button is a real command tap');
+    assert.ok(btn, 'the one-tap Paid button');
     const cmd = JSON.parse(btn[1].replaceAll('&quot;', '"').replaceAll('&amp;', '&'));
-    assert.equal(cmd.command, 'mail_paid');
-    assert.deepEqual(cmd.payload, { moveId: 'mv-a' }, 'ONLY the moveId travels — no folder, no message id');
-    // The folderless row: the honest note, and no second button.
-    assert.match(out.body, /no folder recorded — file by hand/);
-    assert.equal((out.body.match(/mail_paid/g) || []).length, 1, 'one button, not one per row regardless');
-    assert.match(out.body, /amount not read/, 'an unpriced row says so rather than showing £0');
+    assert.deepEqual(cmd.payload, { moveId: 'mv-a' }, 'ONLY the moveId travels on the one-tap path');
+    // The folderless row: a PICKER of real folders, not "file by hand".
+    assert.ok(!out.body.includes('file by hand'), 'the dead end is gone');
+    assert.match(out.body, /data-lc-paidto="mv-c"/, 'the picker button names its move');
+    assert.match(out.body, /data-lc-payfolder/, 'with a sibling select the client handler reads');
+    assert.match(out.body, /<option value="03 SUPPLIERS\/Drinks">/, 'real folders are the options');
+    assert.match(out.body, /<option value="03 SUPPLIERS\/Other suppliers">/, 'an UNSYNCED folder is still a destination — enabled means mirrored, not valid');
+    assert.ok(!out.body.includes('<option value="00 INVOICES TO PAY">'), 'the queue itself is never a destination');
+    assert.ok(!out.body.includes('Deleted Items'), 'nor the bin');
+    // The written run folds away instead of duplicating the list.
+    assert.match(out.body, /<details[^>]*><summary[^>]*>The run as written/, 'the raw text is one tap away, not a second copy');
+    assert.match(out.body, /white-space:pre-wrap">18 invoices queued\./, 'and keeps its structure inside');
   });
   fs.rmSync(dir, { recursive: true, force: true });
 });
