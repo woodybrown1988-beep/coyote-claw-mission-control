@@ -163,7 +163,8 @@ function getSection(db, ctx) {
       }
     : null;
 
-  return { ok: true, cards, trends, escalations, snapshot, ratingTrend, pendingTotal, qpage, engineSwitchNote };
+  const coverage = S.reviewCoverage(q, ctx.now || Date.now());
+  return { ok: true, cards, trends, escalations, snapshot, ratingTrend, pendingTotal, qpage, engineSwitchNote, coverage };
 }
 
 // =====================================================================================
@@ -194,7 +195,7 @@ function renderEscalationBanner(escalations) {
 
 // Honest ratings line as tiles: real stored ratings + the actionable-30d queue + the lifetime backlog
 // (the "959") demoted to historical context. NEVER a fabricated number — '—' when not yet ingested.
-function renderRatings(snap, ratingTrend) {
+function renderRatings(snap, ratingTrend, cov) {
   if (!snap) {
     return '<div class="banner muted">Review snapshot not yet ingested — ratings + the awaiting backlog appear after the daily ingest.</div>';
   }
@@ -206,11 +207,29 @@ function renderRatings(snap, ratingTrend) {
     lab: 'Trend · 12mo', val: lastAvg == null ? '—' : lastAvg.toFixed(2),
     sub: 'monthly mean · all platforms', points: ratingTrend || [], width: 120, height: 26,
   });
-  return `<div class="tiles">
-    <div class="tile blue"><div class="lab">Google</div><div class="val">${fmtRating(snap.google)}</div><div class="sub">${win}</div></div>
-    <div class="tile green"><div class="lab">TripAdvisor</div><div class="val">${fmtRating(snap.tripadvisor)}</div><div class="sub">${win}</div></div>
-    <div class="tile amber"><div class="lab">OpenTable</div><div class="val">${fmtRating(snap.opentable)}</div><div class="sub">${win}</div></div>
-    <div class="tile"><div class="lab">Actionable · 30d</div><div class="val">${S.fmtInt(snap.awaitingRecentText)}</div><div class="sub g">recent text · the live queue</div></div>
+  // A ROLLING-WINDOW RATING MUST DECLARE ITS INPUT (2026-08-21). These tiles published a trailing
+  // 30-day mean with nothing to say how many reviews were in the window. When Google's feed died the
+  // number fell 4.77 -> 3.86 on attrition alone and rendered as a service collapse. A window metric
+  // cannot look stale, only bad — so the sample has to travel with the number.
+  const byPlat = (name) => (cov && cov.platforms || []).find((p) => p.platform === name) || null;
+  const winSub = (name) => {
+    const p = byPlat(name);
+    if (!p) return win;
+    if (p.silent) return `<span class="warn">no input since ${S.escapeHtml(p.latest || '—')} · ${p.ageDays}d</span>`;
+    return win;
+  };
+  // The board has held BOTH numbers all along and never compared them: Google's own profile count
+  // against what actually reached our corpus. On 2026-08-21 that was 1,386 against 232, on one
+  // screen, for three weeks. The comparison costs nothing and is the loudest thing on the page.
+  const g = cov && cov.google;
+  const gapBanner = g && g.missing > 0
+    ? `<div class="banner amber">Google's profile reports ${S.fmtInt(g.getTotal)} reviews; ${S.fmtInt(g.corpusTotal)} have reached our corpus — <b>${S.fmtInt(g.missing)} are missing</b>, so the queue below cannot be complete and the 30-day rating is computed over what did arrive.</div>`
+    : '';
+  return `${gapBanner}<div class="tiles">
+    <div class="tile blue"><div class="lab">Google</div><div class="val">${fmtRating(snap.google)}</div><div class="sub">${winSub('google')}</div></div>
+    <div class="tile green"><div class="lab">TripAdvisor</div><div class="val">${fmtRating(snap.tripadvisor)}</div><div class="sub">${winSub('tripadvisor')}</div></div>
+    <div class="tile amber"><div class="lab">OpenTable</div><div class="val">${fmtRating(snap.opentable)}</div><div class="sub">${winSub('opentable')}</div></div>
+    <div class="tile"><div class="lab">Actionable · 30d</div><div class="val">${S.fmtInt(snap.awaitingRecentText)}</div><div class="sub g">per Google Business Profile</div></div>
     <div class="tile muted"><div class="lab">Awaiting · lifetime</div><div class="val">${S.fmtInt(snap.awaiting)}</div><div class="sub">historical · not a queue</div></div>
     ${trendTile}
   </div>`;
@@ -301,7 +320,7 @@ function render(section, ctx) {
   const stamp = `review snapshot · ${inner}`;
 
   const escalationBanner = renderEscalationBanner(model.escalations || []);
-  const ratings = renderRatings(snap, model.ratingTrend);
+  const ratings = renderRatings(snap, model.ratingTrend, model.coverage);
   const rising = renderRising(model.trends || []);
   const boundaryNote = model.engineSwitchNote
     ? `<div class="rmeta" style="font-size:11px;opacity:.8;margin:2px 0 8px;color:var(--amber,#F59E0B)">⚠ ${S.escapeHtml(model.engineSwitchNote)}</div>`

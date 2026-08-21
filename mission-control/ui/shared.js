@@ -1561,6 +1561,10 @@ function css() {
 // dashed target line (same convention as the £38 QR rule). Delegates to reporting.svgSparkline —
 // pure, tested, gap-aware (null points break the line rather than interpolate).
 const REP = require('./reporting.js');
+// The per-platform review-freshness reader lives in data.js (the SELECT-only read contract) and is
+// re-exported here because pages may require ONLY ../shared.js — a boundary worth keeping, so the
+// reader comes to the pages rather than the pages reaching past it.
+const COV = require('./data.js');
 function sparkline(points, opts) {
   return REP.svgSparkline({ points: points || [], ...(opts || {}) });
 }
@@ -1902,6 +1906,8 @@ function deptChip(deptKey) {
 }
 
 module.exports = {
+  reviewCoverage: COV.reviewCoverage,
+  coverageSentence: COV.coverageSentence,
   DEPARTMENTS,
   FLEET,
   agentKeyForType,
