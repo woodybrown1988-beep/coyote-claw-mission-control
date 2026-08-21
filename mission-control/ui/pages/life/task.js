@@ -25,32 +25,88 @@ const ACTIONS = {
 };
 
 // PAID, FROM THE TASK (operator ask 2026-08-21: "how do we get an invoice removed from the
-// list"). The verb existed — mail_paid files ONE invoice back to its supplier folder, and the
-// queue rule ("we moved it in, and nothing has moved it since") drops it from the list — but it
-// was reachable only from a CLI on the box, and the owner is not on the box. The armed event
-// carries the priced lines, so each row gets its own button. moveId names a row in OUR OWN move
-// log, never a message; a row with no recorded onward folder gets the honest note instead of a
-// button, because the writer would refuse to invent a destination for it.
-function invoiceRunBlock(events) {
+// list", then "play through it like you are using it as a human"). The first cut listed 18 flat
+// rows under a 40-line description saying the same thing — the same debt twice, buttons on the
+// second copy only, unpriced rows indistinguishable, and a "file by hand" dead end. This is the
+// primary surface now: grouped by supplier exactly as the run is written, subtotals, ages, the
+// gated total, and every row actionable — a recorded home gets a one-tap button; a row with no
+// recorded home gets a picker of REAL folders (half the queue arrives via Xero's relay, where one
+// sender serves three suppliers, so history can never name the folder — the owner's pick is the
+// resolution, and the writer still refuses a path that names no folder).
+function invoiceRunBlock(events, folders) {
   const armed = (events || []).find((e) => e.event_type === 'INVOICE_RUN_ARMED');
   if (!armed) return '';
   let lines = [];
   try { lines = JSON.parse(armed.payload_json || '{}').lines || []; } catch { return ''; }
   if (!lines.length) return '';
-  const gbp = (p) => typeof p === 'number' && p > 0
-    ? '\u00a3' + (p / 100).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-    : 'amount not read';
-  const rows = lines.map((l) => {
-    const name = `<b>${LIFE.esc(String(l.supplier || '?'))}</b>${l.ref ? ` \u00b7 invoice ${LIFE.esc(String(l.ref))}` : ''}`;
+  const gbp = (p) => '\u00a3' + (p / 100).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const muted = 'font-size:11.5px;color:#9aa3ad';
+
+  // One group per supplier, exactly as the run text is written: biggest known obligation first,
+  // unpriced groups sink to the bottom where the go-and-read work lives.
+  const groups = []; const at = new Map();
+  for (const l of lines) {
+    const k = String(l.supplier || '?').toLowerCase().replace(/[^a-z0-9]+/g, '');
+    if (!at.has(k)) { at.set(k, groups.length); groups.push({ supplier: String(l.supplier || '?'), rows: [] }); }
+    groups[at.get(k)].rows.push(l);
+  }
+  const sumOf = (rs) => rs.every((r) => typeof r.totalPence === 'number' && r.totalPence > 0)
+    ? rs.reduce((a, r) => a + r.totalPence, 0) : null;
+  groups.sort((a, b) => (sumOf(b.rows) ?? -1) - (sumOf(a.rows) ?? -1));
+
+  // The picker options: real move-target folders from the mirror, minus the action folders an
+  // invoice never files to. Rendered once, cloned per row by the browser's own <select>.
+  const opts = (folders || [])
+    .filter((f) => !/^(00 |01 |02 |08 )|^Deleted Items/.test(String(f.path)))
+    .map((f) => `<option value="${LIFE.esc(String(f.path))}">${LIFE.esc(String(f.path))}</option>`).join('');
+
+  const rowHtml = (l) => {
+    const age = typeof l.ageDays === 'number'
+      ? `<span style="${muted}${l.ageDays >= 14 ? ';color:#f5c96b' : ''}">${l.ageDays}d</span>` : '';
+    const what = l.ref
+      ? `invoice ${LIFE.esc(String(l.ref))}`
+      : `<span style="${muted}">\u201c${LIFE.esc(String(l.subject || '').slice(0, 52))}${String(l.subject || '').length > 52 ? '\u2026' : ''}\u201d</span>`;
+    const price = typeof l.totalPence === 'number' && l.totalPence > 0
+      ? `<b>${gbp(l.totalPence)}</b>` : `<span style="${muted}">not read</span>`;
     const act = l.onwardPath
       ? btnCmd('Paid \u2014 file it', 'mail_paid', { moveId: String(l.moveId) })
-      : '<span style="font-size:11.5px;color:#9aa3ad">no folder recorded \u2014 file by hand</span>';
-    return `<div class="lc-row" style="align-items:center;justify-content:space-between;gap:8px;padding:4px 0;border-top:1px solid rgba(255,255,255,.06)">`
-      + `<div style="font-size:12.5px">${name} \u2014 ${LIFE.esc(gbp(l.totalPence))}</div><div>${act}</div></div>`;
+      : (opts
+        ? `<span data-lc-payrow style="display:inline-flex;gap:6px;align-items:center">`
+          + `<select data-lc-payfolder class="r-btn small" style="max-width:190px"><option value="">where it files\u2026</option>${opts}</select>`
+          + `<button class="r-btn small" data-lc-paidto="${LIFE.esc(String(l.moveId))}">Paid \u2014 file it</button></span>`
+        : `<span style="${muted}">no folders known \u2014 file by hand</span>`);
+    return `<div class="lc-row" style="align-items:center;justify-content:space-between;gap:8px;padding:3px 0 3px 12px">`
+      + `<div style="font-size:12.5px;display:flex;gap:10px;align-items:baseline">${what} ${price} ${age}</div><div>${act}</div></div>`;
+  };
+
+  const body = groups.map((g, i) => {
+    const sub = sumOf(g.rows);
+    const home = [...new Set(g.rows.map((r) => r.onwardPath).filter(Boolean))];
+    return `<div style="border-top:1px solid rgba(255,255,255,.08);padding:6px 0">`
+      + `<div class="lc-row" style="justify-content:space-between;align-items:baseline">`
+      + `<div style="font-size:13px"><b>${i + 1}) ${LIFE.esc(g.supplier)}</b>`
+      + (home.length === 1 ? ` <span style="${muted}">\u2192 ${LIFE.esc(home[0])}</span>` : '') + `</div>`
+      + `<div style="font-size:12.5px">${sub !== null ? `<b>${gbp(sub)}</b>` : `<span style="${muted}">${g.rows.length === 1 ? 'amount' : 'amounts'} not read</span>`}</div></div>`
+      + g.rows.map(rowHtml).join('') + `</div>`;
   }).join('');
-  return `<div style="margin:2px 0 10px">`
-    + `<div style="font-size:11px;letter-spacing:.06em;color:#9aa3ad;margin-bottom:2px">PAY QUEUE \u2014 mark one paid and it files to its supplier folder and leaves this list</div>`
-    + rows + `</div>`;
+
+  // THE TOTAL KEEPS ITS GATE. "TOTAL INVOICES TO PAY" only when every invoice is read — a payment
+  // total standing over unread debt is the one number that could make him pay the wrong amount.
+  const priced = lines.filter((l) => typeof l.totalPence === 'number' && l.totalPence > 0);
+  const unread = lines.length - priced.length;
+  const sum = priced.reduce((a, l) => a + l.totalPence, 0);
+  const total = unread === 0
+    ? `<div style="font-size:13.5px;padding-top:8px;border-top:1px solid rgba(255,255,255,.12)"><b>TOTAL INVOICES TO PAY = ${gbp(sum)}</b></div>`
+    : priced.length === 0
+      ? `<div style="${muted};padding-top:8px;border-top:1px solid rgba(255,255,255,.12)">No total: none of these ${lines.length} amounts has been read off its document.</div>`
+      : `<div style="font-size:13px;padding-top:8px;border-top:1px solid rgba(255,255,255,.12)"><b>TOTAL OF THE ${priced.length} READ = ${gbp(sum)}</b>`
+        + `<div style="${muted}">${unread} still unread \u2014 not the payment total until ${unread === 1 ? 'it is' : 'they are'} read.</div></div>`;
+
+  return `<div style="margin:2px 0 12px">`
+    + `<div class="lc-row" style="justify-content:space-between;align-items:baseline;margin-bottom:2px">`
+    + `<div style="font-size:11px;letter-spacing:.06em;color:#9aa3ad">PAY QUEUE \u00b7 ${lines.length} INVOICE${lines.length === 1 ? '' : 'S'}</div>`
+    + `<div style="${muted}">tap Paid when one is paid \u2014 it files to its supplier folder and leaves this list</div></div>`
+    + body + total + `</div>`;
 }
 
 function btnCmd(label, command, payload) {
@@ -84,6 +140,11 @@ module.exports = {
         projects: q("SELECT id, title, status FROM life_projects WHERE status NOT IN ('CANCELLED','DONE') ORDER BY CASE status WHEN 'ACTIVE' THEN 0 ELSE 1 END, title"),
         // Owner→agent context (operator ask 2026-08-13): the task's files, for the rail below.
         files: q("SELECT id, filename, kind, bytes, note, created_at FROM life_task_files WHERE task_id = ? AND state = 'ATTACHED' ORDER BY created_at", [id]),
+        // The picker's folder list (pay-queue rows with no recorded home): REAL move targets
+        // from the mirror, read-only. NOT filtered on `enabled` — that flag means MIRRORED (the
+        // queue folder itself is enabled=0), and a folder is a perfectly good destination without
+        // being synced. An absent table degrades to no picker, never an error.
+        mailFolders: q("SELECT path FROM life_mail_folders WHERE move_target = 1 ORDER BY path"),
         // AGENT PRESENCE (operator ask 2026-08-13): the latest dispatch's job id — the live
         // stage comes from librarian.db in render via ctx.q (cross-domain read by reference).
         lastDispatch: (() => {
@@ -175,8 +236,16 @@ module.exports = {
             every newline into a space — eighteen invoices as one solid paragraph. The updates thread
             below has carried pre-wrap since it was built; the description was the one render site
             without it. */''}
-      ${t.description ? `<div style="font-size:13px;margin-bottom:10px;white-space:pre-wrap">${LIFE.esc(t.description)}</div>` : ''}
-      ${invoiceRunBlock(s.events)}
+      ${(() => {
+        // When the interactive pay-queue renders, it IS the list — showing the same 18 invoices
+        // twice (a wall of text, then the buttons below it) had the owner reading the inert copy.
+        // The written run stays one tap away: it is the contract of what completing files.
+        const run = invoiceRunBlock(s.events, s.mailFolders);
+        const desc = t.description ? `<div style="font-size:13px;margin-bottom:10px;white-space:pre-wrap">${LIFE.esc(t.description)}</div>` : '';
+        return run
+          ? `${run}${desc ? `<details style="margin-bottom:10px"><summary style="font-size:11.5px;color:#9aa3ad;cursor:pointer">The run as written \u2014 the exact list completing this task files</summary>${desc}</details>` : ''}`
+          : desc;
+      })()}
       <div class="lc-row" style="align-items:center">${focusBtn} ${acts} ${specials} ${routeControl} ${projectControl}</div></div>`;
 
     // ── THE AGENT RAIL (operator ask 2026-08-13): talk to the agent, hand it files ──

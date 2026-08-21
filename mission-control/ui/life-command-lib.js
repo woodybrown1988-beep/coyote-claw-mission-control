@@ -212,11 +212,18 @@ const COMMAND_SHAPES = {
   // Paid — file this ONE invoice on (operator ask 2026-08-21). moveId names a row in OUR OWN
   // move log, never a message: the writer looks the mail up from that row, refuses a move that
   // is not APPLIED, and 403s any named actor — a tap from this authenticated surface IS the
-  // owner's hand. `list` and `toPath` are deliberately NOT relayed: the browser never asks for
-  // dumps, and a row with no recorded onward folder gets no button rather than a folder picker
-  // that invents destinations.
+  // owner's hand. `list` is deliberately NOT relayed (the browser never asks for dumps).
+  //
+  // toPath IS relayed, bounded — and only because the alternative was a dead end (operator,
+  // 2026-08-21: "some of the invoices have no button"). Half the queue arrives via Xero's relay,
+  // where ONE sender address serves three different suppliers, so sender history can never name
+  // the folder and the row had no recorded home. The page offers a picker of REAL move-target
+  // folders read from the mirror; the owner's pick is the resolution, and the writer still
+  // refuses any path that names no existing folder. Nothing is invented — it is chosen.
   mail_paid: (p) => typeof p.moveId === 'string' && !!p.moveId.trim()
-    && p.list === undefined && p.toPath === undefined,
+    && p.list === undefined
+    && (p.toPath === undefined || (typeof p.toPath === 'string' && !!p.toPath.trim()
+        && p.toPath.length <= 200 && !p.toPath.includes('\n'))),
   set_due: (p) => typeof p.taskId === 'string' && !!p.taskId
     && (p.dueAt === null || (typeof p.dueAt === 'string' && !!p.dueAt.trim()))
     && (p.dueKind === undefined || ['HARD', 'TARGET', 'NONE'].includes(p.dueKind)),

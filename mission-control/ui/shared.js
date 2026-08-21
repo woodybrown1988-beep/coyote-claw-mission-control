@@ -638,6 +638,20 @@ function clientScript() {
         .then(function(r){return r.json();}).then(function(r){if(r&&r.ok){window.__lcReload();}else{busy=false;b.disabled=false;window.__lcRefuse(b,r&&r.error);}})
         .catch(function(){busy=false;b.disabled=false;window.__lcSay(b,window.__lcNet);});
         return;}
+      // PAID WITH A CHOSEN FOLDER (operator ask 2026-08-21): a queue row with no recorded home
+      // renders a picker of REAL folders; the button reads the sibling select, so the command is
+      // assembled from the owner's pick — never from free text, never invented server-side.
+      var pb=t.closest('[data-lc-paidto]');
+      if(pb){e.preventDefault();if(busy)return;
+        var prow=pb.closest('[data-lc-payrow]');
+        var psel=prow?prow.querySelector('select[data-lc-payfolder]'):null;
+        var pdest=psel?String(psel.value||'').trim():'';
+        if(!pdest){window.__lcSay(pb,'pick a folder first — that choice is where it files');return;}
+        busy=true;pb.disabled=true;
+        fetch('/api/life/command',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({command:'mail_paid',idempotencyKey:hex(),payload:{moveId:String(pb.getAttribute('data-lc-paidto')||''),toPath:pdest}})})
+        .then(function(r){return r.json();}).then(function(r){if(r&&r.ok){window.__lcReload();}else{busy=false;pb.disabled=false;window.__lcRefuse(pb,r&&r.error);}})
+        .catch(function(){busy=false;pb.disabled=false;window.__lcSay(pb,window.__lcNet);});
+        return;}
       // PROPOSE BLOCK (2026-08-18): the owner names a task (or a title), a date and times;
       // the button assembles the direct place_block shape. The writer refuses the past.
       var bp=t.closest('[data-lc-blockplace]');
