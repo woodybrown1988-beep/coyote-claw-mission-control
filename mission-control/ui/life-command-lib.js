@@ -209,6 +209,14 @@ const COMMAND_SHAPES = {
   mail_owner_replied: (p) => typeof p.draftId === 'string' && !!p.draftId.trim()
     && (p.note === undefined || (typeof p.note === 'string' && p.note.length <= 2000))
     && (p.taskOutcome === undefined || ['waiting', 'wake', 'complete', 'none'].includes(p.taskOutcome)),
+  // Paid — file this ONE invoice on (operator ask 2026-08-21). moveId names a row in OUR OWN
+  // move log, never a message: the writer looks the mail up from that row, refuses a move that
+  // is not APPLIED, and 403s any named actor — a tap from this authenticated surface IS the
+  // owner's hand. `list` and `toPath` are deliberately NOT relayed: the browser never asks for
+  // dumps, and a row with no recorded onward folder gets no button rather than a folder picker
+  // that invents destinations.
+  mail_paid: (p) => typeof p.moveId === 'string' && !!p.moveId.trim()
+    && p.list === undefined && p.toPath === undefined,
   set_due: (p) => typeof p.taskId === 'string' && !!p.taskId
     && (p.dueAt === null || (typeof p.dueAt === 'string' && !!p.dueAt.trim()))
     && (p.dueKind === undefined || ['HARD', 'TARGET', 'NONE'].includes(p.dueKind)),

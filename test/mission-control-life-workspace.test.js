@@ -62,7 +62,7 @@ const CMD_ALLOWLIST = new Set(['note', 'decide', 'transition', 'complete', 'set_
   'plan_today', 'approve_plan', 'compile_week', 'approve_week', 'compile_quarter', 'approve_quarter',
   'pause_capability', 'resume_capability', 'create_outcome', 'create_project', 'set_route', 'set_setting',
   'rename_task', 'rename_project', 'cancel_project', 'import_preview', 'import_batch', 'assign_project', 'accept_standalone',
-  'calendar_sync', 'park_project', 'activate_project', 'place_block', 'remove_block', 'move_block', 'swap_block', 'mail_sync', 'set_due', 'mail_owner_replied',
+  'calendar_sync', 'park_project', 'activate_project', 'place_block', 'remove_block', 'move_block', 'swap_block', 'mail_sync', 'set_due', 'mail_owner_replied', 'mail_paid',
   'remove_task_file', 'renew_dispatch']);
 function assertOnlySanctionedLc(body, key) {
   for (const m of body.matchAll(/data-lc-[a-z-]+/g)) {

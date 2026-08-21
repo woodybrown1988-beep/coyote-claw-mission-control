@@ -24,6 +24,35 @@ const ACTIONS = {
   DONE: [], CANCELLED: [],
 };
 
+// PAID, FROM THE TASK (operator ask 2026-08-21: "how do we get an invoice removed from the
+// list"). The verb existed — mail_paid files ONE invoice back to its supplier folder, and the
+// queue rule ("we moved it in, and nothing has moved it since") drops it from the list — but it
+// was reachable only from a CLI on the box, and the owner is not on the box. The armed event
+// carries the priced lines, so each row gets its own button. moveId names a row in OUR OWN move
+// log, never a message; a row with no recorded onward folder gets the honest note instead of a
+// button, because the writer would refuse to invent a destination for it.
+function invoiceRunBlock(events) {
+  const armed = (events || []).find((e) => e.event_type === 'INVOICE_RUN_ARMED');
+  if (!armed) return '';
+  let lines = [];
+  try { lines = JSON.parse(armed.payload_json || '{}').lines || []; } catch { return ''; }
+  if (!lines.length) return '';
+  const gbp = (p) => typeof p === 'number' && p > 0
+    ? '\u00a3' + (p / 100).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    : 'amount not read';
+  const rows = lines.map((l) => {
+    const name = `<b>${LIFE.esc(String(l.supplier || '?'))}</b>${l.ref ? ` \u00b7 invoice ${LIFE.esc(String(l.ref))}` : ''}`;
+    const act = l.onwardPath
+      ? btnCmd('Paid \u2014 file it', 'mail_paid', { moveId: String(l.moveId) })
+      : '<span style="font-size:11.5px;color:#9aa3ad">no folder recorded \u2014 file by hand</span>';
+    return `<div class="lc-row" style="align-items:center;justify-content:space-between;gap:8px;padding:4px 0;border-top:1px solid rgba(255,255,255,.06)">`
+      + `<div style="font-size:12.5px">${name} \u2014 ${LIFE.esc(gbp(l.totalPence))}</div><div>${act}</div></div>`;
+  }).join('');
+  return `<div style="margin:2px 0 10px">`
+    + `<div style="font-size:11px;letter-spacing:.06em;color:#9aa3ad;margin-bottom:2px">PAY QUEUE \u2014 mark one paid and it files to its supplier folder and leaves this list</div>`
+    + rows + `</div>`;
+}
+
 function btnCmd(label, command, payload) {
   const cmd = LIFE.esc(JSON.stringify({ command, payload }));
   return `<button class="r-btn small" data-lc-cmd="${cmd}">${LIFE.esc(label)}</button>`;
@@ -147,6 +176,7 @@ module.exports = {
             below has carried pre-wrap since it was built; the description was the one render site
             without it. */''}
       ${t.description ? `<div style="font-size:13px;margin-bottom:10px;white-space:pre-wrap">${LIFE.esc(t.description)}</div>` : ''}
+      ${invoiceRunBlock(s.events)}
       <div class="lc-row" style="align-items:center">${focusBtn} ${acts} ${specials} ${routeControl} ${projectControl}</div></div>`;
 
     // ── THE AGENT RAIL (operator ask 2026-08-13): talk to the agent, hand it files ──
