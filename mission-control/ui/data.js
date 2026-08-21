@@ -357,7 +357,15 @@ function inputDropSentence(win) {
     .map((p) => {
       const head = `${p.platform} written reviews fell ${p.prior} → ${p.cur}`;
       if (p.verdict === 'platform') {
-        return `${head}, and EVERY source fell with it (${p.dropped.map(leg).join(', ')}) — independent routes do not break together, so guests are writing less while still leaving ratings. Nothing to fix; there is simply less to count.`;
+        // NARROWED (2026-08-21). This used to end "so guests are writing less while still leaving
+        // ratings" — a claim about GUEST BEHAVIOUR that the routes cannot support. Comparing routes
+        // separates "upstream of our pipeline" from "inside our pipeline"; it cannot separate
+        // "guests wrote fewer words" from "the platform stopped sending us the words", because
+        // both produce identical evidence: ratings arriving, text not.
+        //
+        // Which is the same overreach this whole check was built to end, one notch quieter. It
+        // states what the routes prove and stops there.
+        return `${head}, and EVERY source fell with it (${p.dropped.map(leg).join(', ')}) — independent routes do not break together, so the change is upstream of us rather than in our pipeline: the ratings still arrive, the words do not. Nothing in our delivery to fix.`;
       }
       if (p.verdict === 'pipeline') {
         // Worth naming even when the platform total held: a route is gone and it can be restored.

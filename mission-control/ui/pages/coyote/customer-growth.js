@@ -300,7 +300,7 @@ module.exports = {
     // for two days after the outage ended.
     const backlogNote = rep.extractorBacklog ? ` Issue extraction has ${rep.extractorBacklog} review(s) waiting.` : '';
     const degradeBanner = rep.coverageNote
-      ? `<div class="cg-degrade"><b>A review feed has gone quiet:</b> ${esc(rep.coverageNote)}${esc(backlogNote)} Figures below are real but frozen for that platform.${rep.coverage.google && rep.coverage.google.missing ? ` Google's own profile reports ${Number(rep.coverage.google.getTotal).toLocaleString('en-GB')} reviews against ${Number(rep.coverage.google.corpusTotal).toLocaleString('en-GB')} in our corpus — ${Number(rep.coverage.google.missing).toLocaleString('en-GB')} have not reached us.` : ''}</div>`
+      ? `<div class="cg-degrade"><b>A review feed has gone quiet:</b> ${esc(rep.coverageNote)}${esc(backlogNote)} Figures below are real but frozen for that platform.${rep.coverage.google && rep.coverage.google.missing ? ` Our last fetch from Google returned ${Number(rep.coverage.google.fetchedTotal).toLocaleString('en-GB')} reviews; ${Number(rep.coverage.google.currentTotal ?? rep.coverage.google.corpusTotal).toLocaleString('en-GB')} are in our corpus — ${Number(rep.coverage.google.missing).toLocaleString('en-GB')} have not reached us.` : ''}</div>`
       : '';
 
     // LIVE reputation panel (the heart) — one home for ratings: stars = the engine-stored
