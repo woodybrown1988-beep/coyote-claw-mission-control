@@ -1923,6 +1923,7 @@ module.exports = {
   reviewCoverage: COV.reviewCoverage,
   coverageSentence: COV.coverageSentence,
   reviewInputWindows: COV.reviewInputWindows,
+  inputDropVerdicts: COV.inputDropVerdicts,
   inputDropSentence: COV.inputDropSentence,
   DEPARTMENTS,
   FLEET,

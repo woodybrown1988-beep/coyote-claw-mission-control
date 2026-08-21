@@ -88,14 +88,22 @@ function getSection(db, ctx) {
   // tiles that are perfectly readable. Reading only `collapsed` hid the actionable verdict; reading
   // only `reportable` gagged the tiles. They are separate because they answer separate questions.
   const gatingPlatforms = win.collapsed.map(asRow);
-  const reportedPlatforms = (win.reportable || win.collapsed).map(asRow);
-  const collapsedPlatforms = reportedPlatforms;
   // Unknown coverage is NOT treated as fine — if the corpus cannot be read, the tiles gate too.
   const inputCollapsed = !win.present
     ? true
     : (covPrior > 0 && covCur < covPrior * 0.5) || gatingPlatforms.length > 0;
-  const inputNote = S.inputDropSentence(win);
-  const coverage = { cur: covCur, prior: covPrior, collapsed: inputCollapsed, collapsedPlatforms, inputNote };
+  // SENTENCES TRAVEL WITH THEIR TAILS (2026-08-21, round-two audit). The first fix joined every
+  // reportable sentence into one string and dropped it into the collapse banner, whose closing line
+  // is derived from the GATING platforms — so a non-gating pipeline fault could put "Nothing in our
+  // delivery to fix. Restore the route named above" into ONE banner: the exact self-contradiction
+  // the closing-line fix existed to kill, rebuilt from its own parts. A sentence may only share a
+  // banner with a tail that belongs to its platform's verdict, so the two sets are kept apart:
+  //   gatingNote  — sentences for platforms that gated the tiles; the blind banner + its tail
+  //   routeNotes  — sentences for non-gating route faults; their own banner, no borrowed tail
+  const dropRows = S.inputDropVerdicts(win);
+  const gatingNote = dropRows.filter((r) => r.gating).map((r) => r.sentence).join(' ') || null;
+  const routeNotes = dropRows.filter((r) => !r.gating).map((r) => r.sentence);
+  const coverage = { cur: covCur, prior: covPrior, collapsed: inputCollapsed, collapsedPlatforms: gatingPlatforms, gatingNote, routeNotes, inputNote: gatingNote };
 
   // (b) all-time frequency + a real sample quote per code (MAX = a deterministic, real row value)
   const frequency = rows(
@@ -250,7 +258,10 @@ function risingTiles(rising, coverage, coverageNote) {
   // which was a claim about CAUSE that nothing in the data supported, and on 2026-08-21 it was
   // wrong: every one of OpenTable's delivery routes had fallen together, which is guests writing
   // less, not a broken feed. The sentence now comes from comparing the routes against each other.
-  const named = coverage && coverage.inputNote ? ` ${S.escapeHtml(coverage.inputNote)}` : '';
+  //
+  // GATING sentences only: the blind banner's closing line is derived from the gating verdicts, so
+  // only sentences whose platform gated may share it. Non-gating faults render in their own banner.
+  const named = coverage && coverage.gatingNote ? ` ${S.escapeHtml(coverage.gatingNote)}` : '';
   // THE CLOSING LINE MUST AGREE WITH THE VERDICT ABOVE IT. It used to end "Restore the feed before
   // reading these as a trend" unconditionally — which, the moment the verdict became derived, put
   // "Nothing to fix" and "Restore the feed" in the same sentence. A banner that contradicts itself
@@ -264,8 +275,12 @@ function risingTiles(rising, coverage, coverageNote) {
   // A ROUTE FAILURE IS NEWS EVEN WHEN THE TILES ARE NOT GATED. `blind` decides whether the counts
   // can be read at all; a broken delivery route is worth saying either way, and if it only spoke
   // when something else had already collapsed it would never be the thing that told you first.
-  const routeOnly = !blind && named
-    ? `<div class="banner amber">${named.trim()}</div>`
+  // ALWAYS rendered, blind or not: a non-gating route fault is its own story with its own
+  // instruction ("Restore it."), and folding it into the collapse banner is how the contradiction
+  // above was built. Separate fault, separate banner.
+  const routeNotes = (coverage && coverage.routeNotes) || [];
+  const routeOnly = routeNotes.length
+    ? `<div class="banner amber">${routeNotes.map((n) => S.escapeHtml(n)).join(' ')}</div>`
     : '';
   const note = blind
     ? `<div class="banner amber">Reviews WITH TEXT have collapsed in this window — ${S.fmtInt(curBase)} against ${S.fmtInt(priorBase)} in the prior 30 days. Only a review with text can produce a tag, so a count of zero here means nothing arrived to count, not that a complaint stopped: falls are NOT shown as easing.${named}${tail}</div>`
