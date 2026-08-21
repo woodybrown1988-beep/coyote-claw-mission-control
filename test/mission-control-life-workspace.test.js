@@ -62,7 +62,7 @@ const CMD_ALLOWLIST = new Set(['note', 'decide', 'transition', 'complete', 'set_
   'plan_today', 'approve_plan', 'compile_week', 'approve_week', 'compile_quarter', 'approve_quarter',
   'pause_capability', 'resume_capability', 'create_outcome', 'create_project', 'set_route', 'set_setting',
   'rename_task', 'rename_project', 'cancel_project', 'import_preview', 'import_batch', 'assign_project', 'accept_standalone',
-  'calendar_sync', 'park_project', 'activate_project', 'place_block', 'remove_block', 'move_block', 'swap_block', 'mail_sync', 'set_due', 'mail_owner_replied', 'mail_paid',
+  'calendar_sync', 'park_project', 'activate_project', 'place_block', 'remove_block', 'move_block', 'swap_block', 'mail_sync', 'set_due', 'mail_owner_replied', 'mail_paid', 'set_project_standing',
   'remove_task_file', 'renew_dispatch']);
 function assertOnlySanctionedLc(body, key) {
   for (const m of body.matchAll(/data-lc-[a-z-]+/g)) {
@@ -98,7 +98,7 @@ function makeFixture(dir) {
       created_at TEXT, updated_at TEXT);
     CREATE TABLE life_projects (id TEXT PRIMARY KEY, owner_id TEXT, domain_key TEXT, title TEXT,
       definition_of_done TEXT, stage TEXT, status TEXT, risk_state TEXT, due_date TEXT,
-      visibility TEXT, created_at TEXT, updated_at TEXT);
+      visibility TEXT, created_at TEXT, updated_at TEXT, standing INTEGER NOT NULL DEFAULT 0);
     CREATE TABLE life_tasks (id TEXT PRIMARY KEY, owner_id TEXT, outcome_id TEXT, project_id TEXT, domain_key TEXT,
       title TEXT, status TEXT, execution_mode TEXT, definition_of_done TEXT DEFAULT '', due_kind TEXT DEFAULT 'NONE', due_at TEXT, estimate_minutes INTEGER,
       importance INTEGER DEFAULT 3, consequence INTEGER DEFAULT 3, risk_level TEXT, visibility TEXT,

@@ -15,7 +15,7 @@ module.exports = {
     try {
       const q = (sql, args) => { const r = LIFE.lifeSelect(o.db, sql, args); return r.ok ? r.rows : []; };
       return {
-        projects: q(`SELECT id, title, domain_key, stage, status, risk_state, definition_of_done, due_date FROM life_projects ORDER BY CASE status WHEN 'ACTIVE' THEN 0 WHEN 'PARKED' THEN 1 WHEN 'WAITING' THEN 1 ELSE 2 END, created_at LIMIT 20`),
+        projects: q(`SELECT id, title, domain_key, stage, status, risk_state, definition_of_done, due_date, standing FROM life_projects ORDER BY CASE status WHEN 'ACTIVE' THEN 0 WHEN 'PARKED' THEN 1 WHEN 'WAITING' THEN 1 ELSE 2 END, created_at LIMIT 20`),
         nexts: q(`SELECT project_id, id, title FROM v_life_available_work WHERE project_id IS NOT NULL ORDER BY calculated_priority DESC`),
         // REAL progress (operator ask 2026-08-13): tasks done over tasks that exist — the
         // one percentage this page can say honestly, always shown WITH its fraction.
@@ -31,7 +31,13 @@ module.exports = {
   render(section, ctx) {
     const s = section || {};
     if (s.absent) return { stamp: '', body: wrap(LIFE.absentCard('Projects')) };
+    // TWO ROWS (operator ask 2026-08-21). ACTIVE covers two different things: the handful of
+    // pushes he is DRIVING, and the permanent operational streams that simply never end. Mixing
+    // them made the board unreadable and made the four-slot cap look wrong — ongoing streams were
+    // filling slots meant for focus. Focused first, padded to the four slots; ongoing beneath.
     const active = s.projects.filter((p) => p.status === 'ACTIVE');
+    const focused = active.filter((p) => Number(p.standing) !== 1);
+    const ongoing = active.filter((p) => Number(p.standing) === 1);
     const rest = s.projects.filter((p) => p.status !== 'ACTIVE');
     const riskTone = { GREEN: 'good', AMBER: 'warn', RED: 'bad' };
     // Agent presence per project: this project's tasks → their latest jobs → in-flight ones,
@@ -88,18 +94,25 @@ module.exports = {
     // an active project, activate a parked one; the writer names the fifth-slot refusal.
     const swap = (p) => (p.status === 'ACTIVE' ? cmd('Park', 'park_project', { projectId: p.id }, 'small')
       : ['PARKED', 'WAITING'].includes(String(p.status)) ? cmd('Activate', 'activate_project', { projectId: p.id }, 'small') : '');
+    // The standing flag had a writer verb and NO surface — he could not move a project between
+    // the rows without asking. One button, both directions, saying which it becomes.
+    const stand = (p) => (p.status !== 'ACTIVE' ? ''
+      : Number(p.standing) === 1
+        ? cmd('Make focused', 'set_project_standing', { projectId: p.id, standing: false }, 'small')
+        : cmd('Make ongoing', 'set_project_standing', { projectId: p.id, standing: true }, 'small'));
     const ctl = (p) => (['DONE', 'CANCELLED'].includes(String(p.status)) ? '' :
       `<button class="r-btn small" data-lc-rename="${LIFE.esc(JSON.stringify({ kind: 'project', id: p.id, title: p.title }))}">Rename…</button>`
+      + stand(p)
       + swap(p)
       + `<button class="lc-cxl" data-lc-cancel-project="${LIFE.esc(p.id)}">✕ cancel</button>`);
     const openSlot = `<div class="r-card r-panel" style="border-style:dashed;display:flex;flex-direction:column;justify-content:center;text-align:center;color:var(--rmuted)"><div style="font-size:13.5px;line-height:1.6;padding:8px 4px">An open project slot.<br>Four at most, by design.</div></div>`;
-    const slots = [...active.map(card)];
+    const slots = [...focused.map(card)];
     while (slots.length < 4) slots.push(openSlot);
     // data-fab-target: on THIS page the floating + means "Add a project" (operator report
     // 2026-08-10 — it opened the task capture). The form is ALWAYS here (second report
     // same day: full slots left no way to add at all): at four active the new project
     // lands PARKED — named on the form, echoed by the writer — never a dead end.
-    const atCap = active.length >= 4;
+    const atCap = focused.length >= 4;   // an ongoing stream takes no slot
     const form = `<div class="r-card r-panel" data-fab-target="Add a project"><h3 class="r-panel-title" style="margin-bottom:8px">Add a project</h3>
       <form class="lc-create-form" data-kind="project" style="display:grid;gap:8px">
         ${atCap ? '<input type="hidden" name="parked" value="1">' : ''}
@@ -110,6 +123,14 @@ module.exports = {
         ${atCap ? '<div class="r-note">Four active is the cap, by design — this one lands parked below. Park or finish an active project, then Activate it into the freed slot.</div>' : ''}
       </form></div>`;
     const restRows = rest.length ? S.rcc.panel({ title: 'Waiting, parked and finished', body: rest.map((p) => `<div class="r-lrow"><div><div style="font-weight:600"><a href="/life/project?id=${encodeURIComponent(p.id)}" style="color:inherit">${LIFE.esc(p.title)}</a></div><div style="margin-top:3px">${S.rcc.tag(p.status.toLowerCase())} ${S.rcc.tag(p.domain_key)}</div></div><div style="display:flex;gap:8px;align-items:center;flex-shrink:0">${ctl(p)}</div></div>`).join('') }) : '';
-    return { stamp: '', body: wrap(`<div style="display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));margin-bottom:12px">${slots.join('')}</div>${form}${restRows}`) };
+    const GRID = 'display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(300px,1fr))';
+    const heading = (t, sub) => `<div style="display:flex;align-items:baseline;gap:10px;margin:0 0 6px"><div style="font-size:11px;letter-spacing:.06em;color:#9aa3ad">${t}</div><div style="font-size:11.5px;color:#9aa3ad">${sub}</div></div>`;
+    const focusedRow = heading(`FOCUSED \u00b7 ${focused.length} OF 4 SLOTS`, 'what you are driving to a finish')
+      + `<div style="${GRID};margin-bottom:14px">${slots.join('')}</div>`;
+    const ongoingRow = ongoing.length
+      ? heading(`ONGOING \u00b7 ${ongoing.length}`, 'always-on streams \u2014 they never finish, and never take a slot')
+        + `<div style="${GRID};margin-bottom:12px">${ongoing.map(card).join('')}</div>`
+      : '';
+    return { stamp: '', body: wrap(`${focusedRow}${ongoingRow}${form}${restRows}`) };
   },
 };

@@ -25,7 +25,7 @@ const CMD_ALLOWLIST = new Set(['note', 'decide', 'transition', 'complete', 'set_
   'plan_today', 'approve_plan', 'compile_week', 'approve_week', 'compile_quarter', 'approve_quarter',
   'pause_capability', 'resume_capability', 'create_outcome', 'create_project', 'set_route', 'set_setting',
   'rename_task', 'rename_project', 'cancel_project', 'import_preview', 'import_batch', 'assign_project', 'accept_standalone',
-  'calendar_sync', 'park_project', 'activate_project', 'place_block', 'remove_block']);
+  'calendar_sync', 'park_project', 'activate_project', 'set_project_standing', 'place_block', 'remove_block']);
 function assertOnlySanctionedLc(body, key) {
   for (const m of body.matchAll(/data-lc-[a-z-]+/g)) assert.ok(SANCTIONED_LC.has(m[0]), `${key}: unsanctioned affordance ${m[0]}`);
   for (const m of body.matchAll(/data-lc-cmd="([^"]*)"/g)) {
@@ -48,7 +48,7 @@ function makeFixture(dir) {
   db.exec(`
     CREATE TABLE life_projects (id TEXT PRIMARY KEY, owner_id TEXT, domain_key TEXT, title TEXT,
       definition_of_done TEXT, stage TEXT, status TEXT, risk_state TEXT, due_date TEXT,
-      visibility TEXT, created_at TEXT, updated_at TEXT);
+      visibility TEXT, created_at TEXT, updated_at TEXT, standing INTEGER NOT NULL DEFAULT 0);
     CREATE TABLE life_tasks (id TEXT PRIMARY KEY, owner_id TEXT, outcome_id TEXT, project_id TEXT, domain_key TEXT,
       title TEXT, status TEXT, execution_mode TEXT, definition_of_done TEXT DEFAULT '', due_kind TEXT DEFAULT 'NONE',
       due_at TEXT, estimate_minutes INTEGER, importance INTEGER DEFAULT 3, consequence INTEGER DEFAULT 3,
@@ -58,8 +58,8 @@ function makeFixture(dir) {
     CREATE VIEW v_life_available_work AS
       SELECT t.*, 0 AS calculated_priority FROM life_tasks t WHERE t.status IN ('READY','SCHEDULED','IN_PROGRESS');
     INSERT INTO life_projects VALUES
-      ('pj1','woody','business','Loyalty pilot <q3>','Scorecard approved','DISCOVERY','ACTIVE','AMBER',NULL,'OWNER_ONLY','${T}','${T}'),
-      ('pj2','woody','admin','Old drive tidy','Archive emptied','DELIVERY','DONE','GREEN',NULL,'OWNER_ONLY','${T}','${T}');
+      ('pj1','woody','business','Loyalty pilot <q3>','Scorecard approved','DISCOVERY','ACTIVE','AMBER',NULL,'OWNER_ONLY','${T}','${T}',0),
+      ('pj2','woody','admin','Old drive tidy','Archive emptied','DELIVERY','DONE','GREEN',NULL,'OWNER_ONLY','${T}','${T}',0);
     INSERT INTO life_tasks (id, owner_id, project_id, domain_key, title, status, due_kind, due_at, visibility, source_type, created_by, created_at, updated_at) VALUES
       ('t1','woody','pj1','business','Draft criteria <script>alert(1)</script>','READY','HARD','2026-08-14','OWNER_ONLY','MANUAL','h','${T}','${T}'),
       ('t2','woody','pj1','business','Chase Como thread','WAITING','NONE',NULL,'OWNER_ONLY','MANUAL','h','${T}','${T}'),
@@ -178,9 +178,9 @@ test('Projects page: + means add-a-project — the form is ALWAYS there; four ac
   // it creates parked, says so; parked rows offer Activate.
   const db = new sqlite.DatabaseSync(dbPath);
   for (let i = 2; i <= 4; i++) {
-    db.prepare(`INSERT INTO life_projects VALUES ('pf${i}','woody','business','Filler ${i}','d','DELIVERY','ACTIVE','GREEN',NULL,'OWNER_ONLY','${T}','${T}')`).run();
+    db.prepare(`INSERT INTO life_projects VALUES ('pf${i}','woody','business','Filler ${i}','d','DELIVERY','ACTIVE','GREEN',NULL,'OWNER_ONLY','${T}','${T}',0)`).run();
   }
-  db.prepare(`INSERT INTO life_projects VALUES ('pk1','woody','admin','Parked idea','d','DEFINE','PARKED','GREEN',NULL,'OWNER_ONLY','${T}','${T}')`).run();
+  db.prepare(`INSERT INTO life_projects VALUES ('pk1','woody','admin','Parked idea','d','DEFINE','PARKED','GREEN',NULL,'OWNER_ONLY','${T}','${T}',0)`).run();
   db.close();
   withEnv(dbPath, () => {
     const full = PROJECTS.render(PROJECTS.getSection(null, {}), {}).body;
@@ -211,4 +211,32 @@ test('wiring: server registers the route; workspaceOf resolves the drawer to the
   assert.ok(src.includes("require('./ui/pages/life/project.js')"), 'server.js serves /life/project');
   assert.equal(SHARED.workspaceOf('life-project').key, 'life', 'prefix fallback shells the drawer correctly');
   assert.equal(PROJECT.route, '/life/project');
+});
+
+test('projects page: FOCUSED row is slot-counted, ONGOING row is separate and takes no slot', () => {
+  // Operator ask 2026-08-21. ACTIVE covers two different things — the pushes he is driving, and
+  // permanent streams that never end. Mixed in one grid the board was unreadable and the
+  // four-slot cap looked wrong, because ongoing streams were filling slots meant for focus.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-rows-'));
+  const dbPath = makeFixture(dir);
+  const db = new sqlite.DatabaseSync(dbPath);
+  db.exec(`UPDATE life_projects SET status = 'ACTIVE', standing = 1 WHERE id = 'pj2';`);
+  db.close();
+  withEnv(dbPath, () => {
+    const body = PROJECTS.render(PROJECTS.getSection(null, {}), {}).body;
+    assert.match(body, /FOCUSED · 1 OF 4 SLOTS/, 'the ongoing one does NOT count toward the slots');
+    assert.match(body, /ONGOING · 1/, 'and gets its own row');
+    assert.ok(body.indexOf('FOCUSED') < body.indexOf('ONGOING'), 'focused first, ongoing beneath');
+    // Three open-slot cards, not two: the standing project vacated its slot.
+    assert.equal((body.match(/An open project slot/g) || []).length, 3);
+    // The flag has a control in both directions.
+    assert.match(body, /Make ongoing/, 'a focused project can be made ongoing');
+    assert.match(body, /Make focused/, 'and an ongoing one brought back');
+    const cmds = [...body.matchAll(/data-lc-cmd="([^"]*set_project_standing[^"]*)"/g)]
+      .map((m) => JSON.parse(m[1].replaceAll('&quot;', '"').replaceAll('&amp;', '&')));
+    assert.ok(cmds.some((c) => c.payload.standing === true) && cmds.some((c) => c.payload.standing === false),
+      'both directions are real command taps');
+    assertOnlySanctionedLc(body, 'projects');
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
 });
