@@ -145,3 +145,32 @@ test('drawer: a structured description KEEPS its structure — pre-wrap, newline
   });
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('drawer: the pay run gets a Paid button per priced invoice — and none where no folder is recorded', () => {
+  // The verb existed (mail_paid) but was reachable only from a CLI on the box, and the owner is
+  // not on the box. The armed event carries the priced lines; each row gets its own button whose
+  // payload is ONLY the moveId — a row in our own move log, never a message id.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-tf-'));
+  withEnv(fixture(dir, (db) => {
+    db.prepare(`INSERT INTO life_task_events (id, owner_id, task_id, event_type, actor_type, payload_json, created_at)
+                VALUES ('ev1','woody','t1','INVOICE_RUN_ARMED','HUMAN', ?, '${'2026-08-21T06:40:00.000Z'}')`).run(
+      JSON.stringify({ moves: ['mv-a', 'mv-b'], queued: 2, lines: [
+        { moveId: 'mv-a', supplier: 'George Cockburn & Son Ltd', subject: 's1', ref: '15072', totalPence: 18590, onwardPath: '03 SUPPLIERS/Other suppliers' },
+        { moveId: 'mv-b', supplier: 'QSR Automations, LLC', subject: 's2', ref: null, totalPence: null, onwardPath: null },
+      ] }));
+  }), () => {
+    const out = render();
+    assert.match(out.body, /PAY QUEUE/, 'the block renders');
+    assert.match(out.body, /George Cockburn &amp; Son Ltd<\/b> · invoice 15072 — £185\.90/, 'supplier, ref, price');
+    const btn = /data-lc-cmd="([^"]*mail_paid[^"]*)"/.exec(out.body);
+    assert.ok(btn, 'the Paid button is a real command tap');
+    const cmd = JSON.parse(btn[1].replaceAll('&quot;', '"').replaceAll('&amp;', '&'));
+    assert.equal(cmd.command, 'mail_paid');
+    assert.deepEqual(cmd.payload, { moveId: 'mv-a' }, 'ONLY the moveId travels — no folder, no message id');
+    // The folderless row: the honest note, and no second button.
+    assert.match(out.body, /no folder recorded — file by hand/);
+    assert.equal((out.body.match(/mail_paid/g) || []).length, 1, 'one button, not one per row regardless');
+    assert.match(out.body, /amount not read/, 'an unpriced row says so rather than showing £0');
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+});
