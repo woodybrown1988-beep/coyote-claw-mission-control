@@ -234,8 +234,18 @@ function risingTiles(rising, coverage, coverageNote) {
   // wrong: every one of OpenTable's delivery routes had fallen together, which is guests writing
   // less, not a broken feed. The sentence now comes from comparing the routes against each other.
   const named = coverage && coverage.inputNote ? ` ${S.escapeHtml(coverage.inputNote)}` : '';
+  // THE CLOSING LINE MUST AGREE WITH THE VERDICT ABOVE IT. It used to end "Restore the feed before
+  // reading these as a trend" unconditionally — which, the moment the verdict became derived, put
+  // "Nothing to fix" and "Restore the feed" in the same sentence. A banner that contradicts itself
+  // teaches the operator to read none of it.
+  const verdicts = new Set(((coverage && coverage.collapsedPlatforms) || []).map((c) => c.verdict));
+  const tail = verdicts.has('pipeline')
+    ? ' Restore the route named above before reading these as a trend.'
+    : verdicts.size === 1 && verdicts.has('platform')
+      ? ' Read these again once written reviews recover.'
+      : ' Establish the cause before reading these as a trend.';
   const note = blind
-    ? `<div class="banner amber">Reviews WITH TEXT have collapsed in this window — ${S.fmtInt(curBase)} against ${S.fmtInt(priorBase)} in the prior 30 days. Only a review with text can produce a tag, so a count of zero here means nothing arrived to count, not that a complaint stopped: falls are NOT shown as easing.${named} Restore the feed before reading these as a trend.</div>`
+    ? `<div class="banner amber">Reviews WITH TEXT have collapsed in this window — ${S.fmtInt(curBase)} against ${S.fmtInt(priorBase)} in the prior 30 days. Only a review with text can produce a tag, so a count of zero here means nothing arrived to count, not that a complaint stopped: falls are NOT shown as easing.${named}${tail}</div>`
     : '';
   // ALWAYS RENDERED, not only inside the blind banner. The per-platform coverage sentence was
   // computed on every request and then interpolated only into the branch above, so it could never

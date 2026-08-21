@@ -158,3 +158,28 @@ test('an empty corpus gates the tiles and asserts nothing', () => {
   assert.equal(DATA.inputDropSentence(w), null);
   assert.doesNotMatch(render(db), /▼ easing/, 'an unreadable corpus is not treated as healthy');
 });
+
+// The closing line must AGREE with the verdict above it. It used to end "Restore the feed before
+// reading these as a trend" unconditionally, which — the moment the verdict became derived — put
+// "Nothing to fix" and "Restore the feed" in the same sentence. A banner that contradicts itself
+// teaches the operator to read none of it.
+test('the banner does not tell you to fix something it just said needs no fixing', () => {
+  const body = render(db_({ opentable: { 'api-v1': [3, 12], email: [2, 11] }, google: { 'gmb-direct': [21, 11] } }));
+  assert.match(body, /Nothing to fix/);
+  assert.doesNotMatch(body, /Restore the feed/, 'the two cannot both be true');
+  assert.match(body, /Read these again once written reviews recover/, 'the tail follows the verdict');
+});
+
+test('a pipeline verdict DOES close by telling you to restore it', () => {
+  const body = render(db_({ opentable: { 'api-v1': [0, 14], email: [11, 11] }, google: { 'gmb-direct': [4, 20] } }));
+  assert.match(body, /delivery fault in our pipeline/);
+  assert.match(body, /Restore the route named above/);
+  assert.doesNotMatch(body, /Nothing to fix/);
+});
+
+test('an unknown cause closes by asking for one, not by asserting either', () => {
+  const body = render(db_({ tripadvisor: { 'api-v1': [2, 14] }, google: { 'gmb-direct': [4, 20] } }));
+  assert.match(body, /cause unknown/);
+  assert.match(body, /Establish the cause/);
+  assert.doesNotMatch(body, /Nothing to fix/);
+});
