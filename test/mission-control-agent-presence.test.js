@@ -60,7 +60,7 @@ function lifeFixture(dir, seed) {
     CREATE TABLE life_waiting_conditions (id TEXT PRIMARY KEY, task_id TEXT, owner_id TEXT,
       dependency_label TEXT, wake_type TEXT, fallback_at TEXT, state TEXT, created_at TEXT, updated_at TEXT);
     CREATE TABLE life_projects (id TEXT PRIMARY KEY, owner_id TEXT, domain_key TEXT, title TEXT,
-      definition_of_done TEXT, stage TEXT, status TEXT, risk_state TEXT, due_date TEXT, visibility TEXT, created_at TEXT, updated_at TEXT);
+      definition_of_done TEXT, stage TEXT, status TEXT, risk_state TEXT, due_date TEXT, visibility TEXT, created_at TEXT, updated_at TEXT, standing INTEGER NOT NULL DEFAULT 0);
     CREATE VIEW v_life_available_work AS SELECT t.*, 0 AS calculated_priority FROM life_tasks t WHERE t.status = 'READY';
   `);
   if (seed) seed(db);

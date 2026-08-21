@@ -45,7 +45,7 @@ function fixture(dir, seed) {
     CREATE TABLE life_waiting_conditions (id TEXT PRIMARY KEY, task_id TEXT, owner_id TEXT,
       dependency_label TEXT, wake_type TEXT, fallback_at TEXT, state TEXT, created_at TEXT, updated_at TEXT);
     CREATE TABLE life_projects (id TEXT PRIMARY KEY, owner_id TEXT, domain_key TEXT, title TEXT,
-      definition_of_done TEXT, stage TEXT, status TEXT, visibility TEXT, created_at TEXT, updated_at TEXT);
+      definition_of_done TEXT, stage TEXT, status TEXT, visibility TEXT, created_at TEXT, updated_at TEXT, standing INTEGER NOT NULL DEFAULT 0);
     CREATE TABLE life_task_files (id TEXT PRIMARY KEY, owner_id TEXT, task_id TEXT, filename TEXT,
       original_name TEXT DEFAULT '', kind TEXT, bytes INTEGER, sha256 TEXT, note TEXT DEFAULT '',
       state TEXT DEFAULT 'ATTACHED', created_at TEXT, updated_at TEXT);

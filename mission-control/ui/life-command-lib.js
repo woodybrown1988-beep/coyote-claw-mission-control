@@ -224,6 +224,9 @@ const COMMAND_SHAPES = {
     && p.list === undefined
     && (p.toPath === undefined || (typeof p.toPath === 'string' && !!p.toPath.trim()
         && p.toPath.length <= 200 && !p.toPath.includes('\n'))),
+  // Standing = an always-on stream that takes no focus slot (operator ruling 2026-08-21). The
+  // writer re-validates and refuses clearing the flag when the four real slots are already full.
+  set_project_standing: (p) => typeof p.projectId === 'string' && !!p.projectId && typeof p.standing === 'boolean',
   set_due: (p) => typeof p.taskId === 'string' && !!p.taskId
     && (p.dueAt === null || (typeof p.dueAt === 'string' && !!p.dueAt.trim()))
     && (p.dueKind === undefined || ['HARD', 'TARGET', 'NONE'].includes(p.dueKind)),
