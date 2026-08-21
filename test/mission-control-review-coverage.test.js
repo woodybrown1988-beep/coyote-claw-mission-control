@@ -103,3 +103,109 @@ test('no corpus table at all → present:false, not a false all-clear', () => {
   assert.equal(cov.present, false);
   assert.equal(DATA.coverageSentence(cov), null);
 });
+
+// --- A DEAD LEG BEHIND A LIVE SIBLING (2026-08-21, adversarial review) --------------------------
+// OpenTable arrives by TWO independent paths: the upstream app's feed ('api-v1') and a Gmail parser
+// ('email'). The api-v1 leg stopped on 2026-07-28 — 24 days against its own longest gap of 13 — and
+// the platform still read "current to 2026-08-16" because the email leg kept delivering. Grouping
+// at PLATFORM grain made a dead source invisible behind a live sibling.
+//
+// THE CLASS: freshness must be measured at the grain that can INDEPENDENTLY FAIL. Anything coarser
+// lets a surviving sibling stand in for a source that has stopped — and when the sibling goes too,
+// there is no warning left to give, because the first failure was never reported.
+function legDb(spec) {
+  const db = new sqlite.DatabaseSync(':memory:');
+  db.exec(`CREATE TABLE review_corpus (review_id TEXT PRIMARY KEY, platform TEXT, source_ingest TEXT, reviewed_date TEXT, text TEXT);
+           CREATE TABLE review_snapshot (total INT, awaiting_recent_text INT, fetched_at INT);`);
+  const ins = db.prepare('INSERT INTO review_corpus VALUES (?,?,?,?,?)');
+  let i = 0;
+  for (const [platform, sources] of Object.entries(spec)) {
+    for (const [source, ages] of Object.entries(sources)) {
+      for (const a of ages) ins.run(`r${i++}`, platform, source, day(a) + 'T00:00:00Z', 'words');
+    }
+  }
+  return db;
+}
+const every = (from, to, step) => { const o = []; for (let d = from; d >= to; d -= step) o.push(d); return o; };
+
+test('a silent LEG is named even when its platform looks perfectly current', () => {
+  const cov = DATA.reviewCoverage(q(legDb({
+    opentable: {
+      'api-v1': every(120, 24, 3),   // stopped 24 days ago; its own longest gap is 3
+      email: every(60, 2, 4),        // still delivering
+    },
+  })), NOW);
+  const ot = cov.platforms.find((p) => p.platform === 'opentable');
+  assert.equal(ot.silent, false, 'the PLATFORM is genuinely still delivering — that part was right');
+  assert.equal(cov.silentLegs.length, 1);
+  assert.equal(cov.silentLegs[0].source, 'api-v1');
+  const note = DATA.coverageSentence(cov);
+  assert.match(note, /opentable still looks current/, 'it does not cry outage');
+  assert.match(note, /api-v1 source has produced nothing since/, 'but it names the leg that died');
+  assert.match(note, /email/, 'and which one is carrying it');
+});
+
+// NEGATIVE CONTROL — a single-leg platform must never be described this way, or every healthy
+// platform with one source would generate noise.
+test('a platform with only ONE source is never reported as a hidden dead leg', () => {
+  const cov = DATA.reviewCoverage(q(legDb({ tripadvisor: { 'api-v1': every(120, 2, 3) } })), NOW);
+  assert.equal(cov.silentLegs.length, 0);
+  assert.equal(DATA.coverageSentence(cov), null, 'a healthy single-leg platform says nothing at all');
+});
+
+test('when the whole platform IS silent, that outranks the leg wording', () => {
+  const cov = DATA.reviewCoverage(q(legDb({
+    google: { 'gmb-direct': every(120, 40, 2) },   // everything stopped 40 days ago
+  })), NOW);
+  const note = DATA.coverageSentence(cov);
+  assert.match(note, /google has delivered no review since/, 'the louder fact wins');
+  assert.doesNotMatch(note, /still looks current/);
+});
+
+// --- TEXT-BEARING FRESHNESS --------------------------------------------------------------------
+// Only a review WITH TEXT can be classified. A platform can deliver rating-only rows steadily and
+// supply nothing the extractor can read — live on 2026-08-21, OpenTable's rows were 4 days old
+// while its newest review with text was 22 days old.
+test('a platform delivering only rating-only rows is visibly stale on text', () => {
+  const db = new sqlite.DatabaseSync(':memory:');
+  db.exec(`CREATE TABLE review_corpus (review_id TEXT PRIMARY KEY, platform TEXT, source_ingest TEXT, reviewed_date TEXT, text TEXT);
+           CREATE TABLE review_snapshot (total INT, awaiting_recent_text INT, fetched_at INT);`);
+  const ins = db.prepare('INSERT INTO review_corpus VALUES (?,?,?,?,?)');
+  let i = 0;
+  for (const a of every(120, 22, 2)) ins.run(`t${i++}`, 'opentable', 'email', day(a) + 'T00:00:00Z', 'words'); // steps land exactly on 22
+  for (const a of every(20, 2, 2)) ins.run(`n${i++}`, 'opentable', 'email', day(a) + 'T00:00:00Z', null);
+  const cov = DATA.reviewCoverage(q(db), NOW);
+  const ot = cov.platforms.find((p) => p.platform === 'opentable');
+  assert.equal(ot.ageDays, 2, 'rows are arriving');
+  assert.equal(ot.textAgeDays, 22, 'but nothing readable has arrived in three weeks');
+  assert.ok(ot.textAgeDays > ot.ageDays, 'the two must be reported separately, never conflated');
+});
+
+// A RETIRED LEG IS NOT A DEAD LEG (2026-08-21). Google's 'api-v1' source stopped on purpose the day
+// the ingest began fetching from Google directly. Reporting that as an outage every day is exactly
+// the noise that teaches an operator to stop reading these warnings — and the first version of the
+// leg model did, right next to the OpenTable warning that genuinely mattered.
+//
+// The distinguishing fact is in the data: a sibling holding MORE rows has taken the platform over.
+test('a leg superseded by a BIGGER sibling is a handover, and is not reported', () => {
+  const cov = DATA.reviewCoverage(q(legDb({
+    google: {
+      'api-v1': every(200, 60, 4),      // the retired writer — stopped, and small
+      'gmb-direct': every(300, 2, 2),   // took over, and holds far more
+    },
+  })), NOW);
+  assert.ok(cov.silentLegs.some((l) => l.source === 'api-v1'), 'the leg IS silent — that fact is still computed');
+  assert.equal(DATA.coverageSentence(cov), null, 'but it is not reported: something bigger replaced it');
+});
+
+test('a leg whose survivor is SMALLER is still reported — a side-channel is not a replacement', () => {
+  const cov = DATA.reviewCoverage(q(legDb({
+    opentable: {
+      'api-v1': every(300, 24, 3),   // the primary, stopped
+      email: every(60, 2, 6),        // a small side-channel, still alive
+    },
+  })), NOW);
+  const note = DATA.coverageSentence(cov);
+  assert.match(note, /api-v1 source has produced nothing since/, 'the primary going quiet is real news');
+  assert.match(note, /email/, 'and the sentence says what is carrying it');
+});
