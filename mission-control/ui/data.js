@@ -271,13 +271,30 @@ function reviewInputWindows(q, now) {
   const curFrom = dayIso(INPUT_WINDOW_DAYS * 86400000);
   const priorFrom = dayIso(2 * INPUT_WINDOW_DAYS * 86400000);
   // Text-bearing only: a review with no words cannot produce an issue tag, so it is not input.
-  const legRows = q(
-    `SELECT platform, source_ingest AS src,
-       SUM(CASE WHEN reviewed_date >= ? AND text IS NOT NULL AND TRIM(text) <> '' THEN 1 ELSE 0 END) cur,
-       SUM(CASE WHEN reviewed_date >= ? AND reviewed_date < ? AND text IS NOT NULL AND TRIM(text) <> '' THEN 1 ELSE 0 END) prior
-     FROM review_corpus GROUP BY platform, source_ingest`,
+  // ROUTES COME FROM THE DELIVERY LEDGER, NOT FROM THE ROW. review_corpus.source_ingest can only
+  // hold ONE value, so the moment two routes converged on a single row (as OpenTable's did, to stop
+  // them storing 34 reviews twice) it would have reported a single route — and a platform with one
+  // observable route can never be diagnosed, only guessed at. review_deliveries records that route
+  // X delivered review Y, so one row can be credited to both without existing twice.
+  const deliveryRows = q(
+    `SELECT c.platform, d.source AS src,
+       SUM(CASE WHEN c.reviewed_date >= ? AND c.text IS NOT NULL AND TRIM(c.text) <> '' THEN 1 ELSE 0 END) cur,
+       SUM(CASE WHEN c.reviewed_date >= ? AND c.reviewed_date < ? AND c.text IS NOT NULL AND TRIM(c.text) <> '' THEN 1 ELSE 0 END) prior
+     FROM review_deliveries d JOIN review_corpus c ON c.review_id = d.review_id
+     GROUP BY c.platform, d.source`,
     [curFrom, priorFrom, curFrom],
-  ).rows || [];
+  );
+  // FALLBACK, not a silent one: a database predating the ledger still gets a per-route answer from
+  // the row's own provenance, which is exactly right for every review only one route ever touched.
+  const legRows = (deliveryRows.ok && (deliveryRows.rows || []).length)
+    ? deliveryRows.rows
+    : (q(
+        `SELECT platform, source_ingest AS src,
+           SUM(CASE WHEN reviewed_date >= ? AND text IS NOT NULL AND TRIM(text) <> '' THEN 1 ELSE 0 END) cur,
+           SUM(CASE WHEN reviewed_date >= ? AND reviewed_date < ? AND text IS NOT NULL AND TRIM(text) <> '' THEN 1 ELSE 0 END) prior
+         FROM review_corpus GROUP BY platform, source_ingest`,
+        [curFrom, priorFrom, curFrom],
+      ).rows || []);
   if (!legRows.length) return { present: false, platforms: [], cur: 0, prior: 0, collapsed: [] };
 
   const byPlatform = new Map();
