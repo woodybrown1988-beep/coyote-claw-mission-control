@@ -36,8 +36,11 @@ const ACTIONS = {
 function invoiceRunBlock(events, folders) {
   const armed = (events || []).find((e) => e.event_type === 'INVOICE_RUN_ARMED');
   if (!armed) return '';
-  let lines = [];
-  try { lines = JSON.parse(armed.payload_json || '{}').lines || []; } catch { return ''; }
+  let lines = []; let groupPaid = [];
+  try {
+    const pj = JSON.parse(armed.payload_json || '{}');
+    lines = pj.lines || []; groupPaid = pj.groupPaid || [];
+  } catch { return ''; }
   if (!lines.length) return '';
   const gbp = (p) => '\u00a3' + (p / 100).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const muted = 'font-size:11.5px;color:#9aa3ad';
@@ -79,19 +82,33 @@ function invoiceRunBlock(events, folders) {
           + `<select data-lc-payfolder class="r-routesel" style="max-width:190px"><option value="">where it files\u2026</option>${opts}</select>`
           + `<button class="r-btn small" data-lc-paidto="${LIFE.esc(String(l.moveId))}">Paid \u2014 file it</button></span>`
         : `<span style="${muted}">no folders known \u2014 file by hand</span>`);
+    // THE PAYMENT HINT (operator ask 2026-08-21): the bank already shows this exact amount
+    // leaving under this supplier's name — say so, in his own shape ("£150 paid on 21/08/2026"),
+    // and keep it a SUGGESTION: the Paid tap stays the confirmation. Green like a citation, not
+    // like a verdict.
+    const ddmm = (d) => `${String(d).slice(8, 10)}/${String(d).slice(5, 7)}/${String(d).slice(0, 4)}`;
+    const hint = l.paid && typeof l.paid.amountPence === 'number'
+      ? `<div style="font-size:11.5px;color:#9BC17E;padding:0 0 2px 12px">${gbp(l.paid.amountPence)} paid on ${ddmm(l.paid.txnDate)} (${LIFE.esc(String(l.paid.account || 'bank'))}, QuickBooks) \u2014 match${l.ref ? `es invoice ${LIFE.esc(String(l.ref))}` : ''}; confirm with Paid</div>`
+      : '';
     return `<div class="lc-row" style="align-items:center;justify-content:space-between;gap:8px;padding:3px 0 3px 12px">`
-      + `<div style="font-size:12.5px;display:flex;gap:10px;align-items:baseline">${what} ${price} ${age}</div><div>${act}</div></div>`;
+      + `<div style="font-size:12.5px;display:flex;gap:10px;align-items:baseline">${what} ${price} ${age}</div><div>${act}</div></div>${hint}`;
   };
 
+  const gkey = (n) => String(n || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
   const body = groups.map((g, i) => {
     const sub = sumOf(g.rows);
     const home = [...new Set(g.rows.map((r) => r.onwardPath).filter(Boolean))];
+    // A statement paid as one transfer: the whole group's total left the bank under this name.
+    const gp = (groupPaid || []).find((x) => gkey(x.supplier) === gkey(g.supplier));
+    const gHint = gp && typeof gp.amountPence === 'number'
+      ? `<div style="font-size:11.5px;color:#9BC17E;padding:0 0 2px 12px">${gbp(gp.amountPence)} paid on ${String(gp.txnDate).slice(8, 10)}/${String(gp.txnDate).slice(5, 7)}/${String(gp.txnDate).slice(0, 4)} (${LIFE.esc(String(gp.account || 'bank'))}, QuickBooks) \u2014 matches this group's total; confirm each with Paid</div>`
+      : '';
     return `<div style="border-top:1px solid rgba(255,255,255,.08);padding:6px 0">`
       + `<div class="lc-row" style="justify-content:space-between;align-items:baseline">`
       + `<div style="font-size:13px"><b>${i + 1}) ${LIFE.esc(g.supplier)}</b>`
       + (home.length === 1 ? ` <span style="${muted}">\u2192 ${LIFE.esc(home[0])}</span>` : '') + `</div>`
       + `<div style="font-size:12.5px">${sub !== null ? `<b>${gbp(sub)}</b>` : `<span style="${muted}">${g.rows.length === 1 ? 'amount' : 'amounts'} not read</span>`}</div></div>`
-      + g.rows.map(rowHtml).join('') + `</div>`;
+      + gHint + g.rows.map(rowHtml).join('') + `</div>`;
   }).join('');
 
   // THE TOTAL KEEPS ITS GATE. "TOTAL INVOICES TO PAY" only when every invoice is read — a payment
