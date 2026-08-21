@@ -202,3 +202,31 @@ test('drawer: the pay queue is the primary surface — grouped, totaled, every r
   });
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('drawer: a bank payment matching an invoice renders as a SUGGESTION, in his own shape', () => {
+  // Operator ask 2026-08-21: "£150 paid on 21/08/2026 under invoice 1234 - match". The hint is
+  // green like a citation, names its source (QuickBooks, the account), and says "confirm with
+  // Paid" in the same breath — the tap stays the owner's act. A group paid as one transfer gets
+  // the same line under the group header.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-tf-'));
+  withEnv(fixture(dir, (db) => {
+    db.prepare(`INSERT INTO life_task_events (id, owner_id, task_id, event_type, actor_type, payload_json, created_at)
+                VALUES ('ev1','woody','t1','INVOICE_RUN_ARMED','HUMAN', ?, '2026-08-21T06:40:00.000Z')`).run(
+      JSON.stringify({ moves: ['mv-a', 'mv-b', 'mv-c'], queued: 3, groupPaid: [
+        { supplier: 'George Cockburn & Son Ltd', amountPence: 45630, txnDate: '2026-08-20', account: 'HSBC Current' },
+      ], lines: [
+        { moveId: 'mv-a', supplier: 'George Cockburn & Son Ltd', subject: 's1', ref: '15072', totalPence: 18590, onwardPath: '03 SUPPLIERS/Other suppliers', ageDays: 7 },
+        { moveId: 'mv-b', supplier: 'George Cockburn & Son Ltd', subject: 's2', ref: '15453', totalPence: 27040, onwardPath: '03 SUPPLIERS/Other suppliers', ageDays: 7 },
+        { moveId: 'mv-c', supplier: 'MCEdge Ltd', subject: 's3', ref: '016808', totalPence: 15000, onwardPath: '03 SUPPLIERS/Other suppliers', ageDays: 6,
+          paid: { amountPence: 15000, txnDate: '2026-08-21', account: 'HSBC Current', matchedBy: 'supplier-and-amount' } },
+      ] }));
+  }), () => {
+    const out = render();
+    assert.match(out.body, /£150\.00 paid on 21\/08\/2026 \(HSBC Current, QuickBooks\) — matches invoice 016808; confirm with Paid/,
+      'his shape: amount, date dd/mm/yyyy, source, the invoice it matches, and the confirmation stays his');
+    assert.match(out.body, /£456\.30 paid on 20\/08\/2026 \(HSBC Current, QuickBooks\) — matches this group's total/,
+      'a statement paid as one transfer reads at the group level');
+    assert.match(out.body, /color:#9BC17E/, 'green like a citation, not a verdict');
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+});
