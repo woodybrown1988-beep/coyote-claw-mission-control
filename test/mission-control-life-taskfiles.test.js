@@ -191,6 +191,7 @@ test('drawer: the pay queue is the primary surface — grouped, totaled, every r
     assert.ok(!out.body.includes('file by hand'), 'the dead end is gone');
     assert.match(out.body, /data-lc-paidto="mv-c"/, 'the picker button names its move');
     assert.match(out.body, /data-lc-payfolder/, 'with a sibling select the client handler reads');
+    assert.match(out.body, /<select data-lc-payfolder class="r-routesel"/, 'the select wears the class with color-scheme:dark — as r-btn its popup rendered white-on-white (operator, 2026-08-21, a repeat of 2026-08-10)');
     assert.match(out.body, /<option value="03 SUPPLIERS\/Drinks">/, 'real folders are the options');
     assert.match(out.body, /<option value="03 SUPPLIERS\/Other suppliers">/, 'an UNSYNCED folder is still a destination — enabled means mirrored, not valid');
     assert.ok(!out.body.includes('<option value="00 INVOICES TO PAY">'), 'the queue itself is never a destination');

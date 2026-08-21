@@ -56,6 +56,10 @@ function invoiceRunBlock(events, folders) {
 
   // The picker options: real move-target folders from the mirror, minus the action folders an
   // invoice never files to. Rendered once, cloned per row by the browser's own <select>.
+  // r-routesel, NOT r-btn: a native select popup ignores the control's colours, and without
+  // color-scheme:dark it renders the UA's light list under our light text — white-on-white,
+  // invisible. This page's Route and Project dropdowns carry the same class for the same reason
+  // (the CSS comment dates the original report 2026-08-10; the picker repeated it 2026-08-21).
   const opts = (folders || [])
     .filter((f) => !/^(00 |01 |02 |08 )|^Deleted Items/.test(String(f.path)))
     .map((f) => `<option value="${LIFE.esc(String(f.path))}">${LIFE.esc(String(f.path))}</option>`).join('');
@@ -72,7 +76,7 @@ function invoiceRunBlock(events, folders) {
       ? btnCmd('Paid \u2014 file it', 'mail_paid', { moveId: String(l.moveId) })
       : (opts
         ? `<span data-lc-payrow style="display:inline-flex;gap:6px;align-items:center">`
-          + `<select data-lc-payfolder class="r-btn small" style="max-width:190px"><option value="">where it files\u2026</option>${opts}</select>`
+          + `<select data-lc-payfolder class="r-routesel" style="max-width:190px"><option value="">where it files\u2026</option>${opts}</select>`
           + `<button class="r-btn small" data-lc-paidto="${LIFE.esc(String(l.moveId))}">Paid \u2014 file it</button></span>`
         : `<span style="${muted}">no folders known \u2014 file by hand</span>`);
     return `<div class="lc-row" style="align-items:center;justify-content:space-between;gap:8px;padding:3px 0 3px 12px">`
