@@ -101,9 +101,24 @@ function getSection(db, ctx) {
   //   gatingNote  — sentences for platforms that gated the tiles; the blind banner + its tail
   //   routeNotes  — sentences for non-gating route faults; their own banner, no borrowed tail
   const dropRows = S.inputDropVerdicts(win);
-  const gatingNote = dropRows.filter((r) => r.gating).map((r) => r.sentence).join(' ') || null;
+  // GROUPED BY VERDICT, EVEN AMONG THE GATING (round-three audit). Separating gating from
+  // non-gating killed the contradiction across that boundary — and it reappeared INSIDE it the
+  // moment two platforms gated with different verdicts: one joined string, one union-derived tail,
+  // and the banner read "Nothing in our delivery to fix. ... Restore the route named above" again.
+  // The rule was never "gating vs not"; it is that A SENTENCE MAY ONLY SHARE A BANNER WITH A TAIL
+  // THAT MATCHES ITS OWN VERDICT — so the grouping has to be by verdict all the way down, each
+  // group closing itself. Pipeline first: it is the only group the operator can act on tonight.
+  const VERDICT_ORDER = { pipeline: 0, unknown: 1, platform: 2 };
+  const gatingGroups = [];
+  for (const r of dropRows.filter((x) => x.gating)) {
+    const v = r.verdict || 'unknown';
+    let g = gatingGroups.find((x) => x.verdict === v);
+    if (!g) { g = { verdict: v, sentences: [] }; gatingGroups.push(g); }
+    g.sentences.push(r.sentence);
+  }
+  gatingGroups.sort((a, b) => (VERDICT_ORDER[a.verdict] ?? 1) - (VERDICT_ORDER[b.verdict] ?? 1));
   const routeNotes = dropRows.filter((r) => !r.gating).map((r) => r.sentence);
-  const coverage = { cur: covCur, prior: covPrior, collapsed: inputCollapsed, collapsedPlatforms: gatingPlatforms, gatingNote, routeNotes, inputNote: gatingNote };
+  const coverage = { cur: covCur, prior: covPrior, collapsed: inputCollapsed, collapsedPlatforms: gatingPlatforms, gatingGroups, routeNotes };
 
   // (b) all-time frequency + a real sample quote per code (MAX = a deterministic, real row value)
   const frequency = rows(
@@ -219,9 +234,6 @@ function noChangeTailProb(cur, prior, curBase, priorBase) {
 const NOISE_P = 0.10;
 
 function risingTiles(rising, coverage, coverageNote) {
-  if (!rising.length) {
-    return '<div class="banner muted">No trend window computed yet — rising themes appear once issue_trends is populated.</div>';
-  }
   // A fall is only "easing" if something was actually measured this window. When the review feed
   // has collapsed, every zero is the feed's silence, not the kitchen's improvement — so the tiles
   // stay neutral and say why, rather than turning green on an absence.
@@ -229,6 +241,43 @@ function risingTiles(rising, coverage, coverageNote) {
   // The denominators the counts are drawn from — reviews WITH TEXT, the only ones that can be tagged.
   const curBase = (coverage && coverage.cur) || 0;
   const priorBase = (coverage && coverage.prior) || 0;
+
+  // BANNERS ARE BUILT BEFORE THE TILES DECIDE WHETHER TO EXIST (round-three audit). They used to
+  // be composed after the tile loop, below an early return for an empty issue_trends — so on a
+  // fresh trend table a live "delivery fault in our pipeline ... Restore it." was computed in
+  // getSection and then never rendered: the round-one render gap, wearing its third outfit. What a
+  // banner says has nothing to do with whether there are tiles to gate.
+  const TAILS = {
+    pipeline: ' Restore the route named above before reading these as a trend.',
+    platform: ' Read these again once the written reviews return.',
+    unknown: ' Establish the cause before reading these as a trend.',
+  };
+  // One banner PER VERDICT GROUP, each closing itself — a sentence may only share a banner with a
+  // tail that matches its own verdict, and that rule holds among the gating exactly as it does
+  // across the gating boundary. Separate divs also make the old contradiction a non-text-run: the
+  // pinned regexes cannot match across </div>.
+  const gatingBanners = ((coverage && coverage.gatingGroups) || [])
+    .map((g) => `<div class="banner amber">${S.escapeHtml(g.sentences.join(' '))}${S.escapeHtml(TAILS[g.verdict] ?? TAILS.unknown)}</div>`)
+    .join('');
+  const routeNotes = (coverage && coverage.routeNotes) || [];
+  const routeOnly = routeNotes.length
+    ? `<div class="banner amber">${routeNotes.map((n) => S.escapeHtml(n)).join(' ')}</div>`
+    : '';
+  const note = blind
+    ? `<div class="banner amber">Reviews WITH TEXT have collapsed in this window — ${S.fmtInt(curBase)} against ${S.fmtInt(priorBase)} in the prior 30 days. Only a review with text can produce a tag, so a count of zero here means nothing arrived to count, not that a complaint stopped: falls are NOT shown as easing.</div>`
+    : '';
+  // ALWAYS rendered (round-three audit): this was gated on !blind since #200, on the theory that
+  // the collapse banner carried it — which stopped being true the moment the banner became
+  // derived. A 43-day-silent feed's warning was dropped whenever an UNRELATED collapse fired:
+  // a signal gated behind someone else's alarm.
+  const covNote = coverageNote
+    ? `<div class="banner amber">${S.escapeHtml(coverageNote)}</div>`
+    : '';
+  const banners = `${note}${gatingBanners}${routeOnly}${covNote}`;
+
+  if (!rising.length) {
+    return `${banners}<div class="banner muted">No trend window computed yet — rising themes appear once issue_trends is populated.</div>`;
+  }
   const tiles = rising.map((r) => {
     const isAllergen = r.code === ALLERGEN;
     const up = r.rising || r.delta > 0;
@@ -254,47 +303,9 @@ function risingTiles(rising, coverage, coverageNote) {
       <div class="sub${subCls ? ' ' + subCls : ''}">prior ${S.fmtInt(r.prior)} · ${arrow} ${word} (${S.escapeHtml(deltaTxt)})</div>
     </div>`;
   }).join('');
-  // DERIVED, never asserted. This used to end "so these counts describe a feed, not the kitchen" —
-  // which was a claim about CAUSE that nothing in the data supported, and on 2026-08-21 it was
-  // wrong: every one of OpenTable's delivery routes had fallen together, which is guests writing
-  // less, not a broken feed. The sentence now comes from comparing the routes against each other.
-  //
-  // GATING sentences only: the blind banner's closing line is derived from the gating verdicts, so
-  // only sentences whose platform gated may share it. Non-gating faults render in their own banner.
-  const named = coverage && coverage.gatingNote ? ` ${S.escapeHtml(coverage.gatingNote)}` : '';
-  // THE CLOSING LINE MUST AGREE WITH THE VERDICT ABOVE IT. It used to end "Restore the feed before
-  // reading these as a trend" unconditionally — which, the moment the verdict became derived, put
-  // "Nothing to fix" and "Restore the feed" in the same sentence. A banner that contradicts itself
-  // teaches the operator to read none of it.
-  const verdicts = new Set(((coverage && coverage.collapsedPlatforms) || []).map((c) => c.verdict));
-  const tail = verdicts.has('pipeline')
-    ? ' Restore the route named above before reading these as a trend.'
-    : verdicts.size === 1 && verdicts.has('platform')
-      ? ' Read these again once the written reviews return.'
-      : ' Establish the cause before reading these as a trend.';
-  // A ROUTE FAILURE IS NEWS EVEN WHEN THE TILES ARE NOT GATED. `blind` decides whether the counts
-  // can be read at all; a broken delivery route is worth saying either way, and if it only spoke
-  // when something else had already collapsed it would never be the thing that told you first.
-  // ALWAYS rendered, blind or not: a non-gating route fault is its own story with its own
-  // instruction ("Restore it."), and folding it into the collapse banner is how the contradiction
-  // above was built. Separate fault, separate banner.
-  const routeNotes = (coverage && coverage.routeNotes) || [];
-  const routeOnly = routeNotes.length
-    ? `<div class="banner amber">${routeNotes.map((n) => S.escapeHtml(n)).join(' ')}</div>`
-    : '';
-  const note = blind
-    ? `<div class="banner amber">Reviews WITH TEXT have collapsed in this window — ${S.fmtInt(curBase)} against ${S.fmtInt(priorBase)} in the prior 30 days. Only a review with text can produce a tag, so a count of zero here means nothing arrived to count, not that a complaint stopped: falls are NOT shown as easing.${named}${tail}</div>`
-    : '';
-  // ALWAYS RENDERED, not only inside the blind banner. The per-platform coverage sentence was
-  // computed on every request and then interpolated only into the branch above, so it could never
-  // reach the operator unless the collapse guard had ALREADY fired — i.e. it could only ever speak
-  // when it was no longer the news. A signal gated behind the alarm it was meant to precede.
-  const covNote = coverageNote && !blind
-    ? `<div class="banner amber">${S.escapeHtml(coverageNote)}</div>`
-    : '';
   // The denominator travels with the numbers, always — this is what makes a fall readable.
   const base = `<div class="r-mini-note">Counts are over reviews WITH TEXT: ${S.fmtInt(curBase)} classified this window vs ${S.fmtInt(priorBase)} in the prior 30 days. A fall is only marked easing when it is unlikely (&lt;${Math.round(NOISE_P * 100)}%) to happen by chance at this sample size.</div>`;
-  return `${note}${routeOnly}${covNote}<div class="tiles">${tiles}</div>${base}`;
+  return `${banners}<div class="tiles">${tiles}</div>${base}`;
 }
 
 function frequencyTable(frequency) {
