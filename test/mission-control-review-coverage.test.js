@@ -209,3 +209,55 @@ test('a leg whose survivor is SMALLER is still reported — a side-channel is no
   assert.match(note, /api-v1 source has produced nothing since/, 'the primary going quiet is real news');
   assert.match(note, /email/, 'and the sentence says what is carrying it');
 });
+
+// --- WITHDRAWN ROWS ARE HISTORY, NOT SURPLUS (2026-08-21) --------------------------------------
+// Five google rows came from a retired feed and have no counterpart in the 1,386 reviews Google now
+// returns. They are kept deliberately — a review the platform has since removed is still a real
+// review we once received, and its content cannot be re-derived — and flagged with withdrawn_at.
+//
+// Counting them as unreconciled duplicates would make the discrepancy banner nag for ever about
+// rows that are exactly where they should be, which is precisely how a warning stops being read.
+function surplusDb({ current, withdrawn, fetched }) {
+  const db = new sqlite.DatabaseSync(':memory:');
+  db.exec(`CREATE TABLE review_corpus (review_id TEXT PRIMARY KEY, platform TEXT, source_ingest TEXT, reviewed_date TEXT, text TEXT, withdrawn_at INTEGER);
+           CREATE TABLE review_snapshot (total INT, awaiting_recent_text INT, fetched_at INT);`);
+  const ins = db.prepare('INSERT INTO review_corpus VALUES (?,?,?,?,?,?)');
+  let i = 0;
+  for (let n = 0; n < current; n++) ins.run(`c${i++}`, 'google', 'gmb-direct', day(n % 30) + 'T00:00:00Z', 'words', null);
+  for (let n = 0; n < withdrawn; n++) ins.run(`w${i++}`, 'google', 'api-v1', day(200 + n) + 'T00:00:00Z', 'words', 1_700_000_000_000);
+  db.prepare('INSERT INTO review_snapshot VALUES (?,?,?)').run(fetched, 5, NOW);
+  return db;
+}
+
+test('withdrawn rows raise neither a surplus nor a shortfall', () => {
+  const cov = DATA.reviewCoverage(q(surplusDb({ current: 1386, withdrawn: 5, fetched: 1386 })), NOW);
+  assert.equal(cov.google.corpusTotal, 1391, 'the raw row count is still reported honestly');
+  assert.equal(cov.google.withdrawn, 5);
+  assert.equal(cov.google.currentTotal, 1386, 'but the comparison uses the rows claiming to be current');
+  assert.equal(cov.google.surplus, 0, 'THE POINT: no permanent nag about rows that are where they belong');
+  assert.equal(cov.google.missing, 0);
+});
+
+// NEGATIVE CONTROLS — the exclusion must not blind the check in either direction.
+test('a REAL surplus is still caught with withdrawn rows present', () => {
+  const cov = DATA.reviewCoverage(q(surplusDb({ current: 1400, withdrawn: 5, fetched: 1386 })), NOW);
+  assert.equal(cov.google.surplus, 14, 'duplicates among the current rows still surface');
+  assert.equal(cov.google.missing, 0);
+});
+
+test('a REAL shortfall is still caught with withdrawn rows present', () => {
+  const cov = DATA.reviewCoverage(q(surplusDb({ current: 1300, withdrawn: 5, fetched: 1386 })), NOW);
+  assert.equal(cov.google.missing, 86, 'reviews that never reached us still surface');
+  assert.equal(cov.google.surplus, 0);
+});
+
+test('a database without the withdrawn_at column still reports, rather than erroring', () => {
+  const db = new sqlite.DatabaseSync(':memory:');
+  db.exec(`CREATE TABLE review_corpus (review_id TEXT PRIMARY KEY, platform TEXT, source_ingest TEXT, reviewed_date TEXT, text TEXT);
+           CREATE TABLE review_snapshot (total INT, awaiting_recent_text INT, fetched_at INT);
+           INSERT INTO review_corpus VALUES ('a','google','gmb-direct','2026-08-20T00:00:00Z','x');
+           INSERT INTO review_snapshot VALUES (1, 0, 0);`);
+  const cov = DATA.reviewCoverage(q(db), NOW);
+  assert.equal(cov.google.withdrawn, 0, 'an absent column reads as "none marked", not as a crash');
+  assert.equal(cov.google.currentTotal, 1);
+});

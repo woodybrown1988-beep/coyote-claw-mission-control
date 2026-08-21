@@ -178,6 +178,13 @@ function reviewCoverage(q, now) {
   // reviews, because a retired writer's duplicates were still in place) the check returned 0 and
   // the banner stayed silent. Right outcome, wrong reason, and no branch existed for the direction
   // that was actually true. A discrepancy check with only one sign is half a check.
+  // WITHDRAWN ROWS ARE HISTORY, NOT SURPLUS. A review the platform has since removed is still a
+  // real review we once received; it is kept deliberately (its content is not re-derivable) and
+  // flagged with withdrawn_at. Counting it as an unreconciled duplicate would make this banner
+  // nag for ever about rows that are exactly where they should be — which is how a warning stops
+  // being read. The column is absent on older DBs, so the query falls back rather than erroring.
+  const wRow = (q(`SELECT COUNT(*) n FROM review_corpus WHERE platform = 'google' AND withdrawn_at IS NOT NULL`).rows || [])[0];
+  const withdrawn = wRow ? toInt(wRow.n) : 0;
   const fetched = snap ? toInt(snap.total) : null;
   const google = g
     ? {
@@ -185,8 +192,12 @@ function reviewCoverage(q, now) {
         fetchedTotal: fetched,          // reviews OUR ingest paginated from Google
         getTotal: fetched,              // retained name for existing callers
         corpusTotal: g.n,               // rows we hold for this platform
-        missing: fetched != null && fetched > g.n ? fetched - g.n : 0,
-        surplus: fetched != null && g.n > fetched ? g.n - fetched : 0,
+        withdrawn,
+        // Compared on the rows that CLAIM to be current — withdrawn ones are excluded from both
+        // directions, so they neither hide a real shortfall nor invent a surplus.
+        currentTotal: g.n - withdrawn,
+        missing: fetched != null && fetched > g.n - withdrawn ? fetched - (g.n - withdrawn) : 0,
+        surplus: fetched != null && g.n - withdrawn > fetched ? g.n - withdrawn - fetched : 0,
       }
     : null;
   return { present: true, platforms, silent: platforms.filter((p) => p.silent), silentLegs, legs, google };
