@@ -125,3 +125,23 @@ test('drawer: a dispatched task offers Send back; files list with download + rem
   });
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('drawer: a structured description KEEPS its structure — pre-wrap, newlines intact (operator, 2026-08-21)', () => {
+  // The pay-run task is WRITTEN grouped by supplier — one block each, a total line — and the
+  // drawer collapsed every newline into a space: eighteen invoices as one solid paragraph. The
+  // updates thread below has carried pre-wrap since it was built; the description was the one
+  // render site without it.
+  const DESC = '18 invoices queued.\n\n1) GEORGE COCKBURN & SON LTD\n   Invoices 15072 & 15453 = £401.71\n\nTOTAL OF THE 8 READ = £1,482.73';
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-tf-'));
+  withEnv(fixture(dir, (db) => {
+    db.prepare('UPDATE life_tasks SET description = ? WHERE id = ?').run(DESC, 't1');
+  }), () => {
+    const out = render();
+    const div = /<div style="[^"]*margin-bottom:10px[^"]*">18 invoices queued\.[\s\S]*?<\/div>/.exec(out.body);
+    assert.ok(div, 'the description renders');
+    assert.match(div[0], /white-space:pre-wrap/, 'without pre-wrap the browser eats every newline');
+    assert.ok(div[0].includes('\n\n1) GEORGE COCKBURN &amp; SON LTD'), 'the blank line before a supplier block survives, escaped');
+    assert.ok(div[0].includes('\n   Invoices 15072 &amp; 15453 = £401.71'), 'and so does the indent that makes it a block');
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+});
