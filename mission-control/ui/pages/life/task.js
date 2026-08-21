@@ -141,7 +141,12 @@ module.exports = {
         ${t.due_at ? S.rcc.tag(`due ${String(t.due_at).slice(0, 10)}${t.due_kind === 'HARD' ? ' · hard' : ''}`) : ''}
       </div>
       ${wait ? `<div style="font-size:12.5px;color:#f5c96b;margin-bottom:8px">Waiting on <b>${LIFE.esc(wait.dependency_label)}</b>${wait.fallback_at ? ` · follow-up ${LIFE.esc(String(wait.fallback_at).slice(0, 10))}` : ''}</div>` : ''}
-      ${t.description ? `<div style="font-size:13px;margin-bottom:10px">${LIFE.esc(t.description)}</div>` : ''}
+      ${/* pre-wrap, or the writer's structure dies here (operator, 2026-08-21): the pay-run task is
+            WRITTEN grouped by supplier with one block each and a total line, and this div collapsed
+            every newline into a space — eighteen invoices as one solid paragraph. The updates thread
+            below has carried pre-wrap since it was built; the description was the one render site
+            without it. */''}
+      ${t.description ? `<div style="font-size:13px;margin-bottom:10px;white-space:pre-wrap">${LIFE.esc(t.description)}</div>` : ''}
       <div class="lc-row" style="align-items:center">${focusBtn} ${acts} ${specials} ${routeControl} ${projectControl}</div></div>`;
 
     // ── THE AGENT RAIL (operator ask 2026-08-13): talk to the agent, hand it files ──
