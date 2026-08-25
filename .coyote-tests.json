@@ -107,6 +107,14 @@
     {
       "module": "mission-control/ui/pages/claw/health.js",
       "export": "render"
+    },
+    {
+      "module": "mission-control/ui/pages/coyote/overview.js",
+      "export": "getSection"
+    },
+    {
+      "module": "mission-control/ui/pages/coyote/overview.js",
+      "export": "render"
     }
   ],
   "tests": [
@@ -165,6 +173,10 @@
     {
       "name": "mission-control-claw-queue-depth",
       "command": "node --test test/mission-control-claw-queue-depth.test.js"
+    },
+    {
+      "name": "mission-control-overview-kpi",
+      "command": "node --test test/mission-control-overview-kpi.test.js"
     }
   ],
   "mutants": [

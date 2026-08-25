@@ -15,6 +15,7 @@ const sqlite = require('node:sqlite');
 
 const DATA = require('../mission-control/ui/data.js');
 const K = require('../mission-control/ui/kpi.js');
+const SHARED = require('../mission-control/ui/shared.js');
 const overview = require('../mission-control/ui/pages/coyote/overview.js');
 
 const NOW = 1783000000000;
@@ -74,6 +75,10 @@ function makeDb() {
     CREATE TABLE rota_ahead_budget (business_date TEXT, department TEXT, labour_pct REAL, revenue_target_pence INTEGER, as_of INTEGER, PRIMARY KEY (business_date, department));
     CREATE TABLE rota_ahead_shifts (business_date TEXT, rc_shift_id INTEGER, sched_minutes INTEGER, sched_cost_true_pence INTEGER, department TEXT, as_of INTEGER);
     CREATE TABLE rota_review_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, mode TEXT, week_monday TEXT, ran_at INTEGER, status TEXT, trigger TEXT, report_json TEXT);
+    CREATE TABLE sub_items (id TEXT PRIMARY KEY, pack_cost_pence INTEGER, pack_qty REAL);
+    CREATE TABLE products (id TEXT PRIMARY KEY, lightspeed_sku TEXT UNIQUE);
+    CREATE TABLE recipe_lines (product_id TEXT, sub_item_id TEXT, quantity REAL, PRIMARY KEY (product_id, sub_item_id));
+    CREATE TABLE sales_by_product (business_date TEXT, sku TEXT, total_amount_pence INTEGER, quantity REAL, PRIMARY KEY (business_date, sku));
   `);
   db.prepare(`INSERT INTO premises_regime VALUES ('previous','2022-02-20','2023-03-31',''),('current','2023-04-01',NULL,'moved')`).run();
   return db;
@@ -170,6 +175,87 @@ test('overview: THE WEEK — yesterday + last full week verdict tiles, premises-
   db.close();
 });
 
+test('overview: recipe-cost tile sales-weights complete recipes and excludes every partial recipe', () => {
+  const db = makeDb();
+  db.exec(`
+    INSERT INTO sub_items VALUES
+      ('cost-200',200,1),('cost-100',100,1),('missing-cost',NULL,1),('missing-qty',100,NULL);
+    INSERT INTO products VALUES
+      ('A','A'),('B','B'),('UNRECIPE','UNRECIPE'),('NULLCOST','NULLCOST'),('NULLQTY','NULLQTY');
+    INSERT INTO recipe_lines VALUES
+      ('A','cost-200',1),
+      ('B','cost-100',3),
+      ('NULLCOST','cost-200',1),('NULLCOST','missing-cost',1),
+      ('NULLQTY','missing-qty',1);
+    INSERT INTO sales_by_product VALUES
+      ('2025-07-14','A',900000,1),
+      ('2026-07-13','A',10000,10),('2026-07-14','A',30000,10),
+      ('2026-07-14','B',10000,20),
+      ('2026-07-14','UNRECIPE',30000,5),
+      ('2026-07-14','NULLCOST',10000,2),
+      ('2026-07-14','NULLQTY',10000,2);
+  `);
+  const ctx = ctxFor(db);
+  const m = overview.getSection(db, ctx);
+  assert.equal(m.recipeCost.recipeLineCount, 5, 'the recipe-line gate is counted live');
+  assert.equal(m.recipeCost.from, '2025-07-15', '365-day inclusive window starts 364 days before the latest sale');
+  assert.equal(m.recipeCost.to, '2026-07-14');
+  assert.equal(m.recipeCost.allNetPence, 100000, 'the older £9,000 sale is outside the trailing window');
+  assert.equal(m.recipeCost.coveredNetPence, 50000, 'only A + B have complete recipes');
+  assert.ok(Math.abs(m.recipeCost.theoreticalCostPence - 10000) < 1e-9,
+    'A: 20 units × 200p + B: 20 units × 300p');
+  assert.equal(m.recipeCost.achievedAverageNetPence, 1250,
+    'achieved average is covered sales 50,000p ÷ 40 actual units, not a product-list price');
+  assert.ok(Math.abs(m.recipeCost.theoreticalPct - 20) < 1e-9, '10,000p theoretical ÷ 50,000p covered');
+  assert.ok(Math.abs(m.recipeCost.coveragePct - 50) < 1e-9, '50,000p covered ÷ 100,000p all net');
+
+  const out = overview.render(m, ctx);
+  assert.match(out.body, /Theoretical cost 20\.0% of covered sales · recipes cover 50\.0% of net/);
+  assert.match(out.body, /href="\/coyote\/costs"/);
+  const tileAt = out.body.indexOf('Recipe costs · trailing 365 days');
+  const tileEnd = out.body.indexOf('</a></div></div>', tileAt);
+  assert.ok(tileAt >= 0 && tileEnd > tileAt, 'recipe-cost tile is present');
+  const tile = out.body.slice(tileAt, tileEnd);
+  assert.doesNotMatch(tile, /recipe_lines|sub_items|pack_cost_pence|pack_qty|Calum gate|BOM|denominator/i,
+    'the operator tile contains no storage or implementation jargon');
+  db.close();
+});
+
+test('overview: recipe-cost tile handles missing and zero sales denominators without inventing percentages', () => {
+  const db = makeDb();
+  db.exec(`
+    INSERT INTO sub_items VALUES ('costed',100,1);
+    INSERT INTO products VALUES ('A','A');
+    INSERT INTO recipe_lines VALUES ('A','costed',1);
+  `);
+  const ctx = ctxFor(db);
+  const m = overview.getSection(db, ctx);
+  assert.equal(m.recipeCost.recipeLineCount, 1);
+  assert.equal(m.recipeCost.theoreticalPct, null);
+  assert.equal(m.recipeCost.coveragePct, null);
+  const out = overview.render(m, ctx);
+  assert.match(out.body, /Theoretical cost — of covered sales · recipes cover — of net/);
+  assert.doesNotMatch(out.body, /NaN|Infinity/);
+  db.close();
+
+  const zeroDb = makeDb();
+  zeroDb.exec(`
+    INSERT INTO sub_items VALUES ('costed',100,1);
+    INSERT INTO products VALUES ('A','A');
+    INSERT INTO recipe_lines VALUES ('A','costed',1);
+    INSERT INTO sales_by_product VALUES ('2026-07-14','A',0,0),('2026-07-14','UNRECIPE',1000,1);
+  `);
+  const zeroCtx = ctxFor(zeroDb);
+  const zero = overview.getSection(zeroDb, zeroCtx);
+  assert.equal(zero.recipeCost.coveredNetPence, 0);
+  assert.equal(zero.recipeCost.theoreticalPct, null, 'zero covered sales is not a valid cost denominator');
+  assert.equal(zero.recipeCost.coveragePct, 0, 'zero covered ÷ positive all net is a real 0% coverage');
+  const zeroOut = overview.render(zero, zeroCtx);
+  assert.match(zeroOut.body, /Theoretical cost — of covered sales · recipes cover 0\.0% of net/);
+  assert.doesNotMatch(zeroOut.body, /NaN|Infinity/);
+  zeroDb.close();
+});
+
 test('overview: QR verdict line renders spend per SITTING (fragmentation ruling 2026-07-31) — QR slots group, EAT IN splits group, £38 target retired', () => {
   const db = makeDb();
   seedSales(db);
@@ -258,9 +344,30 @@ test('overview: premises guard — an LY window on the old site refuses raw YoY'
 test('overview: EMPTY db degrades to honest banners (no throw, no fabrication)', () => {
   const db = makeDb();
   const ctx = ctxFor(db);
-  const out = overview.render(overview.getSection(db, ctx), ctx);
+  const m = overview.getSection(db, ctx);
+  assert.equal(m.recipeCost.recipeLineCount, 0, 'the empty-state decision comes from a live count');
+  const out = overview.render(m, ctx);
   assert.match(out.body, /No sales record yet/);
   assert.match(out.body, /No forward rota\/forecast on file yet/);
+  assert.match(out.body, /Theoretical cost will appear after recipes are added\./);
+  assert.match(out.body, /href="\/coyote\/costs"/);
+  assert.doesNotMatch(out.body, /recipe_lines is empty|Calum gate/, 'empty state stays in plain operator language');
   assert.doesNotMatch(out.body, /£0\.00.*vs.*LY/, 'no fabricated comparisons');
+  db.close();
+});
+
+test('overview: every emitted inline script parses and the shared page keeps its single script', () => {
+  const db = makeDb();
+  const ctx = ctxFor(db);
+  const out = overview.render(overview.getSection(db, ctx), ctx);
+  const html = SHARED.renderShell({
+    active: overview.key, workspace: overview.workspace, route: overview.route,
+    title: overview.title, sub: overview.sub, stamp: out.stamp, body: out.body, badges: {}, foot: [],
+  });
+  const blocks = [...String(html).matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/g)].map((match) => match[1]);
+  assert.equal(blocks.length, 1, 'the overview emits only the existing shared inline client script');
+  for (const src of blocks) {
+    assert.doesNotThrow(() => new Function(src), 'an emitted inline script does not parse');
+  }
   db.close();
 });
