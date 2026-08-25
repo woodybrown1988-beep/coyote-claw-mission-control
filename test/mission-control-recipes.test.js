@@ -13,6 +13,12 @@ const {
 } = require('../mission-control/server.js');
 const DATA = require('../mission-control/ui/data.js');
 const recipesPage = require('../mission-control/ui/pages/coyote/recipes.js');
+const SHARED = require('../mission-control/ui/shared.js');
+const {
+  normalizeRecipeFamily,
+  getSection: getRecipesSection,
+  render: renderRecipes,
+} = recipesPage;
 
 const NOW = 1782900000000;
 
@@ -29,6 +35,22 @@ function makeDb(seed) {
   return db;
 }
 function ctxFor(db, query) { return { q: (sql, p) => DATA.safeSelect(db, sql, p), now: NOW, halt: { halted: false }, query: query || {} }; }
+function renderEmitted(db, query) {
+  const ctx = ctxFor(db, query);
+  const rendered = renderRecipes(getRecipesSection(db, ctx), ctx);
+  return {
+    ...rendered,
+    html: SHARED.renderShell({
+      active: recipesPage.key,
+      title: recipesPage.title,
+      sub: recipesPage.sub,
+      stamp: rendered.stamp,
+      body: rendered.body,
+      badges: {},
+      foot: [],
+    }),
+  };
+}
 
 // ===================================================================================================
 // applyRecipeAction — the closed allowlist + validation (mutation-relevant)
@@ -173,109 +195,212 @@ test('buildRecipeTemplate: pre-filled with the live products; header-only note w
   assert.match(t, /CHZ,Cheeseburger,,/, 'a row per real product, sku pre-filled, ingredient+qty blank');
 });
 
-test('page: coverage weights by SALES + a partial-cost product is a GAP, never a fabricated cost', () => {
-  const db = makeDb((d) => {
-    // two products; CHZ fully costed, FRIES has a recipe line whose ingredient has NO pack cost (uncosted)
-    d.prepare(`INSERT INTO products (id, lightspeed_sku, name, updated_at) VALUES ('CHZ','CHZ','Cheeseburger',1),('FRIES','FRIES','Fries',1)`).run();
-    d.prepare(`INSERT INTO sub_items (id, name, unit_of_measure, pack_cost_pence, pack_qty, updated_at) VALUES ('bun','bun','each',500,48,1),('spud','potato','g',NULL,NULL,1)`).run();
-    d.prepare(`INSERT INTO recipe_lines (product_id, sub_item_id, quantity, updated_at) VALUES ('CHZ','bun',1,1),('FRIES','spud',200,1)`).run();
-    // sales: CHZ sells more
-    d.prepare(`INSERT INTO sales_by_product (business_date, sku, total_amount_pence, quantity, updated_at) VALUES ('2026-07-20','CHZ',80000,100,1),('2026-07-20','FRIES',20000,50,1)`).run();
-  });
-  const ctx = ctxFor(db);
-  const section = recipesPage.getSection(db, ctx);
-  assert.equal(section.salesWired, true);
-  const chz = section.products.find((p) => p.id === 'CHZ');
-  const fries = section.products.find((p) => p.id === 'FRIES');
-  assert.equal(chz.costed, true, 'CHZ fully costed');
-  assert.equal(fries.costed, false, 'FRIES partial (uncosted ingredient) → NOT costed, no fabricated number');
-  // worklist sorted by sales (CHZ first)
-  assert.equal(section.products[0].id, 'CHZ');
-  // coverage = costed net / total net = 80000 / 100000 = 0.8
-  assert.ok(Math.abs(section.coverage.pct - 0.8) < 1e-9, 'coverage weights by what actually sells');
-  const out = recipesPage.render(section, ctx);
-  assert.match(out.body, /Net sales costed/);
-  assert.match(out.body, /Cheeseburger/);
-  assert.doesNotMatch(out.body, /NaN|undefined/);
+test('normalizeRecipeFamily repeatedly removes specified suffixes, punctuation, and groups case-consistently', () => {
+  assert.equal(normalizeRecipeFamily('Mega Burger - Single'), 'Mega Burger');
+  assert.equal(normalizeRecipeFamily('Mega Burger - Double - DEAL...'), 'Mega Burger');
+  assert.equal(normalizeRecipeFamily('Mega Burger (included)'), 'Mega Burger');
+  assert.equal(normalizeRecipeFamily('Pasta - Eat In Deal'), 'Pasta');
+  assert.equal(normalizeRecipeFamily('Pasta - CC Deal'), 'Pasta');
+  assert.equal(normalizeRecipeFamily('Pasta - DEAL'), 'Pasta');
+  assert.equal(normalizeRecipeFamily('Plain Product!!!'), 'Plain Product');
+  assert.equal(normalizeRecipeFamily(null), 'Unnamed product');
 });
 
-test('page: renders gracefully with NO sales table (products not seeded yet) — never throws, never fabricates', () => {
-  // a DB WITHOUT the sales aggregate table (pre-ingest)
-  const db = new sqlite.DatabaseSync(':memory:');
-  db.exec(`CREATE TABLE sub_items (id TEXT PRIMARY KEY, name TEXT, pack_cost_pence INTEGER, pack_qty REAL, unit_of_measure TEXT, cost_source TEXT, updated_at INTEGER);
-           CREATE TABLE products (id TEXT PRIMARY KEY, lightspeed_sku TEXT, name TEXT, category TEXT, updated_at INTEGER);
-           CREATE TABLE recipe_lines (product_id TEXT, sub_item_id TEXT, quantity REAL, updated_at INTEGER, PRIMARY KEY (product_id, sub_item_id));`);
+function seedDailyFixture(d) {
+  const productInsert = d.prepare(`INSERT INTO products (id, lightspeed_sku, name, updated_at) VALUES (?,?,?,1)`);
+  const salesInsert = d.prepare(`INSERT INTO sales_by_product (business_date, sku, total_amount_pence, quantity, updated_at) VALUES (?,?,?,?,1)`);
+  const lineInsert = d.prepare(`INSERT INTO recipe_lines (product_id, sub_item_id, quantity, updated_at) VALUES (?,?,?,1)`);
+
+  d.exec(`
+    INSERT INTO sub_items (id, name, unit_of_measure, pack_cost_pence, pack_qty, updated_at) VALUES
+      ('base','Recipe base','each',1200,8,1),
+      ('garnish','Garnish','g',500,100,1),
+      ('missing-cost','Missing cost','each',NULL,10,1),
+      ('missing-qty','Missing quantity','each',1000,NULL,1);
+  `);
+
+  // 22 complete recipes: the first is 1 × 1200/8 + 2 × 500/100 = 160 integer pence.
+  const costedNets = [
+    300000, 190000,
+    ...Array.from({ length: 17 }, (_, i) => 180000 - i * 10000),
+    0, -100, -200,
+  ];
+  costedNets.forEach((net, i) => {
+    const sku = `C${String(i).padStart(2, '0')}`;
+    productInsert.run(sku, sku, i === 0 ? 'Arithmetic Hero' : `Costed Product ${i}`);
+    lineInsert.run(sku, 'base', 1);
+    if (i === 0) lineInsert.run(sku, 'garnish', 2);
+    // C01 has net sales but zero quantity; C19 has quantity but a zero achieved price.
+    const units = i === 0 ? 500 : i === 1 ? 0 : i === 19 ? 10 : 100;
+    salesInsert.run('2026-07-20', sku, net, units);
+  });
+
+  const outstandingNames = [
+    'Solo Hero - CC Deal',
+    'Mega Burger - Single',
+    'mega burger - Double',
+    'Mega Burger (included)',
+    'Pasta - Eat In Deal',
+    'Pasta - DEAL',
+    'Pasta - Double - DEAL...',
+    ...Array.from({ length: 15 }, (_, i) => `Outstanding Family ${i}`),
+  ];
+  const outstandingNets = [
+    200000, 90000, 85000, 80000, 70000, 60000, 50000, 40000, 39000, 38000,
+    37000, 36000, 35000, 34000, 33000, 32000, 31000, 30000, 29000, 28000, 27000, 26000,
+  ];
+  outstandingNames.forEach((name, i) => {
+    const sku = `O${String(i).padStart(2, '0')}`;
+    productInsert.run(sku, sku, name);
+    salesInsert.run('2026-07-20', sku, outstandingNets[i], 100);
+  });
+  lineInsert.run('O00', 'missing-cost', 1);
+  lineInsert.run('O01', 'missing-qty', 1);
+
+  // Outside the trailing 12-month window and therefore excluded from rankings and coverage.
+  salesInsert.run('2025-07-20', 'O21', 9999999, 1);
+}
+
+test('daily emitted page: cost arithmetic, sales coverage, top 20, family roll-ups, next-20 value, and bottom CSV setup', () => {
+  const db = makeDb(seedDailyFixture);
   const ctx = ctxFor(db);
-  const section = recipesPage.getSection(db, ctx);
-  assert.equal(section.salesWired, false, 'no sales table → not wired, handled');
-  assert.equal(section.coverage, null, 'no coverage % fabricated without sales');
-  const out = recipesPage.render(section, ctx);
-  assert.ok(out.body.length > 50);
-  assert.match(out.body, /No products yet|seeds from the live Lightspeed/i, 'honest empty-products state');
-  assert.match(out.stamp, /products seed when sales flow/i, 'stamp is honest about the pending seed');
-  assert.doesNotMatch(out.body, /NaN|undefined|£0\.00/, 'no fabricated numbers before data');
+  const section = getRecipesSection(db, ctx);
+
+  assert.equal(section.recipeLineCount, 25, 'live count includes every seeded recipe line');
+  assert.equal(section.salesWired, true);
+  assert.equal(section.salesPresent, true);
+
+  const hero = section.products.find((p) => p.id === 'C00');
+  assert.equal(hero.costed, true);
+  assert.equal(hero.unit_cost_pence, 160, '1×1200/8 + 2×500/100 = 160p');
+  assert.equal(hero.achieved_price_pence, 600, '300000p ÷ 500 units = 600p');
+  assert.equal(hero.gp_pence, 440, '600p achieved price − 160p cost = 440p');
+  assert.ok(Math.abs(hero.cost_pct - 160 / 600) < 1e-12);
+  assert.equal(section.products.find((p) => p.id === 'O00').costed, false, 'missing pack cost stays incomplete');
+  assert.equal(section.products.find((p) => p.id === 'O01').costed, false, 'missing pack quantity stays incomplete');
+
+  assert.equal(section.costedTotal, 22);
+  assert.equal(section.costedTop.length, 20);
+  assert.equal(section.costedTop[0].id, 'C00', 'costed results rank by 12-month net sales');
+  assert.equal(section.costedTop[19].id, 'C19');
+  assert.equal(section.costedRemaining, 2);
+
+  assert.equal(section.worklist.length, 20);
+  assert.equal(section.worklist[0].id, 'O00', 'individual outstanding ranking semantics are preserved');
+  assert.equal(section.worklist[19].id, 'O19');
+  assert.equal(section.nextOutstandingNet, 1077000, 'next 20 represent £10,770.00 net sales');
+
+  const mega = section.workFamilies.find((f) => f.name === 'Mega Burger');
+  assert.ok(mega);
+  assert.equal(mega.memberCount, 3);
+  assert.equal(mega.net_sales, 255000);
+  assert.deepEqual(mega.members.map((p) => p.id), ['O01', 'O02', 'O03']);
+  assert.equal(section.workFamilies[0].name, 'Mega Burger', 'combined family sales outrank the higher individual Solo item');
+  assert.equal(section.workFamilies[1].name, 'Solo Hero');
+
+  const expectedCostedNet = 2189700;
+  const expectedAllNet = 3319700;
+  assert.equal(section.coverage.costedNet, expectedCostedNet);
+  assert.equal(section.coverage.totalNet, expectedAllNet);
+  assert.ok(Math.abs(section.coverage.pct - expectedCostedNet / expectedAllNet) < 1e-12);
+
+  const out = renderEmitted(db);
+  assert.match(out.html, /See how much of the last 12 months’ net sales has complete recipe costing/);
+  assert.match(out.body, /12-month net sales covered/);
+  assert.match(out.body, /66\.0%/);
+  assert.match(out.body, /£21,897\.00 costed-product net sales ÷ £33,197\.00 all-product net sales/);
+  assert.match(out.body, /Coverage means the share of 12-month net sales whose products have complete recipe costs/);
+  assert.match(out.body, /Next 20 outstanding products[\s\S]*£10,770\.00/);
+
+  assert.match(out.body, /<th>product<\/th><th>unit cost<\/th><th>achieved average net price<\/th><th>GP £<\/th><th>cost %<\/th>/);
+  assert.match(out.body, /Arithmetic Hero[\s\S]*£1\.60[\s\S]*£6\.00[\s\S]*£4\.40[\s\S]*26\.7%/);
+  assert.match(out.body, /and 2 more, all costed\./);
+  assert.doesNotMatch(out.body, /Costed Product 20|Costed Product 21/, 'only the top 20 costed products render');
+  const zeroQtyRow = out.body.match(/<tr><td>Costed Product 1[\s\S]*?<\/tr>/)[0];
+  assert.equal((zeroQtyRow.match(/unavailable/g) || []).length, 3, 'zero quantity makes average price, GP, and cost % unavailable');
+  const zeroPriceRow = out.body.match(/<tr><td>Costed Product 19[\s\S]*?<\/tr>/)[0];
+  assert.match(zeroPriceRow, /£0\.00[\s\S]*£-1\.50[\s\S]*unavailable/, 'zero achieved price is shown honestly without a cost-% division');
+
+  assert.match(out.body, /<tbody><tr><td><b>Mega Burger<\/b><\/td><td class="mono">3<\/td><td class="mono">£2,550\.00/);
+  assert.match(out.body, /<details class="rc-family"><summary>3 members<\/summary><ul>[\s\S]*O01[\s\S]*Mega Burger - Single[\s\S]*O02[\s\S]*mega burger - Double[\s\S]*O03[\s\S]*Mega Burger \(included\)/);
+  assert.ok(out.body.indexOf('<b>Mega Burger</b>') < out.body.indexOf('<b>Solo Hero</b>'), 'family rows use combined-net ranking');
+
+  const ingredientsAt = out.body.indexOf('Ingredients <span');
+  const setupAt = out.body.indexOf('Recipe setup: bulk CSV import');
+  assert.ok(setupAt > ingredientsAt, 'CSV setup is at the bottom, after ingredients');
+  assert.match(out.body.slice(out.body.lastIndexOf('<details class="panel rc-setup">')), /^<details class="panel rc-setup"><summary[^>]*><b>Recipe setup: bulk CSV import<\/b>/);
+  assert.doesNotMatch(out.body, /<details class="panel rc-setup"[^>]*\bopen\b/, 'CSV setup starts collapsed');
+
+  assert.doesNotMatch(out.body, /Calum gate|not wired|recipe-gated|Infinity|NaN|undefined/i);
+  const scripts = [...out.html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/g)].map((match) => match[1]);
+  assert.equal(scripts.length, 1, 'the emitted page retains one inline client script');
+  for (const src of scripts) assert.doesNotThrow(() => new Function(src), 'an emitted inline script does not parse');
+});
+
+test('genuine zero-recipe-lines state replaces Costed and worklist analytics with useful next steps', () => {
+  const db = makeDb((d) => {
+    d.exec(`
+      INSERT INTO products (id, lightspeed_sku, name, updated_at) VALUES ('P1','P1','First Product',1);
+      INSERT INTO sales_by_product (business_date, sku, total_amount_pence, quantity, updated_at) VALUES ('2026-07-20','P1',50000,100,1);
+    `);
+  });
+  const section = getRecipesSection(db, ctxFor(db));
+  assert.equal(section.recipeLineCount, 0);
+  const out = renderEmitted(db);
+  assert.match(out.body, /No product recipes have been entered yet/);
+  assert.match(out.body, /Add ingredient pack costs below/);
+  assert.doesNotMatch(out.body, /<div class="sec-label">Costed|rc-family-table/, 'analytics are replaced, not hardcoded on');
+  assert.doesNotMatch(out.body, /Next 1 outstanding product/, 'the worklist value is also replaced in the zero-recipe state');
+  assert.match(out.body, /Recipe setup: bulk CSV import/);
+  assert.doesNotMatch(out.body, /Calum gate|not wired|recipe-gated|Infinity|NaN|undefined/i);
+});
+
+test('partial states: missing sales keeps cost results usable; no complete recipe keeps the family worklist visible', () => {
+  const db = new sqlite.DatabaseSync(':memory:');
+  db.exec(`
+    CREATE TABLE sub_items (id TEXT PRIMARY KEY, name TEXT, supplier TEXT, pack_description TEXT, pack_cost_pence INTEGER, pack_qty REAL, unit_of_measure TEXT, cost_source TEXT, updated_at INTEGER);
+    CREATE TABLE products (id TEXT PRIMARY KEY, lightspeed_sku TEXT, name TEXT, category TEXT, updated_at INTEGER);
+    CREATE TABLE recipe_lines (product_id TEXT, sub_item_id TEXT, quantity REAL, updated_at INTEGER, PRIMARY KEY (product_id, sub_item_id));
+    INSERT INTO sub_items VALUES ('ok','Costed ingredient',NULL,NULL,500,10,'each','manual',1);
+    INSERT INTO sub_items VALUES ('missing','Missing cost',NULL,NULL,NULL,10,'each','manual',1);
+    INSERT INTO products VALUES ('COMPLETE','COMPLETE','Complete Product',NULL,1);
+    INSERT INTO products VALUES ('PARTIAL','PARTIAL','Partial Product - Single',NULL,1);
+    INSERT INTO recipe_lines VALUES ('COMPLETE','ok',2,1);
+    INSERT INTO recipe_lines VALUES ('PARTIAL','missing',1,1);
+  `);
+  const section = getRecipesSection(db, ctxFor(db));
+  assert.equal(section.salesWired, false);
+  assert.equal(section.coverage, null);
+  assert.equal(section.costedTotal, 1);
+  const out = renderEmitted(db);
+  assert.match(out.body, /12-month sales are unavailable/);
+  assert.match(out.body, /Complete Product[\s\S]*£1\.00[\s\S]*unavailable/);
+  assert.match(out.body, /<b>Partial Product<\/b>/, 'the outstanding family remains usable without sales');
+
+  const incompleteOnly = makeDb((d) => {
+    d.exec(`
+      INSERT INTO sub_items (id,name,unit_of_measure,pack_cost_pence,pack_qty,updated_at) VALUES ('x','x','each',NULL,1,1);
+      INSERT INTO products (id,lightspeed_sku,name,updated_at) VALUES ('P','P','Needs Cost - DEAL',1);
+      INSERT INTO recipe_lines (product_id,sub_item_id,quantity,updated_at) VALUES ('P','x',1,1);
+      INSERT INTO sales_by_product (business_date,sku,total_amount_pence,quantity,updated_at) VALUES ('2026-07-20','P',10000,10,1);
+    `);
+  });
+  const incompleteOut = renderEmitted(incompleteOnly);
+  assert.match(incompleteOut.body, /No products have complete recipe costs yet/);
+  assert.match(incompleteOut.body, /<b>Needs Cost<\/b>/, 'an empty Costed result never hides outstanding work');
+  assert.doesNotMatch(incompleteOut.body, /Infinity|NaN|undefined/);
   db.close();
 });
 
-// ===================================================================================================
-// The WORKLIST redesign (audit 2026-07-21) — capped list, search-opens-the-editor, honest caps
-// ===================================================================================================
-function seedMany(d, n) {
-  const prods = [], sales = [];
-  for (let i = 0; i < n; i++) {
-    const sku = `P${String(i).padStart(3, '0')}`;
-    prods.push(`('${sku}','${sku}','Product ${i}',1)`);
-    // descending £ so the worklist order is deterministic: P000 sells most
-    sales.push(`('2026-07-20','${sku}',${(n - i) * 1000},${n - i},1)`);
-  }
-  d.prepare(`INSERT INTO products (id, lightspeed_sku, name, updated_at) VALUES ${prods.join(',')}`).run();
-  d.prepare(`INSERT INTO sales_by_product (business_date, sku, total_amount_pence, quantity, updated_at) VALUES ${sales.join(',')}`).run();
-}
-
-test('worklist: capped at 20 uncosted by £ net — the cap is STATED, the tail reachable via search', () => {
-  const db = makeDb((d) => seedMany(d, 25));
-  const section = recipesPage.getSection(db, ctxFor(db));
-  assert.equal(section.worklist.length, 20, 'capped at 20');
-  assert.equal(section.uncostedTotal, 25, 'total uncosted still reported');
-  assert.equal(section.worklist[0].id, 'P000', 'biggest seller first');
-  const out = recipesPage.render(section, ctxFor(db));
-  assert.match(out.body, /Top 20 uncosted by £ net sold · 25 uncosted in total/, 'cap + total stated honestly');
-  assert.doesNotMatch(out.body, /Product 24<\/b>/, 'the tail is NOT rendered (no 474-row sheet)');
-  assert.match(out.body, /name="find"/, 'search reaches the tail');
-});
-
-test('search (?find=) opens the on-demand editor: matches by name/SKU, cap stated, lines shown', () => {
-  const db = makeDb((d) => {
-    seedMany(d, 25);
-    d.prepare(`INSERT INTO sub_items (id, name, unit_of_measure, pack_cost_pence, pack_qty, updated_at) VALUES ('bun','bun','each',500,48,1)`).run();
-    d.prepare(`INSERT INTO recipe_lines (product_id, sub_item_id, quantity, updated_at) VALUES ('P024','bun',2,1)`).run();
-  });
-  const ctx = ctxFor(db, { find: 'Product 24' });
-  const section = recipesPage.getSection(db, ctx);
-  assert.equal(section.find, 'Product 24');
-  assert.equal(section.matches.total, 1);
-  assert.equal(section.matches.shown[0].id, 'P024', 'tail product reachable by search');
-  const out = recipesPage.render(section, ctx);
-  assert.match(out.body, /1 match for/, 'match count stated');
-  assert.match(out.body, /details class="rc-prod" open/, 'single match opens its editor');
-  assert.match(out.body, /bun/, 'existing recipe lines rendered inside the editor');
-  assert.doesNotMatch(out.body, /Top 20 uncosted/, 'search replaces the worklist view');
-  // SKU search too
-  const bySku = recipesPage.getSection(db, ctxFor(db, { find: 'p003' }));
-  assert.equal(bySku.matches.shown[0].id, 'P003', 'case-insensitive SKU match');
-});
-
-test('carrot tile: coverage-if-worklist-finished is pure arithmetic on the same weights', () => {
-  const db = makeDb((d) => {
-    seedMany(d, 5); // net weights 5000,4000,3000,2000,1000 → total 15000
-    d.prepare(`INSERT INTO sub_items (id, name, unit_of_measure, pack_cost_pence, pack_qty, updated_at) VALUES ('bun','bun','each',500,48,1)`).run();
-    d.prepare(`INSERT INTO recipe_lines (product_id, sub_item_id, quantity, updated_at) VALUES ('P000','bun',1,1)`).run(); // biggest seller costed
-  });
-  const section = recipesPage.getSection(db, ctxFor(db));
-  assert.ok(Math.abs(section.coverage.pct - 5000 / 15000) < 1e-9);
-  assert.ok(Math.abs(section.nextGainPct - 1) < 1e-9, 'all 4 uncosted fit the cap → finishing the list = 100%');
-  const out = recipesPage.render(section, ctxFor(db));
-  assert.match(out.body, /Cost the 4 below/);
-  assert.match(out.body, /100\.0%/);
-  assert.doesNotMatch(out.body, /NaN|undefined/);
+test('search still reaches a raw SKU without changing the ranked next-20 product set', () => {
+  const db = makeDb(seedDailyFixture);
+  const base = getRecipesSection(db, ctxFor(db));
+  const searched = getRecipesSection(db, ctxFor(db, { find: 'O21' }));
+  assert.deepEqual(searched.worklist.map((p) => p.id), base.worklist.map((p) => p.id));
+  assert.equal(searched.matches.total, 1);
+  assert.equal(searched.matches.shown[0].id, 'O21');
+  const out = renderEmitted(db, { find: 'O21' });
+  assert.match(out.body, /1 match for/);
+  assert.match(out.body, /details class="rc-prod" open/);
+  assert.match(out.body, /O21/);
 });

@@ -115,6 +115,18 @@
     {
       "module": "mission-control/ui/pages/coyote/overview.js",
       "export": "render"
+    },
+    {
+      "module": "mission-control/ui/pages/coyote/recipes.js",
+      "export": "normalizeRecipeFamily"
+    },
+    {
+      "module": "mission-control/ui/pages/coyote/recipes.js",
+      "export": "getSection"
+    },
+    {
+      "module": "mission-control/ui/pages/coyote/recipes.js",
+      "export": "render"
     }
   ],
   "tests": [
@@ -177,6 +189,10 @@
     {
       "name": "mission-control-overview-kpi",
       "command": "node --test test/mission-control-overview-kpi.test.js"
+    },
+    {
+      "name": "mission-control-recipes-daily-costing",
+      "command": "node --test test/mission-control-recipes.test.js"
     }
   ],
   "mutants": [
