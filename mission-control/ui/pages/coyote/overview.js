@@ -16,6 +16,7 @@ const K = require('../../kpi.js');
 // covers feed is regular. Evidence + sitting-key derivation: docs/qr-sitting-basis-2026-07-31.md.
 
 function toInt(v) { const n = Number(v); return Number.isFinite(n) ? n : 0; }
+function toNum(v) { if (v === null || v === undefined) return null; const n = Number(v); return Number.isFinite(n) ? n : null; }
 function row(res) { return res && res.ok && res.rows && res.rows.length ? res.rows[0] : null; }
 function rows(res) { return res && res.ok && res.rows ? res.rows : []; }
 
@@ -58,6 +59,65 @@ module.exports = {
       `SELECT issue_code, count_current, count_prior FROM issue_trends
         WHERE computed_at = (SELECT MAX(computed_at) FROM issue_trends) AND rising = 1
         ORDER BY count_current DESC`));
+
+    // Compact recipe-cost overview: live recipe gate, then sales-weighted economics over the
+    // latest 365 days available at product grain. A recipe is complete only when every line has
+    // both pack inputs; achieved selling price comes from actual amount / quantity, never from a
+    // product-list price. All reads stay behind ctx.q / safeSelect.
+    const recipeLineCount = toInt((row(q(`SELECT COUNT(*) c FROM recipe_lines`)) || {}).c);
+    let recipeCost = {
+      recipeLineCount, from: null, to: null, allNetPence: null, coveredNetPence: null,
+      theoreticalCostPence: null, achievedAverageNetPence: null,
+      theoreticalPct: null, coveragePct: null,
+    };
+    if (recipeLineCount > 0) {
+      const productSalesMaxRow = row(q(`SELECT MAX(business_date) d FROM sales_by_product`));
+      const productSalesMax = productSalesMaxRow && productSalesMaxRow.d ? String(productSalesMaxRow.d) : null;
+      if (productSalesMax) {
+        const from = K.shiftDays(productSalesMax, -364);
+        const metrics = row(q(
+          `SELECT * FROM (WITH recipe_costs AS (
+             SELECT p.lightspeed_sku sku,
+                    COUNT(rl.sub_item_id) recipe_line_count,
+                    SUM(CASE WHEN rl.sub_item_id IS NOT NULL
+                                  AND (si.id IS NULL OR si.pack_cost_pence IS NULL OR si.pack_qty IS NULL)
+                             THEN 1 ELSE 0 END) incomplete_line_count,
+                    SUM(rl.quantity * CAST(si.pack_cost_pence AS REAL) / si.pack_qty) unit_cost_pence
+               FROM products p
+               LEFT JOIN recipe_lines rl ON rl.product_id = p.id
+               LEFT JOIN sub_items si ON si.id = rl.sub_item_id
+              GROUP BY p.id, p.lightspeed_sku
+           ), product_sales AS (
+             SELECT sku,
+                    SUM(total_amount_pence) net_sales_pence,
+                    SUM(quantity) units_sold,
+                    CAST(SUM(total_amount_pence) AS REAL) / NULLIF(SUM(quantity), 0) achieved_average_net_pence
+               FROM sales_by_product
+              WHERE business_date BETWEEN ? AND ?
+              GROUP BY sku
+           ), costed_sales AS (
+             SELECT s.net_sales_pence, s.units_sold, s.achieved_average_net_pence, r.unit_cost_pence
+               FROM product_sales s
+               JOIN recipe_costs r ON r.sku = s.sku
+              WHERE r.recipe_line_count > 0 AND r.incomplete_line_count = 0
+           )
+           SELECT (SELECT SUM(net_sales_pence) FROM product_sales) all_net_pence,
+                  SUM(net_sales_pence) covered_net_pence,
+                  SUM(net_sales_pence * unit_cost_pence / NULLIF(achieved_average_net_pence, 0)) theoretical_cost_pence,
+                  CAST(SUM(net_sales_pence) AS REAL) / NULLIF(SUM(units_sold), 0) achieved_average_net_pence
+             FROM costed_sales)`, [from, productSalesMax])) || {};
+        const allNetPence = toNum(metrics.all_net_pence);
+        const coveredNetPence = toNum(metrics.covered_net_pence) == null ? 0 : toNum(metrics.covered_net_pence);
+        const theoreticalCostPence = toNum(metrics.theoretical_cost_pence);
+        recipeCost = {
+          recipeLineCount, from, to: productSalesMax, allNetPence, coveredNetPence,
+          theoreticalCostPence, achievedAverageNetPence: toNum(metrics.achieved_average_net_pence),
+          theoreticalPct: coveredNetPence > 0 && theoreticalCostPence != null
+            ? (theoreticalCostPence / coveredNetPence) * 100 : null,
+          coveragePct: allNetPence > 0 ? (coveredNetPence / allNetPence) * 100 : null,
+        };
+      }
+    }
 
     // ============ (3) THE WEEK — computed AT READ TIME (canonical-source ruling) ============
     const kpiMaxRow = row(q(`SELECT MAX(business_date) d FROM v_sales_day_all WHERE premises='current'`));
@@ -205,7 +265,7 @@ module.exports = {
       now, needsYou, signoff, planfb, manualReplies, googleReplies, replyTotal,
       escalations: escRows.length, allergen,
       rising: rising.map((r) => ({ code: r.issue_code, cur: toInt(r.count_current), prior: toInt(r.count_prior) })),
-      kpiMax, yesterday, week, ahead, decompNow, qr, labourWeek,
+      kpiMax, yesterday, week, ahead, decompNow, qr, labourWeek, recipeCost,
       lastIngest, spent, ceiling, doneToday,
       halt: ctx.halt || { halted: false, source: '' },
     };
@@ -267,10 +327,10 @@ module.exports = {
 
     // ============ (3) THE WEEK — yesterday + last full week, verdict tiles ============
     parts.push(`<div class="sec-label">The week<span class="rule"></span></div>`);
+    const t = [];
     if (!m.kpiMax) {
       parts.push(`<div class="banner muted">No sales record yet — the daily ingest fills this in.</div>`);
     } else {
-      const t = [];
       if (m.yesterday && m.yesterday.net != null) {
         const y = m.yesterday;
         const cmp = y.comparable && y.lyNet != null && y.lyNet > 0;
@@ -286,8 +346,21 @@ module.exports = {
           <div class="val">${gbp(w.net)}</div>
           <div class="sub">${S.fmtInt(w.txn)} txn${w.comparable ? ` · ${pct(w.net, w.lyNet)} net / ${pct(w.txn, w.lyTxn)} txn vs same week LY` : ' · LY not comparable (premises guard)'}</div></div>`);
       }
-      parts.push(`<div class="tiles" style="grid-template-columns:repeat(2,minmax(240px,1fr))">${t.join('')}</div>`);
     }
+    const rc = m.recipeCost || { recipeLineCount: 0 };
+    const hasRecipes = toInt(rc.recipeLineCount) > 0;
+    const fmtRecipePct = (v) => v !== null && v !== undefined && Number.isFinite(Number(v)) ? `${Number(v).toFixed(1)}%` : '—';
+    const theoreticalText = fmtRecipePct(rc.theoreticalPct);
+    const coverageText = fmtRecipePct(rc.coveragePct);
+    const recipeCopy = hasRecipes
+      ? `Theoretical cost ${theoreticalText} of covered sales · recipes cover ${coverageText} of net`
+      : 'Theoretical cost will appear after recipes are added.';
+    const recipeTone = !hasRecipes || (rc.theoreticalPct == null && rc.coveragePct == null)
+      ? 'muted' : (rc.coveragePct >= 80 ? 'green' : 'amber');
+    t.push(`<div class="tile ${recipeTone}">
+      <div class="lab">Recipe costs · trailing 365 days</div><div class="val">${hasRecipes ? theoreticalText : 'No recipes'}</div>
+      <div class="sub">${recipeCopy}</div><div><a class="tag" href="/coyote/costs">Open Costs →</a></div></div>`);
+    parts.push(`<div class="tiles" style="grid-template-columns:repeat(2,minmax(240px,1fr))">${t.join('')}</div>`);
 
     // ============ (4) WEEK AHEAD — the forward panel ============
     parts.push(`<div class="sec-label">The week ahead<span class="rule"></span></div>`);
