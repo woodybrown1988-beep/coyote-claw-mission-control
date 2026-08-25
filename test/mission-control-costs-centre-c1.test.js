@@ -49,6 +49,8 @@ CREATE TABLE qb_pl_monthly (realm_id TEXT, month TEXT, account_id TEXT, account_
 CREATE TABLE qb_journal_lines (realm_id TEXT, period_month TEXT, txn_date TEXT, txn_type TEXT, doc_num TEXT, account_id TEXT, account_name TEXT, entity_name TEXT, memo TEXT, debit_pence INTEGER, credit_pence INTEGER, updated_at INTEGER);
 CREATE TABLE qb_bank_txns (realm_id TEXT, txn_kind TEXT, txn_id TEXT, txn_date TEXT, bank_account_id TEXT, bank_account_name TEXT, total_pence INTEGER, counterparty TEXT, memo TEXT, lines_json TEXT, qb_updated TEXT, updated_at INTEGER);
 CREATE TABLE recipe_lines (product_id TEXT, sub_item_id TEXT, quantity REAL);
+CREATE TABLE products (id TEXT PRIMARY KEY, lightspeed_sku TEXT, name TEXT, category TEXT);
+CREATE TABLE sub_items (id TEXT PRIMARY KEY, name TEXT, pack_cost_pence INTEGER, pack_qty REAL, unit_of_measure TEXT);
 `;
 
 function makeDb() {
@@ -252,19 +254,25 @@ test('attention queue: rent-step days-until DERIVES from ctx.now (two NOWs 10 da
   assert.ok(earlier.includes('£60,000 → £65,000/yr from 2026-10-28 — 108 day(s) away'), '10 days earlier → 108 — derived, never hardcoded');
 });
 
-test('attention queue: the recipe carrot fires while recipe_lines = 0', () => {
+test('attention queue: recipe availability is checked live and only complete recipes clear the prompt', () => {
   const db = makeDb(); seedExec(db);
   const body = render(db);
-  assert.ok(body.includes('recipe costing: top-20 = 59.5% coverage, one session'), 'the carrot line');
+  assert.ok(body.includes('Recipe costing is not available yet'), 'the live empty state is shown');
+  assert.ok(body.includes('No recipes have been added'), 'the copy accurately describes the empty recipe book');
   assert.ok(body.includes('/coyote/recipes'), 'pointing at the recipes worklist');
-  // rows present → the carrot goes quiet
+  // A line alone is not enough: the product and ingredient inputs must make a complete recipe.
   db.prepare(`INSERT INTO recipe_lines VALUES ('p1','s1',1.0)`).run();
-  assert.ok(!render(db).includes('Theoretical costing locked'), 'a populated recipe store silences the carrot');
+  assert.ok(render(db).includes('Recipe costing needs complete ingredient details'), 'an incomplete recipe is reported accurately');
+  db.prepare(`INSERT INTO products VALUES ('p1','SKU1','Burger','Food')`).run();
+  db.prepare(`INSERT INTO sub_items VALUES ('s1','Bun',50,1,'each')`).run();
+  const complete = render(db);
+  assert.ok(!complete.includes('Recipe costing needs complete ingredient details'), 'a complete recipe clears the prompt');
+  assert.ok(complete.includes('Recipe comparison is available for 1 completely costed product(s)'), 'the bridge copy reflects live availability');
 });
 
 // ---------------- (e) bridge arithmetic ----------------
 
-test('profitability bridge: £100,000 − £20,000 − £25,000 − £20,000 = £35,000 site contribution; theoretical overlay ABSENT with the recipe-gate note', () => {
+test('profitability bridge: £100,000 − £20,000 − £25,000 − £20,000 = £35,000 site contribution; recipe comparison copy is live', () => {
   const db = makeDb(); seedExec(db);
   const body = render(db);
   const wf = body.slice(body.indexOf('class="waterfall"'), body.indexOf('Cost mix'));
@@ -272,7 +280,8 @@ test('profitability bridge: £100,000 − £20,000 − £25,000 − £20,000 = �
   assert.ok(wf.includes('>−£20,000<'), 'COGS bar (negative)');
   assert.ok(wf.includes('>−£25,000<'), 'labour bar (negative, import)');
   assert.match(wf, /wf-col total"><div class="wf-bar"[^>]*><div class="wf-val">£35,000</, 'contribution = after ALL overheads, the total bar');
-  assert.ok(wf.includes('theoretical overlay ABSENT — recipe_lines = 0 (the Calum gate)'), 'the gate note');
+  assert.ok(wf.includes('Recipe comparison is not available yet because no recipes have been added'), 'the live empty-state note');
+  assert.doesNotMatch(wf, /recipe_lines|Calum gate/, 'no storage or project shorthand reaches the operator');
 });
 
 // ---------------- ratios ----------------

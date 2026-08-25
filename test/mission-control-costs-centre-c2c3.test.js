@@ -9,10 +9,10 @@
 //     concentration top-1/top-3; person-named payees POOL into Staff-payroll (no name renders —
 //     the surveillance boundary); PPV + ingredient watch invoice-line-gated; invoice queue =
 //     the no-bills empty-state.
-//   COGS: actual-by-category REAL (QB COGS accounts) + theoretical column gated; bridge
-//     recipe-gated; ingredient watch invoice-gated; stock no-wire; other-variable REAL.
-//   MARGINS: ALL gated EXCEPT recipe-data-quality, which shows LIVE coverage (it measures the
-//     gate); the Calum carrot + Recipes link on every gated panel.
+//   COGS: actual-by-category REAL (QB COGS accounts) + reference-month recipe theoretical;
+//     live variance bridge; plain-language ingredient/stock empty states; other-variable REAL.
+//   MARGINS: live trailing-12-month leaderboard, sales-weighted coverage, median-split matrix,
+//     leading-product cost build and recipe data quality.
 //   NO-MOCK-NUMBERS: empty DB → the only £ digits anywhere are the encoded rent canon.
 const assert = require('node:assert/strict');
 const test = require('node:test');
@@ -32,8 +32,9 @@ CREATE TABLE qb_journal_lines (realm_id TEXT, period_month TEXT, txn_date TEXT, 
 CREATE TABLE qb_bank_txns (realm_id TEXT, txn_kind TEXT, txn_id TEXT, txn_date TEXT, total_pence INTEGER, counterparty TEXT);
 CREATE TABLE qb_bills (realm_id TEXT, bill_id TEXT);
 CREATE TABLE recipe_lines (product_id TEXT, sub_item_id TEXT, quantity REAL);
-CREATE TABLE products (id TEXT PRIMARY KEY, lightspeed_sku TEXT, name TEXT);
-CREATE TABLE sub_items (id TEXT PRIMARY KEY, name TEXT, pack_cost_pence INTEGER, pack_qty REAL);
+CREATE TABLE products (id TEXT PRIMARY KEY, lightspeed_sku TEXT, name TEXT, category TEXT);
+CREATE TABLE sub_items (id TEXT PRIMARY KEY, name TEXT, pack_cost_pence INTEGER, pack_qty REAL, unit_of_measure TEXT);
+CREATE TABLE sales_by_product (business_date TEXT, sku TEXT, total_amount_pence INTEGER, quantity REAL);
 `;
 function makeDb() { const db = new sqlite.DatabaseSync(':memory:'); db.exec(DDL); return db; }
 const render = (db, query, now) => {
@@ -130,32 +131,32 @@ test('SUPPLIERS concentration + the gated panels: top-1/top-3 shares real; PPV +
 });
 
 // ---------------------------------------------------------------------------------------------
-// COGS fixture: refMonth = Jun 2026. COGS accounts: Meat £20,000, Dry goods £10,000 (Cost of
-// Goods Sold type). Other-variable overhead: Packaging £3,000 (variable name). Net £100,000 →
-// COGS 30%. A Rent account (fixed) must NOT appear in either COGS or other-variable.
+// COGS fixture: refMonth = Jun 2026. COGS accounts: Meat £1,000, Dry goods £500 (Cost of
+// Goods Sold type). Other-variable overhead: Packaging £300 (variable name). Net £3,970 →
+// actual COGS 37.8%. A Rent account (fixed) must NOT appear in either COGS or other-variable.
 // ---------------------------------------------------------------------------------------------
 function seedCogs(db) {
   const sd = db.prepare(`INSERT INTO v_sales_day_all VALUES (?,?,?)`);
-  sd.run('2026-06-15', 5000000, 'current'); sd.run('2026-06-30', 5000000, 'current');
+  sd.run('2026-06-15', 200000, 'current'); sd.run('2026-06-30', 197000, 'current');
   const ac = db.prepare(`INSERT INTO qb_accounts (realm_id, account_id, name, acct_type, classification) VALUES ('r1',?,?,?,?)`);
   ac.run('61', 'Meat (203)', 'Cost of Goods Sold', 'Expense');
   ac.run('62', 'Dry goods (203)', 'Cost of Goods Sold', 'Expense');
   ac.run('40', 'Packaging (205)', 'Expense', 'Expense');   // overhead-variable
   ac.run('10', 'Rent (205)', 'Expense', 'Expense');        // overhead-fixed decoy
   const pl = db.prepare(`INSERT INTO qb_pl_monthly VALUES ('r1',?,?,?,?)`);
-  pl.run('2026-06', '61', 'Meat (203)', 2000000);
-  pl.run('2026-06', '62', 'Dry goods (203)', 1000000);
-  pl.run('2026-06', '40', 'Packaging (205)', 300000);
-  pl.run('2026-06', '10', 'Rent (205)', 1500000);
+  pl.run('2026-06', '61', 'Meat (203)', 100000);
+  pl.run('2026-06', '62', 'Dry goods (203)', 50000);
+  pl.run('2026-06', '40', 'Packaging (205)', 30000);
+  pl.run('2026-06', '10', 'Rent (205)', 150000);
 }
 
-test('COGS: actual-by-category is REAL (QB COGS accounts) with the theoretical column gated; other-variable REAL; a fixed account never leaks into either', () => {
+test('COGS: actual-by-category remains live without recipes; other-variable is live; a fixed account never leaks into either', () => {
   const db = makeDb(); seedCogs(db);
   const body = render(db, { tab: 'cogs' });
-  assert.ok(body.includes('Meat (203)') && body.includes('£20,000'), 'COGS category actual');
-  assert.ok(body.includes('COGS 30.0% of net'), 'COGS % of net');
-  assert.ok(body.includes('theoretical — recipe-gated'), 'the theoretical column is gated, not fabricated');
-  assert.ok(body.includes('Packaging (205)') && body.includes('£3,000'), 'other-variable actual');
+  assert.ok(body.includes('Meat (203)') && body.includes('£1,000'), 'COGS category actual');
+  assert.ok(body.includes('actual COGS 37.8% of net'), 'COGS % of net');
+  assert.ok(body.includes('No recipes have been added yet'), 'the theoretical side has a truthful live empty state');
+  assert.ok(body.includes('Packaging (205)') && body.includes('£300'), 'other-variable actual');
   // the fixed Rent account must appear in NEITHER the COGS table nor the other-variable table
   const cogsRegion = body.slice(body.indexOf('Actual versus theoretical'), body.indexOf('COGS variance bridge'));
   assert.ok(!cogsRegion.includes('Rent (205)'), 'a fixed account never renders as COGS');
@@ -163,40 +164,117 @@ test('COGS: actual-by-category is REAL (QB COGS accounts) with the theoretical c
   assert.ok(!ovRegion.includes('Rent (205)'), 'a fixed account never renders as other-variable');
 });
 
-test('COGS gated panels: variance bridge recipe-gated · ingredient watch invoice-line-gated · stock no-wire', () => {
+test('COGS unavailable panels use plain operator-facing language', () => {
   const db = makeDb(); seedCogs(db);
   const body = render(db, { tab: 'cogs' });
-  assert.ok(body.includes('COGS variance bridge') && body.includes('recipe_lines is empty'), 'bridge = the Calum gate');
-  assert.ok(body.includes('Ingredient price watch') && body.includes('invoice-LINE data'), 'price watch = the invoice-line build');
-  assert.ok(body.includes('Stock and waste control') && body.includes('no stock-count wire'), 'stock = no wire');
+  assert.ok(body.includes('COGS variance bridge') && body.includes('No recipes have been added yet'), 'bridge explains the missing business input');
+  assert.ok(body.includes('Ingredient price watch') && body.includes('each ingredient’s pack price'), 'price watch explains what is missing');
+  assert.ok(body.includes('Stock and waste control') && body.includes('No stock counts or waste logs have been recorded'), 'stock panel gives an operator action');
 });
 
 // ---------------------------------------------------------------------------------------------
-// MARGINS fixture: 3 products; product P1 fully costed (recipe line to a costed sub_item); P2
-// has a recipe line to an UNCOSTED sub_item (pack_cost null) → NOT costed; P3 no recipe. So
-// products = 3, costed = 1, recipe_lines = 2. Coverage = 33.3%.
+// RECIPE ECONOMICS fixture — all expected results are hand-computed.
+// Eight complete products generate £3,370 net from 440 units; one incomplete and one absent
+// recipe add £600 net. Covered-net coverage = 3,370 / 3,970 = 84.9%.
+// Complete-product theoretical COGS = £1,030: Food £450 + Drinks £580.
+// GP/unit values and units split at medians £5.00 and 55, producing 2 products in every quadrant.
 // ---------------------------------------------------------------------------------------------
-function seedMargins(db) {
-  db.prepare(`INSERT INTO products VALUES ('P1','SKU1','Burger'),('P2','SKU2','Fries'),('P3','SKU3','Shake')`).run();
-  db.prepare(`INSERT INTO sub_items VALUES ('bun','Bun',500,48),('spud','Potato',NULL,NULL)`).run();
-  db.prepare(`INSERT INTO recipe_lines VALUES ('P1','bun',1),('P2','spud',200)`).run();
+function seedRecipeEconomics(db) {
+  db.exec(`
+    INSERT INTO products VALUES
+      ('A','A','Alpha Burger','Food'),('B','B','Bravo Burger','Food'),
+      ('C','C','Cola','Drinks'),('D','D','Draught','Drinks'),
+      ('E','E','Edamame','Food'),('F','F','Fries','Food'),
+      ('G','G','Ginger Beer','Drinks'),('H','H','House Soda','Drinks'),
+      ('I','I','Incomplete Item','Food'),('J','J','No Recipe Item','Food');
+    INSERT INTO sub_items VALUES
+      ('beef','Beef',150,1,'each'),('bun','Bun',50,1,'each'),
+      ('b','Bravo ingredient',200,1,'each'),('c','Cola ingredient',300,1,'each'),
+      ('d','Draught ingredient',400,1,'each'),('e','Edamame ingredient',100,1,'each'),
+      ('f','Fries ingredient',100,1,'each'),('g','Ginger ingredient',200,1,'each'),
+      ('h','Soda ingredient',200,1,'each'),('bad','Missing pack quantity',100,NULL,'each');
+    INSERT INTO recipe_lines VALUES
+      ('A','beef',1),('A','bun',1),('B','b',1),('C','c',1),('D','d',1),
+      ('E','e',1),('F','f',1),('G','g',1),('H','h',1),('I','bad',1);
+    INSERT INTO sales_by_product VALUES
+      ('2026-06-30','A',100000,100),('2026-06-30','B',81000,90),
+      ('2026-06-30','C',40000,80),('2026-06-30','D',35000,70),
+      ('2026-06-30','E',40000,40),('2026-06-30','F',27000,30),
+      ('2026-06-30','G',10000,20),('2026-06-30','H',4000,10),
+      ('2026-06-30','I',50000,50),('2026-06-30','J',10000,10);
+  `);
 }
 
-test('MARGINS: all four heart panels are recipe-gated with the Calum carrot; recipe-data-quality shows LIVE coverage (it measures the gate)', () => {
-  const db = makeDb(); seedMargins(db);
+test('buildRecipeEconomics: concrete leaderboard, weighted coverage, quadrants, cost build and monthly category outputs', () => {
+  const db = makeDb(); seedRecipeEconomics(db);
+  const q = (sql, p) => DATA.safeSelect(db, sql, p);
+  const result = page.buildRecipeEconomics(q, '2026-06');
+  assert.equal(result.recipeLines, 10);
+  assert.equal(result.costedProducts, 8, 'the missing pack quantity fails validated completeness');
+  assert.equal(result.leaderboard[0].name, 'Alpha Burger');
+  assert.equal(result.leaderboardTotals.net, 337000);
+  assert.equal(result.leaderboardTotals.units, 440);
+  assert.ok(Math.abs(result.coveragePct - 84.88664987405541) < 1e-9);
+  assert.equal(result.matrix.volumeMedian, 55);
+  assert.equal(result.matrix.gpMedianPence, 500);
+  assert.deepEqual(Object.fromEntries(Object.entries(result.matrix.quadrants).map(([key, value]) => [key, value.count])),
+    { protect: 2, promote: 2, fix: 2, replace: 2 });
+  assert.deepEqual(result.matrix.quadrants.protect.leaders.map((p) => p.name), ['Alpha Burger', 'Bravo Burger']);
+  assert.deepEqual(result.costBuild.lines.map((line) => [line.ingredient, line.lineCostPence]), [['Beef', 150], ['Bun', 50]]);
+  assert.equal(result.monthly.theoretical, 103000);
+  assert.deepEqual(result.monthly.byCategory, [{ name: 'Drinks', p: 58000 }, { name: 'Food', p: 45000 }]);
+});
+
+test('MARGINS renders leaderboard totals, weighted coverage, all matrix quadrants and the leading product cost build', () => {
+  const db = makeDb(); seedRecipeEconomics(db);
   const body = render(db, { tab: 'margins' });
-  for (const p of ['Menu margin erosion watch', 'Product economics matrix', 'Smokehouse BBQ cost build']) {
-    assert.ok(body.includes(p), `${p} panel present`);
+  assert.match(body, /Sales-weighted recipe coverage<\/div><div class="r-kpi-value">84\.9%/);
+  assert.ok(body.includes('£3,370.00'), 'leaderboard total net');
+  assert.match(body, /Top 8 total \/ weighted average/);
+  assert.match(body, />440<\/th>/, 'leaderboard total units');
+  for (const quadrant of ['Protect', 'Promote', 'Fix', 'Replace']) {
+    assert.match(body, new RegExp(`<b>${quadrant}<\\/b><span class="mono">2<`), `${quadrant} count`);
   }
-  assert.ok((body.match(/recipe_lines is empty/g) || []).length >= 3, 'the gated panels name the Calum gate');
-  assert.ok((body.match(/59\.5% coverage/g) || []).length >= 3, 'the carrot on every gated panel');
-  // recipe-data-quality: LIVE — products 3, costed 1, coverage 33.3%, recipe lines 2
-  const q = body.slice(body.indexOf('Recipe data quality'));
-  assert.ok(q.includes('>3<'), 'products count live');
-  assert.ok(q.includes('>1<'), 'costed count live');
-  assert.ok(q.includes('33.3% of products'), 'coverage measured live');
-  assert.ok(q.includes('the Calum gate — 0') || q.includes('>2<'), 'recipe-lines count');
-  assert.ok(body.includes('/coyote/recipes'), 'the manage-at pointer');
+  assert.ok(body.includes('Alpha Burger cost build'), 'highest-net product selected');
+  assert.ok(body.includes('Beef') && body.includes('Bun'), 'ingredient lines render');
+  assert.ok(body.includes('£1.50') && body.includes('£0.50'), 'line and unit costs render');
+  assert.match(body, /Total recipe cost[\s\S]*£2\.00/);
+  assert.match(body, /Achieved average net price[\s\S]*£10\.00/);
+  assert.ok(body.includes('Complete recipes') && body.includes('>8<'), 'recipe quality is preserved');
+});
+
+test('COGS calculates monthly theoretical categories and an actual-versus-theoretical variance bridge', () => {
+  const db = makeDb(); seedCogs(db); seedRecipeEconomics(db);
+  const body = render(db, { tab: 'cogs' });
+  assert.match(body, /Drinks[\s\S]*£580/);
+  assert.match(body, /Food[\s\S]*£450/);
+  assert.match(body, /Theoretical COGS<\/div><div class="r-kpi-value">£1,030/);
+  assert.match(body, /Gap<\/div><div class="r-kpi-value">\+£470/);
+  assert.ok(body.includes('+45.6% vs theoretical'), 'variance percentage is shown');
+  assert.ok(body.includes('Complete recipes cover 84.9% of Jun 2026 item-level net sales'), 'monthly sales-weighted coverage');
+  assert.ok(body.includes('waste, larger portions, buying-price changes, stock timing'), 'operational meaning is explained');
+});
+
+test('MARGINS genuine-empty fallback is driven by the live recipe count', () => {
+  const db = makeDb();
+  const body = render(db, { tab: 'margins' });
+  assert.ok(body.includes('No recipes have been added yet'), 'genuine empty state');
+  assert.ok(body.includes('no recipes added yet'), 'quality panel reflects the same live state');
+  assert.doesNotMatch(body, /£0\.00/, 'the fallback does not invent sales or costs');
+});
+
+test('emitted inline scripts parse and recipe/stock empty states contain no implementation jargon', () => {
+  const db = makeDb(); seedCogs(db); seedRecipeEconomics(db);
+  for (const tab of ['executive', 'forecast', 'cogs', 'margins', 'suppliers', 'fixed', 'cash']) {
+    const body = render(db, { tab });
+    const blocks = [...body.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/g)].map((match) => match[1]);
+    for (const src of blocks) assert.doesNotThrow(() => new Function(src), `${tab} emitted an invalid inline script`);
+  }
+  for (const tab of ['cogs', 'margins']) {
+    const body = render(db, { tab });
+    assert.doesNotMatch(body, /recipe_lines|sub_items|pack_cost_pence|pack_qty|Calum gate|not wired|\bgated\b|invoice-LINE|operations-scope|no wire/i,
+      `${tab} contains internal project or storage language`);
+  }
 });
 
 test('NO-MOCK-NUMBERS across C2 + C3: an empty DB renders only the encoded rent canon — every other £ is absent, no NaN/undefined', () => {
