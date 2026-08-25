@@ -33,6 +33,49 @@ const ACTIONS = {
 // recorded home gets a picker of REAL folders (half the queue arrives via Xero's relay, where one
 // sender serves three suppliers, so history can never name the folder — the owner's pick is the
 // resolution, and the writer still refuses a path that names no folder).
+// THE WEEKLY BOOKER RUN (operator ask 2026-08-25). Keyed on the ARMED event, exactly like
+// invoiceRunBlock above — a task that merely mentions Booker gets nothing, and a renamed task
+// keeps its button. The GO runs every leg the box owns; the fetch from booker.co.uk is the one
+// leg it cannot, so the panel prints WHICH invoices are still outside rather than a green tick.
+function bookerRunBlock(events) {
+  const armed = (events || []).find((e) => e.event_type === 'BOOKER_RUN_ARMED');
+  if (!armed) return '';
+  const runs = (events || []).filter((e) => e.event_type === 'BOOKER_RUN_EXECUTED');
+  const last = runs.length ? runs[runs.length - 1] : null;
+  let pl = {};
+  try { pl = JSON.parse((last && last.payload_json) || '{}'); } catch (_) { pl = {}; }
+  const muted = 'font-size:11.5px;color:#9aa3ad';
+
+  const go = `<button class="r-btn" data-lc-cmd="${LIFE.esc(JSON.stringify({ command: 'booker_run', payload: {} }))}">Go &mdash; run the Booker update</button>`;
+
+  let outcome = `<div style="${muted};margin-top:8px">Not run yet this week.</div>`;
+  if (last) {
+    const when = LIFE.esc(String(last.created_at || '').slice(0, 16).replace('T', ' '));
+    const noteLines = String(pl.note || '').split('\n').filter(Boolean);
+    // The failure branch is FIRST and loud. A run that crashed and a run that found nothing look
+    // identical in a summary line, and only one of them means the week is fine.
+    const head = pl.ok === false
+      ? `<div style="font-size:12.5px;color:#ef6b68;font-weight:600">Last run FAILED at ${when} &mdash; ${LIFE.esc(String(pl.error || 'no reason recorded'))}</div>`
+      : `<div style="font-size:12.5px;color:#9aa3ad">Last run ${when}</div>`;
+    // A FAILED run knows NOTHING about what is outstanding, so it must claim nothing. The first
+    // version of this line fell through to the happy branch on a crash and rendered "Nothing
+    // outstanding - both streams are in" over the top of a stack trace: the single most misleading
+    // sentence the panel could produce, and it took a test against emitted output to see it.
+    const still = pl.ok === false
+      ? `<div style="font-size:12.5px;color:#9aa3ad;margin-top:6px">The run did not finish, so nothing is known about what is outstanding.</div>`
+      : pl.needsBrowser
+      ? `<div style="font-size:12.5px;color:#f5c96b;margin-top:6px"><b>${Number(pl.missingDirect || 0)}</b> Marketplace invoices are still on Booker&rsquo;s site and not here`
+        + (pl.missingDirectValue ? ` &mdash; &pound;${Number(pl.missingDirectValue).toFixed(2)} ex VAT` : '')
+        + `. That fetch needs your logged-in Chrome; the box has no route to Booker.</div>`
+      : `<div style="font-size:12.5px;color:#7fc99a;margin-top:6px">Nothing outstanding &mdash; both streams are in.</div>`;
+    outcome = `${head}${noteLines.length
+      ? `<div style="font-size:12.5px;line-height:1.6;margin-top:6px;white-space:pre-wrap">${LIFE.esc(noteLines.join('\n'))}</div>` : ''}${still}`;
+  }
+  return `<div class="r-card r-panel" style="margin-bottom:10px"><h3>Booker &mdash; the weekly update</h3>
+    <div style="font-size:12.5px;line-height:1.55;margin-bottom:8px">Go parses every Booker PDF that has arrived, checks each invoice against the total printed on it, files depot and Marketplace lines separately, and rebuilds the price analysis.</div>
+    ${go}${outcome}</div>`;
+}
+
 function invoiceRunBlock(events, folders) {
   const armed = (events || []).find((e) => e.event_type === 'INVOICE_RUN_ARMED');
   if (!armed) return '';
@@ -261,7 +304,8 @@ module.exports = {
         // When the interactive pay-queue renders, it IS the list — showing the same 18 invoices
         // twice (a wall of text, then the buttons below it) had the owner reading the inert copy.
         // The written run stays one tap away: it is the contract of what completing files.
-        const run = invoiceRunBlock(s.events, s.mailFolders);
+        const booker = bookerRunBlock(s.events);
+        const run = booker || invoiceRunBlock(s.events, s.mailFolders);
         const desc = t.description ? `<div style="font-size:13px;margin-bottom:10px;white-space:pre-wrap">${LIFE.esc(t.description)}</div>` : '';
         return run
           ? `${run}${desc ? `<details style="margin-bottom:10px"><summary style="font-size:11.5px;color:#9aa3ad;cursor:pointer">The run as written \u2014 the exact list completing this task files</summary>${desc}</details>` : ''}`

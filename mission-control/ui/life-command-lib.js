@@ -184,6 +184,11 @@ const COMMAND_SHAPES = {
   // the writer polls Outlook and updates its OWN mirror; nothing is ever written to the
   // calendar. The writer refuses this from any agent-actor payload; MC relays no actor at
   // all (it IS the authenticated owner surface).
+  // The weekly Booker run's GO (operator ask 2026-08-25). No payload: the writer finds the ONE
+  // armed Booker task itself, so this surface cannot point the run at some other task. READ-ONLY
+  // against booker.co.uk in the strongest sense — the box has no route to it at all; everything
+  // the run touches is already on disk.
+  booker_run: () => true,
   calendar_sync: () => true,
   // Mail (Graph Stage C 2026-08-11): the owner's "read my inbox now". READ-ONLY against the
   // mailbox — the writer polls Graph and updates its OWN mirror; nothing is ever sent.
