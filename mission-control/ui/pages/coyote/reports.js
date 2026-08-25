@@ -22,16 +22,16 @@
 //   • the bank side = qb_bank_txns POSTED deposits (QB Phase-0 rule: "For Review" is not
 //     exposed; match on POSTED). NO tender↔deposit matching algorithm exists yet — the bank
 //     column renders the POSTED aggregate UNMATCHED; the match build is future work.
-// P5 ABSORPTION (this build): the LAST pending tab (menu) is BUILT to its honest GATE-STATE —
+// P5 ABSORPTION (this build): the LAST pending tab (menu) is BUILT from the line ledger —
 //   • the flash category-performance + best/slowest-sellers panels and the phase banner left
 //     the page entirely; their ONE home is now the canonical product performance table + the
 //     same-period decline watch (line grain, SKU-consolidated — sales_receipt_lines_api,
 //     product truth from 2023-07, NOT the scraper sales_by_product aggregate);
 //   • the period-nav machinery left reports WITH them (menu was its last user on this page;
 //     /coyote/labour keeps its own strip — the module lives on there);
-//   • contribution is GATED: recipe_lines = 0 (the Calum gate) — £-at-risk, dogs, portfolio
-//     placement and the contribution/class columns are designed empty-states carrying the ONE
-//     unlock line (the live recipes-worklist carrot → /coyote/recipes); no number is invented.
+//   • contribution joins the sales SKU to a complete recipe cost. Incomplete recipes stay out of
+//     the portfolio and classification, remain visible in the sales tables, and link to the live
+//     recipes worklist. An empty recipe book renders plain-language empty states.
 // NO-FABRICATION rules baked in:
 //   • Executive KPI window = the LAST FULL Mon–Sun week vs the weekday-aligned week LY (−364d),
 //     premises-guarded — a non-comparable LY drops the delta and says so, never a raw cross-site %.
@@ -122,9 +122,6 @@ const LABOUR_MATERIALITY_PENCE = 4500;
 // GRIDDLE nor BUN — the griddle/bun hybrids are mains, not sides).
 const DRINK_CLASS_NAMES = ['HOT DRINKS', 'SOFT DRINKS', 'ALCOHOL', 'SHAKES'];
 
-// Menu (P5) — the ONE unlock line every contribution-gated panel carries (the live
-// recipes-worklist carrot; the worklist itself is the value's home — /coyote/recipes).
-const UNLOCK_LINE = 'recipe costing: top-20 = 59.5% coverage, one session';
 // Menu movers / decline-watch thresholds — PRESENTATION CUTS (captioned as such), not rulings.
 const MOVER_PCT = 0.25; // |Δ 28d net| ≥ 25% of the prior window …
 const MOVER_FLOOR_PENCE = 10000; // … AND ≥ £100
@@ -697,13 +694,94 @@ function buildRecon(q, rv2) {
 // MENU GROWTH (P5) — the product ledger at line grain (sales_receipt_lines_api — product truth
 // from 2023-07): 28d product aggregates vs the prior 28d and the same 28d window LY (−364d).
 // Products group by SKU (renamed variants share SKUs — MAX(name) labels the row); SKUs without
-// positive window net (zero-value modifier lines) are excluded, stated on the tab.
-// CONTRIBUTION IS GATED: recipe_lines = 0 (the Calum gate) — £-at-risk, dogs, portfolio
-// placement and the contribution/class columns render as designed empty-states; nothing is
-// estimated. A line-absence IS a zero here (lines are ledger facts: no line = nothing sold),
+// positive window net (zero-value modifier lines) are excluded, stated on the tab. Complete BOM
+// cost is joined by the product's Lightspeed SKU; incomplete recipes never enter contribution or
+// classification. A line-absence IS a zero here (lines are ledger facts: no line = nothing sold),
 // unlike the day-grain no-record rule.
+
+// A weighted median uses item sales (units) as the weight. Sorting by SKU after the value makes
+// the exact-half case stable, and >= is the single boundary rule for BOTH axes: an item exactly
+// on either median belongs to the high half. Exported because these classifications and the
+// de-duplicated risk union are business logic, not markup.
+function buildMenuPortfolio(products, decliners) {
+  const current = (Array.isArray(products) ? products : []).map((source) => {
+    const p = source || {};
+    const sku = String(p.sku == null ? '' : p.sku);
+    const qty = num(p.qty) || 0;
+    const net = num(p.net) || 0;
+    const unitCostPence = num(p.unitCostPence);
+    const recipeCosted = unitCostPence != null;
+    const contributionPence = recipeCosted && qty > 0 ? (net / qty) - unitCostPence : null;
+    return { ...p, sku, qty, net, unitCostPence, recipeCosted, contributionPence, className: null, labelled: false };
+  });
+  const totalNet = current.reduce((sum, p) => sum + p.net, 0);
+  const coveredNet = current.filter((p) => p.recipeCosted).reduce((sum, p) => sum + p.net, 0);
+  const awaiting = current.filter((p) => !p.recipeCosted);
+  const plottable = current.filter((p) => p.contributionPence != null && p.qty > 0 && p.net > 0);
+
+  const weightedMedian = (rows, valueOf) => {
+    const sorted = rows.slice().sort((a, b) => valueOf(a) - valueOf(b) || a.sku.localeCompare(b.sku));
+    const weight = sorted.reduce((sum, p) => sum + p.qty, 0);
+    if (!sorted.length || !(weight > 0)) return null;
+    let seen = 0;
+    for (const p of sorted) {
+      seen += p.qty;
+      if (seen >= weight / 2) return valueOf(p);
+    }
+    return valueOf(sorted[sorted.length - 1]);
+  };
+  const popularityMedian = weightedMedian(plottable, (p) => p.qty);
+  const contributionMedianPence = weightedMedian(plottable, (p) => p.contributionPence);
+  for (const p of plottable) {
+    const popular = p.qty >= popularityMedian;
+    const contributing = p.contributionPence >= contributionMedianPence;
+    p.className = popular
+      ? (contributing ? 'Winner' : 'Workhorse')
+      : (contributing ? 'Opportunity' : 'Dog');
+  }
+
+  // The highest-window-net item in each quadrant receives a persistent label; every bubble
+  // still carries the complete tooltip. Ties break by SKU so refreshes never move labels around.
+  for (const className of ['Winner', 'Workhorse', 'Opportunity', 'Dog']) {
+    plottable.filter((p) => p.className === className)
+      .sort((a, b) => b.net - a.net || a.sku.localeCompare(b.sku))
+      .slice(0, 1)
+      .forEach((p) => { p.labelled = true; });
+  }
+
+  const dogs = plottable.filter((p) => p.className === 'Dog');
+  const riskBySku = new Map();
+  for (const p of dogs) riskBySku.set(p.sku, p.net);
+  for (const source of (Array.isArray(decliners) ? decliners : [])) {
+    const d = source || {};
+    const sku = String(d.sku == null ? '' : d.sku);
+    if (sku) riskBySku.set(sku, Math.max(0, num(d.now) || 0));
+  }
+  const riskWindowNet = [...riskBySku.values()].reduce((sum, value) => sum + value, 0);
+
+  return {
+    products: current,
+    plottable,
+    popularityMedian,
+    contributionMedianPence,
+    totalNet,
+    coveredNet,
+    coveragePct: totalNet > 0 ? (coveredNet / totalNet) * 100 : 0,
+    awaitingCount: awaiting.length,
+    awaitingNet: awaiting.reduce((sum, p) => sum + p.net, 0),
+    dogCount: dogs.length,
+    dogNet: dogs.reduce((sum, p) => sum + p.net, 0),
+    weeklyRiskPence: riskWindowNet / 4,
+    riskSkus: [...riskBySku.keys()].sort(),
+  };
+}
+
 function buildMenu(q, rv2) {
-  const mg = { apiMax: null, from: null, products: null, movers: null, decline: null };
+  const recipeLineRow = rowsOf(q(`SELECT COUNT(*) n FROM recipe_lines`))[0] || {};
+  const mg = {
+    apiMax: null, from: null, products: null, movers: null, decline: null, decliners: null,
+    recipeLines: num(recipeLineRow.n) || 0, portfolio: buildMenuPortfolio([], []),
+  };
   const apiMax = rv2 && rv2.maxApiDate ? rv2.maxApiDate : null;
   if (!apiMax) return mg;
   const from = K.shiftDays(apiMax, -27);
@@ -719,11 +797,34 @@ function buildMenu(q, rv2) {
   const curM = toMap(cur);
   const priM = toMap(agg(K.shiftDays(from, -28), K.shiftDays(apiMax, -28)));
   const lyM = toMap(agg(K.shiftDays(from, -364), K.shiftDays(apiMax, -364)));
+  const costs = new Map();
+  if (mg.recipeLines > 0) {
+    for (const r of rowsOf(q(
+      `SELECT CAST(p.lightspeed_sku AS TEXT) sku,
+              COUNT(rl.product_id) recipe_line_count,
+              SUM(CASE WHEN rl.product_id IS NOT NULL AND
+                            (si.id IS NULL OR si.pack_cost_pence IS NULL OR si.pack_cost_pence < 0
+                             OR si.pack_qty IS NULL OR si.pack_qty <= 0
+                             OR rl.quantity IS NULL OR rl.quantity <= 0)
+                       THEN 1 ELSE 0 END) invalid_line_count,
+              SUM(rl.quantity * CAST(si.pack_cost_pence AS REAL) / si.pack_qty) unit_cost_pence
+         FROM products p
+         LEFT JOIN recipe_lines rl ON rl.product_id = p.id
+         LEFT JOIN sub_items si ON si.id = rl.sub_item_id
+        WHERE p.lightspeed_sku IS NOT NULL
+        GROUP BY p.id, CAST(p.lightspeed_sku AS TEXT)`))) {
+      const lineCount = num(r.recipe_line_count) || 0;
+      const invalid = num(r.invalid_line_count) || 0;
+      const unitCostPence = num(r.unit_cost_pence);
+      costs.set(String(r.sku), lineCount > 0 && invalid === 0 && unitCostPence != null ? unitCostPence : null);
+    }
+  }
   mg.products = [...curM.entries()]
     .map(([sku, p]) => ({
       sku, name: p.name, qty: p.qty, net: p.net,
       priorNet: priM.has(sku) ? priM.get(sku).net : null,
       lyNet: lyM.has(sku) ? lyM.get(sku).net : null,
+      unitCostPence: costs.has(sku) ? costs.get(sku) : null,
     }))
     .sort((a, b) => b.net - a.net);
   // movers: |Δ 28d net| ≥ 25% AND ≥ £100 vs the prior 28d (presentation cut, captioned);
@@ -739,17 +840,30 @@ function buildMenu(q, rv2) {
   mg.movers = movers;
   // decline watch: top 6 by net DECLINE vs the prior 28d, ≥ £50 floor (presentation cut);
   // a stopped seller is a REAL decline row (its window net truly IS zero), never dropped.
-  mg.decline = [...skus]
+  mg.decliners = [...skus]
     .map((sku) => {
       const p = priM.has(sku) ? priM.get(sku) : null;
       if (!p || !(p.net > 0)) return null;
       const c = curM.has(sku) ? curM.get(sku) : null;
       const now = c ? c.net : 0;
-      return { sku, name: c ? c.name : p.name, prior: p.net, now, pct: (now / p.net - 1) * 100 };
+      return now < p.net ? { sku, name: c ? c.name : p.name, prior: p.net, now, pct: (now / p.net - 1) * 100 } : null;
     })
-    .filter((r) => r && r.prior - r.now >= DECLINE_FLOOR_PENCE)
-    .sort((a, b) => (b.prior - b.now) - (a.prior - a.now))
-    .slice(0, 6);
+    .filter(Boolean)
+    .sort((a, b) => (b.prior - b.now) - (a.prior - a.now) || a.sku.localeCompare(b.sku));
+  mg.portfolio = buildMenuPortfolio(mg.products, mg.decliners);
+  mg.products = mg.portfolio.products;
+  const currentBySku = new Map(mg.products.map((p) => [p.sku, p]));
+  mg.decliners = mg.decliners.map((d) => {
+    const currentProduct = currentBySku.get(d.sku);
+    const unitCostPence = costs.has(d.sku) ? costs.get(d.sku) : null;
+    return {
+      ...d,
+      recipeCosted: unitCostPence != null,
+      contributionPence: currentProduct ? currentProduct.contributionPence : null,
+      className: currentProduct ? currentProduct.className : null,
+    };
+  });
+  mg.decline = mg.decliners.filter((r) => r.prior - r.now >= DECLINE_FLOOR_PENCE).slice(0, 6);
   return mg;
 }
 
@@ -803,8 +917,9 @@ function channelMonthStats(rv2) {
 module.exports = {
   CPT_BAND,
   SITTING_MIN_CAPTURE, SITTING_MAX_SPREAD, sittingCaptureVerdict,
+  buildMenuPortfolio,
   key: 'revenue', route: '/coyote/revenue', workspace: 'coyote', title: 'Revenue',
-  sub: 'Revenue Command Centre — all five tabs live · contribution gated on recipe costing · covers live via OpenTable (spend/cover derived)',
+  sub: 'Revenue Command Centre — all five tabs live · menu contribution uses completed recipes · covers live via OpenTable (spend/cover derived)',
 
   getSection(db, ctx) {
     const q = ctx && ctx.q;
@@ -891,7 +1006,7 @@ module.exports = {
     } else if (tab === 'reconciliation') {
       m.recon = buildRecon(q, rv2);
     } else {
-      // menu (P5) — the line-grain product ledger; contribution-gated panels carry no data call
+      // menu (P5) — the line-grain product ledger joined read-only to complete recipe cost
       m.menu = buildMenu(q, rv2);
     }
     return m;
@@ -995,9 +1110,7 @@ module.exports = {
       .rcc .source h4{margin:0 0 6px;font-size:12px}
       .rcc .source p{margin:0;color:#909aa4;font-size:10px;line-height:1.45}
       .rcc .source .sync{margin-top:9px;color:#7fe0ae;font-size:10px;font-weight:800}
-      /* menu: portfolio matrix + classification key + decline rows (the mock's .matrix/.quad/
-         .decline-row grammar, ported verbatim into the .rcc scope; the .bubble class arrives
-         WITH contribution — no dead classes shipped ahead of the data) */
+      /* menu: portfolio matrix + classification key + decline rows */
       .rcc .menu-kpis{grid-template-columns:repeat(4,minmax(0,1fr))}
       @media(max-width:820px){.rcc .menu-kpis{grid-template-columns:repeat(2,1fr)}}
       .rcc .matrix{display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;height:300px;border-left:1px solid #39424b;border-bottom:1px solid #39424b;position:relative;margin:0 6px 30px 40px}
@@ -1008,6 +1121,17 @@ module.exports = {
       .rcc .quad.workhorse{background:linear-gradient(135deg,rgba(240,182,79,.08),transparent)}
       .rcc .axis-y{position:absolute;left:-36px;top:46%;transform:rotate(-90deg);color:#7f8994;font-size:10px}
       .rcc .axis-x{position:absolute;bottom:-24px;left:46%;color:#7f8994;font-size:10px}
+      .rcc .matrix-threshold-x{position:absolute;left:50%;bottom:-18px;transform:translateX(-50%);color:#a0a9b2;background:#11161a;padding:1px 5px;font-size:9px;z-index:4;white-space:nowrap}
+      .rcc .matrix-threshold-y{position:absolute;left:-7px;top:50%;transform:translate(-100%,-50%);color:#a0a9b2;background:#11161a;padding:1px 5px;font-size:9px;z-index:4;white-space:nowrap}
+      .rcc .bubble{position:absolute;z-index:2;transform:translate(-50%,-50%);border:1px solid rgba(255,255,255,.72);border-radius:50%;padding:0;box-shadow:0 4px 14px rgba(0,0,0,.42);cursor:pointer;transition:transform .14s,filter .14s;appearance:none}
+      .rcc .bubble.winner{background:rgba(69,196,134,.76)}
+      .rcc .bubble.workhorse{background:rgba(240,182,79,.78)}
+      .rcc .bubble.opportunity{background:rgba(173,140,255,.8)}
+      .rcc .bubble.dog{background:rgba(239,107,104,.78)}
+      .rcc .bubble:hover,.rcc .bubble:focus{z-index:8;transform:translate(-50%,-50%) scale(1.12);filter:brightness(1.14);outline:2px solid #fff;outline-offset:2px}
+      .rcc .bubble-label{position:absolute;left:calc(100% + 5px);top:50%;transform:translateY(-50%);max-width:112px;overflow:hidden;text-overflow:ellipsis;color:#eef2f5;font-size:9px;font-weight:800;white-space:nowrap;text-shadow:0 1px 3px #000;pointer-events:none}
+      .rcc .bubble-tip{display:none;position:absolute;z-index:10;bottom:calc(100% + 8px);left:50%;transform:translateX(-50%);width:max-content;max-width:220px;background:#080a0c;border:1px solid #47515b;border-radius:8px;color:#fff;padding:7px 9px;font-size:10px;font-weight:600;line-height:1.45;text-align:left;white-space:normal;box-shadow:0 10px 24px rgba(0,0,0,.55);pointer-events:none}
+      .rcc .bubble:hover .bubble-tip,.rcc .bubble:focus .bubble-tip{display:block}
       .rcc .matrix-empty{position:absolute;inset:0;display:grid;place-items:center;padding:14px;text-align:left}
       .rcc .matrix-empty .r-empty{background:rgba(13,17,21,.93);max-width:430px;box-shadow:0 10px 30px rgba(0,0,0,.35)}
       .rcc .r-worklist-link{color:var(--raccent2);font-size:11px;font-weight:700;margin-top:8px}
@@ -1027,6 +1151,8 @@ module.exports = {
       .rcc .decline-row .action{color:#aab2ba;line-height:1.3}
       @media(max-width:520px){.rcc .decline-row{grid-template-columns:1fr 60px 60px 48px}.rcc .decline-row .action{display:none}}
       .rcc .not-costed{color:#7f8994;font-style:italic}
+      .rcc .recipe-missing{color:var(--raccent2);font-weight:700;text-decoration:none}
+      .rcc .recipe-missing:hover{text-decoration:underline}
       .rcc .rv2-caption a,.rcc .r-mini-note a{color:var(--raccent2);text-decoration:none}
       .rcc .rv2-caption a:hover,.rcc .r-mini-note a:hover{text-decoration:underline}
       /* surviving legacy grammar (the expands + decomp/scorecard tables keep their pre-restyle form) */
@@ -1873,46 +1999,76 @@ module.exports = {
     const renderMenu = () => {
       const mg = m.menu || {};
       const hasLines = !!(mg.products && mg.products.length);
+      const portfolio = mg.portfolio || buildMenuPortfolio([], []);
+      const hasRecipes = (num(mg.recipeLines) || 0) > 0;
+      const hasContribution = portfolio.plottable.length > 0;
+      const coverageCopy = `Contribution on ${portfolio.coveragePct.toFixed(1)}% of window net`;
+      const contributionGbp = (pence) => pence < 0 ? `−${gbp(Math.abs(pence))}` : gbp(pence);
+      const menuEmpty = (title, copy, link) => `<div class="r-empty"><b>${esc(title)}</b><br>${esc(copy)}${link ? `<div class="r-unlock"><a class="r-worklist-link" href="/coyote/recipes">${esc(link)} →</a></div>` : ''}</div>`;
 
-      // ---- KPI strip (4): two REAL line-grain tiles, two contribution-GATED tiles whose
-      // VALUE carries zero digits — no £-at-risk or dogs count exists without contribution ----
+      // ---- KPI strip (4): line-ledger facts plus the live recipe-backed risk and Dogs views ----
       const kpis = [
         S.rcc.kpi({
           label: 'Products selling', value: hasLines ? String(mg.products.length) : '—',
-          sub: hasLines ? 'distinct SKUs with positive 28d net · line grain' : 'no per-receipt line record yet',
+          sub: hasLines ? 'distinct till SKUs with positive 28-day net' : 'no item-level sales in the window',
         }),
         S.rcc.kpi({
-          label: 'Weekly revenue at risk', value: 'needs costing',
-          sub: `needs contribution — the Calum gate (recipe_lines is empty) · unlock: ${UNLOCK_LINE}`,
+          label: 'Weekly revenue at risk', value: hasRecipes && hasContribution ? gbp(portfolio.weeklyRiskPence) : '—',
+          sub: hasRecipes && hasContribution
+            ? `Dogs plus every item down vs the prior window, counted once · 28-day net ÷ 4 · ${coverageCopy}`
+            : 'Add complete recipes for sold items to include Dogs without understating risk',
         }),
         S.rcc.kpi({
           label: 'Menu movers', value: hasLines ? String(mg.movers) : '—',
           sub: hasLines ? '|Δ net| ≥ 25% and ≥ £100 vs prior 28d — presentation cut, not a ruling' : 'no per-receipt line record yet',
         }),
         S.rcc.kpi({
-          label: 'Dogs', value: 'needs costing',
-          sub: `classification needs contribution — the Calum gate · unlock: ${UNLOCK_LINE}`,
+          label: 'Dogs', value: hasRecipes && hasContribution ? String(portfolio.dogCount) : '—',
+          sub: hasRecipes && hasContribution
+            ? `${gbp(portfolio.dogNet)} combined current-window net · ${coverageCopy}`
+            : 'Add complete recipes for sold items to classify the portfolio',
         }),
       ].join('');
       const kpiCaption = mg.apiMax
-        ? `<div class="rv2-caption">28d to ${esc(mg.apiMax)} (per-receipt max) vs prior 28d · line grain (sales_receipt_lines_api — product truth from 2023-07) · products grouped by SKU (renamed variants consolidated; MAX(name) labels the row) · SKUs without positive window net excluded (zero-value modifier lines) · contribution: recipe_lines is EMPTY (the Calum gate) — <a href="/coyote/recipes">recipes worklist</a></div>`
-        : `<div class="rv2-caption">No per-receipt API record yet — the K-Series daily ingest fills the line grain; products, movers, the decline watch and the performance table light up with it. The contribution family stays gated on recipe costing either way.</div>`;
+        ? `<div class="rv2-caption">28 days to ${esc(mg.apiMax)} vs the prior 28 days · till item lines consolidated by SKU, so renamed variants count once · the latest till name labels each item · SKUs without positive window net are excluded${hasRecipes ? ` · ${coverageCopy}` : ' · Add menu recipes to calculate contribution and classification'}.</div>`
+        : `<div class="rv2-caption">No item-level sales have arrived yet. The daily till feed will populate products, movers, decline watch and performance; menu recipes will add contribution once sales are present.</div>`;
 
-      // ---- menu engineering portfolio: the mock's quadrant matrix as the DESIGNED EMPTY-STATE
-      // — four labelled tinted quadrants, NO bubbles (bubbles land with contribution), the
-      // blocker + unlock centred inside; the classification key below is definitional TEXT ----
-      const quads = `<div class="matrix">
-          <div class="quad opportunity"><strong>OPPORTUNITIES / PUZZLES</strong><br>High contribution · low popularity</div>
+      // ---- menu engineering portfolio: every completely costed SKU is plotted. The visual
+      // boundary is the unit-sales-weighted median on each axis; exact medians use the high side. ----
+      const quadFrame = `<div class="quad opportunity"><strong>OPPORTUNITIES / PUZZLES</strong><br>High contribution · low popularity</div>
           <div class="quad winner"><strong>WINNERS / STARS</strong><br>High contribution · high popularity</div>
           <div class="quad dog"><strong>DOGS</strong><br>Low contribution · low popularity</div>
           <div class="quad workhorse"><strong>WORKHORSES / PLOWHORSES</strong><br>Low contribution · high popularity</div>
-          <div class="axis-y">Contribution profit / item</div><div class="axis-x">Sales popularity →</div>
-          <div class="matrix-empty">${S.rcc.emptyState({
-            title: 'Portfolio placement',
-            blocker: 'portfolio placement needs per-item contribution — recipe_lines is empty (the Calum gate). The quadrants are ready; bubbles land with the first costed recipes.',
-            unlock: UNLOCK_LINE,
-          })}<a class="r-worklist-link" href="/coyote/recipes">open the recipes worklist →</a></div>
-        </div>`;
+          <div class="axis-y">Contribution / item</div><div class="axis-x">Current-window units →</div>`;
+      let quads;
+      if (!hasContribution) {
+        const copy = hasRecipes
+          ? 'No sold item has a complete recipe yet. Finish one or more recipes to compare popularity with contribution.'
+          : 'Add a menu recipe to compare popularity with contribution. Sales performance remains available below.';
+        quads = `<div class="matrix">${quadFrame}<div class="matrix-empty">${menuEmpty('Portfolio awaiting recipes', copy, 'Open the recipes worklist')}</div></div>`;
+      } else {
+        const plotted = portfolio.plottable;
+        const minUnits = Math.min(...plotted.map((p) => p.qty));
+        const maxUnits = Math.max(...plotted.map((p) => p.qty));
+        const minContribution = Math.min(...plotted.map((p) => p.contributionPence));
+        const maxContribution = Math.max(...plotted.map((p) => p.contributionPence));
+        const axisPct = (value, min, median, max) => {
+          if (value < median) return median > min ? 8 + ((value - min) / (median - min)) * 38 : 27;
+          return max > median ? 54 + ((value - median) / (max - median)) * 38 : 73;
+        };
+        const maxNet = Math.max(...plotted.map((p) => p.net));
+        const bubbles = plotted.slice().sort((a, b) => a.net - b.net || a.sku.localeCompare(b.sku)).map((p) => {
+          const left = axisPct(p.qty, minUnits, portfolio.popularityMedian, maxUnits);
+          const top = 100 - axisPct(p.contributionPence, minContribution, portfolio.contributionMedianPence, maxContribution);
+          // Diameter follows sqrt(net), so the visible circle AREA follows current-window net.
+          const size = Math.max(8, 54 * Math.sqrt(p.net / maxNet));
+          const tip = `${p.name} · ${int(Math.round(p.qty))} units · ${contributionGbp(p.contributionPence)} contribution/item · ${gbp(p.net)} net · ${p.className}`;
+          return `<button type="button" class="bubble ${p.className.toLowerCase()}" data-menu-sku="${esc(p.sku)}" data-menu-class="${esc(p.className)}" data-window-net-pence="${p.net}" style="left:${left.toFixed(1)}%;top:${top.toFixed(1)}%;width:${size.toFixed(1)}px;height:${size.toFixed(1)}px" aria-label="${esc(tip)}">${p.labelled ? `<span class="bubble-label">${esc(p.name)}</span>` : ''}<span class="bubble-tip" role="tooltip">${esc(tip)}</span></button>`;
+        }).join('');
+        quads = `<div class="matrix">${quadFrame}${bubbles}
+          <div class="matrix-threshold-x">median ${int(Math.round(portfolio.popularityMedian))} units</div>
+          <div class="matrix-threshold-y">median ${contributionGbp(portfolio.contributionMedianPence)}</div></div>`;
+      }
       const classKey = `<div class="classification-key">
           <div class="class-card"><h4 class="k-up">Winners</h4><p>Protect availability, feature prominently and use in paid creative. Avoid unnecessary discounting.</p></div>
           <div class="class-card"><h4 class="k-flat">Workhorses</h4><p>Keep because guests want them, but improve recipe cost, price architecture or add-on conversion.</p></div>
@@ -1920,27 +2076,36 @@ module.exports = {
           <div class="class-card"><h4 class="k-down">Dogs</h4><p>Low popularity and weak economics. Rework once, then remove unless strategically necessary.</p></div>
         </div>`;
       const portfolioPanel = S.rcc.panel({
-        title: 'Menu engineering portfolio', sub: 'popularity vs contribution profit per item · bubble size = current-period revenue',
-        headRight: S.rcc.tag('Gated', 'warn'),
+        title: 'Menu engineering portfolio', sub: 'current-window units vs contribution per item · bubble area = current-window net',
+        headRight: hasContribution ? S.rcc.tag(`${portfolio.plottable.length} costed`, 'good') : '',
         body: quads + classKey
-          + `<div class="r-mini-note">quadrant placement needs BOTH axes real — popularity (line grain, ready) × contribution/item (recipe_lines, empty); nothing is estimated.</div>`,
+          + (hasContribution
+            ? `<div class="r-mini-note">${coverageCopy} · thresholds are unit-sales-weighted medians: ${int(Math.round(portfolio.popularityMedian))} units and ${contributionGbp(portfolio.contributionMedianPence)} contribution/item · items exactly on a median enter the high side · Awaiting recipes: ${portfolio.awaitingCount} items, ${gbp(portfolio.awaitingNet)} net.</div>`
+            : (hasLines
+              ? `<div class="r-mini-note">Awaiting recipes: ${portfolio.awaitingCount} items, ${gbp(portfolio.awaitingNet)} net. Uncosted items remain visible in the performance and decline tables.</div>`
+              : '<div class="r-mini-note">The portfolio will populate when item-level sales and complete menu recipes overlap.</div>')),
       });
 
-      // ---- same-period decline watch (REAL, line grain): top net declines vs the prior 28d;
-      // the action column is the honest generic — per-product actions need contribution ----
+      // ---- same-period decline watch: top net declines vs the prior 28d; the response carries
+      // achieved contribution for costed current sellers and the recipes link for uncosted ones. ----
       let declineBody;
       if (!hasLines) {
-        declineBody = S.rcc.emptyState({ title: 'Same-period decline watch', blocker: 'No per-receipt line record in the window.', unlock: 'the K-Series daily API ingest (line grain)' });
+        declineBody = menuEmpty('Same-period decline watch', 'No item-level sales are available in the current window.', null);
       } else if (!mg.decline.length) {
         declineBody = `${S.rcc.pill('no product declined ≥ £50 net vs the prior 28 days', true)}
-          <div class="r-mini-note">decline floor £50 (presentation cut, not a ruling) · 28d to ${esc(mg.apiMax)} vs prior 28d · line grain (sales_receipt_lines_api)</div>`;
+          <div class="r-mini-note">decline floor £50 (presentation cut, not a ruling) · 28 days to ${esc(mg.apiMax)} vs the prior 28 days${hasContribution ? ` · ${coverageCopy}` : ''}</div>`;
       } else {
+        const response = (r) => {
+          if (r.contributionPence != null) return `<span class="mono">${contributionGbp(r.contributionPence)} / item</span>${r.className ? ` · ${esc(r.className)}` : ''}`;
+          if (!r.recipeCosted) return `<a class="recipe-missing" href="/coyote/recipes">No recipe yet</a>`;
+          return 'No current sales to establish achieved price';
+        };
         const rowsHtml = mg.decline.map((r) => `<div class="decline-row"><div><strong>${esc(r.name)}</strong></div>
             <div class="r-num mono">${gbp(r.prior)}</div><div class="r-num mono">${gbp(r.now)}</div>
             <div class="r-num mono r-down">${esc(pctStr(r.pct))}</div>
-            <div class="action">check price/portion/menu placement — contribution unknown until costing</div></div>`).join('');
+            <div class="action">${response(r)}</div></div>`).join('');
         declineBody = `<div class="decline-row head"><div>Item</div><div class="r-num">Prior 28d</div><div class="r-num">Now 28d</div><div class="r-num">Δ%</div><div class="action">Response</div></div>${rowsHtml}
-          <div class="r-mini-note">top ${mg.decline.length} net decline(s) ≥ £50 (presentation floor, not a ruling) · 28d to ${esc(mg.apiMax)} vs prior 28d · line grain (sales_receipt_lines_api) · a stopped seller shows its true £0.00 window net · per-product actions land with contribution — the generic check is the honest ceiling</div>`;
+          <div class="r-mini-note">top ${mg.decline.length} net decline(s) ≥ £50 (presentation floor, not a ruling) · 28 days to ${esc(mg.apiMax)} vs the prior 28 days · a stopped seller shows its true £0.00 window net · ${coverageCopy}</div>`;
       }
       const declinePanel = S.rcc.panel({
         title: 'Same-period decline watch', sub: 'largest net declines · 28d vs the prior 28d · ex-VAT',
@@ -1948,29 +2113,32 @@ module.exports = {
         body: declineBody,
       });
 
-      // ---- canonical product performance: FILLS NOW at line grain; the contribution column
-      // is the SAME muted zero-digit cell everywhere and every class chip is Pending ----
+      // ---- canonical product performance: sales facts for every consolidated SKU, contribution
+      // and classification only where a complete recipe makes them real. ----
       let perfBody;
       if (!hasLines) {
-        perfBody = S.rcc.emptyState({ title: 'Canonical product performance', blocker: 'No per-receipt line record in the window.', unlock: 'the K-Series daily API ingest (line grain)' });
+        perfBody = menuEmpty('Canonical product performance', 'No item-level sales are available in the current window.', null);
       } else {
         const totalNet = mg.products.reduce((s, p) => s + p.net, 0) || 1;
         const na = (why) => `<span class="rp-yoy-na" title="${esc(why)}">—</span>`;
         const pcell = (v) => `<span class="${v >= 0 ? 'r-up' : 'r-down'}">${esc(pctStr(v))}</span>`;
+        const classTone = { Winner: 'good', Workhorse: 'warn', Opportunity: 'info', Dog: 'bad' };
         const rowsHtml = mg.products.slice(0, 15).map((p) => {
           const trend = p.priorNet != null && p.priorNet > 0 ? (p.net / p.priorNet - 1) * 100 : null;
           const yoy = p.lyNet != null && p.lyNet > 0 ? (p.net / p.lyNet - 1) * 100 : null;
+          const economics = p.contributionPence != null
+            ? `<td class="r-num mono">${contributionGbp(p.contributionPence)}</td><td>${S.rcc.tag(p.className, classTone[p.className])}</td>`
+            : `<td class="r-num not-costed"><a class="recipe-missing" href="/coyote/recipes">No recipe yet</a></td><td>${S.rcc.tag('Awaiting recipe', 'info')}</td>`;
           return `<tr><td>${esc(p.name)}</td>
             <td class="r-num mono">${int(Math.round(p.qty))}</td>
             <td class="r-num mono">${gbp(p.net)}</td>
             <td class="r-num mono">${((p.net / totalNet) * 100).toFixed(1)}%</td>
             <td class="r-num mono">${trend != null ? pcell(trend) : na('no prior-28d record')}</td>
             <td class="r-num mono">${yoy != null ? pcell(yoy) : na('no LY record (same 28d window −364d)')}</td>
-            <td class="r-num not-costed">not costed</td>
-            <td>${S.rcc.tag('Pending', 'info')}</td></tr>`;
+            ${economics}</tr>`;
         }).join('');
         perfBody = `<div style="overflow:auto"><table><thead><tr><th>Product</th><th class="r-num">Units</th><th class="r-num">Net · 28d</th><th class="r-num">Mix</th><th class="r-num">Trend vs prior 28d</th><th class="r-num">YoY</th><th class="r-num">Contribution / item</th><th>Class</th></tr></thead><tbody>${rowsHtml}</tbody></table></div>
-          <div class="r-mini-note">top 15 of ${int(mg.products.length)} products by 28d net · line grain (sales_receipt_lines_api — product truth from 2023-07) · grouped by SKU, MAX(name) label · mix = share of the 28d product net · YoY = same 28d window −364d · contribution + classification unlock with ${esc(UNLOCK_LINE)} — <a href="/coyote/recipes">recipes worklist</a></div>`;
+          <div class="r-mini-note">top 15 of ${int(mg.products.length)} products by 28-day net · till item lines consolidated by SKU · mix = share of 28-day product net · YoY = same 28-day window −364 days · ${coverageCopy} · Awaiting recipes: ${portfolio.awaitingCount} items, ${gbp(portfolio.awaitingNet)} net.</div>`;
       }
       const perfPanel = S.rcc.panel({
         title: 'Canonical product performance', sub: 'units · net · mix · momentum per SKU-consolidated product',

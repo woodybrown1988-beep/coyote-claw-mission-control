@@ -127,6 +127,10 @@
     {
       "module": "mission-control/ui/pages/coyote/recipes.js",
       "export": "render"
+    },
+    {
+      "module": "mission-control/ui/pages/coyote/reports.js",
+      "export": "buildMenuPortfolio"
     }
   ],
   "tests": [
@@ -193,6 +197,10 @@
     {
       "name": "mission-control-recipes-daily-costing",
       "command": "node --test test/mission-control-recipes.test.js"
+    },
+    {
+      "name": "mission-control-menu-growth",
+      "command": "node --test test/mission-control-rcc-p5-menu.test.js"
     }
   ],
   "mutants": [

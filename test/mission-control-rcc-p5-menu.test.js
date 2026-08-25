@@ -1,38 +1,15 @@
 'use strict';
-// RCC Stage 2 P5 — the MENU GROWTH tab (the LAST pending tab, built to its honest GATE-STATE:
-// recipe_lines = 0 — the Calum gate). Every expected number is HAND-COMPUTED in the fixture
-// comments, never re-derived through the module. Pinned here:
-//   (a) KPI STRIP (28d to the per-receipt max): products selling = distinct SKUs with positive
-//       window net (a zero-net modifier SKU is the pinned negative control — 4, never 5);
-//       menu movers = |Δ 28d net| ≥ 25% AND ≥ £100 vs the prior 28d (BOTH conditions — a
-//       25.0%-exactly-but-£80 swing is the pinned decoy; a new/stopped product counts when its
-//       swing clears £100), captioned as a presentation cut, not a ruling; £-at-risk + dogs =
-//       contribution-GATED tiles whose VALUE carries zero digits;
-//   (b) PORTFOLIO: the mock's quadrant matrix as the DESIGNED EMPTY-STATE — four labelled
-//       tinted quadrants, NO bubbles, the blocker (recipe_lines is empty) + the ONE unlock
-//       line + the /coyote/recipes link inside; the classification key = definitional TEXT;
-//   (c) DECLINE WATCH: top net declines ≥ £50 vs the prior 28d (a £40 decline is the pinned
-//       below-floor decoy), a stopped seller shows its TRUE £0.00 window net, the action
-//       column is the honest generic (contribution unknown until costing);
-//   (d) PERFORMANCE TABLE: SKU-consolidation (MAX(name) label — the variant name never
-//       renders), units/net/mix/trend/YoY hand-pinned, YoY window-bounded (an out-of-LY-window
-//       record is the pinned decoy), every contribution cell 'not costed' (zero digits),
-//       every class chip Pending; VOID/cancelled receipts never count (SALE_WHERE);
-//   (e) ONE-HOME DELETIONS: the pending banner + category-performance + best/slowest sellers
-//       + the period-nav machinery are GONE from this page;
-//   (f) NO-MOCK-NUMBERS: an EMPTY db renders ZERO £-figures; the Calum gate renders anyway.
+
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const sqlite = require('node:sqlite');
 
 const DATA = require('../mission-control/ui/data.js');
+const S = require('../mission-control/ui/shared.js');
 const reports = require('../mission-control/ui/pages/coyote/reports.js');
 
-const NOW = 1783000000000; // 2026-07 (the p1p4 anchor)
-const UNLOCK = 'recipe costing: top-20 = 59.5% coverage, one session';
+const NOW = 1783000000000;
 
-// The REAL production column shape (src/schema.sql) — P5 consumes sku/name/quantity, so this
-// fixture carries them (the P2/P3 fixtures predate the columns and never select them).
 const DDL = `
 CREATE TABLE premises_regime (name TEXT PRIMARY KEY, start_date TEXT, end_date TEXT, note TEXT);
 CREATE TABLE sales_day (business_date TEXT PRIMARY KEY, net_sales_pence INTEGER, gross_sales_pence INTEGER, pos_guest_count INTEGER, transactions INTEGER, taxes_pence INTEGER, refunds_pence INTEGER, voids_pence INTEGER, discounts_pence INTEGER, comps_pence INTEGER, service_charges_pence INTEGER, tips_pence INTEGER, updated_at INTEGER);
@@ -41,6 +18,9 @@ CREATE TABLE sales_receipt_lines_api (receipt_id TEXT NOT NULL, line_id TEXT NOT
 CREATE TABLE sales_api_ingest_runs (business_date TEXT, source TEXT, status TEXT, receipts INTEGER, detail TEXT, pulled_at INTEGER, PRIMARY KEY (business_date, source));
 CREATE TABLE sales_channel_map_api (account_profile_code TEXT PRIMARY KEY, profile_name TEXT, delivery_mode TEXT, channel_label TEXT, first_seen INTEGER, updated_at INTEGER, label_source TEXT);
 CREATE TABLE acct_groups_api (code TEXT PRIMARY KEY, name TEXT, statistic_group TEXT, updated_at INTEGER);
+CREATE TABLE products (id TEXT PRIMARY KEY, lightspeed_sku TEXT UNIQUE, name TEXT, category TEXT, updated_at INTEGER);
+CREATE TABLE sub_items (id TEXT PRIMARY KEY, name TEXT, pack_cost_pence INTEGER, pack_qty REAL);
+CREATE TABLE recipe_lines (product_id TEXT, sub_item_id TEXT, quantity REAL, PRIMARY KEY (product_id, sub_item_id));
 `;
 
 function makeDb() {
@@ -50,247 +30,231 @@ function makeDb() {
   return db;
 }
 
-/** Menu world. Per-receipt max = 2026-07-11 → 28d window 2026-06-14..07-11; prior window
- *  2026-05-17..06-13; LY window (−364d) 2025-06-15..2025-07-12.
- *
- *  Current-window products (SKU → lines):
- *    BURG  £400.00 / 40u — TWO name variants sharing the SKU: 'Bacon Cheeseburger' (£300, 30u)
- *          + 'Bacon Cheese Burger (Single)' (£100, 10u) → ONE row, MAX(name) label
- *          'Bacon Cheeseburger' (lexicographic max), the variant name NEVER renders
- *    FRIES £150.00 / 30u ('OG Dirty Fries')
- *    NEWP  £110.00 / 11u ('Vegan BBQ') — absent from the prior window (new)
- *    SHAKE  £80.00 / 16u ('Oreo Shake')
- *    ZMOD    £0.00 /  1u ('Plain Bun add-on') — zero-net modifier SKU → EXCLUDED everywhere
- *    X1 cancelled=1 £999.00 ('Cancelled Burger') + X2 type=VOID £555.00 ('Void Burger')
- *      → SALE_WHERE decoys, must never render anywhere
- *
- *  Prior window (2026-06-01): BURG £320.00 · FRIES £300.00 · SHAKE £120.00 · WING £200.00
- *    ('Hangry Bird' — sells to ZERO in the current window).
- *
- *  LY window (2025-07-01): BURG £250.00 · SHAKE £80.00.
- *  LY DECOY (2025-06-01 — BEFORE the LY window opens): FRIES £100.00 → FRIES YoY must stay '—'.
- *
- *  HAND-COMPUTED:
- *    products selling = 4 (BURG FRIES NEWP SHAKE; ZMOD excluded — 5 = the bug)
- *    movers (|Δ| ≥ 25% AND ≥ £100): FRIES −£150 ✓ · WING −£200 ✓ · NEWP +£110 (new) ✓
- *      · BURG +£80 = 25.0% EXACTLY but < £100 → NOT a mover (4 = the bug) · SHAKE −£40 ✗ → 3
- *    decline watch (≥ £50 floor): WING £200→£0 (−100.0%) then FRIES £300→£150 (−50.0%);
- *      SHAKE's £40 decline is BELOW the floor → absent → '2 declining'
- *    table (net desc, total £740.00): BURG 40u £400.00 mix 54.1% trend +25.0% (400/320)
- *      YoY +60.0% (400/250) · FRIES 30u £150.00 mix 20.3% trend −50.0% YoY '—' (decoy outside
- *      the LY window) · NEWP 11u £110.00 mix 14.9% trend '—' (no prior) YoY '—' · SHAKE 16u
- *      £80.00 mix 10.8% trend −33.3% YoY +0.0% (80/80) */
-function seedMenu(db) {
-  const insR = db.prepare(`INSERT INTO sales_receipts_api VALUES (?,?,?,?,'LOCAL',?,1)`);
-  const insL = db.prepare(`INSERT INTO sales_receipt_lines_api (receipt_id, line_id, business_date, sku, name, quantity, net_without_tax_pence, updated_at) VALUES (?,?,?,?,?,?,?,1)`);
-  // current window
-  insR.run('A', '2026-07-10', 'SALE', 0, 30000);
-  insL.run('A', 'l1', '2026-07-10', 'BURG', 'Bacon Cheeseburger', 30, 30000);
-  insR.run('B', '2026-07-11', 'SALE', 0, 10000); // sets the per-receipt max
-  insL.run('B', 'l1', '2026-07-11', 'BURG', 'Bacon Cheese Burger (Single)', 10, 10000);
-  insR.run('C', '2026-07-05', 'SALE', 0, 15000);
-  insL.run('C', 'l1', '2026-07-05', 'FRIES', 'OG Dirty Fries', 30, 15000);
-  insR.run('D', '2026-07-06', 'SALE', 0, 8000);
-  insL.run('D', 'l1', '2026-07-06', 'SHAKE', 'Oreo Shake', 16, 8000);
-  insR.run('E', '2026-07-08', 'SALE', 0, 11000);
-  insL.run('E', 'l1', '2026-07-08', 'NEWP', 'Vegan BBQ', 11, 11000);
-  insR.run('F', '2026-07-09', 'SALE', 0, 0);
-  insL.run('F', 'l1', '2026-07-09', 'ZMOD', 'Plain Bun add-on', 1, 0); // zero-value modifier
-  insR.run('X1', '2026-07-10', 'SALE', 1, 99900); // cancelled — never counts
-  insL.run('X1', 'l1', '2026-07-10', 'DEC1', 'Cancelled Burger', 1, 99900);
-  insR.run('X2', '2026-07-10', 'VOID', 0, 55500); // VOID type — never counts
-  insL.run('X2', 'l1', '2026-07-10', 'DEC2', 'Void Burger', 1, 55500);
-  // prior window
-  insR.run('P1', '2026-06-01', 'SALE', 0, 32000);
-  insL.run('P1', 'l1', '2026-06-01', 'BURG', 'Bacon Cheeseburger', 32, 32000);
-  insR.run('P2', '2026-06-01', 'SALE', 0, 30000);
-  insL.run('P2', 'l1', '2026-06-01', 'FRIES', 'OG Dirty Fries', 60, 30000);
-  insR.run('P3', '2026-06-01', 'SALE', 0, 12000);
-  insL.run('P3', 'l1', '2026-06-01', 'SHAKE', 'Oreo Shake', 24, 12000);
-  insR.run('P4', '2026-06-01', 'SALE', 0, 20000);
-  insL.run('P4', 'l1', '2026-06-01', 'WING', 'Hangry Bird', 20, 20000);
-  // LY window + the out-of-LY-window decoy
-  insR.run('L1', '2025-07-01', 'SALE', 0, 25000);
-  insL.run('L1', 'l1', '2025-07-01', 'BURG', 'Bacon Cheeseburger', 25, 25000);
-  insR.run('L2', '2025-07-01', 'SALE', 0, 8000);
-  insL.run('L2', 'l1', '2025-07-01', 'SHAKE', 'Oreo Shake', 16, 8000);
-  insR.run('L3', '2025-06-01', 'SALE', 0, 10000); // BEFORE 2025-06-15 — outside the LY window
-  insL.run('L3', 'l1', '2025-06-01', 'FRIES', 'OG Dirty Fries', 20, 10000);
+/**
+ * Per-receipt max = 2026-07-11, so current = 2026-06-14..07-11 and prior = 05-17..06-13.
+ * Current, SKU-consolidated:
+ *   BURG 40u £400 (two names/lines), FRIES 30u £150, NEWP 11u £110, SHAKE 16u £80.
+ * Prior: BURG £320, FRIES £300, SHAKE £120, WING £200. Thus every decliner is
+ * FRIES £150, SHAKE £80, WING £0; the ≥£50 watch contains FRIES + WING.
+ */
+function seedSales(db) {
+  const receipt = db.prepare(`INSERT INTO sales_receipts_api VALUES (?,?,?,?,'LOCAL',?,1)`);
+  const line = db.prepare(`INSERT INTO sales_receipt_lines_api (receipt_id,line_id,business_date,sku,name,quantity,net_without_tax_pence,updated_at) VALUES (?,?,?,?,?,?,?,1)`);
+  const add = (id, date, sku, name, qty, net, type = 'SALE', cancelled = 0) => {
+    receipt.run(id, date, type, cancelled, net);
+    line.run(id, 'l1', date, sku, name, qty, net);
+  };
+
+  add('A', '2026-07-10', 'BURG', 'Bacon Cheeseburger', 30, 30000);
+  add('B', '2026-07-11', 'BURG', 'Bacon Cheese Burger (Single)', 10, 10000);
+  add('C', '2026-07-05', 'FRIES', 'OG Dirty Fries', 30, 15000);
+  add('D', '2026-07-06', 'SHAKE', 'Oreo Shake', 16, 8000);
+  add('E', '2026-07-08', 'NEWP', 'Vegan BBQ', 11, 11000);
+  add('F', '2026-07-09', 'ZMOD', 'Plain Bun add-on', 1, 0);
+  add('X1', '2026-07-10', 'DEC1', 'Cancelled Burger', 1, 99900, 'SALE', 1);
+  add('X2', '2026-07-10', 'DEC2', 'Void Burger', 1, 55500, 'VOID', 0);
+
+  add('P1', '2026-06-01', 'BURG', 'Bacon Cheeseburger', 32, 32000);
+  add('P2', '2026-06-01', 'FRIES', 'OG Dirty Fries', 60, 30000);
+  add('P3', '2026-06-01', 'SHAKE', 'Oreo Shake', 24, 12000);
+  add('P4', '2026-06-01', 'WING', 'Hangry Bird', 20, 20000);
+
+  add('L1', '2025-07-01', 'BURG', 'Bacon Cheeseburger', 25, 25000);
+  add('L2', '2025-07-01', 'SHAKE', 'Oreo Shake', 16, 8000);
+  add('L3', '2025-06-01', 'FRIES', 'OG Dirty Fries', 20, 10000);
 }
 
-const render = (db) => {
-  const ctx = { q: (sql, p) => DATA.safeSelect(db, sql, p), now: NOW, query: { tab: 'menu' } };
-  return reports.render(reports.getSection(db, ctx), ctx).body;
-};
+function seedCompleteRecipes(db) {
+  db.exec(`
+    INSERT INTO products VALUES
+      ('product-burger','BURG','Bacon Cheeseburger','Mains',1),
+      ('product-fries','FRIES','OG Dirty Fries','Sides',1),
+      ('product-new','NEWP','Vegan BBQ','Mains',1),
+      ('product-shake','SHAKE','Oreo Shake','Drinks',1);
+    INSERT INTO sub_items VALUES
+      ('bun','Bun',100,1),
+      ('patty','Patty pack',1000,5),
+      ('potato','Potato portion',400,1000),
+      ('vegan','Vegan filling',200,1),
+      ('shake','Shake ingredients',600,1);
+    INSERT INTO recipe_lines VALUES
+      ('product-burger','bun',1),
+      ('product-burger','patty',1),
+      ('product-fries','potato',1000),
+      ('product-new','vegan',1),
+      ('product-shake','shake',1);
+  `);
+}
 
-// ---------------- (a) the KPI strip ----------------
+function seedPartialRecipes(db) {
+  db.exec(`
+    INSERT INTO products VALUES
+      ('product-burger','BURG','Bacon Cheeseburger','Mains',1),
+      ('product-fries','FRIES','OG Dirty Fries','Sides',1),
+      ('product-new','NEWP','Vegan BBQ','Mains',1),
+      ('product-shake','SHAKE','Oreo Shake','Drinks',1);
+    INSERT INTO sub_items VALUES
+      ('bun','Bun',100,1),
+      ('patty','Patty pack',1000,5),
+      ('potato','Potato portion',400,1000),
+      ('missing-pack','Vegan filling',200,NULL);
+    INSERT INTO recipe_lines VALUES
+      ('product-burger','bun',1),
+      ('product-burger','patty',1),
+      ('product-fries','potato',1000),
+      ('product-new','missing-pack',1);
+  `);
+}
 
-test('KPI strip: products selling excludes the zero-net modifier SKU (4, never 5); sources captioned', () => {
+function rendered(db) {
+  const ctx = { q: (sql, params) => DATA.safeSelect(db, sql, params), now: NOW, query: { tab: 'menu' } };
+  const section = reports.getSection(db, ctx);
+  const page = reports.render(section, ctx);
+  return { section, page, html: page.body };
+}
+
+function textOnly(html) {
+  return String(html)
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ');
+}
+
+test('buildMenuPortfolio: concrete medians, inclusive boundaries, four classes and de-duplicated risk', () => {
+  const result = reports.buildMenuPortfolio([
+    { sku: 'BURG', qty: 40, net: 40000, unitCostPence: 300 },
+    { sku: 'FRIES', qty: 30, net: 15000, unitCostPence: 400 },
+    { sku: 'NEWP', qty: 11, net: 11000, unitCostPence: 200 },
+    { sku: 'SHAKE', qty: 16, net: 8000, unitCostPence: 600 },
+  ], [
+    { sku: 'FRIES', now: 15000 },
+    { sku: 'SHAKE', now: 8000 },
+    { sku: 'WING', now: 0 },
+  ]);
+
+  assert.equal(result.popularityMedian, 30);
+  assert.equal(result.contributionMedianPence, 700);
+  assert.deepEqual(Object.fromEntries(result.products.map((p) => [p.sku, p.className])), {
+    BURG: 'Winner',
+    FRIES: 'Workhorse',
+    NEWP: 'Opportunity',
+    SHAKE: 'Dog',
+  });
+  assert.equal(result.products.find((p) => p.sku === 'BURG').contributionPence, 700, 'window net / units − summed unit cost');
+  assert.equal(result.products.find((p) => p.sku === 'FRIES').className, 'Workhorse', 'exact popularity median enters high side');
+  assert.equal(result.products.find((p) => p.sku === 'BURG').className, 'Winner', 'exact contribution median enters high side');
+  assert.deepEqual(result.riskSkus, ['FRIES', 'SHAKE', 'WING'], 'Dog SHAKE is counted once when also declining');
+  assert.equal(result.weeklyRiskPence, 5750);
+  assert.equal(result.coveragePct, 100);
+});
+
+test('buildMenuPortfolio: partial and empty inputs keep uncosted items out with honest fallbacks', () => {
+  const partial = reports.buildMenuPortfolio([
+    { sku: 'A', qty: 4, net: 4000, unitCostPence: 250 },
+    { sku: 'B', qty: 2, net: 1000, unitCostPence: null },
+  ], null);
+  assert.deepEqual(partial.plottable.map((p) => p.sku), ['A']);
+  assert.equal(partial.awaitingCount, 1);
+  assert.equal(partial.awaitingNet, 1000);
+  assert.equal(partial.coveragePct, 80);
+
+  const empty = reports.buildMenuPortfolio(null, undefined);
+  assert.deepEqual(empty.products, []);
+  assert.equal(empty.popularityMedian, null);
+  assert.equal(empty.contributionMedianPence, null);
+  assert.equal(empty.weeklyRiskPence, 0);
+  assert.equal(empty.coveragePct, 0);
+});
+
+test('live recipes emit all bubbles, thresholds, classes, contribution, Dogs and weekly risk', () => {
   const db = makeDb();
-  seedMenu(db);
-  const body = render(db);
-  assert.match(body, /Products selling<\/div><div class="r-kpi-value">4</, 'BURG + FRIES + NEWP + SHAKE');
-  assert.doesNotMatch(body, /Products selling<\/div><div class="r-kpi-value">5/, 'counting ZMOD = the bug');
-  assert.match(body, /distinct SKUs with positive 28d net · line grain/, 'the basis is captioned');
-  assert.match(body, /28d to 2026-07-11 \(per-receipt max\) vs prior 28d · line grain \(sales_receipt_lines_api — product truth from 2023-07\)/, 'window + source named once');
-  assert.match(body, /grouped by SKU \(renamed variants consolidated; MAX\(name\) labels the row\)/);
+  seedSales(db);
+  seedCompleteRecipes(db);
+  const { section, html } = rendered(db);
+
+  assert.equal(section.menu.products.length, 4, 'zero-net, cancelled and VOID lines stay excluded');
+  assert.equal((html.match(/class="bubble /g) || []).length, 4);
+  for (const [sku, className] of [['BURG', 'Winner'], ['FRIES', 'Workhorse'], ['NEWP', 'Opportunity'], ['SHAKE', 'Dog']]) {
+    assert.match(html, new RegExp(`data-menu-sku="${sku}" data-menu-class="${className}"`));
+  }
+  assert.match(html, /median 30 units/);
+  assert.match(html, /median £7\.00/);
+  assert.match(html, /Contribution on 100\.0% of window net/);
+  assert.match(html, /Weekly revenue at risk<\/div><div class="r-kpi-value">£57\.50<\/div>/);
+  assert.match(html, /Dogs<\/div><div class="r-kpi-value">1<\/div><div class="r-kpi-sub">£80\.00 combined current-window net/);
+  assert.match(html, /<td class="r-num mono">£7\.00<\/td><td><span class="r-tag good">Winner<\/span>/);
+  assert.match(html, /<td class="r-num mono">£1\.00<\/td><td><span class="r-tag warn">Workhorse<\/span>/);
+  assert.match(html, /<td class="r-num mono">£8\.00<\/td><td><span class="r-tag info">Opportunity<\/span>/);
+  assert.match(html, /<td class="r-num mono">−£1\.00<\/td><td><span class="r-tag bad">Dog<\/span>/);
+  assert.match(html, /OG Dirty Fries[\s\S]*£1\.00 \/ item[\s\S]*Workhorse/, 'costed decliner response uses achieved contribution');
+  assert.match(html, /Hangry Bird[\s\S]*href="\/coyote\/recipes">No recipe yet<\/a>/, 'uncosted decliner links to the recipe worklist');
   db.close();
 });
 
-test('menu movers: BOTH thresholds pinned — the 25.0%-exactly-but-£80 swing is NOT a mover (3, never 4)', () => {
+test('SKU consolidation prevents duplicate plotting and KPI counting', () => {
   const db = makeDb();
-  seedMenu(db);
-  const body = render(db);
-  // FRIES (−£150) + WING (−£200, stopped) + NEWP (+£110, new) = 3; BURG's +£80 is exactly
-  // 25.0% of £320 but below the £100 floor — counting it (4) = the bug
-  assert.match(body, /Menu movers<\/div><div class="r-kpi-value">3</, 'the hand-computed count');
-  assert.doesNotMatch(body, /Menu movers<\/div><div class="r-kpi-value">4/, 'the £100 floor is a separate AND');
-  assert.match(body, /≥ 25% and ≥ £100 vs prior 28d — presentation cut, not a ruling/, 'thresholds captioned as presentation, never a ruling');
+  seedSales(db);
+  seedCompleteRecipes(db);
+  const { html } = rendered(db);
+
+  assert.match(html, /Products selling<\/div><div class="r-kpi-value">4<\/div>/);
+  assert.equal((html.match(/data-menu-sku="BURG"/g) || []).length, 1, 'two till names sharing BURG make one bubble');
+  assert.doesNotMatch(html, /data-menu-sku="ZMOD"|data-menu-sku="DEC1"|data-menu-sku="DEC2"/);
+  assert.doesNotMatch(html, /Bacon Cheese Burger \(Single\)/, 'the consolidated label is stable');
+  assert.equal((html.match(/Weekly revenue at risk<\/div><div class="r-kpi-value">£57\.50/g) || []).length, 1);
   db.close();
 });
 
-test('£-at-risk + dogs: contribution-GATED tiles — the VALUE carries zero digits, the unlock line rides the sub', () => {
+test('partial recipes exclude incomplete and missing recipes, and report their exact exposure', () => {
   const db = makeDb();
-  seedMenu(db);
-  const body = render(db);
-  assert.match(body, /Weekly revenue at risk<\/div><div class="r-kpi-value">needs costing<\/div>/, 'no £-at-risk figure exists without contribution');
-  assert.match(body, /Dogs<\/div><div class="r-kpi-value">needs costing<\/div>/, 'no dog count exists without classification');
-  assert.match(body, /needs contribution — the Calum gate \(recipe_lines is empty\)/);
-  assert.match(body, /classification needs contribution — the Calum gate/);
-  // the ONE unlock line appears on EVERY contribution-gated surface: at-risk tile, dogs tile,
-  // the portfolio empty-state, the performance-table caption = exactly 4
-  assert.equal(body.split(UNLOCK).length - 1, 4, 'the unlock line rides every gated panel');
+  seedSales(db);
+  seedPartialRecipes(db);
+  const { html } = rendered(db);
+
+  assert.equal((html.match(/class="bubble /g) || []).length, 2);
+  assert.match(html, /data-menu-sku="BURG"/);
+  assert.match(html, /data-menu-sku="FRIES"/);
+  assert.doesNotMatch(html, /data-menu-sku="NEWP"|data-menu-sku="SHAKE"/);
+  assert.match(html, /Contribution on 74\.3% of window net/);
+  assert.match(html, /Awaiting recipes: 2 items, £190\.00 net/);
+  assert.equal((html.match(/href="\/coyote\/recipes">No recipe yet<\/a>/g) || []).length, 3,
+    'NEWP + SHAKE in performance and SHAKE in decline response use the recipe fallback');
   db.close();
 });
 
-// ---------------- (b) the portfolio (designed empty-state) ----------------
-
-test('portfolio: four labelled tinted quadrants, NO bubbles, the Calum blocker + unlock + recipes link inside', () => {
+test('empty recipe book emits friendly empty states and no internal implementation language', () => {
   const db = makeDb();
-  seedMenu(db);
-  const body = render(db);
-  assert.match(body, /class="quad opportunity"><strong>OPPORTUNITIES \/ PUZZLES<\/strong><br>High contribution · low popularity/);
-  assert.match(body, /class="quad winner"><strong>WINNERS \/ STARS<\/strong><br>High contribution · high popularity/);
-  assert.match(body, /class="quad dog"><strong>DOGS<\/strong><br>Low contribution · low popularity/);
-  assert.match(body, /class="quad workhorse"><strong>WORKHORSES \/ PLOWHORSES<\/strong><br>Low contribution · high popularity/);
-  assert.equal((body.match(/class="bubble/g) || []).length, 0, 'NO bubbles — placement needs contribution');
-  assert.match(body, /portfolio placement needs per-item contribution — recipe_lines is empty \(the Calum gate\)/, 'the blocker is named');
-  assert.match(body, new RegExp(`Unlock: ${UNLOCK.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`), 'the unlock line inside the empty-state');
-  assert.match(body, /class="r-worklist-link" href="\/coyote\/recipes"/, 'the live recipes-worklist link');
-  // the axis labels are structural text of the designed state
-  assert.match(body, /class="axis-y">Contribution profit \/ item</);
-  assert.match(body, /class="axis-x">Sales popularity →</);
+  seedSales(db);
+  const { html } = rendered(db);
+  const visible = textOnly(html);
+
+  assert.equal((html.match(/class="bubble /g) || []).length, 0);
+  assert.match(visible, /Portfolio awaiting recipes/);
+  assert.match(visible, /Add a menu recipe to compare popularity with contribution/);
+  assert.match(visible, /Awaiting recipes: 4 items, £740\.00 net/);
+  assert.match(html, /Weekly revenue at risk<\/div><div class="r-kpi-value">—<\/div>/);
+  assert.match(html, /Dogs<\/div><div class="r-kpi-value">—<\/div>/);
+  assert.doesNotMatch(visible, /recipe_lines|sub_items|sales_receipt_lines_api|Calum gate|needs costing|not wired|\bgated\b/i);
   db.close();
 });
 
-test('classification key: the four class-cards render definitional TEXT — no numbers', () => {
+test('Menu Growth emitted HTML retains one compiling inline client script', () => {
   const db = makeDb();
-  seedMenu(db);
-  const body = render(db);
-  const start = body.indexOf('<div class="classification-key">');
-  const end = body.indexOf('Same-period decline watch');
-  assert.ok(start >= 0 && end > start, 'the key renders inside the portfolio panel');
-  const key = body.slice(start, end);
-  assert.equal((key.match(/class="class-card"/g) || []).length, 4, 'four class-cards');
-  assert.match(key, /Winners<\/h4><p>Protect availability, feature prominently/);
-  assert.match(key, /Workhorses<\/h4><p>Keep because guests want them/);
-  assert.match(key, /Opportunities<\/h4><p>Profitable but under-ordered/);
-  assert.match(key, /Dogs<\/h4><p>Low popularity and weak economics/);
-  assert.doesNotMatch(key.replace(/<[^>]*>/g, ''), /\d/, 'definitional text only — never a number');
-  db.close();
-});
-
-// ---------------- (c) the decline watch ----------------
-
-test('decline watch: seeded declines hand-pinned in order; a stopped seller shows its TRUE £0.00; the £40 decoy stays out', () => {
-  const db = makeDb();
-  seedMenu(db);
-  const body = render(db);
-  const panel = body.slice(body.indexOf('Same-period decline watch'), body.indexOf('Canonical product performance'));
-  // WING £200→£0 = the biggest decline, first; its window net truly IS zero (line-ledger fact)
-  assert.match(panel, /<strong>Hangry Bird<\/strong><\/div>\s*<div class="r-num mono">£200\.00<\/div><div class="r-num mono">£0\.00<\/div>\s*<div class="r-num mono r-down">−100\.0%<\/div>/, 'the stopped seller leads');
-  assert.match(panel, /<strong>OG Dirty Fries<\/strong><\/div>\s*<div class="r-num mono">£300\.00<\/div><div class="r-num mono">£150\.00<\/div>\s*<div class="r-num mono r-down">−50\.0%<\/div>/);
-  assert.ok(panel.indexOf('Hangry Bird') < panel.indexOf('OG Dirty Fries'), 'ordered by £ decline, biggest first');
-  // SHAKE's £40 decline is below the £50 floor — the pinned below-floor decoy
-  assert.doesNotMatch(panel, /Oreo Shake/, 'a below-floor decline never renders in the watch');
-  assert.match(panel, /r-tag bad">2 declining</, 'the head count = rows shown');
-  // the action column is the HONEST GENERIC — per-product actions need contribution
-  assert.equal((panel.match(/check price\/portion\/menu placement — contribution unknown until costing/g) || []).length, 2, 'one generic action per row, nothing invented');
-  assert.match(panel, /≥ £50 \(presentation floor, not a ruling\)/, 'the floor is captioned');
-  db.close();
-});
-
-// ---------------- (d) the performance table ----------------
-
-test('performance table: SKU-consolidation + units/net/mix/trend/YoY hand-pinned; the variant name never renders', () => {
-  const db = makeDb();
-  seedMenu(db);
-  const body = render(db);
-  // BURG: ONE consolidated row — 40u, £400.00, mix 400/740 = 54.1%, trend 400/320 = +25.0%,
-  // YoY 400/250 = +60.0%
-  assert.match(body, /<td>Bacon Cheeseburger<\/td>\s*<td class="r-num mono">40<\/td>\s*<td class="r-num mono">£400\.00<\/td>\s*<td class="r-num mono">54\.1%<\/td>\s*<td class="r-num mono"><span class="r-up">\+25\.0%<\/span><\/td>\s*<td class="r-num mono"><span class="r-up">\+60\.0%<\/span><\/td>/, 'the consolidated row, hand-computed');
-  assert.doesNotMatch(body, /Bacon Cheese Burger \(Single\)/, 'MAX(name) labels the SKU — the variant never renders');
-  assert.equal((body.match(/<td>Bacon Cheese/g) || []).length, 1, 'one row per SKU, never per name');
-  // FRIES: trend −50.0%; YoY '—' — its only LY record sits BEFORE the −364d window opens
-  assert.match(body, /<td>OG Dirty Fries<\/td>\s*<td class="r-num mono">30<\/td>\s*<td class="r-num mono">£150\.00<\/td>\s*<td class="r-num mono">20\.3%<\/td>\s*<td class="r-num mono"><span class="r-down">−50\.0%<\/span><\/td>\s*<td class="r-num mono"><span class="rp-yoy-na" title="no LY record \(same 28d window −364d\)">—<\/span><\/td>/, 'YoY is window-bounded — the out-of-window LY decoy never counts');
-  // NEWP: no prior window → trend '—' with its reason (yet it IS a menu mover above)
-  assert.match(body, /<td>Vegan BBQ<\/td>\s*<td class="r-num mono">11<\/td>\s*<td class="r-num mono">£110\.00<\/td>\s*<td class="r-num mono">14\.9%<\/td>\s*<td class="r-num mono"><span class="rp-yoy-na" title="no prior-28d record">—<\/span><\/td>/);
-  // SHAKE: trend −33.3%, YoY flat +0.0% (80/80)
-  assert.match(body, /<td>Oreo Shake<\/td>\s*<td class="r-num mono">16<\/td>\s*<td class="r-num mono">£80\.00<\/td>\s*<td class="r-num mono">10\.8%<\/td>\s*<td class="r-num mono"><span class="r-down">−33\.3%<\/span><\/td>\s*<td class="r-num mono"><span class="r-up">\+0\.0%<\/span><\/td>/);
-  // net-desc ordering
-  assert.ok(body.indexOf('<td>Bacon Cheeseburger</td>') < body.indexOf('<td>OG Dirty Fries</td>'), 'ordered by 28d net');
-  assert.ok(body.indexOf('<td>OG Dirty Fries</td>') < body.indexOf('<td>Vegan BBQ</td>'));
-  assert.ok(body.indexOf('<td>Vegan BBQ</td>') < body.indexOf('<td>Oreo Shake</td>'));
-  db.close();
-});
-
-test('performance table: every contribution cell is the SAME zero-digit "not costed", every class chip Pending', () => {
-  const db = makeDb();
-  seedMenu(db);
-  const body = render(db);
-  assert.equal((body.match(/<td class="r-num not-costed">not costed<\/td>/g) || []).length, 4, 'one muted zero-digit cell per row — no per-product invention');
-  assert.equal((body.match(/<span class="r-tag info">Pending<\/span>/g) || []).length, 4, 'one Pending chip per row');
-  assert.match(body, /contribution \+ classification unlock with recipe costing: top-20 = 59\.5% coverage, one session/, 'the caption carries the unlock');
-  assert.match(body, /<a href="\/coyote\/recipes">recipes worklist<\/a>/, 'the caption links the worklist');
-  db.close();
-});
-
-test('SALE_WHERE + modifier honesty: cancelled/VOID receipts and the zero-net modifier never render', () => {
-  const db = makeDb();
-  seedMenu(db);
-  const body = render(db);
-  assert.doesNotMatch(body, /Cancelled Burger|Void Burger/, 'non-sale receipts never enter the product ledger');
-  assert.doesNotMatch(body, /£999|£555/, 'their £ never leak into any figure');
-  assert.doesNotMatch(body, /Plain Bun add-on/, 'a zero-net modifier SKU is excluded (stated in the caption)');
-  assert.match(body, /SKUs without positive window net excluded \(zero-value modifier lines\)/);
-  db.close();
-});
-
-// ---------------- (e) one-home deletions ----------------
-
-test('ONE-HOME: the pending banner, category-performance, best/slowest sellers and the period-nav machinery are GONE', () => {
-  const db = makeDb();
-  seedMenu(db);
-  const body = render(db);
-  assert.doesNotMatch(body, /Phase 5 pending/, 'the phase banner is deleted');
-  assert.doesNotMatch(body, /Category performance/, 'the parked flash category table is deleted — the performance table is its home');
-  assert.doesNotMatch(body, /Best sellers|Slowest sellers/, 'the parked seller lists are deleted — the table + decline watch absorb them');
-  assert.doesNotMatch(body, /rp-two|rp-hint/, 'the pending-tab grammar left the page');
-  assert.doesNotMatch(body, /period=day|period=week|name="period"/, 'the period-nav strip left reports (labour keeps its own)');
-  db.close();
-});
-
-// ---------------- (f) no mock numbers ----------------
-
-test('NO-MOCK-NUMBERS: an EMPTY db renders ZERO £-figures on the menu tab; the Calum gate renders anyway', () => {
-  const db = makeDb(); // tables exist, no rows — the honest-empty worst case
-  const body = render(db);
-  assert.doesNotMatch(body, /£\d/, 'no £-figure may render from an empty box');
-  assert.match(body, /No per-receipt API record yet/, 'the strip names its blocker');
-  assert.match(body, /no per-receipt line record yet/, 'the real tiles say why they are empty');
-  // the contribution gate is a fact about recipe_lines, not about sales — it renders regardless
-  assert.match(body, /recipe_lines is empty \(the Calum gate\)/);
-  assert.equal(body.split(UNLOCK).length - 1, 3, 'at-risk + dogs + portfolio carry the unlock (the table caption is an empty-state here)');
-  assert.equal((body.match(/class="bubble/g) || []).length, 0, 'still no bubbles');
+  seedSales(db);
+  seedCompleteRecipes(db);
+  const { page } = rendered(db);
+  const document = S.renderShell({
+    title: reports.title,
+    sub: reports.sub,
+    body: page.body,
+    stamp: page.stamp,
+    workspace: reports.workspace,
+    route: reports.route,
+    key: reports.key,
+  });
+  const scripts = [...document.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/g)].map((match) => match[1]);
+  assert.equal(scripts.length, 1, 'the tab introduces no second inline script block');
+  for (const src of scripts) assert.doesNotThrow(() => new Function(src));
   db.close();
 });
