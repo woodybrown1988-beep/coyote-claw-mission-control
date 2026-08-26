@@ -173,6 +173,47 @@ function invoiceRunBlock(events, folders) {
     + body + total + `</div>`;
 }
 
+// THE SITUATION BRIEF (operator ask 2026-08-21: "the AI should give a summary of what the
+// situation is, what has been done via the updates, and what the next proposed steps are").
+//
+// Rendered VISIBLY as the machine's read, never as the owner's own words — it sits in its own
+// panel, labelled, dated and model-stamped, so it can never be mistaken for something he wrote or
+// something an agent formally reported. The markdown it emits is a fixed, tiny subset (bold
+// labels, "- " bullets, "1." steps): rendered by hand rather than by a parser, because a general
+// markdown renderer here would be a script-injection surface for text a model produced.
+function briefPanel(b) {
+  if (!b || !String(b.brief_md || '').trim()) return '';
+  const md = String(b.brief_md);
+  const esc = (x) => LIFE.esc(x);
+  const inline = (line) => esc(line).replace(/\*\*(.+?)\*\*/g, '<b style="color:#e9eef4">$1</b>');
+  const out = [];
+  let list = null;
+  const flush = () => { if (list) { out.push(`<${list.tag} style="margin:2px 0 6px;padding-left:18px">${list.items.join('')}</${list.tag}>`); list = null; } };
+  for (const raw of md.split(/\n/)) {
+    const line = raw.trim();
+    if (!line) { flush(); continue; }
+    const b1 = /^-\s+(.*)$/.exec(line);
+    const n1 = /^(\d+)[.)]\s+(.*)$/.exec(line);
+    if (b1) {
+      if (!list || list.tag !== 'ul') { flush(); list = { tag: 'ul', items: [] }; }
+      list.items.push(`<li style="margin:1px 0">${inline(b1[1])}</li>`);
+    } else if (n1) {
+      if (!list || list.tag !== 'ol') { flush(); list = { tag: 'ol', items: [] }; }
+      list.items.push(`<li style="margin:1px 0">${inline(n1[2])}</li>`);
+    } else {
+      flush();
+      out.push(`<div style="margin:0 0 6px">${inline(line)}</div>`);
+    }
+  }
+  flush();
+  const when = b.generated_at ? String(b.generated_at).slice(0, 10) : '';
+  return `<div class="r-card" style="background:rgba(127,209,220,.05);border:1px solid rgba(127,209,220,.22);border-radius:10px;padding:12px 14px;margin-bottom:12px">`
+    + `<div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin-bottom:6px">`
+    + `<div style="font-size:11px;letter-spacing:.06em;color:#7FD1DC">WHERE THIS STANDS</div>`
+    + `<div style="font-size:11px;color:#9aa3ad">read of your notes \u00b7 ${esc(String(b.model || ''))}${when ? ` \u00b7 ${esc(when)}` : ''}</div></div>`
+    + `<div style="font-size:13px;line-height:1.55">${out.join('')}</div></div>`;
+}
+
 function btnCmd(label, command, payload) {
   const cmd = LIFE.esc(JSON.stringify({ command, payload }));
   return `<button class="r-btn small" data-lc-cmd="${cmd}">${LIFE.esc(label)}</button>`;
@@ -204,6 +245,9 @@ module.exports = {
         projects: q("SELECT id, title, status FROM life_projects WHERE status NOT IN ('CANCELLED','DONE') ORDER BY CASE status WHEN 'ACTIVE' THEN 0 ELSE 1 END, title"),
         // Owner→agent context (operator ask 2026-08-13): the task's files, for the rail below.
         files: q("SELECT id, filename, kind, bytes, note, created_at FROM life_task_files WHERE task_id = ? AND state = 'ATTACHED' ORDER BY created_at", [id]),
+        // THE SITUATION BRIEF (operator ask 2026-08-21): gpt-5.6-sol's read of where this task
+        // actually stands. Absent table or no row degrades to no panel, never an error.
+        brief: q('SELECT brief_md, model, generated_at, input_digest FROM life_task_briefs WHERE task_id = ?', [id])[0] || null,
         // The picker's folder list (pay-queue rows with no recorded home): REAL move targets
         // from the mirror, read-only. NOT filtered on `enabled` — that flag means MIRRORED (the
         // queue folder itself is enabled=0), and a folder is a perfectly good destination without
@@ -300,6 +344,7 @@ module.exports = {
             every newline into a space — eighteen invoices as one solid paragraph. The updates thread
             below has carried pre-wrap since it was built; the description was the one render site
             without it. */''}
+      ${briefPanel(s.brief)}
       ${(() => {
         // When the interactive pay-queue renders, it IS the list — showing the same 18 invoices
         // twice (a wall of text, then the buttons below it) had the owner reading the inert copy.

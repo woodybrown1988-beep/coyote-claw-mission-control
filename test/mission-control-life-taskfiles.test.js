@@ -230,3 +230,41 @@ test('drawer: a bank payment matching an invoice renders as a SUGGESTION, in his
   });
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('drawer: the situation brief renders as the machine’s read — labelled, dated, and injection-safe', () => {
+  // Operator ask 2026-08-21. It must be unmistakably NOT his own words and NOT an agent report:
+  // its own labelled, model-stamped panel. The markdown is a tiny fixed subset rendered by hand —
+  // a general renderer here would be a script-injection surface for text a model produced.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-brief-'));
+  withEnv(fixture(dir, (db) => {
+    db.exec(`CREATE TABLE life_task_briefs (task_id TEXT PRIMARY KEY, brief_md TEXT, input_digest TEXT, model TEXT, generated_at TEXT);`);
+    db.prepare('INSERT INTO life_task_briefs VALUES (?,?,?,?,?)').run('t1',
+      '**Where it stands.** Out of contract; no competing quote yet.\n\n'
+      + '**What has happened.**\n- 19 Aug British Gas offered three fixes.\n- 21 Aug <script>alert(1)</script> said it stands.\n\n'
+      + '**Suggested next.**\n1. Get two binding quotes.\n2. Decide by Friday.',
+      'dig1', 'gpt-5.6-sol', '2026-08-21T06:40:00.000Z');
+  }), () => {
+    const out = render();
+    assert.match(out.body, /WHERE THIS STANDS/, 'the panel is labelled');
+    assert.match(out.body, /read of your notes · gpt-5\.6-sol · 2026-08-21/, 'model-stamped and dated — never mistakable for his words');
+    assert.match(out.body, /<b style="color:#e9eef4">Where it stands\.<\/b>/, 'bold labels render');
+    assert.match(out.body, /<ul[^>]*><li[^>]*>19 Aug British Gas offered three fixes\.<\/li>/, 'bullets become a real list');
+    assert.match(out.body, /<ol[^>]*><li[^>]*>Get two binding quotes\.<\/li>/, 'numbered steps become an ordered list');
+    // The safety that matters: model-produced text is ESCAPED, never executed.
+    assert.ok(!out.body.includes('<script>alert(1)</script>'), 'no raw script survives the renderer');
+    assert.match(out.body, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/, 'it renders as visible text instead');
+    // It sits ABOVE the thread — the point is catching up before reading.
+    assert.ok(out.body.indexOf('WHERE THIS STANDS') < out.body.indexOf('Add update'), 'brief first, thread after');
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('drawer: no brief, no panel — an absent table is not an error', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-brief-'));
+  withEnv(fixture(dir), () => {
+    const out = render();
+    assert.ok(!out.body.includes('WHERE THIS STANDS'), 'nothing invented when there is no brief');
+    assert.match(out.body, /Working with the agent/, 'and the rest of the drawer still renders');
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+});
