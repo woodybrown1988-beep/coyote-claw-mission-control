@@ -17,6 +17,7 @@ const DATA = require('../mission-control/ui/data.js');
 const K = require('../mission-control/ui/kpi.js');
 const SHARED = require('../mission-control/ui/shared.js');
 const overview = require('../mission-control/ui/pages/coyote/overview.js');
+const { buildOverviewRecipeEconomics } = overview;
 
 const NOW = 1783000000000;
 function ctxFor(db) { return { q: (sql, p) => DATA.safeSelect(db, sql, p), now: NOW }; }
@@ -71,6 +72,7 @@ function makeDb() {
     CREATE TABLE labour_dept (business_date TEXT, department TEXT, sched_minutes INTEGER, act_minutes INTEGER, sched_cost_rc_pence INTEGER, act_cost_rc_pence INTEGER, rc_uncosted_sched_min INTEGER, rc_uncosted_act_min INTEGER, rc_uncosted_names TEXT, updated_at INTEGER, PRIMARY KEY (business_date, department));
     CREATE TABLE labour_budget (business_date TEXT, department TEXT, labour_pct REAL, updated_at INTEGER, PRIMARY KEY (business_date, department));
     CREATE TABLE sales_receipts_api (receipt_id TEXT PRIMARY KEY, business_date TEXT, type TEXT, cancelled INTEGER, account_profile_code TEXT, net_without_tax_pence INTEGER, table_name TEXT);
+    CREATE TABLE sales_receipt_lines_api (receipt_id TEXT, line_id TEXT, business_date TEXT, sku TEXT, name TEXT, quantity REAL, net_with_tax_pence INTEGER, net_without_tax_pence INTEGER, PRIMARY KEY (receipt_id, line_id));
     CREATE TABLE sales_channel_map_api (account_profile_code TEXT PRIMARY KEY, profile_name TEXT, channel_label TEXT);
     CREATE TABLE rota_ahead_budget (business_date TEXT, department TEXT, labour_pct REAL, revenue_target_pence INTEGER, as_of INTEGER, PRIMARY KEY (business_date, department));
     CREATE TABLE rota_ahead_shifts (business_date TEXT, rc_shift_id INTEGER, sched_minutes INTEGER, sched_cost_true_pence INTEGER, department TEXT, as_of INTEGER);
@@ -78,7 +80,6 @@ function makeDb() {
     CREATE TABLE sub_items (id TEXT PRIMARY KEY, pack_cost_pence INTEGER, pack_qty REAL);
     CREATE TABLE products (id TEXT PRIMARY KEY, lightspeed_sku TEXT UNIQUE);
     CREATE TABLE recipe_lines (product_id TEXT, sub_item_id TEXT, quantity REAL, PRIMARY KEY (product_id, sub_item_id));
-    CREATE TABLE sales_by_product (business_date TEXT, sku TEXT, total_amount_pence INTEGER, quantity REAL, PRIMARY KEY (business_date, sku));
   `);
   db.prepare(`INSERT INTO premises_regime VALUES ('previous','2022-02-20','2023-03-31',''),('current','2023-04-01',NULL,'moved')`).run();
   return db;
@@ -175,7 +176,7 @@ test('overview: THE WEEK — yesterday + last full week verdict tiles, premises-
   db.close();
 });
 
-test('overview: recipe-cost tile sales-weights complete recipes and excludes every partial recipe', () => {
+test('buildOverviewRecipeEconomics: ex-VAT achieved price, contribution basis, coverage and complete-recipe gate', () => {
   const db = makeDb();
   db.exec(`
     INSERT INTO sub_items VALUES
@@ -187,32 +188,45 @@ test('overview: recipe-cost tile sales-weights complete recipes and excludes eve
       ('B','cost-100',3),
       ('NULLCOST','cost-200',1),('NULLCOST','missing-cost',1),
       ('NULLQTY','missing-qty',1);
-    INSERT INTO sales_by_product VALUES
-      ('2025-07-14','A',900000,1),
-      ('2026-07-13','A',10000,10),('2026-07-14','A',30000,10),
-      ('2026-07-14','B',10000,20),
-      ('2026-07-14','UNRECIPE',30000,5),
-      ('2026-07-14','NULLCOST',10000,2),
-      ('2026-07-14','NULLQTY',10000,2);
+    INSERT INTO sales_receipts_api (receipt_id,business_date,type,cancelled) VALUES
+      ('old','2025-07-14','SALE',0),
+      ('A1','2026-07-13','SALE',0),('A2','2026-07-14','SALE',0),
+      ('B','2026-07-14','SALE',0),('UNRECIPE','2026-07-14','SALE',0),
+      ('NULLCOST','2026-07-14','SALE',0),('NULLQTY','2026-07-14','SALE',0),
+      ('VOID','2026-07-14','VOID',0),('CANCELLED','2026-07-14','SALE',1);
+    INSERT INTO sales_receipt_lines_api VALUES
+      ('old','line','2025-07-14','A','Alpha old',1,1080000,900000),
+      ('A1','line','2026-07-13','A','Alpha old name',10,12000,10000),
+      ('A2','line','2026-07-14','A','Alpha',10,36000,30000),
+      ('B','line','2026-07-14','B','Bravo',20,12000,10000),
+      ('UNRECIPE','line','2026-07-14','UNRECIPE','No recipe',5,36000,30000),
+      ('NULLCOST','line','2026-07-14','NULLCOST','Partial',2,12000,10000),
+      ('NULLQTY','line','2026-07-14','NULLQTY','Partial',2,12000,10000),
+      ('VOID','line','2026-07-14','A','Void decoy',100,1200000,1000000),
+      ('CANCELLED','line','2026-07-14','A','Cancelled decoy',100,1200000,1000000);
   `);
   const ctx = ctxFor(db);
-  const m = overview.getSection(db, ctx);
-  assert.equal(m.recipeCost.recipeLineCount, 5, 'the recipe-line gate is counted live');
-  assert.equal(m.recipeCost.from, '2025-07-15', '365-day inclusive window starts 364 days before the latest sale');
-  assert.equal(m.recipeCost.to, '2026-07-14');
-  assert.equal(m.recipeCost.allNetPence, 100000, 'the older £9,000 sale is outside the trailing window');
-  assert.equal(m.recipeCost.coveredNetPence, 50000, 'only A + B have complete recipes');
-  assert.ok(Math.abs(m.recipeCost.theoreticalCostPence - 10000) < 1e-9,
+  const recipeCost = buildOverviewRecipeEconomics(ctx.q);
+  assert.equal(recipeCost.recipeLineCount, 5, 'the recipe-line gate is counted live');
+  assert.equal(recipeCost.from, '2026-07-13', 'the effective start is the first included feed row');
+  assert.equal(recipeCost.to, '2026-07-14');
+  assert.equal(recipeCost.allNetPence, 100000, 'gross values, old data, VOID and cancelled receipts stay out');
+  assert.equal(recipeCost.coveredNetPence, 50000, 'only A + B have complete recipes');
+  assert.ok(Math.abs(recipeCost.theoreticalCostPence - 10000) < 1e-9,
     'A: 20 units × 200p + B: 20 units × 300p');
-  assert.equal(m.recipeCost.achievedAverageNetPence, 1250,
-    'achieved average is covered sales 50,000p ÷ 40 actual units, not a product-list price');
-  assert.ok(Math.abs(m.recipeCost.theoreticalPct - 20) < 1e-9, '10,000p theoretical ÷ 50,000p covered');
-  assert.ok(Math.abs(m.recipeCost.coveragePct - 50) < 1e-9, '50,000p covered ÷ 100,000p all net');
+  assert.equal(recipeCost.achievedAverageNetPence, 1250,
+    'achieved average is ex-VAT covered sales 50,000p ÷ 40 actual units');
+  assert.ok(Math.abs(recipeCost.theoreticalPct - 20) < 1e-9, '10,000p theoretical ÷ 50,000p covered');
+  assert.ok(Math.abs(recipeCost.coveragePct - 50) < 1e-9, '50,000p covered ÷ 100,000p all ex-VAT sales');
+
+  const m = overview.getSection(db, ctx);
 
   const out = overview.render(m, ctx);
-  assert.match(out.body, /Theoretical cost 20\.0% of covered sales · recipes cover 50\.0% of net/);
+  assert.match(out.body, /Recipe costs · available item sales · 2026-07-13 → 2026-07-14/);
+  assert.match(out.body, /Theoretical recipe cost 20\.0% of covered ex-VAT sales · recipes cover 50\.0% of ex-VAT sales/);
+  assert.match(out.body, /achieved sales and recipe costs are ex-VAT/);
   assert.match(out.body, /href="\/coyote\/costs"/);
-  const tileAt = out.body.indexOf('Recipe costs · trailing 365 days');
+  const tileAt = out.body.indexOf('Recipe costs · available item sales');
   const tileEnd = out.body.indexOf('</a></div></div>', tileAt);
   assert.ok(tileAt >= 0 && tileEnd > tileAt, 'recipe-cost tile is present');
   const tile = out.body.slice(tileAt, tileEnd);
@@ -234,8 +248,12 @@ test('overview: recipe-cost tile handles missing and zero sales denominators wit
   assert.equal(m.recipeCost.theoreticalPct, null);
   assert.equal(m.recipeCost.coveragePct, null);
   const out = overview.render(m, ctx);
-  assert.match(out.body, /Theoretical cost — of covered sales · recipes cover — of net/);
+  assert.match(out.body, /Theoretical recipe cost — of covered ex-VAT sales · recipes cover — of ex-VAT sales/);
   assert.doesNotMatch(out.body, /NaN|Infinity/);
+  const visible = out.body.replace(/<style[\s\S]*?<\/style>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+  assert.doesNotMatch(visible, /sales_receipt_lines_api|sales_receipts_api|\btable\b|\bcolumn\b/i);
+  assert.doesNotMatch(visible, /\d{4}-\d{2}-\d{2}\s*→\s*\d{4}-\d{2}-\d{2}/,
+    'an empty item feed does not invent a reporting period');
   db.close();
 
   const zeroDb = makeDb();
@@ -243,7 +261,11 @@ test('overview: recipe-cost tile handles missing and zero sales denominators wit
     INSERT INTO sub_items VALUES ('costed',100,1);
     INSERT INTO products VALUES ('A','A');
     INSERT INTO recipe_lines VALUES ('A','costed',1);
-    INSERT INTO sales_by_product VALUES ('2026-07-14','A',0,0),('2026-07-14','UNRECIPE',1000,1);
+    INSERT INTO sales_receipts_api (receipt_id,business_date,type,cancelled) VALUES
+      ('A','2026-07-14','SALE',0),('UNRECIPE','2026-07-14','SALE',0);
+    INSERT INTO sales_receipt_lines_api VALUES
+      ('A','line','2026-07-14','A','A',0,9999,0),
+      ('UNRECIPE','line','2026-07-14','UNRECIPE','No recipe',1,1200,1000);
   `);
   const zeroCtx = ctxFor(zeroDb);
   const zero = overview.getSection(zeroDb, zeroCtx);
@@ -251,9 +273,39 @@ test('overview: recipe-cost tile handles missing and zero sales denominators wit
   assert.equal(zero.recipeCost.theoreticalPct, null, 'zero covered sales is not a valid cost denominator');
   assert.equal(zero.recipeCost.coveragePct, 0, 'zero covered ÷ positive all net is a real 0% coverage');
   const zeroOut = overview.render(zero, zeroCtx);
-  assert.match(zeroOut.body, /Theoretical cost — of covered sales · recipes cover 0\.0% of net/);
+  assert.match(zeroOut.body, /Theoretical recipe cost — of covered ex-VAT sales · recipes cover 0\.0% of ex-VAT sales/);
   assert.doesNotMatch(zeroOut.body, /NaN|Infinity/);
   zeroDb.close();
+});
+
+test('overview recipe tile renders an exact three-month span, no fixed-year wording, and one valid inline script', () => {
+  const db = makeDb();
+  db.exec(`
+    INSERT INTO sub_items VALUES ('costed',100,1);
+    INSERT INTO products VALUES ('A','A');
+    INSERT INTO recipe_lines VALUES ('A','costed',1);
+    INSERT INTO sales_receipts_api (receipt_id,business_date,type,cancelled) VALUES
+      ('first','2026-04-01','SALE',0),('middle','2026-05-15','SALE',0),('last','2026-06-30','SALE',0);
+    INSERT INTO sales_receipt_lines_api VALUES
+      ('first','line','2026-04-01','A','Alpha old',1,1200,1000),
+      ('middle','line','2026-05-15','A','Alpha',1,1200,1000),
+      ('last','line','2026-06-30','A','Alpha',1,1200,1000);
+  `);
+  const ctx = ctxFor(db);
+  const section = overview.getSection(db, ctx);
+  const rendered = overview.render(section, ctx);
+  assert.deepEqual([section.recipeCost.from, section.recipeCost.to], ['2026-04-01', '2026-06-30']);
+  assert.match(rendered.body, /available item sales · 2026-04-01 → 2026-06-30/);
+  assert.doesNotMatch(rendered.body, /trailing 12 months|365 days/i);
+
+  const document = SHARED.renderShell({
+    title: overview.title, sub: overview.sub, body: rendered.body, stamp: rendered.stamp,
+    workspace: overview.workspace, route: overview.route, key: overview.key,
+  });
+  const scripts = [...document.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/g)].map((match) => match[1]);
+  assert.equal(scripts.length, 1);
+  assert.doesNotThrow(() => new Function(scripts[0]));
+  db.close();
 });
 
 test('overview: QR verdict line renders spend per SITTING (fragmentation ruling 2026-07-31) — QR slots group, EAT IN splits group, £38 target retired', () => {

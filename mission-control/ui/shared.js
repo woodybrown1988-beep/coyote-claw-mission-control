@@ -20,6 +20,76 @@ function escapeHtml(value) {
     .replace(/'/g, '&#39;');
 }
 
+// Canonical item sales shared by every recipe-economics surface. This mirrors Revenue → Menu
+// Growth: receipt lines are product truth from July 2023, receipt state supplies the sale filter,
+// and the explicitly ex-VAT amount is consolidated at SKU grain before consumers aggregate it.
+function readCanonicalItemSales(q, requestedWindow) {
+  const out = { filteredMax: null, from: null, to: null, rows: [] };
+  if (typeof q !== 'function') return out;
+  const itemSalesFrom = '2023-07-01';
+  const saleWhere = `r.cancelled = 0 AND (r.type IS NULL OR r.type NOT IN ('VOID','CANCEL','RECALL'))`;
+  const resultRows = (result) => result && result.ok && Array.isArray(result.rows) ? result.rows : [];
+  const numberOrNull = (value) => {
+    if (value === null || value === undefined) return null;
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+  };
+  const shiftDays = (iso, days) => new Date(Date.parse(`${iso}T12:00:00Z`) + days * 86400000)
+    .toISOString().slice(0, 10);
+
+  const maxRow = resultRows(q(
+    `SELECT MAX(r.business_date) d
+       FROM sales_receipt_lines_api l
+       JOIN sales_receipts_api r ON r.receipt_id = l.receipt_id
+      WHERE ${saleWhere} AND r.business_date >= ?
+        AND l.sku IS NOT NULL AND TRIM(CAST(l.sku AS TEXT)) <> ''`,
+    [itemSalesFrom]))[0];
+  out.filteredMax = maxRow && maxRow.d ? String(maxRow.d) : null;
+  if (!out.filteredMax) return out;
+
+  const requestedFrom = requestedWindow && requestedWindow.from
+    ? String(requestedWindow.from) : shiftDays(out.filteredMax, -364);
+  const requestedTo = requestedWindow && requestedWindow.to
+    ? String(requestedWindow.to) : out.filteredMax;
+  const from = requestedFrom < itemSalesFrom ? itemSalesFrom : requestedFrom;
+  const to = requestedTo > out.filteredMax ? out.filteredMax : requestedTo;
+  if (from > to) return out;
+
+  const rows = resultRows(q(
+    `SELECT sku, MAX(name) name, SUM(net) net, SUM(units) units,
+            MIN(business_date) from_date, MAX(business_date) to_date
+       FROM (
+         SELECT r.business_date,
+                CAST(l.sku AS TEXT) sku,
+                MAX(l.name) name,
+                SUM(l.quantity) units,
+                SUM(l.net_without_tax_pence) net
+           FROM sales_receipt_lines_api l
+           JOIN sales_receipts_api r ON r.receipt_id = l.receipt_id
+          WHERE ${saleWhere} AND r.business_date >= ? AND r.business_date BETWEEN ? AND ?
+            AND l.sku IS NOT NULL AND TRIM(CAST(l.sku AS TEXT)) <> ''
+          GROUP BY r.business_date, CAST(l.sku AS TEXT)
+       ) canonical_sku_sales
+      GROUP BY sku
+      ORDER BY sku`, [itemSalesFrom, from, to]));
+  if (!rows.length) return out;
+
+  out.rows = rows.map((r) => {
+    const sale = { sku: String(r.sku), net: numberOrNull(r.net) || 0, units: numberOrNull(r.units) || 0 };
+    if (requestedWindow && requestedWindow.includeName) sale.name = String(r.name || r.sku);
+    return sale;
+  });
+  out.from = rows.reduce((earliest, r) => {
+    const date = r.from_date ? String(r.from_date) : null;
+    return date && (!earliest || date < earliest) ? date : earliest;
+  }, null);
+  out.to = rows.reduce((latest, r) => {
+    const date = r.to_date ? String(r.to_date) : null;
+    return date && (!latest || date > latest) ? date : latest;
+  }, null);
+  return out;
+}
+
 // Honest freshness — NEVER claims fresh without a real recent timestamp. Returns {cls, label} where
 // cls ∈ fresh|stale|none. `staleMs` defaults to ~1.5× the daily ingest cadence.
 function freshness(fetchedAt, now, staleMs) {
@@ -1932,6 +2002,7 @@ module.exports = {
   agentIdentity,
   deptChip,
   londonMidnightMs,
+  readCanonicalItemSales,
   escapeHtml,
   freshness,
   fmtTime,
