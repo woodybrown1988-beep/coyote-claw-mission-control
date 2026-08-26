@@ -21,8 +21,8 @@
 //   • labour_day (TRUE ruler: locked rates × burden + salaried/365) + v_sales_day_all IMPORT
 //     as summary pointers — one home per fact: the labour story lives in /coyote/labour, the
 //     revenue story in /coyote/revenue; each month £ renders ONCE here, beside its pointer.
-//   • recipe_lines + products + sub_items + sales_by_product — live recipe economics, with
-//     complete recipes validated before any theoretical cost or margin is shown.
+//   • recipe_lines + products + sub_items + the canonical item-sales feed — live recipe
+//     economics, with complete recipes validated before any theoretical cost or margin is shown.
 // MONTH-GRAIN HONESTY (ruled): QB is month-grain — the mock's "13-week" executive frame
 // renders as TRAILING MONTHS with the grain stated in the sub; weekly figures exist only
 // where a wire supports them (the bank-truth cash calendar) or as stated derivations.
@@ -101,6 +101,8 @@ function median(arr) {
   return a.length % 2 ? a[mid] : (a[mid - 1] + a[mid]) / 2;
 }
 
+const readCanonicalItemSales = S.readCanonicalItemSales;
+
 /** Recipe economics shared by Recipe Margins and COGS & Inventory. A recipe is complete only
  *  when it has at least one line and every line has a positive recipe quantity, a matching
  *  ingredient, a non-negative pack cost and a positive pack quantity. Product costs round once
@@ -146,7 +148,7 @@ function buildRecipeEconomics(q, refMonth) {
        LEFT JOIN recipe_lines rl ON rl.product_id = p.id
        LEFT JOIN sub_items si ON si.id = rl.sub_item_id
       GROUP BY p.id, CAST(p.lightspeed_sku AS TEXT), p.name, p.category`));
-  const complete = recipeRows
+  const completeCandidates = recipeRows
     .filter((r) => (num(r.recipe_line_count) || 0) > 0
       && (num(r.invalid_line_count) || 0) === 0
       && num(r.unit_cost_pence) != null)
@@ -154,22 +156,25 @@ function buildRecipeEconomics(q, refMonth) {
       id: String(r.id), sku: r.sku == null ? '' : String(r.sku),
       name: String(r.name || r.sku || r.id), category: String(r.category || 'Uncategorised'),
       unitCostPence: Math.round(num(r.unit_cost_pence)),
-      net: 0, units: 0, achievedPricePence: null, gpPence: null, costPct: null,
-    }));
+      net: 0, units: 0, achievedPricePence: null, gpPence: null, marginPct: null, costPct: null,
+    }))
+    .sort((a, b) => a.sku.localeCompare(b.sku) || a.id.localeCompare(b.id));
+  // A canonical SKU contributes at most once even if duplicate/alias product records exist.
+  const canonicalRecipes = new Map();
+  const complete = [];
+  for (const product of completeCandidates) {
+    if (product.sku && canonicalRecipes.has(product.sku)) continue;
+    if (product.sku) canonicalRecipes.set(product.sku, product);
+    complete.push(product);
+  }
   out.costedProducts = complete.length;
 
-  const salesMaxRow = rowsOf(q(`SELECT MAX(business_date) d FROM sales_by_product`))[0];
-  out.salesMax = salesMaxRow && salesMaxRow.d ? String(salesMaxRow.d) : null;
-  let salesRows = [];
-  if (out.salesMax) {
-    const fromRow = rowsOf(q(`SELECT date(?, '-12 months', '+1 day') d`, [out.salesMax]))[0];
-    const from = fromRow && fromRow.d ? String(fromRow.d) : K.shiftDays(out.salesMax, -364);
-    out.window = { from, to: out.salesMax };
-    salesRows = rowsOf(q(
-      `SELECT CAST(sku AS TEXT) sku, SUM(total_amount_pence) net, SUM(quantity) units
-         FROM sales_by_product WHERE business_date BETWEEN ? AND ? GROUP BY CAST(sku AS TEXT)`,
-      [from, out.salesMax]));
-    out.allNet = salesRows.reduce((sum, r) => sum + (num(r.net) || 0), 0);
+  const itemSales = readCanonicalItemSales(q);
+  out.salesMax = itemSales.to;
+  const salesRows = itemSales.rows;
+  if (itemSales.from && itemSales.to) {
+    out.window = { from: itemSales.from, to: itemSales.to };
+    out.allNet = salesRows.reduce((sum, r) => sum + r.net, 0);
   }
   const salesBySku = new Map(salesRows.map((r) => [String(r.sku), {
     net: num(r.net) || 0, units: num(r.units) || 0,
@@ -181,6 +186,8 @@ function buildRecipeEconomics(q, refMonth) {
     p.units = sale ? sale.units : 0;
     p.achievedPricePence = p.units > 0 ? p.net / p.units : null;
     p.gpPence = p.achievedPricePence != null ? p.achievedPricePence - p.unitCostPence : null;
+    p.marginPct = p.achievedPricePence > 0 && p.gpPence != null
+      ? (p.gpPence / p.achievedPricePence) * 100 : null;
     p.costPct = p.achievedPricePence > 0 ? (p.unitCostPence / p.achievedPricePence) * 100 : null;
     if (p.sku) completeBySku.set(p.sku, p);
   }
@@ -203,6 +210,8 @@ function buildRecipeEconomics(q, refMonth) {
       unitCostPence,
       achievedPricePence,
       gpPence: achievedPricePence != null && unitCostPence != null ? achievedPricePence - unitCostPence : null,
+      marginPct: achievedPricePence > 0 && unitCostPence != null
+        ? ((achievedPricePence - unitCostPence) / achievedPricePence) * 100 : null,
       costPct: netSales > 0 ? (recipeCost / netSales) * 100 : null,
     };
   };
@@ -214,10 +223,10 @@ function buildRecipeEconomics(q, refMonth) {
     const volumeMedian = median(plottable.map((p) => p.units));
     const gpMedianPence = median(plottable.map((p) => p.gpPence));
     const quadrants = {
-      protect: { label: 'Protect', detail: 'High GP/unit · high units', products: [] },
-      promote: { label: 'Promote', detail: 'High GP/unit · low units', products: [] },
-      fix: { label: 'Fix', detail: 'Low GP/unit · high units', products: [] },
-      replace: { label: 'Replace', detail: 'Low GP/unit · low units', products: [] },
+      protect: { label: 'Protect', detail: 'High contribution/unit · high units', products: [] },
+      promote: { label: 'Promote', detail: 'High contribution/unit · low units', products: [] },
+      fix: { label: 'Fix', detail: 'Low contribution/unit · high units', products: [] },
+      replace: { label: 'Replace', detail: 'Low contribution/unit · low units', products: [] },
     };
     for (const p of plottable) {
       const highVolume = p.units >= volumeMedian;
@@ -251,10 +260,9 @@ function buildRecipeEconomics(q, refMonth) {
   }
 
   if (refMonth) {
-    const monthSales = rowsOf(q(
-      `SELECT CAST(sku AS TEXT) sku, SUM(total_amount_pence) net, SUM(quantity) units
-         FROM sales_by_product WHERE substr(business_date, 1, 7) = ? GROUP BY CAST(sku AS TEXT)`,
-      [refMonth]));
+    const monthSales = readCanonicalItemSales(q, {
+      from: `${refMonth}-01`, to: K.shiftDays(`${monthShift(refMonth, 1)}-01`, -1),
+    }).rows;
     const allNet = monthSales.reduce((sum, r) => sum + (num(r.net) || 0), 0);
     let coveredNet = 0; let theoretical = 0;
     const byCategory = new Map();
@@ -873,7 +881,7 @@ function buildCogs(q, now) {
   return c;
 }
 
-// RECIPE MARGINS — trailing-12-month achieved economics over validated complete recipes.
+// RECIPE MARGINS — achieved economics over the available canonical item-sales period.
 function buildMargins(q, now) {
   return buildRecipeEconomics(q, null);
 }
@@ -882,6 +890,7 @@ module.exports = {
   key: 'costs', route: '/coyote/costs', workspace: 'coyote', title: 'Costs',
   sub: 'Costs & supplier command centre · QB ledger shadow + bank truth',
   buildRecipeEconomics,
+  readCanonicalItemSales,
 
   getSection(db, ctx) {
     const q = ctx && ctx.q;
@@ -1465,7 +1474,7 @@ module.exports = {
         ? categories.map((a) => `<tr><td>${esc(a.name)}</td><td class="r-num mono">${a.actual == null ? '<span class="ash">—</span>' : esc(gbp0(a.actual))}</td><td class="r-num mono">${a.theoretical == null ? '<span class="ash">—</span>' : esc(gbp0(a.theoretical))}</td></tr>`).join('')
         : `<tr><td colspan="3" class="ash">No COGS categories or completely costed product sales in ${esc(monthLabel(c.refMonth))}.</td></tr>`;
       const coverageCopy = monthly && monthly.allNet > 0
-        ? `Complete recipes cover ${pct1(monthly.coveragePct)} of ${esc(monthLabel(c.refMonth))} item-level net sales (${gbp0(monthly.coveredNet)} of ${gbp0(monthly.allNet)}).`
+        ? `Complete recipes cover ${pct1(monthly.coveragePct)} of ${esc(monthLabel(c.refMonth))} ex-VAT item sales (${gbp0(monthly.coveredNet)} of ${gbp0(monthly.allNet)}).`
         : `No item-level sales are available for ${esc(monthLabel(c.refMonth))}.`;
       const theoreticalTotal = recipe.recipeLines > 0 && monthly && monthly.coveredNet > 0
         ? esc(gbp0(monthly.theoretical)) : '—';
@@ -1517,12 +1526,14 @@ module.exports = {
       const g = m.margins || {};
       const productCoverage = g.products > 0 ? (g.costedProducts / g.products) * 100 : null;
       const coveredTotals = g.coveredTotals || {};
-      const windowCopy = g.window ? `${esc(g.window.from)} → ${esc(g.window.to)}` : 'no item-level sales period available';
+      const windowCopy = g.window
+        ? `available item sales · ${esc(g.window.from)} → ${esc(g.window.to)}`
+        : 'no item-level sales period available';
       const summary = `<div class="r-grid r-three-col">
-          ${S.rcc.kpi({ label: 'Sales-weighted recipe coverage', value: pct1(g.coveragePct), sub: g.allNet == null ? 'no item-level sales available' : `${gbp0(g.coveredNet || 0)} of ${gbp0(g.allNet || 0)} trailing-12-month net` })}
-          ${S.rcc.kpi({ label: 'Covered net sales', value: g.coveredNet == null ? '—' : gbp0(g.coveredNet), sub: `${int(g.costedProducts || 0)} products with complete recipes` })}
-          ${S.rcc.kpi({ label: 'Weighted menu cost', value: pct1(coveredTotals.costPct), sub: 'sold units × recipe cost ÷ covered net sales' })}
-        </div>`;
+          ${S.rcc.kpi({ label: 'Sales-weighted recipe coverage', value: pct1(g.coveragePct), sub: g.allNet == null ? 'no item-level sales available' : `${gbp0(g.coveredNet || 0)} of ${gbp0(g.allNet || 0)} ex-VAT item sales` })}
+          ${S.rcc.kpi({ label: 'Covered ex-VAT sales', value: g.coveredNet == null ? '—' : gbp0(g.coveredNet), sub: `${int(g.costedProducts || 0)} products with complete recipes` })}
+          ${S.rcc.kpi({ label: 'Weighted menu cost', value: pct1(coveredTotals.costPct), sub: 'sold units × ex-VAT recipe cost ÷ covered ex-VAT sales' })}
+        </div><div class="rv2-caption">${windowCopy} · achieved sales and recipe costs are ex-VAT.</div>`;
 
       let leaderboardBody;
       if (g.recipeLines === 0) {
@@ -1530,11 +1541,11 @@ module.exports = {
       } else if (!(g.leaderboard || []).length) {
         leaderboardBody = plainEmpty('Recipe margin leaderboard', 'No product has a complete recipe yet.', 'Add the missing ingredient, quantity and pack-price details.');
       } else {
-        const rows = g.leaderboard.map((p) => `<tr><td><b>${esc(p.name)}</b><div class="ash mono">${esc(p.sku)}</div></td><td class="r-num mono">${esc(gbp(p.unitCostPence))}</td><td class="r-num mono">${p.achievedPricePence == null ? '—' : esc(gbp(p.achievedPricePence))}</td><td class="r-num mono">${p.gpPence == null ? '—' : esc(gbp(p.gpPence))}</td><td class="r-num mono">${esc(pct1(p.costPct))}</td><td class="r-num mono">${esc(gbp(p.net))}</td><td class="r-num mono">${int(Math.round(p.units))}</td></tr>`).join('');
+        const rows = g.leaderboard.map((p) => `<tr><td><b>${esc(p.name)}</b><div class="ash mono">${esc(p.sku)}</div></td><td class="r-num mono">${esc(gbp(p.unitCostPence))}</td><td class="r-num mono">${p.achievedPricePence == null ? '—' : esc(gbp(p.achievedPricePence))}</td><td class="r-num mono">${p.gpPence == null ? '—' : esc(gbp(p.gpPence))}</td><td class="r-num mono">${esc(pct1(p.marginPct))}</td><td class="r-num mono">${esc(pct1(p.costPct))}</td><td class="r-num mono">${esc(gbp(p.net))}</td><td class="r-num mono">${int(Math.round(p.units))}</td></tr>`).join('');
         const t = g.leaderboardTotals || {};
-        leaderboardBody = `<div style="overflow:auto"><table><thead><tr><th>Product</th><th class="r-num">Unit cost</th><th class="r-num">Avg net price</th><th class="r-num">GP / unit</th><th class="r-num">Cost %</th><th class="r-num">Net sales</th><th class="r-num">Units</th></tr></thead><tbody>${rows}</tbody><tfoot><tr><th>Top ${int(g.leaderboard.length)} total / weighted average</th><th class="r-num mono">${t.unitCostPence == null ? '—' : esc(gbp(t.unitCostPence))}</th><th class="r-num mono">${t.achievedPricePence == null ? '—' : esc(gbp(t.achievedPricePence))}</th><th class="r-num mono">${t.gpPence == null ? '—' : esc(gbp(t.gpPence))}</th><th class="r-num mono">${esc(pct1(t.costPct))}</th><th class="r-num mono">${esc(gbp(t.net))}</th><th class="r-num mono">${int(Math.round(t.units || 0))}</th></tr></tfoot></table></div>`;
+        leaderboardBody = `<div style="overflow:auto"><table><thead><tr><th>Product</th><th class="r-num">Recipe unit cost</th><th class="r-num">Achieved ex-VAT price</th><th class="r-num">Contribution / unit</th><th class="r-num">Margin %</th><th class="r-num">Cost %</th><th class="r-num">Ex-VAT sales</th><th class="r-num">Units</th></tr></thead><tbody>${rows}</tbody><tfoot><tr><th>Top ${int(g.leaderboard.length)} total / weighted average</th><th class="r-num mono">${t.unitCostPence == null ? '—' : esc(gbp(t.unitCostPence))}</th><th class="r-num mono">${t.achievedPricePence == null ? '—' : esc(gbp(t.achievedPricePence))}</th><th class="r-num mono">${t.gpPence == null ? '—' : esc(gbp(t.gpPence))}</th><th class="r-num mono">${esc(pct1(t.marginPct))}</th><th class="r-num mono">${esc(pct1(t.costPct))}</th><th class="r-num mono">${esc(gbp(t.net))}</th><th class="r-num mono">${int(Math.round(t.units || 0))}</th></tr></tfoot></table></div>`;
       }
-      const leaderboardPanel = S.rcc.panel({ title: 'Recipe margin leaderboard', sub: `top 20 completely costed products by trailing-12-month net sales · ${windowCopy}`, body: leaderboardBody });
+      const leaderboardPanel = S.rcc.panel({ title: 'Recipe margin leaderboard', sub: `top 20 completely costed products by ex-VAT sales · ${windowCopy}`, body: leaderboardBody });
 
       let matrixBody;
       if (!g.matrix) {
@@ -1550,9 +1561,9 @@ module.exports = {
           return `<div class="r-card"><div style="display:flex;justify-content:space-between;gap:8px"><b>${esc(quadrant.label)}</b><span class="mono">${int(quadrant.count)}</span></div><div class="ash" style="font-size:11px;margin:4px 0 8px">${esc(quadrant.detail)}</div>${leaders}</div>`;
         }).join('');
         matrixBody = `<div class="r-grid" style="grid-template-columns:repeat(2,1fr);gap:10px">${cards}</div>
-          <div class="r-mini-note">Median split: ${int(Math.round(g.matrix.volumeMedian))} units and ${esc(gbp(g.matrix.gpMedianPence))} GP/unit. Products exactly on a median enter the high side. Each quadrant lists up to three leaders by net sales.</div>`;
+          <div class="r-mini-note">Median split: ${int(Math.round(g.matrix.volumeMedian))} units and ${esc(gbp(g.matrix.gpMedianPence))} contribution/unit. Products exactly on a median enter the high side. Each quadrant lists up to three leaders by ex-VAT sales.</div>`;
       }
-      const matrixPanel = S.rcc.panel({ title: 'Menu-engineering matrix', sub: 'GP per unit versus trailing-12-month unit sales', body: matrixBody });
+      const matrixPanel = S.rcc.panel({ title: 'Menu-engineering matrix', sub: `contribution per unit versus units sold · ${windowCopy}`, body: matrixBody });
 
       let buildBody; let buildTitle = 'Leading product cost build';
       if (!g.costBuild) {
@@ -1561,8 +1572,8 @@ module.exports = {
         const p = g.costBuild;
         buildTitle = `${p.name} cost build`;
         const lines = p.lines.map((line) => `<tr><td>${esc(line.ingredient)}</td><td class="r-num mono">${esc(String(line.quantity))}${line.unit ? ` ${esc(line.unit)}` : ''}</td><td class="r-num mono">${line.unitCostPence == null ? '—' : esc(gbp(line.unitCostPence))}</td><td class="r-num mono">${line.lineCostPence == null ? '—' : esc(gbp(line.lineCostPence))}</td></tr>`).join('');
-        buildBody = `<div style="overflow:auto"><table><thead><tr><th>Ingredient</th><th class="r-num">Quantity</th><th class="r-num">Unit cost</th><th class="r-num">Line cost</th></tr></thead><tbody>${lines}</tbody><tfoot><tr><th colspan="3">Total recipe cost</th><th class="r-num mono">${esc(gbp(p.unitCostPence))}</th></tr><tr><th colspan="3">Achieved average net price</th><th class="r-num mono">${p.achievedPricePence == null ? '—' : esc(gbp(p.achievedPricePence))}</th></tr></tfoot></table></div>
-          <div class="r-mini-note">Highest-net completely costed product in the trailing-12-month period · ${int(Math.round(p.units))} units · ${esc(gbp(p.net))} net sales.</div>`;
+        buildBody = `<div style="overflow:auto"><table><thead><tr><th>Ingredient</th><th class="r-num">Quantity</th><th class="r-num">Unit cost</th><th class="r-num">Line cost</th></tr></thead><tbody>${lines}</tbody><tfoot><tr><th colspan="3">Total recipe cost (ex-VAT)</th><th class="r-num mono">${esc(gbp(p.unitCostPence))}</th></tr><tr><th colspan="3">Achieved average price (ex-VAT)</th><th class="r-num mono">${p.achievedPricePence == null ? '—' : esc(gbp(p.achievedPricePence))}</th></tr></tfoot></table></div>
+          <div class="r-mini-note">Highest-selling completely costed product in the available period · ${windowCopy} · ${int(Math.round(p.units))} units · ${esc(gbp(p.net))} ex-VAT sales.</div>`;
       }
       const buildPanel = S.rcc.panel({ title: buildTitle, sub: 'ingredient quantity × usable-unit cost', body: buildBody });
 

@@ -11,7 +11,7 @@
 //     the no-bills empty-state.
 //   COGS: actual-by-category REAL (QB COGS accounts) + reference-month recipe theoretical;
 //     live variance bridge; plain-language ingredient/stock empty states; other-variable REAL.
-//   MARGINS: live trailing-12-month leaderboard, sales-weighted coverage, median-split matrix,
+//   MARGINS: live available-period leaderboard, sales-weighted coverage, median-split matrix,
 //     leading-product cost build and recipe data quality.
 //   NO-MOCK-NUMBERS: empty DB → the only £ digits anywhere are the encoded rent canon.
 const assert = require('node:assert/strict');
@@ -19,7 +19,10 @@ const test = require('node:test');
 const sqlite = require('node:sqlite');
 
 const DATA = require('../mission-control/ui/data.js');
+const S = require('../mission-control/ui/shared.js');
 const page = require('../mission-control/ui/pages/coyote/costs.js');
+const { readCanonicalItemSales } = S;
+const { buildRecipeEconomics } = page;
 
 const NOW = Date.parse('2026-07-22T12:00:00Z');
 
@@ -34,7 +37,8 @@ CREATE TABLE qb_bills (realm_id TEXT, bill_id TEXT);
 CREATE TABLE recipe_lines (product_id TEXT, sub_item_id TEXT, quantity REAL);
 CREATE TABLE products (id TEXT PRIMARY KEY, lightspeed_sku TEXT, name TEXT, category TEXT);
 CREATE TABLE sub_items (id TEXT PRIMARY KEY, name TEXT, pack_cost_pence INTEGER, pack_qty REAL, unit_of_measure TEXT);
-CREATE TABLE sales_by_product (business_date TEXT, sku TEXT, total_amount_pence INTEGER, quantity REAL);
+CREATE TABLE sales_receipts_api (receipt_id TEXT PRIMARY KEY, business_date TEXT, type TEXT, cancelled INTEGER);
+CREATE TABLE sales_receipt_lines_api (receipt_id TEXT, line_id TEXT, business_date TEXT, sku TEXT, name TEXT, quantity REAL, net_with_tax_pence INTEGER, net_without_tax_pence INTEGER, PRIMARY KEY (receipt_id, line_id));
 `;
 function makeDb() { const db = new sqlite.DatabaseSync(':memory:'); db.exec(DDL); return db; }
 const render = (db, query, now) => {
@@ -186,7 +190,8 @@ function seedRecipeEconomics(db) {
       ('C','C','Cola','Drinks'),('D','D','Draught','Drinks'),
       ('E','E','Edamame','Food'),('F','F','Fries','Food'),
       ('G','G','Ginger Beer','Drinks'),('H','H','House Soda','Drinks'),
-      ('I','I','Incomplete Item','Food'),('J','J','No Recipe Item','Food');
+      ('I','I','Incomplete Item','Food'),('J','J','No Recipe Item','Food'),
+      ('A-old','A','Alpha Burger Legacy','Food');
     INSERT INTO sub_items VALUES
       ('beef','Beef',150,1,'each'),('bun','Bun',50,1,'each'),
       ('b','Bravo ingredient',200,1,'each'),('c','Cola ingredient',300,1,'each'),
@@ -195,26 +200,45 @@ function seedRecipeEconomics(db) {
       ('h','Soda ingredient',200,1,'each'),('bad','Missing pack quantity',100,NULL,'each');
     INSERT INTO recipe_lines VALUES
       ('A','beef',1),('A','bun',1),('B','b',1),('C','c',1),('D','d',1),
-      ('E','e',1),('F','f',1),('G','g',1),('H','h',1),('I','bad',1);
-    INSERT INTO sales_by_product VALUES
-      ('2026-06-30','A',100000,100),('2026-06-30','B',81000,90),
-      ('2026-06-30','C',40000,80),('2026-06-30','D',35000,70),
-      ('2026-06-30','E',40000,40),('2026-06-30','F',27000,30),
-      ('2026-06-30','G',10000,20),('2026-06-30','H',4000,10),
-      ('2026-06-30','I',50000,50),('2026-06-30','J',10000,10);
+      ('E','e',1),('F','f',1),('G','g',1),('H','h',1),('I','bad',1),
+      ('A-old','beef',1),('A-old','bun',1);
   `);
+  const receipt = db.prepare(`INSERT INTO sales_receipts_api VALUES (?,?,?,?)`);
+  const line = db.prepare(`INSERT INTO sales_receipt_lines_api VALUES (?,? ,?,?,?,?,?,?)`);
+  const add = (id, sku, qty, net, gross = net * 2, type = 'SALE', cancelled = 0) => {
+    receipt.run(id, '2026-06-30', type, cancelled);
+    line.run(id, 'line', '2026-06-30', sku, sku, qty, gross, net);
+  };
+  // A is deliberately split across renamed source lines carrying the same canonical SKU.
+  add('A-old', 'A', 60, 60000, 120000);
+  add('A-new', 'A', 40, 40000, 80000);
+  for (const [sku, net, qty] of [
+    ['B', 81000, 90], ['C', 40000, 80], ['D', 35000, 70], ['E', 40000, 40],
+    ['F', 27000, 30], ['G', 10000, 20], ['H', 4000, 10], ['I', 50000, 50], ['J', 10000, 10],
+  ]) add(sku, sku, qty, net);
+  add('void-decoy', 'A', 100, 999999, 1111111, 'VOID');
+  add('cancelled-decoy', 'A', 100, 888888, 999999, 'SALE', 1);
 }
 
 test('buildRecipeEconomics: concrete leaderboard, weighted coverage, quadrants, cost build and monthly category outputs', () => {
   const db = makeDb(); seedRecipeEconomics(db);
   const q = (sql, p) => DATA.safeSelect(db, sql, p);
-  const result = page.buildRecipeEconomics(q, '2026-06');
-  assert.equal(result.recipeLines, 10);
+  const result = buildRecipeEconomics(q, '2026-06');
+  assert.equal(result.recipeLines, 12);
   assert.equal(result.costedProducts, 8, 'the missing pack quantity fails validated completeness');
+  assert.equal(result.costed.filter((product) => product.sku === 'A').length, 1,
+    'duplicate product records mapping to one canonical SKU cannot duplicate recipe economics');
   assert.equal(result.leaderboard[0].name, 'Alpha Burger');
   assert.equal(result.leaderboardTotals.net, 337000);
   assert.equal(result.leaderboardTotals.units, 440);
   assert.ok(Math.abs(result.coveragePct - 84.88664987405541) < 1e-9);
+  const alpha = result.costed.find((product) => product.sku === 'A');
+  assert.equal(alpha.units, 100, 'two source lines consolidate to one canonical SKU without duplicate units');
+  assert.equal(alpha.net, 100000, 'only the ex-VAT values are summed; gross values and excluded receipts are decoys');
+  assert.equal(alpha.achievedPricePence, 1000, '£10.00 = 100,000p ex-VAT ÷ 100 sold');
+  assert.equal(alpha.gpPence, 800, '£8.00 contribution = £10.00 achieved price − £2.00 recipe cost');
+  assert.equal(alpha.marginPct, 80, 'margin = contribution ÷ achieved ex-VAT price');
+  assert.equal(alpha.costPct, 20, 'cost percentage = recipe cost ÷ achieved ex-VAT price');
   assert.equal(result.matrix.volumeMedian, 55);
   assert.equal(result.matrix.gpMedianPence, 500);
   assert.deepEqual(Object.fromEntries(Object.entries(result.matrix.quadrants).map(([key, value]) => [key, value.count])),
@@ -223,6 +247,36 @@ test('buildRecipeEconomics: concrete leaderboard, weighted coverage, quadrants, 
   assert.deepEqual(result.costBuild.lines.map((line) => [line.ingredient, line.lineCostPence]), [['Beef', 150], ['Bun', 50]]);
   assert.equal(result.monthly.theoretical, 103000);
   assert.deepEqual(result.monthly.byCategory, [{ name: 'Drinks', p: 58000 }, { name: 'Food', p: 45000 }]);
+});
+
+test('readCanonicalItemSales: actual three-month span, July-2023 floor, filters and empty fallback', () => {
+  const db = makeDb();
+  const receipt = db.prepare(`INSERT INTO sales_receipts_api VALUES (?,?,?,?)`);
+  const line = db.prepare(`INSERT INTO sales_receipt_lines_api VALUES (?,?,?,?,?,?,?,?)`);
+  const add = (id, date, sku, qty, gross, net, type = 'SALE', cancelled = 0) => {
+    receipt.run(id, date, type, cancelled);
+    line.run(id, 'line', date, sku, sku, qty, gross, net);
+  };
+  add('before-truth', '2023-06-30', 'A', 99, 99000, 90000);
+  add('first', '2026-04-01', 'A', 2, 3000, 2500);
+  add('alias', '2026-05-15', 'A', 3, 6000, 5000);
+  add('last', '2026-06-30', 'B', 5, 12000, 10000);
+  add('void', '2026-07-01', 'A', 1, 99999, 88888, 'VOID');
+
+  const q = (sql, params) => DATA.safeSelect(db, sql, params);
+  const actual = readCanonicalItemSales(q);
+  assert.equal(actual.filteredMax, '2026-06-30', 'the endpoint comes from the filtered feed, not the VOID decoy');
+  assert.deepEqual([actual.from, actual.to], ['2026-04-01', '2026-06-30']);
+  assert.deepEqual(actual.rows, [
+    { sku: 'A', net: 7500, units: 5 },
+    { sku: 'B', net: 10000, units: 5 },
+  ]);
+  db.close();
+
+  const emptyDb = makeDb();
+  const empty = readCanonicalItemSales((sql, params) => DATA.safeSelect(emptyDb, sql, params));
+  assert.deepEqual(empty, { filteredMax: null, from: null, to: null, rows: [] });
+  emptyDb.close();
 });
 
 test('MARGINS renders leaderboard totals, weighted coverage, all matrix quadrants and the leading product cost build', () => {
@@ -239,7 +293,8 @@ test('MARGINS renders leaderboard totals, weighted coverage, all matrix quadrant
   assert.ok(body.includes('Beef') && body.includes('Bun'), 'ingredient lines render');
   assert.ok(body.includes('£1.50') && body.includes('£0.50'), 'line and unit costs render');
   assert.match(body, /Total recipe cost[\s\S]*£2\.00/);
-  assert.match(body, /Achieved average net price[\s\S]*£10\.00/);
+  assert.match(body, /Achieved average price \(ex-VAT\)[\s\S]*£10\.00/);
+  assert.match(body, /achieved sales and recipe costs are ex-VAT/);
   assert.ok(body.includes('Complete recipes') && body.includes('>8<'), 'recipe quality is preserved');
 });
 
@@ -251,7 +306,7 @@ test('COGS calculates monthly theoretical categories and an actual-versus-theore
   assert.match(body, /Theoretical COGS<\/div><div class="r-kpi-value">£1,030/);
   assert.match(body, /Gap<\/div><div class="r-kpi-value">\+£470/);
   assert.ok(body.includes('+45.6% vs theoretical'), 'variance percentage is shown');
-  assert.ok(body.includes('Complete recipes cover 84.9% of Jun 2026 item-level net sales'), 'monthly sales-weighted coverage');
+  assert.ok(body.includes('Complete recipes cover 84.9% of Jun 2026 ex-VAT item sales'), 'monthly sales-weighted coverage');
   assert.ok(body.includes('waste, larger portions, buying-price changes, stock timing'), 'operational meaning is explained');
 });
 
@@ -261,6 +316,21 @@ test('MARGINS genuine-empty fallback is driven by the live recipe count', () => 
   assert.ok(body.includes('No recipes have been added yet'), 'genuine empty state');
   assert.ok(body.includes('no recipes added yet'), 'quality panel reflects the same live state');
   assert.doesNotMatch(body, /£0\.00/, 'the fallback does not invent sales or costs');
+});
+
+test('an empty item feed keeps the operator-facing no-sales state and invents no period', () => {
+  const db = makeDb();
+  db.exec(`
+    INSERT INTO products VALUES ('A','A','Alpha','Food');
+    INSERT INTO sub_items VALUES ('ingredient','Ingredient',100,1,'each');
+    INSERT INTO recipe_lines VALUES ('A','ingredient',1);
+  `);
+  const body = render(db, { tab: 'margins' });
+  const visible = body.replace(/<style[\s\S]*?<\/style>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+  assert.match(visible, /no item-level sales period available/i);
+  assert.doesNotMatch(visible, /sales_receipt_lines_api|sales_receipts_api|\btable\b|\bcolumn\b/i);
+  assert.doesNotMatch(visible, /\d{4}-\d{2}-\d{2}\s*→\s*\d{4}-\d{2}-\d{2}/);
+  db.close();
 });
 
 test('emitted inline scripts parse and recipe/stock empty states contain no implementation jargon', () => {
@@ -275,6 +345,33 @@ test('emitted inline scripts parse and recipe/stock empty states contain no impl
     assert.doesNotMatch(body, /recipe_lines|sub_items|pack_cost_pence|pack_qty|Calum gate|not wired|\bgated\b|invoice-LINE|operations-scope|no wire/i,
       `${tab} contains internal project or storage language`);
   }
+});
+
+test('MARGINS renders its effective dates without fixed-year wording and the full page has one valid inline script', () => {
+  const db = makeDb();
+  db.exec(`
+    INSERT INTO products VALUES ('A','A','Alpha','Food');
+    INSERT INTO sub_items VALUES ('ingredient','Ingredient',100,1,'each');
+    INSERT INTO recipe_lines VALUES ('A','ingredient',1);
+    INSERT INTO sales_receipts_api VALUES
+      ('first','2026-04-01','SALE',0),('middle','2026-05-15','SALE',0),('last','2026-06-30','SALE',0);
+    INSERT INTO sales_receipt_lines_api VALUES
+      ('first','line','2026-04-01','A','Alpha old',1,1200,1000),
+      ('middle','line','2026-05-15','A','Alpha',1,1200,1000),
+      ('last','line','2026-06-30','A','Alpha',1,1200,1000);
+  `);
+  const ctx = { q: (sql, params) => DATA.safeSelect(db, sql, params), now: NOW, query: { tab: 'margins' } };
+  const rendered = page.render(page.getSection(db, ctx), ctx);
+  assert.match(rendered.body, /available item sales · 2026-04-01 → 2026-06-30/);
+  assert.doesNotMatch(rendered.body, /trailing 12 months|trailing-12-month|365 days/i);
+  const document = S.renderShell({
+    title: page.title, sub: page.sub, body: rendered.body, stamp: rendered.stamp,
+    workspace: page.workspace, route: page.route, key: page.key,
+  });
+  const scripts = [...document.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/g)].map((match) => match[1]);
+  assert.equal(scripts.length, 1);
+  assert.doesNotThrow(() => new Function(scripts[0]));
+  db.close();
 });
 
 test('NO-MOCK-NUMBERS across C2 + C3: an empty DB renders only the encoded rent canon — every other £ is absent, no NaN/undefined', () => {

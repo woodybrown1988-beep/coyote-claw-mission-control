@@ -135,6 +135,14 @@
     {
       "module": "mission-control/ui/pages/coyote/costs.js",
       "export": "buildRecipeEconomics"
+    },
+    {
+      "module": "mission-control/ui/shared.js",
+      "export": "readCanonicalItemSales"
+    },
+    {
+      "module": "mission-control/ui/pages/coyote/overview.js",
+      "export": "buildOverviewRecipeEconomics"
     }
   ],
   "tests": [

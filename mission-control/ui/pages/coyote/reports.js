@@ -786,11 +786,9 @@ function buildMenu(q, rv2) {
   if (!apiMax) return mg;
   const from = K.shiftDays(apiMax, -27);
   mg.apiMax = apiMax; mg.from = from;
-  const agg = (f, t) => rowsOf(q(
-    `SELECT l.sku AS sku, MAX(l.name) AS name, SUM(l.quantity) AS qty, SUM(l.net_without_tax_pence) AS net
-       FROM sales_receipt_lines_api l JOIN sales_receipts_api r ON r.receipt_id = l.receipt_id
-      WHERE ${SALE_WHERE} AND r.business_date BETWEEN ? AND ? AND l.sku IS NOT NULL AND l.sku <> ''
-      GROUP BY l.sku HAVING SUM(l.net_without_tax_pence) > 0`, [f, t]));
+  const agg = (f, t) => S.readCanonicalItemSales(q, { from: f, to: t, includeName: true }).rows
+    .filter((product) => product.net > 0)
+    .map((product) => ({ ...product, qty: product.units }));
   const cur = agg(from, apiMax);
   if (!cur.length) return mg;
   const toMap = (rows) => new Map(rows.map((r) => [String(r.sku), { name: String(r.name || r.sku), qty: num(r.qty) || 0, net: num(r.net) || 0 }]));
