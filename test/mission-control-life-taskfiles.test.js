@@ -246,7 +246,8 @@ test('drawer: the situation brief renders as the machine’s read — labelled, 
   }), () => {
     const out = render();
     assert.match(out.body, /WHERE THIS STANDS/, 'the panel is labelled');
-    assert.match(out.body, /read of your notes · gpt-5\.6-sol · 2026-08-21/, 'model-stamped and dated — never mistakable for his words');
+    assert.match(out.body, /read of your notes · gpt-5\.6-sol · \d+d ago/, 'model-stamped and aged — never mistakable for his words');
+    assert.match(out.body, /title="2026-08-21T06:40:00\.000Z"/, 'the exact instant is one hover away');
     assert.match(out.body, /<b style="color:#e9eef4">Where it stands\.<\/b>/, 'bold labels render');
     assert.match(out.body, /<ul[^>]*><li[^>]*>19 Aug British Gas offered three fixes\.<\/li>/, 'bullets become a real list');
     assert.match(out.body, /<ol[^>]*><li[^>]*>Get two binding quotes\.<\/li>/, 'numbered steps become an ordered list');
@@ -255,6 +256,43 @@ test('drawer: the situation brief renders as the machine’s read — labelled, 
     assert.match(out.body, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/, 'it renders as visible text instead');
     // It sits ABOVE the thread — the point is catching up before reading.
     assert.ok(out.body.indexOf('WHERE THIS STANDS') < out.body.indexOf('Add update'), 'brief first, thread after');
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('drawer: a note newer than the brief says so — the panel never pretends to have read it', () => {
+  // Operator ask 2026-08-26: "i updated the task and the summary isn't updated". It HAD updated,
+  // on the next sweep — but the panel showed generated_at sliced to ten characters, so the brief
+  // written before his note and the one written after it both read "2026-08-26". The one number
+  // that would have answered him was the one the slice cut off.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-brief-'));
+  withEnv(fixture(dir, (db) => {
+    db.exec(`CREATE TABLE life_task_briefs (task_id TEXT PRIMARY KEY, brief_md TEXT, input_digest TEXT, model TEXT, generated_at TEXT);`);
+    db.prepare('INSERT INTO life_task_briefs VALUES (?,?,?,?,?)').run('t1',
+      '**Where it stands.** Waiting on the supplier.', 'dig1', 'gpt-5.6-sol', '2026-08-26T14:18:00.000Z');
+    // ...and then he typed something, after that read.
+    db.prepare('INSERT INTO life_task_updates (id,owner_id,task_id,actor_type,actor_id,raw_text,input_type,record_only,visibility,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)')
+      .run('u1', 'woody', 't1', 'HUMAN', 'woody', 'We accepted the one year deal', 'TEXT', 0, 'OWNER_ONLY', '2026-08-26T14:31:00.000Z');
+  }), () => {
+    const out = render();
+    assert.match(out.body, /isn&#39;t in this read yet|isn't in this read yet/, 'the panel admits what it has not read');
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('drawer: a RECORD-ONLY note is not "not read yet" — that warning would never clear', () => {
+  // briefInputs excludes record-only notes on the engine side, so a brief that skipped one is
+  // CURRENT, not behind. Counting it here would pin a warning to the panel permanently.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-brief-'));
+  withEnv(fixture(dir, (db) => {
+    db.exec(`CREATE TABLE life_task_briefs (task_id TEXT PRIMARY KEY, brief_md TEXT, input_digest TEXT, model TEXT, generated_at TEXT);`);
+    db.prepare('INSERT INTO life_task_briefs VALUES (?,?,?,?,?)').run('t1',
+      '**Where it stands.** Waiting on the supplier.', 'dig1', 'gpt-5.6-sol', '2026-08-26T14:18:00.000Z');
+    db.prepare('INSERT INTO life_task_updates (id,owner_id,task_id,actor_type,actor_id,raw_text,input_type,record_only,visibility,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)')
+      .run('u1', 'woody', 't1', 'HUMAN', 'woody', 'filed for the record', 'TEXT', 1, 'OWNER_ONLY', '2026-08-26T14:31:00.000Z');
+  }), () => {
+    const out = render();
+    assert.ok(!/in this read yet/.test(out.body), 'record-only notes were never brief inputs');
   });
   fs.rmSync(dir, { recursive: true, force: true });
 });

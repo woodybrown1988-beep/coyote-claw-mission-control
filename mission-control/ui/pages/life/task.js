@@ -181,7 +181,29 @@ function invoiceRunBlock(events, folders) {
 // something an agent formally reported. The markdown it emits is a fixed, tiny subset (bold
 // labels, "- " bullets, "1." steps): rendered by hand rather than by a parser, because a general
 // markdown renderer here would be a script-injection surface for text a model produced.
-function briefPanel(b) {
+// How long ago, in words. A brief is only trustworthy if you can see WHEN it was read.
+function agoWords(iso) {
+  const t = Date.parse(String(iso || ''));
+  if (!Number.isFinite(t)) return '';
+  const mins = Math.floor((Date.now() - t) / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins} min ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.floor(hrs / 24)}d ago`;
+}
+
+// The newest thing the brief is SUPPOSED to have read. Mirrors briefInputs on the engine side:
+// record-only notes are excluded there, so they must not count as "not in this yet" here — that
+// would show a pending line that never clears.
+function newestBriefInput(s) {
+  const stamps = [];
+  for (const u of (s.updates || [])) if (Number(u.record_only) !== 1 && u.created_at) stamps.push(String(u.created_at));
+  for (const f of (s.files || [])) if (f.created_at) stamps.push(String(f.created_at));
+  return stamps.sort().pop() || '';
+}
+
+function briefPanel(b, s) {
   if (!b || !String(b.brief_md || '').trim()) return '';
   const md = String(b.brief_md);
   const esc = (x) => LIFE.esc(x);
@@ -206,12 +228,23 @@ function briefPanel(b) {
     }
   }
   flush();
-  const when = b.generated_at ? String(b.generated_at).slice(0, 10) : '';
+  // THE STAMP (operator ask 2026-08-26: "i updated the task and the summary isn't updated").
+  // It had — on the next sweep, seventeen minutes later. The panel printed generated_at sliced
+  // to ten characters, so a brief written before his note and one written after it BOTH read
+  // "2026-08-26": the one number that would have answered the question was the one cut off.
+  const when = agoWords(b.generated_at);
+  const newest = newestBriefInput(s || {});
+  const nMs = Date.parse(newest); const gMs = Date.parse(String(b.generated_at || ''));
+  const behind = Number.isFinite(nMs) && Number.isFinite(gMs) && nMs > gMs;
+  const pending = behind
+    ? `<div style="font-size:11.5px;color:#E8B84B;margin-top:8px;padding-top:8px;border-top:1px solid rgba(232,184,75,.25)">`
+      + `Your note from ${esc(agoWords(newest))} isn't in this read yet \u2014 it refreshes within a minute or two.</div>`
+    : '';
   return `<div class="r-card" style="background:rgba(127,209,220,.05);border:1px solid rgba(127,209,220,.22);border-radius:10px;padding:12px 14px;margin-bottom:12px">`
     + `<div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin-bottom:6px">`
     + `<div style="font-size:11px;letter-spacing:.06em;color:#7FD1DC">WHERE THIS STANDS</div>`
-    + `<div style="font-size:11px;color:#9aa3ad">read of your notes \u00b7 ${esc(String(b.model || ''))}${when ? ` \u00b7 ${esc(when)}` : ''}</div></div>`
-    + `<div style="font-size:13px;line-height:1.55">${out.join('')}</div></div>`;
+    + `<div style="font-size:11px;color:#9aa3ad" title="${esc(String(b.generated_at || ''))}">read of your notes \u00b7 ${esc(String(b.model || ''))}${when ? ` \u00b7 ${esc(when)}` : ''}</div></div>`
+    + `<div style="font-size:13px;line-height:1.55">${out.join('')}</div>${pending}</div>`;
 }
 
 function btnCmd(label, command, payload) {
@@ -344,7 +377,7 @@ module.exports = {
             every newline into a space — eighteen invoices as one solid paragraph. The updates thread
             below has carried pre-wrap since it was built; the description was the one render site
             without it. */''}
-      ${briefPanel(s.brief)}
+      ${briefPanel(s.brief, s)}
       ${(() => {
         // When the interactive pay-queue renders, it IS the list — showing the same 18 invoices
         // twice (a wall of text, then the buttons below it) had the owner reading the inert copy.
