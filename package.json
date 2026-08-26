@@ -1,6 +1,6 @@
 {
   "private": true,
   "scripts": {
-    "test": "node --test"
+    "test": "node --require ./test/tmpdir.js --test"
   }
 }

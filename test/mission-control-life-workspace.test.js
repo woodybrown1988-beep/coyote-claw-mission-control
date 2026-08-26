@@ -638,3 +638,15 @@ test('owner copy is owner-clean: no command vocabulary, no engineering terms, in
   assert.ok(html.includes(JSON.stringify(SHARED.LIFE_REFUSAL_COPY)), 'client mapping table drifted from the exported one');
   assert.ok(html.includes(JSON.stringify(SHARED.LIFE_REFUSAL_FALLBACK)), 'client fallback drifted from the exported one');
 });
+
+test('the suite runs on DISK, not in the shared RAM disk (operator ruling 2026-08-26)', () => {
+  // /tmp here is a 7.5 GB tmpfs shared by every Claude session. This suite creates temp SQLite
+  // fixtures at 132 os.tmpdir() call sites; when the shared RAM filled, whole files went red with
+  // `disk I/O error` and cleared on a smaller re-run — the most expensive kind of false signal.
+  const { testTmpdir } = require('./tmpdir.js');
+  const os = require('node:os');
+  assert.ok(!os.tmpdir().startsWith('/tmp/') && os.tmpdir() !== '/tmp',
+    `the suite must not write into tmpfs — got ${os.tmpdir()}`);
+  // And the contract that keeps it honest: an explicit TMPDIR always wins.
+  assert.equal(testTmpdir({ TMPDIR: '/chosen/by/caller' }), '/chosen/by/caller');
+});
