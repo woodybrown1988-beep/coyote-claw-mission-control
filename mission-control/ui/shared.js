@@ -266,8 +266,6 @@ function renderShell(opts) {
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Coyote Claw · Mission Control · ${escapeHtml(title)}</title>
 <link rel="icon" type="image/svg+xml" href="/static/brand/claw.svg">
-<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>${css()}</style></head>
 <body><div class="app">${sidebar}
 <main class="main">
@@ -1314,7 +1312,21 @@ function css() {
     --blue:#60A5FA;--green:#34D399;--green-dim:rgba(52,211,153,.13);
     --amber:#FBBF24;--amber-dim:rgba(251,191,36,.12);
     --red:#F87171;--red-dim:rgba(248,113,113,.12);--red-glow:rgba(248,113,113,.2);
-    --font-display:'Space Grotesk',sans-serif;--font-body:'Inter',sans-serif;--font-mono:'IBM Plex Mono',monospace;
+  /* SELF-HOSTED, and it is the whole reason the type ever renders (2026-08-27).
+     The shell used to <link> these three families from fonts.googleapis.com while the app's own
+     Content-Security-Policy said style-src 'self' and font-src 'self' — so the browser refused
+     the stylesheet on EVERY page load and every surface silently fell back to the OS default sans
+     and mono. The design had never actually been seen. Serving them from /static/fonts (the
+     pattern the recipe surface already used for Oswald/Barlow) satisfies 'self', removes two
+     third-party preconnects from an OWNER_ONLY dashboard, and works with no egress at all.
+     Space Grotesk and Inter are VARIABLE fonts — one file spans the weight range, so the
+     font-weight descriptor is a range, not a single value. IBM Plex Mono ships static instances. */
+  @font-face{font-family:'Space Grotesk';font-style:normal;font-weight:300 700;font-display:swap;src:url('/static/fonts/space-grotesk-latin-variable.woff2') format('woff2')}
+  @font-face{font-family:'Inter';font-style:normal;font-weight:100 900;font-display:swap;src:url('/static/fonts/inter-latin-variable.woff2') format('woff2')}
+  @font-face{font-family:'IBM Plex Mono';font-style:normal;font-weight:400;font-display:swap;src:url('/static/fonts/ibm-plex-mono-latin-400-normal.woff2') format('woff2')}
+  @font-face{font-family:'IBM Plex Mono';font-style:normal;font-weight:500;font-display:swap;src:url('/static/fonts/ibm-plex-mono-latin-500-normal.woff2') format('woff2')}
+  @font-face{font-family:'IBM Plex Mono';font-style:normal;font-weight:600;font-display:swap;src:url('/static/fonts/ibm-plex-mono-latin-600-normal.woff2') format('woff2')}
+    --font-display:'Space Grotesk',ui-sans-serif,system-ui,'Segoe UI',Roboto,sans-serif;--font-body:'Inter',ui-sans-serif,system-ui,'Segoe UI',Roboto,sans-serif;--font-mono:'IBM Plex Mono',ui-monospace,'Cascadia Mono','Segoe UI Mono',Consolas,monospace;
   }
   *{box-sizing:border-box;margin:0;padding:0}
   body{background:var(--bg);color:var(--text);font-family:var(--font-body);font-size:14.5px;line-height:1.5;-webkit-font-smoothing:antialiased}
