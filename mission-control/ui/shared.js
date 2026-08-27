@@ -1303,15 +1303,6 @@ function clientScript() {
 
 function css() {
   return `
-  :root{
-    --bg:#0A0E16;--panel:#0E141E;--panel-2:#121A26;
-    --card:rgba(255,255,255,.025);--card-hover:rgba(255,255,255,.05);
-    --border:rgba(125,165,205,.10);--border-strong:rgba(125,165,205,.20);--hl:rgba(255,255,255,.05);
-    --text:#E5EDF7;--text-2:#899AB1;--muted:rgba(170,195,225,.34);
-    --cyan:#22D3EE;--cyan-dim:rgba(34,211,238,.13);--cyan-glow:rgba(34,211,238,.22);
-    --blue:#60A5FA;--green:#34D399;--green-dim:rgba(52,211,153,.13);
-    --amber:#FBBF24;--amber-dim:rgba(251,191,36,.12);
-    --red:#F87171;--red-dim:rgba(248,113,113,.12);--red-glow:rgba(248,113,113,.2);
   /* SELF-HOSTED, and it is the whole reason the type ever renders (2026-08-27).
      The shell used to <link> these three families from fonts.googleapis.com while the app's own
      Content-Security-Policy said style-src 'self' and font-src 'self' — so the browser refused
@@ -1326,6 +1317,15 @@ function css() {
   @font-face{font-family:'IBM Plex Mono';font-style:normal;font-weight:400;font-display:swap;src:url('/static/fonts/ibm-plex-mono-latin-400-normal.woff2') format('woff2')}
   @font-face{font-family:'IBM Plex Mono';font-style:normal;font-weight:500;font-display:swap;src:url('/static/fonts/ibm-plex-mono-latin-500-normal.woff2') format('woff2')}
   @font-face{font-family:'IBM Plex Mono';font-style:normal;font-weight:600;font-display:swap;src:url('/static/fonts/ibm-plex-mono-latin-600-normal.woff2') format('woff2')}
+  :root{
+    --bg:#0A0E16;--panel:#0E141E;--panel-2:#121A26;
+    --card:rgba(255,255,255,.025);--card-hover:rgba(255,255,255,.05);
+    --border:rgba(125,165,205,.10);--border-strong:rgba(125,165,205,.20);--hl:rgba(255,255,255,.05);
+    --text:#E5EDF7;--text-2:#899AB1;--muted:rgba(170,195,225,.34);
+    --cyan:#22D3EE;--cyan-dim:rgba(34,211,238,.13);--cyan-glow:rgba(34,211,238,.22);
+    --blue:#60A5FA;--green:#34D399;--green-dim:rgba(52,211,153,.13);
+    --amber:#FBBF24;--amber-dim:rgba(251,191,36,.12);
+    --red:#F87171;--red-dim:rgba(248,113,113,.12);--red-glow:rgba(248,113,113,.2);
     --font-display:'Space Grotesk',ui-sans-serif,system-ui,'Segoe UI',Roboto,sans-serif;--font-body:'Inter',ui-sans-serif,system-ui,'Segoe UI',Roboto,sans-serif;--font-mono:'IBM Plex Mono',ui-monospace,'Cascadia Mono','Segoe UI Mono',Consolas,monospace;
   }
   *{box-sizing:border-box;margin:0;padding:0}
