@@ -915,7 +915,13 @@ module.exports = {
       .lt-newtag{display:inline-block;margin-left:7px;padding:1px 7px;border-radius:999px;font-size:10.5px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;color:#12161a;background:var(--raccent2,#ffb34d);animation:ltpulse 1.6s ease-in-out 3;vertical-align:middle}
       @keyframes ltpulse{0%,100%{opacity:1}50%{opacity:.35}}
       @media (prefers-reduced-motion: reduce){.lt-newup-dot,.lt-newtag{animation:none}}
-        .lt-rtcard{border:1px solid rgba(255,179,77,.42);background:linear-gradient(90deg,rgba(255,179,77,.10),rgba(255,179,77,.03))}
+        /* PADDING IS NOT INHERITED FROM .r-card (operator, 2026-08-28: "the first word is right on
+           the left border"). the .rcc .r-card rule carries only background, border, radius and shadow —
+           every other use pairs it with a COMPANION class that supplies the box: .r-panel (17px)
+           or .r-kpi. This card had neither, so it computed to padding:0 and the heading sat one
+           pixel inside its own border. 17px matches the panels it sits among, so the left edge of
+           this strip lines up with the left edge of everything below it. */
+        .lt-rtcard{padding:17px;border:1px solid rgba(255,179,77,.42);background:linear-gradient(90deg,rgba(255,179,77,.10),rgba(255,179,77,.03))}
         .lt-rth{font-weight:700;font-size:13.5px;color:var(--raccent2,#ffb34d);margin-bottom:3px}
         .lt-rtd{font-size:12px;color:var(--rmuted);margin-bottom:10px;line-height:1.5}
         .lt-rtrow{display:flex;align-items:center;gap:12px;padding:8px 0;border-top:1px solid rgba(255,179,77,.16)}

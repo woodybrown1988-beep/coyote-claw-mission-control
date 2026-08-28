@@ -66,3 +66,23 @@ test('the fallback stacks are deliberate — a failed face must not land on the 
     assert.ok(stack.length >= 3, `${v} falls back through only ${stack.length} option(s): ${m[1]}`);
   }
 });
+
+test('a bare .r-card is a padded box — and its companions still override', () => {
+  // Operator, 2026-08-28: "the first word is right on the left border". `.rcc .r-card` carried
+  // only the SURFACE (background, border, radius, shadow); every padded use got its inset from a
+  // companion class instead, so a bare card computed to padding:0 and its text sat one pixel
+  // inside its own border. Measured live: padding 0px, heading at x=257 against an edge at x=256.
+  const css = SHARED.rcc.css();
+  assert.match(css, /\.rcc \.r-card\{padding:/, 'a card has a box\'s padding');
+
+  // The floor must not steal from the companions, and that depends ENTIRELY on source order:
+  // all three selectors have equal specificity, so the later declaration wins. If .r-card were
+  // ever moved below them, every panel and KPI would silently lose its inset.
+  const card = css.indexOf('.rcc .r-card{');
+  const kpi = css.indexOf('.rcc .r-kpi{');
+  const panel = css.indexOf('.rcc .r-panel{');
+  assert.ok(card >= 0 && kpi > card, '.r-kpi must be declared after .r-card to keep its 16px');
+  assert.ok(panel > card, '.r-panel must be declared after .r-card to keep its 17px');
+  assert.match(css, /\.rcc \.r-panel\{padding:17px/);
+  assert.match(css, /\.rcc \.r-kpi\{padding:16px/);
+});
