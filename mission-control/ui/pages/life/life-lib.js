@@ -233,8 +233,52 @@ function stageStrip(status) {
   return `<span style="font-size:11px;display:inline-flex;gap:6px;align-items:center">${STEPS.map(seg).join('<span style="color:var(--rmuted)">›</span>')}</span>`;
 }
 
+// ── DATES A PERSON CAN ACT ON (audit 2026-08-28) ─────────────────────────────────────────
+// Every Life OS surface printed "Due 2026-08-24" and left the reader to do the arithmetic —
+// against a board where the overdue and the merely-scheduled looked identical. "4 days overdue"
+// is a fact you can act on; an ISO date is homework.
+//
+// London, deliberately: the whole system plans in Europe/London and a UTC day boundary would
+// call something overdue for the last hour of the previous evening. Whole DAYS apart, not
+// elapsed hours, so a task due at 09:00 does not read "due in 0 days" all morning.
+const LONDON = 'Europe/London';
+function londonDayNumber(d) {
+  // Days since epoch AS SEEN IN LONDON — the en-CA locale gives YYYY-MM-DD, which Date.UTC can
+  // take back apart without re-introducing a timezone.
+  const [y, m, day] = new Intl.DateTimeFormat('en-CA', { timeZone: LONDON, year: 'numeric', month: '2-digit', day: '2-digit' })
+    .format(d).split('-').map(Number);
+  return Math.floor(Date.UTC(y, m - 1, day) / 86400000);
+}
+
+/** "4 days overdue" · "due today" · "due tomorrow" · "due in 6 days" · "due 12 Sep".
+ *  Returns '' for anything unparseable — a bad date must print nothing, never "NaN days". */
+function duePhrase(iso, nowMs = Date.now()) {
+  const t = Date.parse(String(iso || ''));
+  if (!Number.isFinite(t)) return '';
+  const days = londonDayNumber(new Date(t)) - londonDayNumber(new Date(nowMs));
+  if (days === 0) return 'due today';
+  if (days === 1) return 'due tomorrow';
+  if (days === -1) return '1 day overdue';
+  if (days < 0) return `${-days} days overdue`;
+  if (days <= 13) return `due in ${days} days`;
+  // Beyond a fortnight a relative count stops meaning anything — a date reads better.
+  return `due ${new Intl.DateTimeFormat('en-GB', { timeZone: LONDON, day: 'numeric', month: 'short' }).format(new Date(t))}`;
+}
+
+/** How urgent, as a class the eye can sort before the words are read.
+ *  'crit' overdue or due today · 'soon' inside three days · 'ok' everything else. */
+function dueSeverity(iso, nowMs = Date.now()) {
+  const t = Date.parse(String(iso || ''));
+  if (!Number.isFinite(t)) return 'none';
+  const days = londonDayNumber(new Date(t)) - londonDayNumber(new Date(nowMs));
+  if (days <= 0) return 'crit';
+  if (days <= 3) return 'soon';
+  return 'ok';
+}
+
 module.exports = {
   lifeDbPath, openLifeReadonly, lifeSelect, esc, emptyCard, absentCard, freshness, FRESH_WINDOW_MIN,
   AGENT_NAME, STAGE_LABEL, IN_FLIGHT_STATUSES, latestDispatchByTask, jobStates, agentChip, stageStrip,
   dispatchStateByTask, agentNeedsYou, needsYouChip, NEEDS_YOU_ROW_STYLE,
+  duePhrase, dueSeverity,
 };

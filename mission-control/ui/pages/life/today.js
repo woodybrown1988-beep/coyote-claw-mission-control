@@ -100,6 +100,23 @@ module.exports = {
         //
         // A cap the reader cannot see is the defect. The limit is now well above any real
         // queue, and anything beyond it is COUNTED and said out loud.
+        // THE ROUTING GAP (audit 2026-08-28). A task with no execution_mode can never be
+        // dispatched: the sweep takes AI-routed work only. Measured that day — 75 of 187 open
+        // tasks had never been routed, 36 of them sitting in available work, so the fleet's
+        // candidate pool was 3 already-attempted tasks and it had dispatched nothing for nine
+        // days. Routing is a REQUIRED step that nothing ever asked him to take.
+        //
+        // Ordered by the priority the view already computes, so the three he is offered are the
+        // three worth deciding — not the three that happen to be newest. Counted in full, and
+        // the count is said out loud: a cap the reader cannot see is the defect (see the
+        // proposals note below, same lesson).
+        unrouted: q(`SELECT id, title, domain_key, due_at, due_kind, calculated_priority
+                       FROM v_life_available_work
+                      WHERE execution_mode IS NULL
+                      ORDER BY calculated_priority DESC, updated_at DESC LIMIT 3`),
+        unroutedCount: q(`SELECT COUNT(*) c FROM v_life_available_work WHERE execution_mode IS NULL`)[0]?.c ?? 0,
+        unroutedTotal: q(`SELECT COUNT(*) c FROM life_tasks
+                           WHERE status NOT IN ('DONE','CANCELLED') AND execution_mode IS NULL`)[0]?.c ?? 0,
         openProposals: q(`SELECT id, task_id, capability_key, command_type, command_json, reason, confidence, risk_level FROM life_update_proposals WHERE state = 'PROPOSED' ORDER BY created_at ASC LIMIT 60`),
         openProposalCount: q(`SELECT COUNT(*) c FROM life_update_proposals WHERE state = 'PROPOSED'`)[0]?.c ?? 0,
         // MAIL (Graph Stage C 2026-08-11) — deliberately SEPARATE queries, not extra columns
@@ -841,8 +858,46 @@ module.exports = {
         + `</div></div><div style="flex-shrink:0;font-size:11.5px;color:var(--rmuted)">clears when you reply, decide or complete</div></div>`
       : '';
 
+
+    // ── ROUTING TRIAGE (audit 2026-08-28) ────────────────────────────────────────────────
+    // The single largest blockage in the system, and the one surface that never existed. A task
+    // with no execution_mode is invisible to the dispatcher forever; 75 of them had accumulated
+    // and nothing had ever asked him to decide. Three at a time, ordered by the priority the
+    // view already computes, each one three taps from being routed.
+    //
+    // DELIBERATELY NOT a nag that grows: it shows three and says how many remain, so clearing it
+    // is a minute rather than an afternoon. And it is absent entirely at zero — a strip that
+    // greets a cleared queue with "0 tasks need routing" is how a surface trains you to skip it.
+    const routeRows = Array.isArray(s.unrouted) ? s.unrouted : [];
+    const routeStrip = (() => {
+      if (!routeRows.length) return '';
+      const n = Number(s.unroutedCount || routeRows.length);
+      const total = Number(s.unroutedTotal || n);
+      const btn = (t, mode, label, title) =>
+        `<button class="r-btn small lt-rt" title="${LIFE.esc(title)}" data-lc-cmd="${LIFE.esc(JSON.stringify({ command: 'set_route', payload: { taskId: t, mode } }))}">${LIFE.esc(label)}</button>`;
+      const rows = routeRows.map((t) => {
+        const due = t.due_at && t.due_kind !== 'NONE' ? LIFE.duePhrase(t.due_at) : '';
+        return `<div class="lt-rtrow">`
+          + `<div class="lt-rtt"><div class="lt-rtn">${LIFE.esc(String(t.title || '').slice(0, 96))}</div>`
+          + `<div class="lt-rtm">${LIFE.esc(String(t.domain_key || ''))}${due ? ` · ${due}` : ''}</div></div>`
+          + `<div class="lt-rtb">`
+          + btn(t.id, 'SELF', 'You', 'You do this one — it leaves the fleet alone')
+          + btn(t.id, 'AI', 'Agent', 'An agent takes a scoped brief; the deliverable still waits for your accept')
+          + btn(t.id, 'HYBRID', 'Both', 'An agent prepares, you finish — never dispatched unattended')
+          + `</div></div>`;
+      }).join('');
+      const rest = n > routeRows.length
+        ? `<div class="lt-rtrest">${n - routeRows.length} more in play${total > n ? `, ${total - n} in parked projects` : ''} — three a day clears it inside a month.</div>`
+        : '';
+      return `<div class="r-card lt-rtcard">`
+        + `<div class="lt-rth">${n} task${n === 1 ? '' : 's'} ${n === 1 ? 'has' : 'have'} never been given a lane</div>`
+        + `<div class="lt-rtd">Until a task is routed no agent can pick it up, so these are invisible to the fleet. One tap each.</div>`
+        + rows + rest + `</div>`;
+    })();
+
     const body = head.replace('__HEADBTNS__', headBtns)
       + updatesBanner
+      + (routeStrip ? `<div style="margin-bottom:12px">${routeStrip}</div>` : '')
       + `<div class="lt-hero">${rexCard}${mustCard}${myDay}</div>`
       + (stuckPanel ? `<div style="margin-bottom:12px">${stuckPanel}</div>` : '')
       + (dueSoonPanel ? `<div style="margin-bottom:12px">${dueSoonPanel}</div>` : '')
@@ -860,6 +915,16 @@ module.exports = {
       .lt-newtag{display:inline-block;margin-left:7px;padding:1px 7px;border-radius:999px;font-size:10.5px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;color:#12161a;background:var(--raccent2,#ffb34d);animation:ltpulse 1.6s ease-in-out 3;vertical-align:middle}
       @keyframes ltpulse{0%,100%{opacity:1}50%{opacity:.35}}
       @media (prefers-reduced-motion: reduce){.lt-newup-dot,.lt-newtag{animation:none}}
+        .lt-rtcard{border:1px solid rgba(255,179,77,.42);background:linear-gradient(90deg,rgba(255,179,77,.10),rgba(255,179,77,.03))}
+        .lt-rth{font-weight:700;font-size:13.5px;color:var(--raccent2,#ffb34d);margin-bottom:3px}
+        .lt-rtd{font-size:12px;color:var(--rmuted);margin-bottom:10px;line-height:1.5}
+        .lt-rtrow{display:flex;align-items:center;gap:12px;padding:8px 0;border-top:1px solid rgba(255,179,77,.16)}
+        .lt-rtt{flex:1;min-width:0}
+        .lt-rtn{font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+        .lt-rtm{font-size:11px;color:var(--rmuted);margin-top:1px}
+        .lt-rtb{display:flex;gap:6px;flex-shrink:0}
+        .lt-rtrest{font-size:11.5px;color:var(--rmuted);padding-top:9px;border-top:1px solid rgba(255,179,77,.16);margin-top:2px}
+        @media(max-width:700px){.lt-rtrow{flex-direction:column;align-items:stretch;gap:7px}.lt-rtb{justify-content:flex-start}}
         .lt-hero{display:grid;gap:12px;grid-template-columns:minmax(0,1.05fr) minmax(0,1.4fr) minmax(0,1fr);margin-bottom:12px}
         .lt-main{display:grid;gap:12px;grid-template-columns:repeat(2,minmax(0,1fr))}
         @media(max-width:1100px){.lt-hero{grid-template-columns:1fr}}
