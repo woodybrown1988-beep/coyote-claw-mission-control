@@ -921,7 +921,11 @@ module.exports = {
            or .r-kpi. This card had neither, so it computed to padding:0 and the heading sat one
            pixel inside its own border. 17px matches the panels it sits among, so the left edge of
            this strip lines up with the left edge of everything below it. */
-        .lt-rtcard{padding:17px;border:1px solid rgba(255,179,77,.42);background:linear-gradient(90deg,rgba(255,179,77,.10),rgba(255,179,77,.03))}
+        /* .rcc-SCOPED so it can actually win. The shell's floor is .rcc .r-card (0,2,0) and a bare
+           .lt-rtcard is (0,1,0), so the page class LOST to it regardless of source order and the
+           strip took the 14px floor instead of the 17px asked for here. Matching .r-panel means
+           this strip's left edge lines up with every panel below it rather than sitting 3px proud. */
+        .rcc .lt-rtcard{padding:17px;border:1px solid rgba(255,179,77,.42);background:linear-gradient(90deg,rgba(255,179,77,.10),rgba(255,179,77,.03))}
         .lt-rth{font-weight:700;font-size:13.5px;color:var(--raccent2,#ffb34d);margin-bottom:3px}
         .lt-rtd{font-size:12px;color:var(--rmuted);margin-bottom:10px;line-height:1.5}
         .lt-rtrow{display:flex;align-items:center;gap:12px;padding:8px 0;border-top:1px solid rgba(255,179,77,.16)}
