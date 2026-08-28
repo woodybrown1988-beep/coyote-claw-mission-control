@@ -62,6 +62,14 @@ module.exports = {
         waitingOf: q(`SELECT task_id, dependency_label, fallback_at FROM life_waiting_conditions WHERE state = 'ACTIVE'`),
         // AGENT PRESENCE (operator ask 2026-08-13): latest dispatch per task; live stage
         // resolves in render via ctx.q (business store, by id — cross-domain read by reference).
+        // THE RANKING THE DATABASE ALREADY DOES (audit 2026-08-28). v_life_available_work scores
+        // every task — importance x10, consequence x7, a time-weighted urgency curve, +15 for an
+        // outcome link, -3 for a quick win — and this page ordered by updated_at and rendered 165
+        // "Ready" tasks at identical weight. The arithmetic was being thrown away at the last step.
+        // Five: enough to be a plan for the next hour, few enough to be read in one glance.
+        topRanked: q(`SELECT id, title, domain_key, due_at, due_kind, execution_mode, calculated_priority
+                        FROM v_life_available_work ORDER BY calculated_priority DESC, updated_at DESC LIMIT 5`),
+        availableCount: q('SELECT COUNT(*) c FROM v_life_available_work')[0]?.c ?? 0,
         dispatchEvents: q(`SELECT task_id, event_type, payload_json FROM life_task_events WHERE event_type IN ('AGENT_DISPATCHED','REOPENED') ORDER BY created_at ASC`),
         // real per-task confidence: the strongest open proposal on that task (never a fabricated score).
         confOf: q(`SELECT task_id, MAX(confidence) conf FROM life_update_proposals WHERE state = 'PROPOSED' GROUP BY task_id`),
@@ -119,10 +127,42 @@ module.exports = {
       const nu = needsYouOf(t.id);
       return `<div class="r-lrow" data-task-row data-task-id="${LIFE.esc(t.id)}"${nu ? ` data-needs-you="1" style="${LIFE.NEEDS_YOU_ROW_STYLE}"` : ''}><div style="min-width:0"><div style="font-weight:600">${link(t.id, t.title)}</div>
         ${LIFE.needsYouChip(nu)}
-        <div style="font-size:12px;color:var(--rmuted);margin-top:3px">${LIFE.esc(t.domain_key)}${t.due_at ? ` · due ${LIFE.esc(String(t.due_at).slice(0, 10))}${t.due_kind === 'HARD' ? ' (hard)' : ''}` : ''}${w ? ` · waiting on ${LIFE.esc(w.dependency_label)}${w.fallback_at ? ` · follow-up ${LIFE.esc(String(w.fallback_at).slice(0, 10))}` : ''}` : ''}${presenceOf(t.id)}</div></div>
+        <div style="font-size:12px;color:var(--rmuted);margin-top:3px">${LIFE.esc(t.domain_key)}${t.due_at && t.due_kind !== 'NONE' ? ` · <span class="lt-due lt-due-${LIFE.dueSeverity(t.due_at)}">${LIFE.esc(LIFE.duePhrase(t.due_at))}</span>${t.due_kind === 'HARD' ? ' (hard)' : ''}` : ''}${w ? ` · waiting on ${LIFE.esc(w.dependency_label)}${w.fallback_at ? ` · follow-up ${LIFE.esc(String(w.fallback_at).slice(0, 10))}` : ''}` : ''}${presenceOf(t.id)}</div></div>
         <div style="display:flex;gap:8px;align-items:center;flex-shrink:0">${pjSel(t)}${S.rcc.route(t.execution_mode)}${c != null ? S.rcc.conf(c) : ''}<a class="r-btn small" href="/life/task?id=${encodeURIComponent(t.id)}">Open</a><button class="r-btn small" title="Rename" aria-label="Rename" data-lc-rename="${LIFE.esc(JSON.stringify({ kind: 'task', id: t.id, title: t.title }))}">✎</button><button class="lc-cxl" title="Cancel — reopenable from its page" aria-label="Cancel" data-lc-cancel="${LIFE.esc(t.id)}">✕</button></div></div>`;
     };
     let body = head;
+
+    // ── NEXT FIVE (audit 2026-08-28) ─────────────────────────────────────────────────────
+    // The list below groups by STATE, which is the right way to answer "where is everything".
+    // It is the wrong way to answer "what now" — and 165 tasks sat in Ready at identical weight
+    // while the database was already ranking them. This panel spends the score: five tasks, the
+    // severity readable as form before it is read as words, and each one saying WHY it ranks
+    // there so the order can be argued with rather than merely obeyed.
+    // Hidden when searching (a search is its own question) and when the board is nearly empty.
+    if (!s.q && Array.isArray(s.topRanked) && s.topRanked.length >= 3) {
+      const rank = (t) => {
+        const sev = t.due_at && t.due_kind !== 'NONE' ? LIFE.dueSeverity(t.due_at) : 'none';
+        const bits = [];
+        const due = t.due_at && t.due_kind !== 'NONE' ? LIFE.duePhrase(t.due_at) : '';
+        if (due) bits.push(`<span class="lt-due lt-due-${sev}">${LIFE.esc(due)}</span>`);
+        if (t.due_kind === 'HARD') bits.push('hard date');
+        if (t.execution_mode) bits.push(LIFE.esc(String(t.execution_mode).toLowerCase()));
+        bits.push(LIFE.esc(String(t.domain_key || '')));
+        return `<div class="r-lrow lt-rank" data-task-row>`
+          + `<div class="lt-rail lt-rail-${sev}"></div>`
+          + `<div style="min-width:0;flex:1">${link(t.id, t.title)}`
+          + `<div style="font-size:12px;color:var(--rmuted);margin-top:3px">${bits.filter(Boolean).join(' · ')}</div></div>`
+          + `</div>`;
+      };
+      const rest = Math.max(0, Number(s.availableCount || 0) - s.topRanked.length);
+      body += S.rcc.panel({
+        title: 'Next five',
+        sub: 'Ranked by what the deadline, the consequence and the outcome link add up to',
+        headRight: `<span class="r-pill">${s.topRanked.length}</span>`,
+        body: s.topRanked.map(rank).join('')
+          + (rest ? `<div class="r-note">${rest} further task${rest === 1 ? '' : 's'} rank below these — the full board is grouped by state underneath.</div>` : ''),
+      });
+    }
     let shown = 0;
     // True per-state totals from COUNT, not from the fetched page: a pill that quietly
     // meant "of the rows we happened to fetch" is the defect this page had (audit F1).

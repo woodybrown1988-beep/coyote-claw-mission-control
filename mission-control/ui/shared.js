@@ -1328,6 +1328,22 @@ function css() {
     --red:#F87171;--red-dim:rgba(248,113,113,.12);--red-glow:rgba(248,113,113,.2);
     --font-display:'Space Grotesk',ui-sans-serif,system-ui,'Segoe UI',Roboto,sans-serif;--font-body:'Inter',ui-sans-serif,system-ui,'Segoe UI',Roboto,sans-serif;--font-mono:'IBM Plex Mono',ui-monospace,'Cascadia Mono','Segoe UI Mono',Consolas,monospace;
   }
+  /* ── DUE SEVERITY, READ AS FORM (audit 2026-08-28) ──────────────────────────────────────
+     Every Life OS surface printed an ISO date and left the reader to work out whether it
+     mattered. The rail encodes urgency in shape and colour so the shape of a list is legible
+     before a single word is; the text colour carries the same fact for anyone who cannot use
+     the colour alone, and the WORDS ("4 days overdue") carry it for everyone — colour is never
+     the only channel. */
+  .lt-due{font-weight:500}
+  .lt-due-crit{color:var(--red)}
+  .lt-due-soon{color:var(--amber)}
+  .lt-due-ok{color:var(--text-2)}
+  .lt-rank{display:flex;gap:12px;align-items:center}
+  .lt-rail{width:3px;align-self:stretch;min-height:30px;border-radius:2px;background:var(--border-strong);flex:none}
+  .lt-rail-crit{background:var(--red);box-shadow:0 0 9px var(--red-glow)}
+  .lt-rail-soon{background:var(--amber)}
+  .lt-rail-ok{background:var(--green)}
+  .lt-rail-none{background:var(--border-strong)}
   *{box-sizing:border-box;margin:0;padding:0}
   body{background:var(--bg);color:var(--text);font-family:var(--font-body);font-size:14.5px;line-height:1.5;-webkit-font-smoothing:antialiased}
   a{color:inherit;text-decoration:none}
