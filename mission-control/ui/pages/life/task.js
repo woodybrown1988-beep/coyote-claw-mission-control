@@ -369,7 +369,7 @@ module.exports = {
         ${S.rcc.tag(String(t.status).toLowerCase().replace('_', ' '))}${S.rcc.route(mode)}${S.rcc.tag(t.domain_key)}${S.rcc.tag(t.visibility === 'OWNER_ONLY' ? 'private' : String(t.visibility).toLowerCase())}${t.recurs ? S.rcc.tag(`repeats · ${String(t.recurs).toLowerCase()}`, 'warn') : ''}
         ${t.project_id ? `<a href="/life/project?id=${encodeURIComponent(String(t.project_id))}" style="text-decoration:none">${S.rcc.tag('project: ' + (((s.projects || []).find((pj) => pj.id === t.project_id) || {}).title || 'unknown'), 'info')}</a>` : ''}
         ${topConf ? S.rcc.conf(topConf.confidence) : ''}
-        ${t.due_at ? S.rcc.tag(`due ${String(t.due_at).slice(0, 10)}${t.due_kind === 'HARD' ? ' · hard' : ''}`) : ''}
+        ${t.due_at && t.due_kind !== 'NONE' ? S.rcc.tag(`${LIFE.duePhrase(t.due_at)}${t.due_kind === 'HARD' ? ' · hard' : ''}`) : ''}
       </div>
       ${wait ? `<div style="font-size:12.5px;color:#f5c96b;margin-bottom:8px">Waiting on <b>${LIFE.esc(wait.dependency_label)}</b>${wait.fallback_at ? ` · follow-up ${LIFE.esc(String(wait.fallback_at).slice(0, 10))}` : ''}</div>` : ''}
       ${/* pre-wrap, or the writer's structure dies here (operator, 2026-08-21): the pay-run task is

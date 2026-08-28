@@ -82,3 +82,19 @@ test('the Tasks page spends the ranking instead of throwing it away', () => {
   assert.ok(!/· due \$\{LIFE\.esc\(String\(t\.due_at\)\.slice\(0, 10\)\)\}/.test(src),
     'no raw ISO date survives in the row meta — that was the thing being fixed');
 });
+
+test('EVERY Life surface speaks one date language — no raw ISO survives in a display slot', () => {
+  // The first pass fixed the Tasks rows only, and the result was worse in one respect: Today
+  // carried "4 days overdue" in the new panel and "Due 2026-08-24" in Due-soon, on the SAME
+  // page. One system, one voice — this fails if a page ever reintroduces a sliced date.
+  const fs = require('node:fs'); const path = require('node:path');
+  const dir = path.join(__dirname, '..', 'mission-control', 'ui', 'pages', 'life');
+  const offenders = [];
+  for (const f of fs.readdirSync(dir).filter((x) => x.endsWith('.js'))) {
+    const src = fs.readFileSync(path.join(dir, f), 'utf8');
+    // A sliced due_at inside a template that also renders the word "due"/"Due" is a display use.
+    // schedule.js slices due_at for COMPARISON and for a form value, which is legitimate.
+    for (const m of src.matchAll(/[Dd]ue \$\{[^}]*due_at[^}]*slice\(0, 10\)/g)) offenders.push(`${f}: ${m[0].slice(0, 60)}`);
+  }
+  assert.deepEqual(offenders, [], 'these render a raw ISO date where a person needs a relative one');
+});

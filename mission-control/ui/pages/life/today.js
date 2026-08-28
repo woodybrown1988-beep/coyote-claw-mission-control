@@ -821,7 +821,7 @@ module.exports = {
         : cmd('Start', 'transition', { taskId: d.id, to: 'IN_PROGRESS' }, 'small primary');
       return `<div class="r-lrow"${overdue ? ' style="border-left:3px solid var(--rbad);padding-left:9px"' : ''}><div style="min-width:0">`
         + `<div style="font-weight:600">${link(d.id, d.title)}</div>`
-        + `<div style="font-size:12px;color:var(--rmuted);margin-top:3px">Due ${LIFE.esc(String(d.due_at).slice(0, 10))} · ${d.due_kind === 'HARD' ? 'hard deadline' : 'target date'}${d.domain_key ? ' · ' + LIFE.esc(d.domain_key) : ''}</div></div>`
+        + `<div style="font-size:12px;color:var(--rmuted);margin-top:3px"><span class="lt-due lt-due-${LIFE.dueSeverity(d.due_at)}">${LIFE.esc(LIFE.duePhrase(d.due_at))}</span> · ${d.due_kind === 'HARD' ? 'hard deadline' : 'target date'}${d.domain_key ? ' · ' + LIFE.esc(d.domain_key) : ''}</div></div>`
         + `<div style="display:flex;gap:6px;align-items:center;flex-shrink:0">${chip}${act}</div></div>`;
     };
     // ── AGENTS WAITING ON YOU ── rendered only when real; each row says WHO, WHY, and

@@ -110,7 +110,7 @@ module.exports = {
       return `<div class="r-lrow"${nu ? ` data-needs-you="1" style="${LIFE.NEEDS_YOU_ROW_STYLE}"` : ''}><div style="min-width:0">
           <div style="font-weight:600"><a href="/life/task?id=${encodeURIComponent(tid)}" style="color:inherit">${LIFE.esc(t.title)}</a></div>
           ${LIFE.needsYouChip(nu)}
-          <div style="margin-top:4px;display:flex;gap:6px;align-items:center;flex-wrap:wrap">${S.rcc.tag(String(t.status).toLowerCase().replace('_', ' '), terminal ? '' : (t.status === 'IN_PROGRESS' ? 'good' : ''))}${S.rcc.tag(t.domain_key)}${t.due_at ? S.rcc.tag(`due ${String(t.due_at).slice(0, 10)}${t.due_kind === 'HARD' ? ' · hard' : ''}`) : ''}</div>
+          <div style="margin-top:4px;display:flex;gap:6px;align-items:center;flex-wrap:wrap">${S.rcc.tag(String(t.status).toLowerCase().replace('_', ' '), terminal ? '' : (t.status === 'IN_PROGRESS' ? 'good' : ''))}${S.rcc.tag(t.domain_key)}${t.due_at && t.due_kind !== 'NONE' ? S.rcc.tag(`${LIFE.duePhrase(t.due_at)}${t.due_kind === 'HARD' ? ' · hard' : ''}`) : ''}</div>
           ${w ? `<div style="font-size:12px;color:#f5c96b;margin-top:3px">Waiting on ${LIFE.esc(w.dependency_label)}${w.fallback_at ? ` · follow-up ${LIFE.esc(String(w.fallback_at).slice(0, 10))}` : ''}</div>` : ''}
           ${presenceOf(tid)}
         </div>
