@@ -1713,7 +1713,15 @@ function rccCss() {
   const T = RCC_TOKENS;
   return `
   .rcc{--rbg:${T.bg};--rpanel:${T.panel};--rpanel2:${T.panel2};--rline:${T.line};--rtext:${T.text};--rmuted:${T.muted};--raccent:${T.accent};--raccent2:${T.accent2};--rgood:${T.good};--rwarn:${T.warn};--rbad:${T.bad};--rblue:${T.blue};--rpurple:${T.purple};--rradius:${T.radius};--rshadow:${T.shadow};color:var(--rtext)}
-  .rcc .r-card{background:linear-gradient(180deg,var(--rpanel) 0%,#12161a 100%);border:1px solid var(--rline);border-radius:var(--rradius);box-shadow:var(--rshadow)}
+  /* A CARD IS A BOX, SO IT HAS A BOX'S PADDING (operator, 2026-08-28: "the first word is right on
+     the left border"). This rule used to carry only the surface — background, border, radius,
+     shadow — and every padded use got its inset from a COMPANION class instead: .r-panel (17px)
+     or .r-kpi (16px). A bare .r-card therefore computed to padding:0 and its text sat one pixel
+     inside its own border. Two were live when this was found: the Life routing strip and the
+     costs quadrant card.
+     The floor is safe because both companions are declared BELOW this line at equal specificity,
+     so they still win, and any inline padding beats all three. */
+  .rcc .r-card{padding:14px;background:linear-gradient(180deg,var(--rpanel) 0%,#12161a 100%);border:1px solid var(--rline);border-radius:var(--rradius);box-shadow:var(--rshadow)}
   .rcc .r-kpi{padding:16px;min-height:135px;position:relative;overflow:hidden}
   .rcc .r-kpi-label{color:#a5aeb7;font-size:11px;text-transform:uppercase;letter-spacing:.085em;font-weight:800}
   .rcc .r-kpi-value{font-size:26px;font-weight:850;letter-spacing:-.7px;margin-top:10px}
