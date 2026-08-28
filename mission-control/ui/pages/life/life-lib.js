@@ -102,6 +102,17 @@ const STAGE_LABEL = {
 };
 const IN_FLIGHT_STATUSES = ['queued', 'preparing', 'dispatched', 'running', 'awaiting_plan_feedback', 'awaiting_signoff'];
 
+// THE COMPANION LANE IS NOT THE AGENT ON THE TASK (audit finding, 2026-08-27).
+// A buying decision earns a market check: the dispatcher enqueues the primary lane and then,
+// in the SAME loop iteration, a context-only research job (dispatch.ts — contextOnly: true).
+// Its AGENT_DISPATCHED event is therefore ALWAYS the later of the two — measured 10ms apart on
+// the live board (16:07:01.211Z boxquery, then 16:07:01.221Z research). Both maps below are
+// last-wins, so without this guard the companion always won: the task rail named "Researcher"
+// while the desk that actually owned the verdict went unnamed, and the Box Query -> Financial
+// Planner handoff attribution was lost with it. The companion INFORMS a decision; it is never
+// the agent working the task.
+const isCompanionLane = (pj) => !!pj && pj.contextOnly === true;
+
 /** rows of AGENT_DISPATCHED events (ordered ASC by created_at) → Map(taskId → {jobId, jobKind}),
  *  LAST dispatch wins (a sent-back task's live job is its newest one). */
 function latestDispatchByTask(eventRows) {
@@ -109,6 +120,7 @@ function latestDispatchByTask(eventRows) {
   for (const r of eventRows || []) {
     let pj = {};
     try { pj = JSON.parse(String(r.payload_json || '{}')); } catch (_) { continue; }
+    if (isCompanionLane(pj)) continue;                       // the market check informs; it is not the agent
     if (pj && typeof pj.jobId === 'string' && pj.jobId) m.set(r.task_id, { jobId: pj.jobId, jobKind: String(pj.jobKind || '') });
   }
   return m;
@@ -153,6 +165,7 @@ function dispatchStateByTask(eventRows) {
     }
     let pj = {};
     try { pj = JSON.parse(String(r.payload_json || '{}')); } catch (_) { continue; }
+    if (isCompanionLane(pj)) continue;                       // ditto — and it must not decide "needs you"
     if (pj && typeof pj.jobId === 'string' && pj.jobId) {
       m.set(r.task_id, { jobId: pj.jobId, jobKind: String(pj.jobKind || ''), reopened: false });
     }
