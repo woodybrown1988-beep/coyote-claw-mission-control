@@ -73,6 +73,35 @@ const dispatchEvent = (db, id, taskId, jobId, jobKind, at) => db.prepare(
    VALUES (?,?,?,'AGENT_DISPATCHED','SERVICE','life-dispatcher',?,?)`,
 ).run(id, 'woody', taskId, JSON.stringify({ jobId, jobKind }), at);
 
+test('the COMPANION market check never becomes the agent on the task', () => {
+  // A buying decision earns a market check, and the dispatcher enqueues it in the same loop
+  // iteration as the primary lane — so its event is ALWAYS later. Measured 10ms apart on the
+  // live board (16:07:01.211Z boxquery, then .221Z research, contextOnly:true). Both maps are
+  // last-wins, so without the guard the companion won every time: the rail named "Researcher"
+  // while the desk that owned the verdict went unnamed, and the handoff attribution went with it.
+  const rows = [
+    { task_id: 't1', payload_json: '{"jobId":"j-primary","jobKind":"boxquery"}' },
+    { task_id: 't1', payload_json: '{"jobId":"j-market","jobKind":"research","contextOnly":true}' },
+  ];
+  assert.deepEqual(LIFE.latestDispatchByTask(rows).get('t1'),
+    { jobId: 'j-primary', jobKind: 'boxquery' }, 'the primary lane owns the task, not the companion');
+
+  const st = LIFE.dispatchStateByTask(rows).get('t1');
+  assert.equal(st.jobId, 'j-primary', 'and "needs you" is judged against the primary lane');
+
+  // The guard must be keyed on contextOnly, NOT on jobKind — a genuine research dispatch is a
+  // primary lane and must still win when it is the newest.
+  assert.deepEqual(LIFE.latestDispatchByTask([
+    { task_id: 't2', payload_json: '{"jobId":"j-a","jobKind":"boxquery"}' },
+    { task_id: 't2', payload_json: '{"jobId":"j-research","jobKind":"research"}' },
+  ]).get('t2'), { jobId: 'j-research', jobKind: 'research' }, 'a real research dispatch still wins');
+
+  // A task whose ONLY dispatch is a companion has no agent on it — never a phantom entry.
+  assert.equal(LIFE.latestDispatchByTask([
+    { task_id: 't3', payload_json: '{"jobId":"j-only","jobKind":"research","contextOnly":true}' },
+  ]).has('t3'), false, 'a companion alone does not put an agent on the task');
+});
+
 test('helpers: last dispatch wins; the strip is the STATE MACHINE and never a percentage', () => {
   const m = LIFE.latestDispatchByTask([
     { task_id: 't1', payload_json: '{"jobId":"j-old","jobKind":"boxquery"}' },
