@@ -360,3 +360,106 @@ test('drawer: a command between steps does not restart the numbering at 1', () =
   });
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+// ── THE SUPPLIER LEDGER PANEL (operator ask 2026-09-01) ───────────────────────────────────────
+//
+// "the supplier invoice payment ledger in the task to ensure we are not about to pay for something
+// which has already been paid". The panel reports what was last SEEN going out under each
+// supplier's identity. It must never say "unpaid" — nothing here can know that, and a green
+// all-clear on a supplier the check is blind to is exactly what licenses the second payment.
+// The panel's own disclaimer contains the word "unpaid" on purpose ("never a statement that an
+// invoice is unpaid"), so a bare search for it trips on the very sentence that makes the promise.
+// Strip the disclaimer, then assert the word appears nowhere else.
+const withoutDisclaimer = (html) => String(html).replace(/never a statement that an invoice is unpaid\./g, '');
+
+function armedWith(db, payload) {
+  db.prepare(
+    `INSERT INTO life_task_events (id, owner_id, task_id, event_type, actor_type, actor_id, payload_json, created_at)
+     VALUES ('e-inv', 'woody', 't1', 'INVOICE_RUN_ARMED', 'SERVICE', 'life-writer', ?, '2026-09-01T09:00:00.000Z')`,
+  ).run(JSON.stringify(payload));
+}
+
+test('drawer: each supplier group states what the bank last saw going out', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-ledger-'));
+  withEnv(fixture(dir, (db) => {
+    armedWith(db, {
+      moves: ['mv1'], folder: '00 INVOICES TO PAY', queued: 1,
+      lines: [{ moveId: 'mv1', supplier: 'Black Isle Brewing Co Ltd', ref: '48548', totalPence: 30527, ageDays: 12 }],
+      suppliers: [{
+        supplier: 'Black Isle Brewing Co Ltd', key: 'black-isle', paidCountYear: 49,
+        seenSince: '2018-11-24',
+        lastPaid: { amountPence: 120455, txnDate: '2026-04-30', account: 'Santander Bank Account (6288)' },
+      }],
+    });
+  }), () => {
+    const out = render();
+    assert.match(out.body, /last paid/, 'the line is there');
+    assert.match(out.body, /£1,204\.55/, 'with the figure that actually left the bank');
+    assert.match(out.body, /2026-04-30/, 'and when');
+    assert.match(out.body, /Santander Bank Account/, 'and from which account');
+    assert.match(out.body, /49 payments in the last year/, 'so he can tell a live account from a dormant one');
+    // THE SENTENCE THAT MUST NEVER APPEAR
+    assert.ok(!/\bunpaid\b/i.test(withoutDisclaimer(out.body)), 'no line declares an invoice unpaid');
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('drawer: a supplier with NO payment on record says so, and names the horizon', () => {
+  // "no payment on record" and "I cannot see this supplier" are different sentences, and only
+  // one of them is safe to act on. Stating the horizon is what separates them.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-ledger-'));
+  withEnv(fixture(dir, (db) => {
+    armedWith(db, {
+      moves: ['mv1'], folder: '00 INVOICES TO PAY', queued: 1,
+      lines: [{ moveId: 'mv1', supplier: 'Unity1 Electrical', ref: null, totalPence: null, ageDays: 9 }],
+      suppliers: [{ supplier: 'Unity1 Electrical', key: 'unity', paidCountYear: 0, seenSince: '2018-11-24', lastPaid: null }],
+    });
+  }), () => {
+    const out = render();
+    assert.match(out.body, /no payment to this supplier on record/);
+    assert.match(out.body, /bank data goes back to 2018-11-24/, 'the reader is told how far the check can see');
+    assert.ok(!/\bunpaid\b/i.test(withoutDisclaimer(out.body)));
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('drawer: the header counts how blind the check is, rather than implying a verdict', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-ledger-'));
+  withEnv(fixture(dir, (db) => {
+    armedWith(db, {
+      moves: ['mv1', 'mv2'], folder: '00 INVOICES TO PAY', queued: 2,
+      lines: [
+        { moveId: 'mv1', supplier: 'Black Isle Brewing Co Ltd', ref: '48548', totalPence: 30527, ageDays: 12 },
+        { moveId: 'mv2', supplier: 'Unity1 Electrical', ref: null, totalPence: null, ageDays: 9 },
+      ],
+      suppliers: [
+        { supplier: 'Black Isle Brewing Co Ltd', key: 'black-isle', paidCountYear: 49, seenSince: '2018-11-24',
+          lastPaid: { amountPence: 120455, txnDate: '2026-04-30', account: 'Santander' } },
+        { supplier: 'Unity1 Electrical', key: 'unity', paidCountYear: 0, seenSince: '2018-11-24', lastPaid: null },
+      ],
+    });
+  }), () => {
+    const out = render();
+    assert.match(out.body, /1 of 2 suppliers here have a payment on record/);
+    assert.match(out.body, /never a statement that an invoice is unpaid/, 'the panel states its own limits');
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('drawer: an armed run with NO supplier positions renders the queue unchanged', () => {
+  // The field is additive: a run armed before this shipped, or by an older CLI, must not blank
+  // the pay queue or grow an empty panel.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-ledger-'));
+  withEnv(fixture(dir, (db) => {
+    armedWith(db, {
+      moves: ['mv1'], folder: '00 INVOICES TO PAY', queued: 1,
+      lines: [{ moveId: 'mv1', supplier: 'Black Isle Brewing Co Ltd', ref: '48548', totalPence: 30527, ageDays: 12 }],
+    });
+  }), () => {
+    const out = render();
+    assert.match(out.body, /PAY QUEUE/, 'the queue still renders');
+    assert.ok(!/Checked against the bank/.test(out.body), 'and no empty ledger header appears');
+    assert.ok(!/on record/.test(out.body));
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+});

@@ -79,10 +79,10 @@ function bookerRunBlock(events) {
 function invoiceRunBlock(events, folders) {
   const armed = (events || []).find((e) => e.event_type === 'INVOICE_RUN_ARMED');
   if (!armed) return '';
-  let lines = []; let groupPaid = [];
+  let lines = []; let groupPaid = []; let suppliers = [];
   try {
     const pj = JSON.parse(armed.payload_json || '{}');
-    lines = pj.lines || []; groupPaid = pj.groupPaid || [];
+    lines = pj.lines || []; groupPaid = pj.groupPaid || []; suppliers = pj.suppliers || [];
   } catch { return ''; }
   if (!lines.length) return '';
   const gbp = (p) => '\u00a3' + (p / 100).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -138,6 +138,34 @@ function invoiceRunBlock(events, folders) {
   };
 
   const gkey = (n) => String(n || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+  // ── WHAT THE BANK KNOWS ABOUT THIS SUPPLIER (operator ask 2026-09-01: "the supplier invoice
+  // payment ledger in the task to ensure we are not about to pay for something which has already
+  // been paid"). A per-invoice PAID badge is rare and precise; this is the line he actually
+  // reasons with — is this account being paid at all, and when did it last go out.
+  //
+  // It NEVER says "unpaid". Nothing here can know that: it reports the last payment seen under
+  // this supplier's identity and how many there were this year, and where it can see nothing it
+  // says exactly that, because "no payment on record" and "I cannot see this supplier" are
+  // different sentences and only one of them is safe to act on.
+  const posOf = (name) => {
+    const k = String(name || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+    return (suppliers || []).find((sp) => {
+      const sk = String(sp.supplier || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+      return sk === k || sk.startsWith(k) || k.startsWith(sk);
+    }) || null;
+  };
+  const ledgerLine = (name) => {
+    const sp = posOf(name);
+    if (!sp) return '';
+    if (!sp.lastPaid) {
+      return `<div style="${muted};padding:1px 0 3px">Ledger: no payment to this supplier on record`
+        + `${sp.seenSince ? ` (bank data goes back to ${LIFE.esc(String(sp.seenSince))})` : ''}.</div>`;
+    }
+    return `<div style="${muted};padding:1px 0 3px">Ledger: last paid <b style="color:#c8d3de">${gbp(sp.lastPaid.amountPence)}</b>`
+      + ` on ${LIFE.esc(String(sp.lastPaid.txnDate))} \u00b7 ${LIFE.esc(String(sp.lastPaid.account))}`
+      + ` \u00b7 ${sp.paidCountYear} payment${sp.paidCountYear === 1 ? '' : 's'} in the last year</div>`;
+  };
+
   const body = groups.map((g, i) => {
     const sub = sumOf(g.rows);
     const home = [...new Set(g.rows.map((r) => r.onwardPath).filter(Boolean))];
@@ -151,6 +179,7 @@ function invoiceRunBlock(events, folders) {
       + `<div style="font-size:13px"><b>${i + 1}) ${LIFE.esc(g.supplier)}</b>`
       + (home.length === 1 ? ` <span style="${muted}">\u2192 ${LIFE.esc(home[0])}</span>` : '') + `</div>`
       + `<div style="font-size:12.5px">${sub !== null ? `<b>${gbp(sub)}</b>` : `<span style="${muted}">${g.rows.length === 1 ? 'amount' : 'amounts'} not read</span>`}</div></div>`
+      + ledgerLine(g.supplier)
       + gHint + g.rows.map(rowHtml).join('') + `</div>`;
   }).join('');
 
@@ -170,6 +199,14 @@ function invoiceRunBlock(events, folders) {
     + `<div class="lc-row" style="justify-content:space-between;align-items:baseline;margin-bottom:2px">`
     + `<div style="font-size:11px;letter-spacing:.06em;color:#9aa3ad">PAY QUEUE \u00b7 ${lines.length} INVOICE${lines.length === 1 ? '' : 'S'}</div>`
     + `<div style="${muted}">tap Paid when one is paid \u2014 it files to its supplier folder and leaves this list</div></div>`
+    + ((suppliers || []).length
+      // SAY WHAT THE CHECK CAN SEE, ONCE. Without this the per-supplier lines below read as a
+      // verdict; with it they read as evidence, which is what they are. The count of suppliers
+      // with nothing on record is the honest measure of how blind this panel currently is.
+      ? `<div style="${muted};margin:0 0 6px">Checked against the bank: `
+        + `${suppliers.filter((sp) => sp.lastPaid).length} of ${suppliers.length} suppliers here have a payment on record. `
+        + `A line below is what was last SEEN going out \u2014 never a statement that an invoice is unpaid.</div>`
+      : '')
     + body + total + `</div>`;
 }
 
