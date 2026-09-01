@@ -25,6 +25,13 @@ function makeDb(options = {}) {
         error TEXT,
         parent_job_id TEXT,
         owner_id TEXT
+      );
+      CREATE TABLE job_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_id TEXT,
+        created_at INTEGER,
+        kind TEXT,
+        detail TEXT
       )
     `);
   }
@@ -99,6 +106,8 @@ test('claw queue depth: fleet buckets, all in-flight statuses, worker joins, que
   insertJob(db, { id: 'unknown-owner', status: 'running', createdAt: NOW - 7000, ownerId: 'ghost:4:1782799000000' });
   insertJob(db, { id: 'unowned', status: 'running', createdAt: NOW - 6000 });
   insertJob(db, { id: 'signoff', status: 'awaiting_signoff', createdAt: NOW - 5000, ownerId: 'host:1:1782799000000' });
+  db.prepare(`INSERT INTO job_events (job_id, created_at, kind, detail) VALUES (?, ?, 'status_change', ?)`)
+    .run('signoff', NOW - 5000, JSON.stringify({ from: 'running', to: 'awaiting_signoff' }));
   insertJob(db, { id: 'done', status: 'done', createdAt: NOW - 4000, ownerId: 'host:3:1782799000000' });
 
   const agentsCtx = context(db);

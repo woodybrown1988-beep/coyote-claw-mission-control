@@ -12,6 +12,7 @@ const IN_FLIGHT = ['preparing', 'dispatched', 'running'];
 const QUEUE_AGE_15M = 15 * 60 * 1000;
 const QUEUE_AGE_1H = 60 * 60 * 1000;
 const RECENT_MS = 36 * 60 * 60 * 1000; // a job counts as "recently done" within ~1.5× the daily cadence
+const HELD_STATUSES = new Set(['awaiting_signoff', 'awaiting_plan_feedback']);
 
 // WHO EACH AGENT IS comes from the shared roster (S.FLEET / S.agentIdentity) — see shared.js for
 // why identity has exactly one writer. This page used to hold its OWN 3-entry map, which is how
@@ -35,6 +36,34 @@ function num(v) {
 function rows(res) {
   return res && res.ok && Array.isArray(res.rows) ? res.rows : [];
 }
+
+// A blocked job's wait starts when it ENTERED the status, not whenever the mutable job row was
+// last touched. In particular, renewLease() deliberately updates jobs.updated_at while a job is
+// parked at either human gate. The append-only status_change trail is the stable clock.
+function deriveBlockedHeldAge(job, eventRows, now) {
+  if (!job || !HELD_STATUSES.has(job.status) || !Number.isFinite(now)) return null;
+  const matching = [];
+  for (const event of Array.isArray(eventRows) ? eventRows : []) {
+    if (!event || event.job_id !== job.id || event.kind !== 'status_change') continue;
+    let detail = event.detail;
+    if (typeof detail === 'string') {
+      try { detail = JSON.parse(detail); } catch (_) { detail = null; }
+    }
+    if (!detail || typeof detail !== 'object' || detail.to !== job.status) continue;
+    if (typeof event.created_at !== 'number' || !Number.isFinite(event.created_at)) continue;
+    matching.push(event);
+  }
+  if (!matching.length) return null;
+  matching.sort((a, b) => (b.created_at - a.created_at) || (num(b.id) - num(a.id)));
+  const age = now - matching[0].created_at;
+  return Number.isFinite(age) && age >= 0 ? age : null;
+}
+
+function heldAgeUnavailable(status) {
+  return 'held age unavailable — missing valid status-change event entering ' + status
+    + '; resolve or retask this job to clear it';
+}
+
 function nullableInt(v) {
   if (v === null || v === undefined) return null;
   const n = Number(v);
@@ -189,6 +218,7 @@ function readQueueDepth(q, now) {
 
 // =================================================================================================
 module.exports = {
+  deriveBlockedHeldAge,
   key: 'agents',
   route: '/claw/agents', workspace: 'claw',
   title: 'Agents',
@@ -210,6 +240,23 @@ module.exports = {
     const nonTerminal = rows(q(`SELECT ${cols} FROM jobs WHERE status NOT IN ('done','failed') ORDER BY updated_at DESC`));
     const terminalRecent = rows(q(`SELECT ${cols} FROM jobs WHERE status IN ('done','failed') ORDER BY updated_at DESC LIMIT 60`));
     const allJobs = nonTerminal.concat(terminalRecent);
+
+    // The age carried into blocked cards comes only from the immutable transition trail. A missing
+    // or malformed event stays null all the way to rendering; jobs.updated_at is intentionally not
+    // a fallback because a lease renewal would turn that into a plausible but false short wait.
+    const heldJobs = allJobs.filter((job) => HELD_STATUSES.has(job.status));
+    const heldEventRows = heldJobs.length
+      ? rows(q(
+        `SELECT id, job_id, created_at, kind, detail FROM job_events
+          WHERE kind = 'status_change' AND job_id IN (${heldJobs.map(() => '?').join(',')})
+          ORDER BY created_at DESC, id DESC`,
+        heldJobs.map((job) => job.id),
+      ))
+      : [];
+    const heldAgeByJob = new Map(heldJobs.map((job) => [
+      job.id,
+      deriveBlockedHeldAge(job, heldEventRows, now),
+    ]));
 
     // parents that have an active (in-flight) child → that parent is waiting on the child's dept
     const activeChildParents = new Set();
@@ -438,15 +485,19 @@ module.exports = {
       const lifeRep = job ? lifeTaskOf(job) : null;
       if (rep.bucket === 'blocked_you') {
         const cp = youCopy(meta.key, job.status);
+        const heldAge = HELD_STATUSES.has(job.status) ? heldAgeByJob.get(job.id) : undefined;
         c.col = 'blocked';
         c.variant = 'you';
         c.task = { strong: summary, tail: ' — ' + cp.verb + '.' };
         c.waitPill = { tone: 'you', text: cp.pill };
         c.button = { label: cp.btn };
         c.talkJobId = job.id; // "Talk about this" → MC Chat, where close/retask live
-        c.time = job.status === 'awaiting_signoff'
-          ? 'waiting on the operator · ' + fmtDur(now - num(job.updated_at))
-          : 'held ' + S.agoLabel(now - num(job.updated_at));
+        c.time = heldAge === null
+          ? heldAgeUnavailable(job.status)
+          : job.status === 'awaiting_signoff'
+            ? 'waiting on the operator · ' + fmtDur(heldAge)
+            : 'held ' + S.agoLabel(heldAge === undefined ? now - num(job.updated_at) : heldAge);
+        if (heldAge !== undefined) c._ageMs = heldAge;
         c._trackJob = job.id;
         c._trackMode = 'gate';
         trackJobIds.add(job.id);
@@ -580,10 +631,13 @@ module.exports = {
       const lifeBtn = life ? { label: 'Open the task', href: '/life/task?id=' + encodeURIComponent(life.taskId) } : null;
       if (b === 'blocked_you') {
         const cp = youCopy(null, j.status);
-        const waiting = j.status === 'awaiting_signoff'
-          ? 'waiting on the operator · ' + fmtDur(now - num(j.updated_at))
-          : 'held ' + S.agoLabel(now - num(j.updated_at));
-        cards.push(Object.assign(base, { col: 'blocked', variant: 'you', task: { strong: typeLabel, tail: ' — ' + cp.verb + '.' }, waitPill: { tone: 'you', text: cp.pill }, button: { label: cp.btn }, talkJobId: j.id, time: waiting, _ageMs: now - num(j.updated_at), _trackJob: j.id, _trackMode: 'gate' }));
+        const heldAge = HELD_STATUSES.has(j.status) ? heldAgeByJob.get(j.id) : undefined;
+        const waiting = heldAge === null
+          ? heldAgeUnavailable(j.status)
+          : j.status === 'awaiting_signoff'
+            ? 'waiting on the operator · ' + fmtDur(heldAge)
+            : 'held ' + S.agoLabel(heldAge === undefined ? now - num(j.updated_at) : heldAge);
+        cards.push(Object.assign(base, { col: 'blocked', variant: 'you', task: { strong: typeLabel, tail: ' — ' + cp.verb + '.' }, waitPill: { tone: 'you', text: cp.pill }, button: { label: cp.btn }, talkJobId: j.id, time: waiting, _ageMs: heldAge === undefined ? now - num(j.updated_at) : heldAge, _trackJob: j.id, _trackMode: 'gate' }));
         trackJobIds.add(j.id);
       } else if (b === 'blocked_dept') {
         cards.push(Object.assign(base, { col: 'blocked', variant: 'dept', task: { strong: typeLabel, tail: ' — awaiting another desk.' }, waitPill: { tone: 'dept', text: 'Waiting on ' + deptNameFor(j) + ' Dept' }, time: 'blocked ' + S.agoLabel(now - num(j.updated_at)), _ageMs: now - num(j.updated_at), button: lifeBtn || undefined }));
