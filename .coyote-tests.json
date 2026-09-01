@@ -98,6 +98,10 @@
     },
     {
       "module": "mission-control/ui/pages/claw/agents.js",
+      "export": "deriveBlockedHeldAge"
+    },
+    {
+      "module": "mission-control/ui/pages/claw/agents.js",
       "export": "render"
     },
     {
@@ -201,6 +205,10 @@
     {
       "name": "mission-control-claw-queue-depth",
       "command": "node --test test/mission-control-claw-queue-depth.test.js"
+    },
+    {
+      "name": "mission-control-claw-held-age",
+      "command": "node --test test/mission-control-claw-held-age.test.js"
     },
     {
       "name": "mission-control-overview-kpi",
