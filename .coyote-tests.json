@@ -147,6 +147,14 @@
     {
       "module": "mission-control/ui/pages/coyote/overview.js",
       "export": "buildOverviewRecipeEconomics"
+    },
+    {
+      "module": "mission-control/ui/pages/life/today.js",
+      "export": "getSection"
+    },
+    {
+      "module": "mission-control/ui/pages/life/today.js",
+      "export": "render"
     }
   ],
   "tests": [
@@ -225,6 +233,10 @@
     {
       "name": "mission-control-costs-recipe-economics",
       "command": "node --test test/mission-control-costs-centre-c2c3.test.js"
+    },
+    {
+      "name": "mission-control-life-autonomy-count",
+      "command": "node --require ./test/tmpdir.js --test test/mission-control-life-autonomy-count.test.js"
     }
   ],
   "mutants": [

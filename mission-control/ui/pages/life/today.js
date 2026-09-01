@@ -17,6 +17,20 @@ const S = require('../../shared.js');
 function londonDate(nowMs) {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/London', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(nowMs));
 }
+// Keep this predicate identical to the engine's AUTOMATED_MOVE_SQL in src/life/mailMove.ts.
+// Mission Control is deployed independently, so it cannot import the engine's TypeScript module.
+const AUTOMATED_MOVE_SQL =
+  "state = 'APPLIED' AND (rule_id IS NOT NULL OR COALESCE(redirect_reason,'') LIKE 'auto-filed%')";
+function automatedMovesOnDay(q, day) {
+  // Match the engine's London-day convention: fetch a UTC window wide enough to cover either
+  // offset, then assign each move to its exact Europe/London calendar day.
+  const mid = Date.parse(`${day}T00:00:00.000Z`);
+  return q(
+    `SELECT moved_at FROM life_mail_moves
+      WHERE ${AUTOMATED_MOVE_SQL} AND moved_at >= ? AND moved_at < ?`,
+    [new Date(mid - 86_400_000).toISOString(), new Date(mid + 2 * 86_400_000).toISOString()],
+  ).filter((r) => londonDate(Date.parse(r.moved_at)) === day).length;
+}
 function eyebrowDate(nowMs) {
   return new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/London', weekday: 'long', day: 'numeric', month: 'long' })
     .format(new Date(nowMs)).replace(',', ' ·').toUpperCase();
@@ -213,6 +227,7 @@ module.exports = {
         neglectedFromWork: q(`SELECT DISTINCT domain_key FROM v_life_available_work`).map((r) => r.domain_key),
         decidedToday: q(`SELECT COUNT(*) c FROM life_update_proposals WHERE decided_at >= ?`, [`${today}T00:00:00.000Z`])[0]?.c ?? 0,
         doneToday: q(`SELECT COUNT(*) c FROM life_task_events WHERE event_type = 'STATUS_CHANGED' AND to_state = 'DONE' AND created_at >= ?`, [`${today}T00:00:00.000Z`])[0]?.c ?? 0,
+        automatedMovesToday: automatedMovesOnDay(q, today),
         captured24h: q(`SELECT COUNT(*) c FROM life_task_events WHERE event_type = 'CREATED' AND created_at >= ?`, [new Date(now - 86_400_000).toISOString()])[0]?.c ?? 0,
         // CALENDAR (Graph go 2026-08-10): the engine mirrors Outlook into life-side tables;
         // My Day reads TODAY's mirror rows. Missing table (engine not deployed) → q() gives
@@ -804,7 +819,7 @@ module.exports = {
     const neglected = Array.isArray(ev.neglected_domains) ? ev.neglected_domains : [];
     const handled = S.rcc.panel({
       title: 'Handled quietly', sub: 'What moved without taking your time',
-      body: `<div style="font-size:13px;line-height:1.7;padding:4px 0">Finished today: <b>${s.doneToday}</b> · suggestions you decided: <b>${s.decidedToday}</b> · applied without you: <b>0</b> — every suggestion waits for your yes.`
+      body: `<div style="font-size:13px;line-height:1.7;padding:4px 0">Finished today: <b>${s.doneToday}</b> · suggestions you decided: <b>${s.decidedToday}</b> · applied without you: <b>${s.automatedMovesToday ?? 0}</b>.`
         + (neglected.length ? `<br><span style="color:#f5c96b">Quiet corner: nothing is moving on <b>${neglected.map(LIFE.esc).join(', ')}</b> despite it being a stated aim — worth one captured task?</span>` : '')
         + `</div>`,
     });
