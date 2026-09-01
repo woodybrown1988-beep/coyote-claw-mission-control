@@ -337,3 +337,26 @@ test('drawer: a command in a brief renders as a copyable block, and stays ESCAPE
   });
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('drawer: a command between steps does not restart the numbering at 1', () => {
+  // Rendering a command closes the open <ol>, so step 2 opened a NEW list and the page showed
+  // "1." twice. Caught in the browser, not the suite: the earlier test asserted step 2 was not
+  // SWALLOWED, which was true — it was present, and mislabelled.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-brief-'));
+  withEnv(fixture(dir, (db) => {
+    db.exec(`CREATE TABLE life_task_briefs (task_id TEXT PRIMARY KEY, brief_md TEXT, input_digest TEXT, model TEXT, generated_at TEXT);`);
+    db.prepare('INSERT INTO life_task_briefs VALUES (?,?,?,?,?)').run('t1',
+      '**Suggested next.**\n1. Run the check:\n`ssh david@100.80.56.91`\n2. Then open the dashboard.\n3. Record the result.',
+      'dig1', 'gpt-5.6-sol', '2026-08-28T09:00:00.000Z');
+  }), () => {
+    const out = render();
+    // the list that resumes after the command must declare where it resumes
+    assert.match(out.body, /<ol start="2"/, 'the second list resumes at 2, not 1');
+    assert.ok(!/<ol start="1"/.test(out.body), 'and a list that starts at 1 needs no attribute');
+    // steps 2 and 3 belong to the SAME resumed list — one command should not split it twice
+    const resumed = /<ol start="2"[^>]*>([\s\S]*?)<\/ol>/.exec(out.body);
+    assert.ok(resumed, 'found the resumed list');
+    assert.equal((resumed[1].match(/<li/g) || []).length, 2, 'steps 2 and 3 stay together');
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+});

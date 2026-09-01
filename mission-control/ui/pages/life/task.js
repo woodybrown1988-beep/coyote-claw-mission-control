@@ -215,7 +215,16 @@ function briefPanel(b, s) {
     .replace(/`([^`]+)`/g, '<code style="font-family:var(--font-mono,monospace);font-size:12px;background:rgba(127,209,220,.10);padding:1px 5px;border-radius:3px">$1</code>');
   const out = [];
   let list = null;
-  const flush = () => { if (list) { out.push(`<${list.tag} style="margin:2px 0 6px;padding-left:18px">${list.items.join('')}</${list.tag}>`); list = null; } };
+  // A COMMAND BLOCK SPLITS THE LIST, SO THE LIST HAS TO REMEMBER ITS NUMBER. Rendering a command
+  // closes the open <ol>; step 2 then opens a NEW one, which restarts at 1 — so a two-step brief
+  // with a command under step 1 showed "1." twice. The parser already captured the real number,
+  // it was simply thrown away. Carry it through as the start attribute.
+  const flush = () => {
+    if (!list) return;
+    const startAttr = list.tag === 'ol' && list.start > 1 ? ` start="${list.start}"` : '';
+    out.push(`<${list.tag}${startAttr} style="margin:2px 0 6px;padding-left:18px">${list.items.join('')}</${list.tag}>`);
+    list = null;
+  };
   for (const raw of md.split(/\n/)) {
     const line = raw.trim();
     if (!line) { flush(); continue; }
@@ -239,7 +248,7 @@ function briefPanel(b, s) {
       if (!list || list.tag !== 'ul') { flush(); list = { tag: 'ul', items: [] }; }
       list.items.push(`<li style="margin:1px 0">${inline(b1[1])}</li>`);
     } else if (n1) {
-      if (!list || list.tag !== 'ol') { flush(); list = { tag: 'ol', items: [] }; }
+      if (!list || list.tag !== 'ol') { flush(); list = { tag: 'ol', items: [], start: Number(n1[1]) || 1 }; }
       list.items.push(`<li style="margin:1px 0">${inline(n1[2])}</li>`);
     } else {
       flush();
