@@ -6,7 +6,7 @@
 //     current-month VERDICT LINE naming the lever);
 //   • QR ATV verdict line reads the PER-RECEIPT record (parity vs direct SQL) — the old
 //     scraper-sourced P3 table is gone (the audit's deepest violation);
-//   • labour verdict line: scorecard-ruler % vs budget, last full week;
+//   • labour verdict line: canonical TRUE cost vs formula budget, last full week;
 //   • WEEK AHEAD: forecast vs rota'd per day; unpublished days say so, never zeros;
 //   • no raw YoY across the premises break; empty DB degrades honestly.
 const assert = require('node:assert/strict');
@@ -17,7 +17,8 @@ const DATA = require('../mission-control/ui/data.js');
 const K = require('../mission-control/ui/kpi.js');
 const SHARED = require('../mission-control/ui/shared.js');
 const overview = require('../mission-control/ui/pages/coyote/overview.js');
-const { buildOverviewRecipeEconomics } = overview;
+const labour = require('../mission-control/ui/pages/coyote/labour.js');
+const { buildOverviewRecipeEconomics, deriveOverviewLabourVerdict } = overview;
 
 const NOW = 1783000000000;
 function ctxFor(db) { return { q: (sql, p) => DATA.safeSelect(db, sql, p), now: NOW }; }
@@ -54,6 +55,40 @@ test('kpi: decompose — the identity holds exactly, lead is named, zero-covers 
   assert.equal(K.decompose(100, 50000, 0, 0), null);
 });
 
+test('deriveOverviewLabourVerdict: formula budget, materiality boundary and missing inputs', () => {
+  const base = {
+    from: '2026-07-06', to: '2026-07-12', days: 7, labourAvailable: true,
+    salariedPence: 14000, netSalesPence: 770000, varRate: 0.224, materialityPence: 4500,
+  };
+  const over = deriveOverviewLabourVerdict({ ...base, actualCostPence: 198000 });
+  assert.equal(over.budgetPence, 186480);
+  assert.equal(over.deltaPence, 11520);
+  assert.equal(over.verdict, 'OVER');
+
+  const atThreshold = deriveOverviewLabourVerdict({ ...base, actualCostPence: 190980 });
+  assert.equal(atThreshold.deltaPence, 4500);
+  assert.equal(atThreshold.verdict, 'within', 'OVER applies only beyond £45');
+  const belowThreshold = deriveOverviewLabourVerdict({ ...base, actualCostPence: 190880 });
+  assert.equal(belowThreshold.deltaPence, 4400);
+  assert.equal(belowThreshold.verdict, 'within');
+
+  const missing = deriveOverviewLabourVerdict({
+    ...base, days: 0, labourAvailable: false, actualCostPence: null, salariedPence: null,
+    varRate: null, materialityPence: null,
+  });
+  assert.deepEqual(missing, {
+    available: false,
+    from: '2026-07-06',
+    to: '2026-07-12',
+    days: 0,
+    missing: [
+      'labour_day actual and salaried cost',
+      'canon_constants labour variable rates',
+      'canon_constants labour materiality',
+    ],
+  });
+});
+
 // ---------- page-level, seeded DB ----------
 
 function makeDb() {
@@ -71,6 +106,8 @@ function makeDb() {
     CREATE TABLE sales_by_channel (business_date TEXT, profile_id TEXT, profile_name TEXT, net_sales_pence INTEGER, gross_sales_pence INTEGER, pos_guest_count INTEGER, transactions INTEGER, tips_pence INTEGER, discounts_pence INTEGER, updated_at INTEGER, PRIMARY KEY (business_date, profile_id));
     CREATE TABLE labour_dept (business_date TEXT, department TEXT, sched_minutes INTEGER, act_minutes INTEGER, sched_cost_rc_pence INTEGER, act_cost_rc_pence INTEGER, rc_uncosted_sched_min INTEGER, rc_uncosted_act_min INTEGER, rc_uncosted_names TEXT, updated_at INTEGER, PRIMARY KEY (business_date, department));
     CREATE TABLE labour_budget (business_date TEXT, department TEXT, labour_pct REAL, updated_at INTEGER, PRIMARY KEY (business_date, department));
+    CREATE TABLE labour_day (business_date TEXT PRIMARY KEY, scheduled_minutes INTEGER, actual_minutes INTEGER, actual_paid_minutes INTEGER, scheduled_cost_pence INTEGER, actual_cost_pence INTEGER, salaried_cost_pence INTEGER, unmapped_actual_minutes INTEGER, unmapped_names TEXT, updated_at INTEGER);
+    CREATE TABLE canon_constants (key TEXT PRIMARY KEY, value TEXT NOT NULL, as_of TEXT NOT NULL, note TEXT);
     CREATE TABLE sales_receipts_api (receipt_id TEXT PRIMARY KEY, business_date TEXT, type TEXT, cancelled INTEGER, account_profile_code TEXT, net_without_tax_pence INTEGER, table_name TEXT);
     CREATE TABLE sales_receipt_lines_api (receipt_id TEXT, line_id TEXT, business_date TEXT, sku TEXT, name TEXT, quantity REAL, net_with_tax_pence INTEGER, net_without_tax_pence INTEGER, PRIMARY KEY (receipt_id, line_id));
     CREATE TABLE sales_channel_map_api (account_profile_code TEXT PRIMARY KEY, profile_name TEXT, channel_label TEXT);
@@ -112,13 +149,20 @@ function seedChannels(db) {
 function seedLabour(db) {
   const ld = db.prepare(`INSERT INTO labour_dept (business_date, department, act_cost_rc_pence, updated_at) VALUES (?,?,?,0)`);
   const lb = db.prepare(`INSERT INTO labour_budget (business_date, department, labour_pct, updated_at) VALUES (?,?,?,0)`);
+  const day = db.prepare(`INSERT INTO labour_day (business_date, scheduled_minutes, actual_minutes, actual_paid_minutes, scheduled_cost_pence, actual_cost_pence, salaried_cost_pence, unmapped_actual_minutes, unmapped_names, updated_at) VALUES (?,?,?,?,?,?,?,?,?,0)`);
   for (let d = 6; d <= 12; d++) {
     const date = `2026-07-${pad(d)}`;
     ld.run(date, 'Kitchen', 14000);
     ld.run(date, 'FOH', 11000);
     lb.run(date, 'Kitchen', 0.133);
     lb.run(date, 'FOH', 0.103);
+    day.run(date, 2880, 2880, 2880, 27000, d === 12 ? 28284 : 28286, 2000, 0, '[]');
   }
+  db.exec(`INSERT INTO canon_constants (key, value, as_of, note) VALUES
+    ('labour.employer_burden_multiplier','1.159','2026-08-10',NULL),
+    ('labour.var_rate_kitchen','0.143','2026-08-10',NULL),
+    ('labour.var_rate_foh','0.081','2026-08-10',NULL),
+    ('labour.materiality_pence','4500','2026-08-10',NULL)`);
   // June weeks intentionally have NO labour_dept rows → "awaiting rota backfill"
 }
 
@@ -341,18 +385,82 @@ test('overview: QR verdict line renders spend per SITTING (fragmentation ruling 
   db.close();
 });
 
-test('overview: labour verdict line — scorecard % vs budget, last full week', () => {
+test('overview: canonical labour verdict agrees with Labour Centre when the RC-screen basis conflicts, including £45 materiality', () => {
   const db = makeDb();
   seedSales(db);
   seedLabour(db);
   const ctx = ctxFor(db);
+
+  const rcActual = 175000;
+  const staleScorecardBudget = 0.236 * 770000;
+  assert.ok(rcActual < staleScorecardBudget, 'the RotaCloud/unburdened basis says within');
+
   const m = overview.getSection(db, ctx);
-  assert.ok(Math.abs(m.labourWeek.actPct - (175000 / 770000) * 100) < 0.001);
-  assert.ok(Math.abs(m.labourWeek.budPct - 23.6) < 0.001);
+  assert.equal(m.labourWeek.actualCostPence, 198000,
+    'Overview must use the weekly labour_day.actual_cost_pence sum, not labour_dept');
+  assert.equal(m.labourWeek.budgetPence, 14000 + (0.224 * 770000));
+  assert.equal(m.labourWeek.deltaPence, 11520);
+  assert.equal(m.labourWeek.verdict, 'OVER');
+
+  const centre = labour.getSection(db, ctx);
+  assert.equal(m.labourWeek.from, centre.exec.week.from);
+  assert.equal(m.labourWeek.to, centre.exec.week.to);
+  assert.equal(m.labourWeek.actualCostPence, centre.exec.inter.ac);
+  assert.equal(m.labourWeek.netSalesPence, centre.exec.inter.net);
+  assert.equal(m.labourWeek.salariedPence, centre.exec.inter.sal);
+  assert.equal(m.labourWeek.budgetPence,
+    Math.round(centre.exec.inter.sal + (centre.canon.varRate * centre.exec.inter.net)));
+  assert.equal(m.labourWeek.verdict,
+    centre.exec.inter.ac - m.labourWeek.budgetPence > centre.canon.materialityPence ? 'OVER' : 'within');
+
   const out = overview.render(m, ctx);
-  assert.match(out.body, /Labour last week: <b>22\.7%<\/b> vs budget 23\.6%/);
+  assert.match(out.body, /Labour last week: <b>25\.7%<\/b> vs formula budget 24\.2%/);
+  assert.match(out.body, /<span class="rp-yoy-down">OVER<\/span>/);
+  assert.doesNotMatch(out.body, /scorecard ruler/);
   assert.match(out.body, /rota review →/);
+
+  const updateDay = db.prepare(`UPDATE labour_day SET actual_cost_pence = ? WHERE business_date = ?`);
+  for (let d = 6; d <= 12; d++) updateDay.run(d === 12 ? 27266 : 27269, `2026-07-${pad(d)}`);
+  const below = overview.getSection(db, ctx);
+  assert.equal(below.labourWeek.deltaPence, 4400, '£44 is above budget but below materiality');
+  assert.equal(below.labourWeek.verdict, 'within');
+  const belowOut = overview.render(below, ctx);
+  assert.match(belowOut.body, /<span class="rp-yoy-up">within<\/span>/);
+  assert.doesNotMatch(belowOut.body, /scorecard ruler/);
   db.close();
+});
+
+test('overview: missing canonical labour inputs name the gap and its unlock without an RC-screen fallback', () => {
+  const noLabour = makeDb();
+  seedSales(noLabour);
+  seedLabour(noLabour);
+  noLabour.prepare(`DELETE FROM labour_day WHERE business_date = '2026-07-10'`).run();
+  const noLabourCtx = ctxFor(noLabour);
+  const missingDay = overview.getSection(noLabour, noLabourCtx);
+  assert.equal(missingDay.labourWeek.available, false);
+  assert.deepEqual(missingDay.labourWeek.missing, ['labour_day actual and salaried cost']);
+  const missingDayOut = overview.render(missingDay, noLabourCtx);
+  assert.match(missingDayOut.body, /Labour last week unavailable .*missing labour_day actual and salaried cost/);
+  assert.match(missingDayOut.body, /run the daily RotaCloud ingest/);
+  assert.doesNotMatch(missingDayOut.body, /Labour last week: <b>|scorecard ruler/);
+  noLabour.close();
+
+  const noCanon = makeDb();
+  seedSales(noCanon);
+  seedLabour(noCanon);
+  noCanon.exec(`DELETE FROM canon_constants`);
+  const noCanonCtx = ctxFor(noCanon);
+  const missingCanon = overview.getSection(noCanon, noCanonCtx);
+  assert.equal(missingCanon.labourWeek.available, false);
+  assert.deepEqual(missingCanon.labourWeek.missing, [
+    'canon_constants labour variable rates',
+    'canon_constants labour materiality',
+  ]);
+  const missingCanonOut = overview.render(missingCanon, noCanonCtx);
+  assert.match(missingCanonOut.body, /Labour last week unavailable .*missing canon_constants labour variable rates · canon_constants labour materiality/);
+  assert.match(missingCanonOut.body, /deploy the engine schema that seeds the ruled canon_constants/);
+  assert.doesNotMatch(missingCanonOut.body, /Labour last week: <b>|scorecard ruler/);
+  noCanon.close();
 });
 
 test('overview: WEEK AHEAD — forecast vs rota, unpublished honesty, FORWARD verdict line', () => {

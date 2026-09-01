@@ -20,6 +20,49 @@ function toNum(v) { if (v === null || v === undefined) return null; const n = Nu
 function row(res) { return res && res.ok && res.rows && res.rows.length ? res.rows[0] : null; }
 function rows(res) { return res && res.ok && res.rows ? res.rows : []; }
 
+const OVERVIEW_LABOUR_CANON_KEYS = {
+  varKitchen: 'labour.var_rate_kitchen',
+  varFoh: 'labour.var_rate_foh',
+  materialityPence: 'labour.materiality_pence',
+};
+
+function deriveOverviewLabourVerdict(input) {
+  const x = input || {};
+  const days = toInt(x.days);
+  const actualCostPence = toNum(x.actualCostPence);
+  const salariedPence = toNum(x.salariedPence);
+  const netSalesPence = toNum(x.netSalesPence);
+  const varRate = toNum(x.varRate);
+  const materialityPence = toNum(x.materialityPence);
+  const missing = [];
+  if (x.labourAvailable === false || days <= 0 || actualCostPence == null || salariedPence == null) {
+    missing.push('labour_day actual and salaried cost');
+  }
+  if (!(netSalesPence > 0)) missing.push('net sales for the labour week');
+  if (varRate == null) missing.push('canon_constants labour variable rates');
+  if (materialityPence == null) missing.push('canon_constants labour materiality');
+  if (missing.length) {
+    return { available: false, from: x.from || null, to: x.to || null, days, missing };
+  }
+  const budgetPence = Math.round(salariedPence + (varRate * netSalesPence));
+  const deltaPence = actualCostPence - budgetPence;
+  return {
+    available: true,
+    from: x.from || null,
+    to: x.to || null,
+    days,
+    actualCostPence,
+    salariedPence,
+    netSalesPence,
+    budgetPence,
+    deltaPence,
+    materialityPence,
+    actPct: (actualCostPence / netSalesPence) * 100,
+    budPct: (budgetPence / netSalesPence) * 100,
+    verdict: deltaPence > materialityPence ? 'OVER' : 'within',
+  };
+}
+
 /** Compact recipe economics for the cockpit. Recipe eligibility deliberately retains the
  * existing Overview gate; only the sales denominator and its effective period come from the
  * shared canonical, explicitly ex-VAT item feed. */
@@ -83,7 +126,7 @@ function buildOverviewRecipeEconomics(q) {
 
 module.exports = {
   key: 'overview', route: '/coyote/overview', workspace: 'coyote', title: 'Overview', sub: 'The cockpit · what needs you, then the week behind and the week ahead',
-  buildOverviewRecipeEconomics,
+  buildOverviewRecipeEconomics, deriveOverviewLabourVerdict,
 
   getSection(db, ctx) {
     const q = ctx.q;
@@ -236,29 +279,45 @@ module.exports = {
         };
       }
     }
-    // (c) labour verdict: last full week, scorecard ruler (the tables live in Labour / Rota Review)
+    // (c) labour verdict: last full week on the Labour Centre's canonical TRUE ruler and formula
+    // budget. Missing labour-day or ruled-constant inputs stay explicit; RC-screen arithmetic is
+    // never a fallback here (the tables live in Labour / Rota Review).
     let labourWeek = null;
     if (kpiMax) {
       const w = K.lastFullWeek(kpiMax);
-      const act = row(q(
-        `SELECT SUM(ld.act_cost_rc_pence) cost, COUNT(DISTINCT ld.business_date) days
-           FROM labour_dept ld JOIN v_sales_day_all s ON s.business_date = ld.business_date
-          WHERE ld.business_date BETWEEN ? AND ? AND s.net_sales_pence > 0`, [w.from, w.to])) || {};
-      const actNet = row(q(
-        `SELECT SUM(net) net FROM (
-           SELECT DISTINCT s.business_date, s.net_sales_pence AS net
-             FROM v_sales_day_all s JOIN labour_dept ld ON ld.business_date = s.business_date
-            WHERE s.business_date BETWEEN ? AND ? AND s.net_sales_pence > 0)`, [w.from, w.to])) || {};
-      const bud = row(q(
-        `SELECT SUM(b.labour_pct * s.net_sales_pence) pence FROM labour_budget b
-           JOIN v_sales_day_all s ON s.business_date = b.business_date
-          WHERE b.business_date BETWEEN ? AND ? AND s.net_sales_pence > 0`, [w.from, w.to])) || {};
-      const aNet = toInt(actNet.net);
-      labourWeek = {
-        from: w.from, to: w.to, days: toInt(act.days),
-        actPct: aNet > 0 && toInt(act.days) > 0 ? (toInt(act.cost) / aNet) * 100 : null,
-        budPct: aNet > 0 ? (Number(bud.pence || 0) / aNet) * 100 : null,
-      };
+      const labourResult = q(
+        `SELECT SUM(l.actual_cost_pence) actual, SUM(l.salaried_cost_pence) salaried,
+                SUM(s.net_sales_pence) net, COUNT(*) sales_days,
+                COUNT(l.business_date) labour_days, COUNT(l.actual_cost_pence) actual_days,
+                COUNT(l.salaried_cost_pence) salaried_days
+           FROM v_sales_day_all s LEFT JOIN labour_day l ON l.business_date = s.business_date
+          WHERE s.business_date BETWEEN ? AND ? AND s.net_sales_pence > 0`, [w.from, w.to]);
+      const labour = row(labourResult) || {};
+      const labourDays = toInt(labour.labour_days);
+      const labourAvailable = !!(labourResult && labourResult.ok
+        && labourDays > 0
+        && labourDays === toInt(labour.sales_days)
+        && toInt(labour.actual_days) === labourDays
+        && toInt(labour.salaried_days) === labourDays);
+      const canonResult = q(`SELECT key, value FROM canon_constants WHERE key IN (?, ?, ?)`, [
+        OVERVIEW_LABOUR_CANON_KEYS.varKitchen,
+        OVERVIEW_LABOUR_CANON_KEYS.varFoh,
+        OVERVIEW_LABOUR_CANON_KEYS.materialityPence,
+      ]);
+      const canon = new Map(rows(canonResult).map((r) => [String(r.key), toNum(r.value)]));
+      const kitchen = canon.get(OVERVIEW_LABOUR_CANON_KEYS.varKitchen);
+      const foh = canon.get(OVERVIEW_LABOUR_CANON_KEYS.varFoh);
+      labourWeek = deriveOverviewLabourVerdict({
+        from: w.from,
+        to: w.to,
+        days: labourDays,
+        labourAvailable,
+        actualCostPence: labour.actual,
+        salariedPence: labour.salaried,
+        netSalesPence: labour.net,
+        varRate: kitchen != null && foh != null ? kitchen + foh : null,
+        materialityPence: canon.get(OVERVIEW_LABOUR_CANON_KEYS.materialityPence),
+      });
     }
 
     // (6) system strip — gathered always, RENDERED only when something is off
@@ -404,10 +463,23 @@ module.exports = {
       const vs = m.qr.eatPerSit != null ? ` vs EAT IN ${gbp(m.qr.eatPerSit)}` : '';
       lines.push(`QR <b>${gbp(m.qr.perSit)}</b>/sitting${vs} (28d, ${S.fmtInt(m.qr.sittings)} QR sittings, per-receipt record) — <span style="opacity:.75">QR orders fragment per sitting; per-order ATV (${gbp(m.qr.atv)}) understates spend; per-cover basis is the honest comparison</span> · <a href="/coyote/reports" style="color:var(--cyan,#22D3EE)">channel mix →</a>`);
     }
-    if (m.labourWeek && m.labourWeek.actPct != null) {
+    if (m.labourWeek && m.labourWeek.available) {
       const lw = m.labourWeek;
-      const over = lw.budPct != null && lw.actPct > lw.budPct;
-      lines.push(`Labour last week: <b>${lw.actPct.toFixed(1)}%</b> vs budget ${lw.budPct != null ? lw.budPct.toFixed(1) + '%' : '—'} (scorecard ruler, ${S.fmtInt(lw.days)}d)${over ? ' <span class="rp-yoy-down">over</span>' : ' <span class="rp-yoy-up">within</span>'} · <a href="/coyote/labour" style="color:var(--cyan,#22D3EE)">labour →</a> · <a href="/coyote/labour?tab=rota-review" style="color:var(--cyan,#22D3EE)">rota review →</a>`);
+      lines.push(`Labour last week: <b>${lw.actPct.toFixed(1)}%</b> vs formula budget ${lw.budPct.toFixed(1)}% (TRUE all-in, ${S.fmtInt(lw.days)}d) ${lw.verdict === 'OVER' ? '<span class="rp-yoy-down">OVER</span>' : '<span class="rp-yoy-up">within</span>'} · <a href="/coyote/labour" style="color:var(--cyan,#22D3EE)">labour →</a> · <a href="/coyote/labour?tab=rota-review" style="color:var(--cyan,#22D3EE)">rota review →</a>`);
+    } else if (m.labourWeek) {
+      const lw = m.labourWeek;
+      const missing = (lw.missing || []).map(esc).join(' · ') || 'canonical labour inputs';
+      const unlocks = [];
+      if ((lw.missing || []).some((x) => String(x).includes('labour_day'))) {
+        unlocks.push('deploy the engine schema if labour_day is absent, then run the daily RotaCloud ingest');
+      }
+      if ((lw.missing || []).some((x) => String(x).includes('canon_constants'))) {
+        unlocks.push('deploy the engine schema that seeds the ruled canon_constants');
+      }
+      if ((lw.missing || []).some((x) => String(x).includes('net sales'))) {
+        unlocks.push('run the daily Lightspeed ingest');
+      }
+      lines.push(`Labour last week unavailable (${esc(lw.from)} → ${esc(lw.to)}): <b>missing ${missing}</b>. Clear it: ${esc(unlocks.join('; ') || 'restore the canonical inputs')}. No verdict is shown · <a href="/coyote/labour" style="color:var(--cyan,#22D3EE)">labour →</a>`);
     }
     if (lines.length) {
       parts.push(`<div class="sec-label">Verdicts<span class="rule"></span></div>`);

@@ -161,6 +161,10 @@
       "export": "buildOverviewRecipeEconomics"
     },
     {
+      "module": "mission-control/ui/pages/coyote/overview.js",
+      "export": "deriveOverviewLabourVerdict"
+    },
+    {
       "module": "mission-control/ui/pages/life/today.js",
       "export": "getSection"
     },
