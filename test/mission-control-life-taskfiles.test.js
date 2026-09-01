@@ -306,3 +306,34 @@ test('drawer: no brief, no panel — an absent table is not an error', () => {
   });
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('drawer: a command in a brief renders as a copyable block, and stays ESCAPED', () => {
+  // Operator, 2026-08-28: "I need to know where to go and what to type — what website to visit,
+  // or if in cmd what ssh then code to type." The brief now writes commands; the panel has to
+  // render them as something he can click once and copy, without ever letting model output
+  // reach the page as markup.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-brief-'));
+  withEnv(fixture(dir, (db) => {
+    db.exec(`CREATE TABLE life_task_briefs (task_id TEXT PRIMARY KEY, brief_md TEXT, input_digest TEXT, model TEXT, generated_at TEXT);`);
+    db.prepare('INSERT INTO life_task_briefs VALUES (?,?,?,?,?)').run('t1',
+      '**Suggested next.**\n1. Run the check on the box from Windows Terminal:\n'
+      + '`ssh david@100.80.56.91`\n`cd ~/coyote-claw && npm run cred-check`\n'
+      + '2. Open Mission Control and read the latest `coyote-reviews-ingest` run.\n'
+      + '3. <script>alert(1)</script> must never execute.',
+      'dig1', 'gpt-5.6-sol', '2026-08-28T09:00:00.000Z');
+  }), () => {
+    const out = render();
+    // the command lines became their own blocks, click-to-select
+    assert.match(out.body, /user-select:all[^>]*>ssh david@100\.80\.56\.91</, 'the ssh line is a copyable block');
+    assert.match(out.body, /cd ~\/coyote-claw &amp;&amp; npm run cred-check/, 'and so is the cd line, escaped');
+    // the numbering SURVIVED — the bug that prompted this was step 2 being swallowed
+    assert.match(out.body, /<ol[^>]*>[\s\S]*Run the check on the box[\s\S]*<\/ol>/, 'step 1 is a list item');
+    assert.match(out.body, /Open Mission Control/, 'step 2 was not swallowed by step 1');
+    // inline code inside a sentence stays inline, not promoted to a block
+    assert.match(out.body, /<code[^>]*>coyote-reviews-ingest<\/code>/, 'inline code renders inline');
+    // and the safety that outranks all of it
+    assert.ok(!out.body.includes('<script>alert(1)</script>'), 'no raw script survives');
+    assert.match(out.body, /&lt;script&gt;/, 'it renders as visible text instead');
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+});

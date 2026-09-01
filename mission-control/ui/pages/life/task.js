@@ -207,7 +207,12 @@ function briefPanel(b, s) {
   if (!b || !String(b.brief_md || '').trim()) return '';
   const md = String(b.brief_md);
   const esc = (x) => LIFE.esc(x);
-  const inline = (line) => esc(line).replace(/\*\*(.+?)\*\*/g, '<b style="color:#e9eef4">$1</b>');
+  // Escape FIRST, then apply the tiny markup to the escaped string — the brief is model output
+  // and must never reach the page as markup. Inline code renders mono; a line that is ENTIRELY
+  // one backticked span becomes a command block (see cmdLine below).
+  const inline = (line) => esc(line)
+    .replace(/\*\*(.+?)\*\*/g, '<b style="color:#e9eef4">$1</b>')
+    .replace(/`([^`]+)`/g, '<code style="font-family:var(--font-mono,monospace);font-size:12px;background:rgba(127,209,220,.10);padding:1px 5px;border-radius:3px">$1</code>');
   const out = [];
   let list = null;
   const flush = () => { if (list) { out.push(`<${list.tag} style="margin:2px 0 6px;padding-left:18px">${list.items.join('')}</${list.tag}>`); list = null; } };
@@ -216,6 +221,20 @@ function briefPanel(b, s) {
     if (!line) { flush(); continue; }
     const b1 = /^-\s+(.*)$/.exec(line);
     const n1 = /^(\d+)[.)]\s+(.*)$/.exec(line);
+    // A COMMAND HE CAN COPY (operator ask 2026-08-28: "I need to know where to go and what to
+    // type — what website to visit, or if in cmd what ssh then code to type"). A line that is
+    // nothing but one backticked span is a command: rendered as its own mono block, with
+    // user-select:all so a single click selects the whole line and nothing around it. No script
+    // is involved — the panel deliberately has none, and a select-all block needs none.
+    const cmd = /^`([^`]+)`$/.exec(line);
+    if (cmd) {
+      flush();
+      out.push(`<div style="font-family:var(--font-mono,monospace);font-size:12px;`
+        + `background:rgba(0,0,0,.28);border:1px solid rgba(127,209,220,.20);border-radius:6px;`
+        + `padding:7px 10px;margin:5px 0 6px;overflow-x:auto;white-space:pre;`
+        + `user-select:all;-webkit-user-select:all">${esc(cmd[1])}</div>`);
+      continue;
+    }
     if (b1) {
       if (!list || list.tag !== 'ul') { flush(); list = { tag: 'ul', items: [] }; }
       list.items.push(`<li style="margin:1px 0">${inline(b1[1])}</li>`);
