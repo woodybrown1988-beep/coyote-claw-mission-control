@@ -133,6 +133,18 @@
       "export": "buildMenuPortfolio"
     },
     {
+      "module": "mission-control/ui/pages/coyote/reports.js",
+      "export": "deriveSittingCaptionState"
+    },
+    {
+      "module": "mission-control/ui/pages/coyote/reports.js",
+      "export": "deriveCoversCaptionState"
+    },
+    {
+      "module": "mission-control/ui/pages/coyote/reports.js",
+      "export": "deriveReconciliationCaptionState"
+    },
+    {
       "module": "mission-control/ui/pages/coyote/costs.js",
       "export": "buildRecipeEconomics"
     },
@@ -213,6 +225,10 @@
     {
       "name": "mission-control-menu-growth",
       "command": "node --test test/mission-control-rcc-p5-menu.test.js"
+    },
+    {
+      "name": "mission-control-report-caption-logic",
+      "command": "node --test test/mission-control-reports-caption-logic.test.js"
     },
     {
       "name": "mission-control-costs-recipe-economics",

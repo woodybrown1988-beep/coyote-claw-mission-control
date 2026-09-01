@@ -35,7 +35,8 @@
 // NO-FABRICATION rules baked in:
 //   • Executive KPI window = the LAST FULL Mon–Sun week vs the weekday-aligned week LY (−364d),
 //     premises-guarded — a non-comparable LY drops the delta and says so, never a raw cross-site %.
-//   • Covers stay "not wired" (POS guest-count is NOT covers — canon) until OpenTable lands.
+//   • Covers are shown only when covers_day spans every positive-net trading date in the window;
+//     POS guest-count is NOT covers (canon), and this page makes no claim about feed existence.
 //   • Forecast (operator ruling): seasonality-aware headline (weighted per-month YoY ratio,
 //     trailing ≤6 complete pairs, ×3/×2 recency) + simple YTD-YoY grey sanity + premises guard
 //     (move 2023-04-01). Months without complete per-receipt coverage are GAPS, never estimates.
@@ -70,13 +71,11 @@ const SALE_WHERE = `r.cancelled = 0 AND (r.type IS NULL OR r.type NOT IN ('VOID'
 const CPT_BAND = [1.9, 2.0];
 
 // ---- SITTINGS CAPTURE GATE (2026-08-19, from a live wrong-number report) ----------------------
-// A sitting can only be formed from a receipt carrying a PHYSICAL table ("… Table N"). The POS
-// records "Order N" — a per-order counter, not a location — for most service, and those are
-// deliberately NOT clustered (an "Order 3" an hour later is a different party; clustering it would
-// be fabrication). So the sittings population is a SUBSET of dine-in — and it is not drawn evenly:
-// measured over the 28 days to 2026-08-18, MON-FRI DEAL was ~100% captured by net, EAT IN ~9% and
-// QR ~19%. "Net per served sitting" is therefore mostly the MON-FRI DEAL price, and setting it
-// against QR compares two channels sampled at very different rates.
+// The current sitting population has two observable grains: receipts clustered at a physical table,
+// and a closed "Order N" tab kept as one standalone sitting. Order counters are never clustered with
+// each other: they identify individual closed tabs, not a reusable place. The panel derives both the
+// population mix and capture from the current window's rows so its caption cannot deny a receipt used
+// by its figure.
 //
 // The arithmetic was never wrong — a biased sample was being presented as a channel verdict. So the
 // panel must STATE the capture rate and REFUSE the comparison when the sample cannot carry it.
@@ -95,13 +94,184 @@ function sittingCaptureVerdict(cap) {
   const spread = Math.abs(qr - served);
   if (low.length) {
     return { ok: false, qr, served, spread,
-      reason: `only ${low.join(' and ')} of that channel's net sits on a numbered table — too little of it is captured to read a per-party figure` };
+      reason: `only ${low.join(' and ')} of that channel's net maps to a sitting (numbered table cluster or standalone Order N receipt) — too little of it is captured to read a per-party figure` };
   }
   if (spread > SITTING_MAX_SPREAD) {
     return { ok: false, qr, served, spread,
       reason: `the channels are captured at different rates (QR ${pct(qr)} vs served ${pct(served)}) — the comparison would measure table-assignment habit, not channel value` };
   }
   return { ok: true, qr, served, spread };
+}
+
+function rowValue(row, names) {
+  for (const name of names) if (row && Object.prototype.hasOwnProperty.call(row, name)) return row[name];
+  return undefined;
+}
+
+function rowDate(row) {
+  const value = rowValue(row, ['date', 'businessDate', 'business_date', 'd']);
+  return value == null ? null : String(value);
+}
+
+function inRequestedWindow(date, window) {
+  return !!date && (!window || !window.from || date >= window.from) && (!window || !window.to || date <= window.to);
+}
+
+function plural(n, one, many) { return `${n} ${n === 1 ? one : many}`; }
+
+// Pure caption seam: the SQL builder supplies current-window rows and this function makes every
+// population/capture claim from those rows. An absent required field is different from a genuine
+// zero/null value and is named rather than converted into a plausible percentage.
+function deriveSittingCaptionState(sittingRows, receiptCaptureRows) {
+  const sittings = Array.isArray(sittingRows) ? sittingRows : [];
+  const receipts = Array.isArray(receiptCaptureRows) ? receiptCaptureRows : [];
+  let tableClusters = 0; let standaloneOrders = 0; let unclassified = 0;
+  const populationMissing = new Set();
+  for (const row of sittings) {
+    const tableName = rowValue(row, ['tableName', 'table_name', 'tbl']);
+    const receiptCount = num(rowValue(row, ['receiptCount', 'receipt_count', 'rcpts']));
+    if (tableName === undefined) populationMissing.add('table_name');
+    if (receiptCount == null) populationMissing.add('receipt_count');
+    const name = tableName == null ? '' : String(tableName);
+    if (/Table\s+\d/i.test(name)) tableClusters++;
+    else if (/^Order\s+\d+$/i.test(name) && receiptCount === 1) standaloneOrders++;
+    else unclassified++;
+  }
+  const total = sittings.length;
+  const pct = (value) => total > 0 ? `${((100 * value) / total).toFixed(1)}%` : '0.0%';
+  const populationSupported = populationMissing.size === 0 && unclassified === 0;
+  const populationCaption = !total
+    ? 'No sitting rows exist in the current window.'
+    : (populationSupported
+      ? `${plural(total, 'sitting', 'sittings')}: ${plural(tableClusters, 'clustered table-served receipt group', 'clustered table-served receipt groups')} (${pct(tableClusters)}) + ${plural(standaloneOrders, 'standalone Order N receipt', 'standalone Order N receipts')} (${pct(standaloneOrders)}).`
+      : `Sitting population unavailable — missing ${[...populationMissing].join(', ') || 'a supported table cluster or standalone Order N classification'} on current-window sitting rows.`);
+
+  const captureMissing = new Set();
+  if (!receipts.length) captureMissing.add('current-window receipt rows');
+  const pool = { QR: { net: 0, sittingNet: 0 }, served: { net: 0, sittingNet: 0 } };
+  const byLabel = {};
+  for (const row of receipts) {
+    const labelValue = rowValue(row, ['label', 'channelLabel', 'channel_label', 'lbl']);
+    const netValue = rowValue(row, ['net', 'net_without_tax_pence']);
+    const sittingNetValue = rowValue(row, ['sittingNet', 'sitting_net', 'cnet']);
+    if (labelValue === undefined || labelValue === null) captureMissing.add('channel_label');
+    if (netValue === undefined || num(netValue) == null) captureMissing.add('net_without_tax_pence');
+    if (sittingNetValue === undefined || num(sittingNetValue) == null) captureMissing.add('sittingNet');
+    if (captureMissing.size) continue;
+    const label = String(labelValue);
+    const net = num(netValue) || 0;
+    const sittingNet = num(sittingNetValue) || 0;
+    const group = label === QR_LABEL ? 'QR' : 'served';
+    pool[group].net += net;
+    pool[group].sittingNet += sittingNet;
+    if (net > 0) byLabel[label] = sittingNet / net;
+  }
+  const capture = { supported: captureMissing.size === 0, byLabel };
+  if (capture.supported) {
+    for (const group of ['QR', 'served']) if (pool[group].net > 0) capture[group] = pool[group].sittingNet / pool[group].net;
+    if (capture.QR == null) captureMissing.add('QR channel net');
+    if (capture.served == null) captureMissing.add('served channel net');
+    capture.supported = captureMissing.size === 0;
+  }
+  const captureCaption = capture.supported
+    ? `Capture by the same population (table clusters and standalone Order N receipts): QR ${(100 * capture.QR).toFixed(1)}% · served ${(100 * capture.served).toFixed(1)}% of current-window channel net (${Object.entries(byLabel).map(([label, value]) => `${label} ${(100 * value).toFixed(1)}%`).join(' · ')}).`
+    : `Capture unavailable — missing ${[...captureMissing].join(', ')}; no capture percentage is shown.`;
+  return {
+    population: { total, tableClusters, standaloneOrders, unclassified, supported: populationSupported },
+    capture,
+    populationCaption,
+    captureCaption,
+  };
+}
+
+function eligibleSalesDates(salesRows, window) {
+  const dates = new Map();
+  for (const row of (Array.isArray(salesRows) ? salesRows : [])) {
+    const date = rowDate(row);
+    const net = num(rowValue(row, ['net', 'netSales', 'net_sales_pence']));
+    if (inRequestedWindow(date, window) && net != null && net > 0) dates.set(date, net);
+  }
+  return dates;
+}
+
+function coverageRequirement(dates) { return dates.join(', '); }
+
+// A covers row is expected only for a positive-net trading date. Zero-net ingest rows describe a
+// legitimate closure and must not turn a complete covers window into a false PARTIAL state.
+function deriveCoversCaptionState(salesRows, coversRows, window) {
+  const eligible = eligibleSalesDates(salesRows, window);
+  const covered = new Map();
+  for (const row of (Array.isArray(coversRows) ? coversRows : [])) {
+    const date = rowDate(row);
+    const total = num(rowValue(row, ['totalCovers', 'total_covers', 'covers']));
+    if (inRequestedWindow(date, window) && eligible.has(date) && total != null) covered.set(date, total);
+  }
+  const eligibleDates = [...eligible.keys()].sort();
+  const coveredDates = [...covered.keys()].sort();
+  const missingDates = eligibleDates.filter((date) => !covered.has(date));
+  const base = {
+    eligibleDates, coveredDates, missingDates,
+    have: coveredDates.length, need: eligibleDates.length,
+    totalCovers: coveredDates.length ? [...covered.values()].reduce((sum, value) => sum + value, 0) : null,
+  };
+  if (!eligibleDates.length) {
+    return { ...base, kind: 'not-applicable', caption: `No cover-applicable trading dates exist in ${window.from} → ${window.to}; closed/non-cover-applicable day rows do not require covers.` };
+  }
+  if (!missingDates.length) {
+    return { ...base, kind: 'complete', caption: `Covers span all ${eligibleDates.length} eligible trading dates (${eligibleDates[0]} → ${eligibleDates[eligibleDates.length - 1]}).` };
+  }
+  const required = coverageRequirement(missingDates);
+  if (!coveredDates.length) {
+    return { ...base, kind: 'empty', caption: `No covers exist in this applicable window. Add covers_day coverage for ${required} to clear the gate.` };
+  }
+  return { ...base, kind: 'partial', caption: `PARTIAL — covers exist for ${coveredDates.length} of ${eligibleDates.length} eligible trading dates; missing ${required}. Add covers_day coverage for those dates to clear the gate.` };
+}
+
+// Reconciliation is allowed to use a narrower intersection because both £ sides are summed from
+// the exact same verified dates. A covers_day row joins that intersection only when the revenue
+// fields required by this particular cross-check are present.
+function deriveReconciliationCaptionState(salesRows, coversRows, window) {
+  const eligible = eligibleSalesDates(salesRows, window);
+  const validCovers = new Map();
+  for (const row of (Array.isArray(coversRows) ? coversRows : [])) {
+    const date = rowDate(row);
+    const revenueCovers = num(rowValue(row, ['revenueCovers', 'revenue_covers']));
+    const revenueNet = num(rowValue(row, ['revenueNet', 'revenue_net_pence', 'ot_net']));
+    if (inRequestedWindow(date, window) && eligible.has(date) && revenueCovers > 0 && revenueNet != null) validCovers.set(date, row);
+  }
+  const eligibleDates = [...eligible.keys()].sort();
+  const dates = [...validCovers.keys()].sort();
+  const missingDates = eligibleDates.filter((date) => !validCovers.has(date));
+  if (!dates.length) {
+    const requirement = missingDates.length
+      ? `Add covers_day revenue_covers and revenue_net_pence for ${coverageRequirement(missingDates)} to clear the gate.`
+      : `Select a requested window containing a positive-net trading date with covers_day revenue coverage to clear the gate.`;
+    return {
+      withheld: true, dates, missingDates, dateLabel: null,
+      lightspeedNet: null, openTableNet: null, openTableGross: null,
+      revenueCovers: null, seatedCovers: null,
+      caption: `Cross-check withheld — no valid requested × eligible trading date × covers_day revenue intersection exists. ${requirement}`,
+    };
+  }
+  let lightspeedNet = 0; let openTableNet = 0; let openTableGross = 0;
+  let revenueCovers = 0; let seatedCovers = 0;
+  for (const date of dates) {
+    const row = validCovers.get(date);
+    lightspeedNet += eligible.get(date) || 0;
+    openTableNet += num(rowValue(row, ['revenueNet', 'revenue_net_pence', 'ot_net'])) || 0;
+    openTableGross += num(rowValue(row, ['revenueGross', 'revenue_gross_pence', 'ot_gross'])) || 0;
+    revenueCovers += num(rowValue(row, ['revenueCovers', 'revenue_covers', 'covers'])) || 0;
+    seatedCovers += num(rowValue(row, ['seatedCovers', 'seated_covers', 'seated'])) || 0;
+  }
+  const contiguous = dates.every((date, index) => index === 0 || K.shiftDays(dates[index - 1], 1) === date);
+  const span = dates.length === 1 ? dates[0] : (contiguous ? `${dates[0]} → ${dates[dates.length - 1]}` : dates.join(', '));
+  const dateLabel = `${span} · ${dates.length} verified ${dates.length === 1 ? 'date' : 'dates'}`;
+  const gap = missingDates.length ? ` Missing covers-day revenue coverage: ${coverageRequirement(missingDates)}.` : '';
+  return {
+    withheld: false, dates, missingDates, dateLabel,
+    lightspeedNet, openTableNet, openTableGross, revenueCovers, seatedCovers,
+    caption: `${dateLabel}; computed only on the requested × eligible trading dates × covers_day revenue intersection.${gap}`,
+  };
 }
 
 const QR_LABEL = 'STOREKIT ORDER & PAY';
@@ -174,11 +344,26 @@ function buildExec(q, maxDate, rv2) {
     // ---- covers (OpenTable → covers_day, Phase 2 PR1): the covers denominator + reserved/walk-in
     // split. Lightspeed £ stays canonical; spend/cover is the DERIVED join (net ÷ covers). SUM over
     // zero cover-rows is null → the tiles render '—' honestly (no covers that week). ----
-    const covAgg = (from, to) => rowsOf(q(
-      `SELECT SUM(total_covers) covers, SUM(reserved_covers) reserved, SUM(walkin_covers) walkin
-         FROM covers_day WHERE business_date BETWEEN ? AND ?`, [from, to]))[0] || {};
-    const cc = covAgg(wk.from, wk.to);
-    const lc = covAgg(lyFrom, lyTo);
+    const salesDatesIn = (from, to) => rowsOf(q(
+      `SELECT business_date date, net_sales_pence net
+         FROM v_sales_day_all WHERE business_date BETWEEN ? AND ?`, [from, to]));
+    const coverDatesIn = (from, to) => rowsOf(q(
+      `SELECT business_date date, total_covers totalCovers, reserved_covers reserved, walkin_covers walkin
+         FROM covers_day WHERE business_date BETWEEN ? AND ?`, [from, to]));
+    const curCoverRows = coverDatesIn(wk.from, wk.to);
+    const lyCoverRows = coverDatesIn(lyFrom, lyTo);
+    const curCoverage = deriveCoversCaptionState(salesDatesIn(wk.from, wk.to), curCoverRows, { from: wk.from, to: wk.to });
+    const lyCoverage = deriveCoversCaptionState(salesDatesIn(lyFrom, lyTo), lyCoverRows, { from: lyFrom, to: lyTo });
+    const splitFor = (coverage, rows) => {
+      const eligible = new Set(coverage.coveredDates);
+      let reserved = 0; let walkin = 0;
+      for (const row of rows) if (eligible.has(rowDate(row))) {
+        reserved += num(row.reserved) || 0;
+        walkin += num(row.walkin) || 0;
+      }
+      return { reserved, walkin };
+    };
+    const curSplit = splitFor(curCoverage, curCoverRows);
 
     // COVERS WINDOW GUARD (2026-08-21). The SPLH intersection discipline (see ~L455) applied to the
     // one feed that never got it — the same class as the day-count guard above, one feed along.
@@ -195,26 +380,13 @@ function buildExec(q, maxDate, rv2) {
     // A part-week total is not a smaller version of the truth, so covers gate to '—' rather than
     // render partial, and every ratio built on them (spend/cover, covers/transaction, both YoYs)
     // gates with them. Net, gross and ATV are untouched — they are complete and stay true.
-    const covDaysIn = (from, to) => num((rowsOf(q(
-      `SELECT COUNT(*) n FROM covers_day WHERE business_date BETWEEN ? AND ? AND total_covers IS NOT NULL`,
-      [from, to]))[0] || {}).n) || 0;
-    const curCovDays = covDaysIn(wk.from, wk.to);
-    const lyCovDays = covDaysIn(lyFrom, lyTo);
-    const curSalesDays = num(cur.days) || 0;
-    const lySalesDays = num(ly.days) || 0;
-    const coversWhole = curCovDays > 0 && curCovDays >= curSalesDays;
-    const lyCoversWhole = lyCovDays > 0 && lyCovDays >= lySalesDays;
-    // Absent (no export ever reached this window) and PARTIAL (some days arrived) are different
-    // states and must not wear each other's wording — "no covers this week" sent to the operator
-    // while 2 of 7 days are sitting in the table is the failure this guard exists to prevent.
-    exec.week.coversWindow = coversWhole ? null : {
-      have: curCovDays, need: curSalesDays,
-      kind: curCovDays === 0 ? 'absent' : 'partial',
-    };
-    exec.week.covers = coversWhole ? num(cc.covers) : null;
-    exec.week.reserved = coversWhole ? num(cc.reserved) || 0 : 0;
-    exec.week.walkin = coversWhole ? num(cc.walkin) || 0 : 0;
-    exec.week.lyCovers = lyComparable && lyCoversWhole ? num(lc.covers) : null;
+    // Empty and PARTIAL are distinct observable window states. Neither is evidence that a feed is
+    // absent: this page can only say which eligible dates do or do not have covers_day rows.
+    exec.week.coversWindow = curCoverage.kind === 'complete' ? null : curCoverage;
+    exec.week.covers = curCoverage.kind === 'complete' ? curCoverage.totalCovers : null;
+    exec.week.reserved = curCoverage.kind === 'complete' ? curSplit.reserved : 0;
+    exec.week.walkin = curCoverage.kind === 'complete' ? curSplit.walkin : 0;
+    exec.week.lyCovers = lyComparable && lyCoverage.kind === 'complete' ? lyCoverage.totalCovers : null;
 
     // COVERS BASIS GUARD (2026-08-19). A covers YoY is only like-for-like if BOTH windows were
     // parsed with a working dedup key. The composite key is
@@ -510,10 +682,10 @@ function buildDrivers(q, maxDate, rv2) {
                 from: String(cpt.f), to: String(cpt.t), asked: { from, to: apiMax } };
     }
 
-    // ---- SITTINGS (2026-07-31): the honest per-PARTY QR-vs-served basis. dine_in_sittings clusters
-    // receipts by physical table (20-min window); net_pence is ex-VAT. Absent/empty table → d.sit
-    // stays null → the panel gates. Per-cover here is OVERALL (dine-in net ÷ OpenTable covers) — covers
-    // are channel-agnostic and "POS guest-count is never covers", so it gates when covers are absent. ----
+    // ---- SITTINGS (2026-07-31): the honest per-PARTY QR-vs-served basis. dine_in_sittings holds
+    // physical-table receipt clusters plus standalone closed Order-N tabs; net_pence is ex-VAT.
+    // Absent/empty table → d.sit stays null → the panel gates. Per-cover here is OVERALL (dine-in
+    // net ÷ OpenTable covers) — covers are channel-agnostic and "POS guest-count is never covers". ----
     const sitRows = rowsOf(q(
       `SELECT channel, COUNT(*) sittings, SUM(net_pence) net, SUM(receipt_count) rcpts
          FROM dine_in_sittings WHERE business_date BETWEEN ? AND ? GROUP BY channel`, [from, apiMax]));
@@ -542,8 +714,12 @@ function buildDrivers(q, maxDate, rv2) {
           WHERE r.business_date IN ${covDays} AND ${SALE_WHERE}
             AND m.channel_label IN ('EAT IN','MON-FRI DEAL','STOREKIT ORDER & PAY')`, [from, apiMax]))[0];
       // How much of each channel's net can actually FORM a sitting (see SITTING_MIN_CAPTURE above).
-      // Denominator = all dine-in net for the channel; numerator = the part on a physical table.
-      const capRows = rowsOf(q(
+      // Denominator = all dine-in net for the channel; numerator = table-clusterable receipts plus
+      // standalone Order-N tabs, the same two-part population described by the rendered caption.
+      const populationResult = q(
+        `SELECT channel, table_name tableName, receipt_count receiptCount, net_pence net
+           FROM dine_in_sittings WHERE business_date BETWEEN ? AND ?`, [from, apiMax]);
+      const capResult = q(
         `SELECT m.channel_label lbl, SUM(r.net_without_tax_pence) net,
                 -- CLUSTERABLE = whatever the engine can actually form a sitting from. Since
                 -- 2026-08-19 that is a physical table OR a closed "Order N" tab (a tab is already
@@ -556,20 +732,20 @@ function buildDrivers(q, maxDate, rv2) {
            FROM sales_receipts_api r JOIN sales_channel_map_api m ON m.account_profile_code = COALESCE(r.account_profile_code,'')
           WHERE r.business_date BETWEEN ? AND ? AND ${SALE_WHERE}
             AND m.channel_label IN ('EAT IN','MON-FRI DEAL','STOREKIT ORDER & PAY')
-          GROUP BY m.channel_label`, [from, apiMax]));
-      const pool = { QR: { net: 0, cnet: 0 }, served: { net: 0, cnet: 0 } };
-      const byLabel = {};
-      for (const r of capRows) {
-        const lbl = String(r.lbl); const net = num(r.net) || 0; const cnet = num(r.cnet) || 0;
-        const grp = lbl === 'STOREKIT ORDER & PAY' ? 'QR' : 'served';
-        pool[grp].net += net; pool[grp].cnet += cnet;
-        if (net > 0) byLabel[lbl] = cnet / net;
-      }
-      const cap = {};
-      for (const k of ['QR', 'served']) if (pool[k].net > 0) cap[k] = pool[k].cnet / pool[k].net;
+          GROUP BY m.channel_label`, [from, apiMax]);
+      const populationRows = populationResult && populationResult.ok
+        ? populationResult.rows
+        : Array.from({ length: totSit }, () => ({ receiptCount: null }));
+      const captionState = deriveSittingCaptionState(populationRows, capResult && capResult.ok ? capResult.rows : []);
+      const cap = captionState.capture;
+      const verdict = !captionState.population.supported
+        ? { ok: false, reason: captionState.populationCaption }
+        : (!captionState.capture.supported
+          ? { ok: false, reason: captionState.captureCaption }
+          : sittingCaptureVerdict(cap));
       d.sit = { from, to: apiMax, by, totNet, totSit, dineNet: dn ? num(dn.net) : null, covers: covers != null && covers > 0 ? covers : null,
                 coversDays: cov ? num(cov.days) || 0 : 0, coversFrom: cov && cov.f ? String(cov.f) : null, coversTo: cov && cov.t ? String(cov.t) : null,
-                capture: cap, captureByLabel: byLabel, verdict: sittingCaptureVerdict(cap) };
+                capture: cap, captureByLabel: cap.byLabel, captionState, verdict };
     }
   }
 
@@ -608,7 +784,7 @@ function buildDrivers(q, maxDate, rv2) {
 // bank side (UNMATCHED — no matching algorithm yet), the recon-battery exception ledger and the
 // day-grain gross-to-net bridge. Every side degrades to its honest empty-state, never a number.
 function buildRecon(q, rv2) {
-  const rc = { apiMax: null, from: null, tenders: null, bank: null, refunds: null, exceptions: null, ledger: [], bridge: null, coverCheck: null };
+  const rc = { apiMax: null, from: null, tenders: null, bank: null, refunds: null, exceptions: null, ledger: [], bridge: null, coverCheck: null, coverCheckGate: null };
   const apiMax = rv2 && rv2.maxApiDate ? rv2.maxApiDate : null;
   if (!apiMax) return rc;
   const from = K.shiftDays(apiMax, -27);
@@ -676,16 +852,22 @@ function buildRecon(q, rv2) {
   // Lightspeed net over the same days. Lightspeed £ stays canon — this is a CROSS-CHECK, not a
   // correction. OpenTable revenue is dine-in seated-with-POS-match only (a SUBSET of all-channel
   // Lightspeed net), so OT/LS below 100% is the expected healthy shape; a swing is a data finding. ----
-  const cc = rowsOf(q(
-    `SELECT SUM(cd.revenue_net_pence) ot_net, SUM(cd.revenue_gross_pence) ot_gross,
-            SUM(cd.revenue_covers) covers, SUM(cd.seated_covers) seated,
-            SUM(s.net_sales_pence) ls_net, COUNT(*) days
-       FROM covers_day cd JOIN v_sales_day_all s ON s.business_date = cd.business_date
-      WHERE cd.business_date BETWEEN ? AND ? AND cd.revenue_covers > 0`, [from, apiMax]))[0];
-  if (cc && num(cc.covers) > 0 && num(cc.ot_net) != null) {
+  const reconSalesRows = rowsOf(q(
+    `SELECT business_date date, net_sales_pence net
+       FROM v_sales_day_all WHERE business_date BETWEEN ? AND ?`, [from, apiMax]));
+  const reconCoverRows = rowsOf(q(
+    `SELECT business_date date, seated_covers seatedCovers,
+            revenue_net_pence revenueNet, revenue_gross_pence revenueGross,
+            revenue_covers revenueCovers
+       FROM covers_day WHERE business_date BETWEEN ? AND ?`, [from, apiMax]));
+  rc.coverCheckGate = deriveReconciliationCaptionState(reconSalesRows, reconCoverRows, { from, to: apiMax });
+  if (!rc.coverCheckGate.withheld) {
+    const check = rc.coverCheckGate;
     rc.coverCheck = {
-      from, to: apiMax, days: num(cc.days) || 0, otNet: num(cc.ot_net), otGross: num(cc.ot_gross) || 0,
-      covers: num(cc.covers), seated: num(cc.seated) || 0, lsNet: num(cc.ls_net),
+      from: check.dates[0], to: check.dates[check.dates.length - 1], days: check.dates.length,
+      dateLabel: check.dateLabel, caption: check.caption, missingDates: check.missingDates,
+      otNet: check.openTableNet, otGross: check.openTableGross,
+      covers: check.revenueCovers, seated: check.seatedCovers, lsNet: check.lightspeedNet,
     };
   }
   return rc;
@@ -915,6 +1097,7 @@ function channelMonthStats(rv2) {
 module.exports = {
   CPT_BAND,
   SITTING_MIN_CAPTURE, SITTING_MAX_SPREAD, sittingCaptureVerdict,
+  deriveSittingCaptionState, deriveCoversCaptionState, deriveReconciliationCaptionState,
   buildMenuPortfolio,
   key: 'revenue', route: '/coyote/revenue', workspace: 'coyote', title: 'Revenue',
   sub: 'Revenue Command Centre — all five tabs live · menu contribution uses completed recipes · covers live via OpenTable (spend/cover derived)',
@@ -1218,8 +1401,10 @@ module.exports = {
           sub: wk && wk.covers != null
             ? `OpenTable seated · ${resShare} reserved / ${walkShare} walk-in${basisBlocked ? ` · YoY withheld — ${esc(basis.reason)}` : ''}`
             : (covGap && covGap.kind === 'partial'
-              ? `withheld — OpenTable covers reach only ${int(covGap.have)} of this week's ${int(covGap.need)} trading days; a part week beside a whole one reads as a collapse`
-              : 'no covers this week (OpenTable)'),
+              ? `withheld — OpenTable covers reach only ${int(covGap.have)} of this week's ${int(covGap.need)} trading days; missing ${esc(covGap.missingDates.join(', '))}`
+              : (covGap && covGap.kind === 'empty'
+                ? 'no covers this week (OpenTable) — none exist in the applicable window; required dates are listed below'
+                : 'no cover-applicable trading dates this week')),
           barPct: canCompare ? barFor(wk.covers, wk.lyCovers) : null,
         }),
         S.rcc.kpi({
@@ -1229,8 +1414,10 @@ module.exports = {
             ? `Lightspeed net ÷ OpenTable covers · YoY withheld — ${esc(basis.reason)}`
             : (covGap && covGap.kind === 'partial'
               ? `withheld — a whole week of net over ${int(covGap.have)} of ${int(covGap.need)} days of covers would read as a surge`
-              : (canCompare && lySpc != null ? 'Lightspeed net ÷ OpenTable covers · ex-VAT · vs same week LY'
-                : 'Lightspeed net ÷ OpenTable covers · ex-VAT (derived join)')),
+              : (covGap && covGap.kind === 'empty'
+                ? `withheld — no covers exist in the applicable window; coverage is needed for ${esc(covGap.missingDates.join(', '))}`
+                : (canCompare && lySpc != null ? 'Lightspeed net ÷ OpenTable covers · ex-VAT · vs same week LY'
+                  : 'Lightspeed net ÷ OpenTable covers · ex-VAT (derived join)'))),
           barPct: canCompare ? barFor(spc, lySpc) : null,
         }),
         S.rcc.kpi({
@@ -1243,9 +1430,11 @@ module.exports = {
       ].join('');
       const kpiCaption = wk
         ? `<div class="rv2-caption">${esc(wk.from)} → ${esc(wk.to)} (last full week, Mon–Sun) · vs same weekday-aligned week LY (−364d: ${esc(wk.lyFrom)} → ${esc(wk.lyTo)}) · per-receipt truth (day-net canon, v_sales_day_all)${wk.lyComparable ? '' : (wk.spanMismatch ? ` · LY not comparable — this week has ${int(wk.spanMismatch.cur)} recorded day(s) against LY's ${int(wk.spanMismatch.ly)}; a short window divided by a full one would read as a collapse, so deltas are omitted` : ' · LY not comparable (premises guard / no record) — deltas omitted, never a cross-site %')}${wk.covers != null ? ` · covers = OpenTable seated (covers_day): ${int(wk.covers)} = ${int(wk.reserved)} reserved + ${int(wk.walkin)} walk-in — booked covers are NEVER read as total${cptTxt ? ` · covers/transaction ${cptTxt} (sanity ~1.9–2.0; a material drift is a data finding, not a KPI)` : ''} · spend/cover = Lightspeed net ÷ covers (derived); POS guest-count is still not covers${!basisBlocked ? '' : ` · <strong>covers YoY and spend/cover YoY are withheld</strong> — ${esc(basis.reason)} (${int(basis.ly || 0)} at-risk LY rows, ${int(basis.cur || 0)} this week). Levels are true; only the year-on-year comparison is blocked, and it returns by itself once the reservations history is rebuilt.`}` : (covGap && covGap.kind === 'partial'
-          ? ` · <strong>covers, spend/cover and covers/transaction are withheld this week</strong> — the OpenTable export reaches ${int(covGap.have)} of the week's ${int(covGap.need)} trading days. Sales are whole, covers are not, and a ratio across the two would invent a collapse (covers) and a surge (spend/cover). Drop the export and all three return with no other change.`
-          : ' · covers stay not-wired until OpenTable lands')}</div>`
-        : `<div class="rv2-caption">No Lightspeed sales yet — the daily ingest (05:30) fills the day-grain record; covers stay not-wired until OpenTable lands.</div>`;
+          ? ` · <strong>covers, spend/cover and covers/transaction are withheld this week</strong> — covers_day coverage reaches ${int(covGap.have)} of the week's ${int(covGap.need)} trading days. Missing covers_day dates: ${esc(covGap.missingDates.join(', '))}. Sales are whole, covers are not. Drop the export and all three return with no other change once it covers those dates.`
+          : (covGap && covGap.kind === 'empty'
+            ? ` · <strong>covers, spend/cover and covers/transaction are withheld this week</strong> — no covers exist in the applicable window. Add covers_day coverage for ${esc(covGap.missingDates.join(', '))} to clear the gate.`
+            : ' · no cover-applicable trading dates exist in this week; zero-net closed days do not require covers.') )}</div>`
+        : `<div class="rv2-caption">No Lightspeed sales yet — the daily ingest (05:30) fills the day-grain record; covers can be evaluated once a positive-net trading date exists.</div>`;
 
       // ---- 8-week trend (inline SVG, mock grammar: orange current+area, amber dashed target,
       // grey LY; a week without a published target = a GAP in the dash, never an invented point) ----
@@ -1796,24 +1985,26 @@ module.exports = {
       const perSit = (x) => (x && x.sittings > 0 ? gbp(Math.round(x.net / x.sittings)) : '—');
       const chOf = (k) => (sit && sit.by[k] && sit.by[k].sittings > 0 ? sit.by[k] : null);
       const qrSit = chOf('QR'), servedSit = chOf('served'), mixedSit = chOf('mixed');
-      // The per-party figures only stand if enough of each channel actually lands on a numbered
-      // table (SITTING_MIN_CAPTURE). When it does not, the value is WITHHELD rather than shown with
-      // a caveat underneath — a number on a KPI tile gets read, whatever the small print says.
+      // The per-party figures only stand if enough of each channel maps to the two-part sitting
+      // population (SITTING_MIN_CAPTURE). When it does not, the value is WITHHELD rather than shown
+      // with a caveat underneath — a number on a KPI tile gets read, whatever the small print says.
       const sitV = sit && sit.verdict ? sit.verdict : null;
       const capBlocked = !!(sit && sitV && !sitV.ok);
+      const sittingFieldsMissing = !!(sit && sit.captionState
+        && (!sit.captionState.population.supported || !sit.captionState.capture.supported));
       const capPct = (x) => (typeof x === 'number' ? `${Math.round(x * 100)}%` : '—');
       const sitTiles = [
         S.rcc.kpi({
           label: 'Net / QR sitting', value: capBlocked ? '—' : perSit(qrSit),
           sub: capBlocked
-            ? `withheld — only ${capPct(sit.capture && sit.capture.QR)} of QR net sits on a numbered table`
+            ? (sittingFieldsMissing ? `withheld — ${sitV.reason}` : `withheld — only ${capPct(sit.capture && sit.capture.QR)} of QR net maps to a table cluster or standalone Order N sitting`)
             : (qrSit ? `${int(qrSit.sittings)} QR sittings · ${(qrSit.rcpts / qrSit.sittings).toFixed(2)} receipts/sitting`
               : (sit ? 'no QR sittings in the window' : 'no sittings yet — run: lightspeed-api -- sittings-backfill')),
         }),
         S.rcc.kpi({
           label: 'Net / served sitting', value: capBlocked ? '—' : perSit(servedSit),
           sub: capBlocked
-            ? `withheld — only ${capPct(sit.capture && sit.capture.served)} of served net sits on a numbered table`
+            ? (sittingFieldsMissing ? `withheld — ${sitV.reason}` : `withheld — only ${capPct(sit.capture && sit.capture.served)} of served net maps to a table cluster or standalone Order N sitting`)
             : (servedSit ? `${int(servedSit.sittings)} served sittings (EAT IN + MON-FRI DEAL)`
               : (sit ? 'no served sittings in the window' : 'dine_in_sittings not populated')),
         }),
@@ -1827,10 +2018,10 @@ module.exports = {
       const labelCap = sit && sit.captureByLabel
         ? Object.entries(sit.captureByLabel).map(([k, v]) => `${esc(k)} ${capPct(v)}`).join(' · ') : '';
       const capLine = sit && sit.capture
-        ? `<div class="rv2-caption"><strong>Capture:</strong> a sitting can only form from a receipt carrying a numbered table; the POS books most service against "Order N", which is a counter, not a place — clustering those would invent parties. Over this window ${labelCap ? `that is ${labelCap} of each channel's net.` : 'capture could not be measured.'}${capBlocked ? ` <strong>The per-party comparison is withheld:</strong> ${esc(sitV.reason)}. It becomes readable when tables are assigned on the POS for ordinary service — nothing in the data can substitute for that.` : ''}</div>`
+        ? `<div class="rv2-caption"><strong>Capture:</strong> ${esc(sit.captionState ? sit.captionState.captureCaption : (labelCap ? `${labelCap} of each channel's net.` : 'capture could not be measured.'))}${capBlocked ? ` <strong>The per-party comparison is withheld:</strong> ${esc(sitV.reason)}. It becomes readable when current-window receipts carry the required net and channel fields and either tables are assigned on the POS or the standalone Order N identifier is retained.` : ''}</div>`
         : '';
       const sitCaption = sit
-        ? capLine + `<div class="rv2-caption">Sittings 28d to ${esc(sit.to)} · a sitting = one party at a physical table (dine_in_sittings — 20-min cluster of receipts, ex-VAT). Figures here describe the table-served subset ONLY, never the whole day. Per-cover is OVERALL: OpenTable covers are day-total + channel-agnostic, so it is not split by channel.${mixNote}</div>`
+        ? capLine + `<div class="rv2-caption">${esc(sit.captionState ? sit.captionState.populationCaption : `${int(sit.totSit)} current-window sittings.`)} Sittings 28d to ${esc(sit.to)} · population = clustered table-served receipt groups plus standalone Order N receipts, derived from dine_in_sittings rows in this window (20-min table clustering, ex-VAT). Per-cover is OVERALL: OpenTable covers are day-total + channel-agnostic, so it is not split by channel.${mixNote}</div>`
         : `<div class="rv2-caption">dine_in_sittings not populated yet — after the derivation deploys, run <code>npm run lightspeed-api -- sittings-backfill</code> (ongoing days fill at ingest); until then this gates honestly.</div>`;
       const sitPanel = S.rcc.panel({
         title: 'Sittings — net per party by channel',
@@ -1972,7 +2163,7 @@ module.exports = {
       const cvk = rc.coverCheck;
       const coverCheckPanel = cvk
         ? S.rcc.panel({
-            title: 'OpenTable £/cover cross-check', sub: `OpenTable POS revenue vs Lightspeed net · ${esc(cvk.from)} → ${esc(cvk.to)}`,
+            title: 'OpenTable £/cover cross-check', sub: `OpenTable POS revenue vs Lightspeed net · ${esc(cvk.dateLabel)}`,
             headRight: S.rcc.tag('cross-check', 'info'),
             body: `<div class="r-driver-grid">
                 ${S.rcc.driver({ label: 'OpenTable £/cover (net)', value: gbp(Math.round(cvk.otNet / cvk.covers)), sub: 'revenue_net ÷ revenue_covers · ex-VAT' })}
@@ -1980,12 +2171,18 @@ module.exports = {
                 ${S.rcc.driver({ label: 'Lightspeed net · window', value: gbp0(cvk.lsNet), sub: 'all channels · v_sales_day_all' })}
                 ${S.rcc.driver({ label: 'OpenTable ÷ Lightspeed', value: cvk.lsNet ? `${((100 * cvk.otNet) / cvk.lsNet).toFixed(1)}%` : '—', sub: 'dine-in matched share of all-channel net' })}
               </div>
-              <div class="r-mini-note">OpenTable surfaces the SAME Lightspeed POS £ per booking — Lightspeed stays the canon (v_sales_day_all); this is a CROSS-CHECK, not a correction. OpenTable revenue is dine-in seated with a POS match only (${cvk.seated ? `${Math.round((100 * cvk.covers) / cvk.seated)}% of seated covers` : 'a subset'}), so OT ÷ LS sits BELOW 100% by design — a material swing is a reconciliation finding.</div>`,
+              <div class="r-mini-note">${esc(cvk.caption)} OpenTable surfaces the SAME Lightspeed POS £ per booking — Lightspeed stays the canon (v_sales_day_all); this is a CROSS-CHECK, not a correction. OpenTable revenue is dine-in seated with a POS match only (${cvk.seated ? `${Math.round((100 * cvk.covers) / cvk.seated)}% of seated covers` : 'a subset'}), so OT ÷ LS sits BELOW 100% by design — a material swing is a reconciliation finding.</div>`,
           })
-        : S.rcc.panel({
-            title: 'OpenTable £/cover cross-check', sub: 'OpenTable POS revenue vs Lightspeed net',
-            body: S.rcc.emptyState({ title: 'OpenTable £/cover cross-check', blocker: 'no OpenTable POS revenue in the window — covers_day.revenue_covers is empty.', unlock: 'the OpenTable export + a reservations rebuild (parser widening lands the £)' }),
-          });
+        : (() => {
+            const blocker = `no OpenTable POS revenue in the window's verified intersection. ${rc.coverCheckGate ? rc.coverCheckGate.caption : 'No valid requested × eligible trading date × covers_day revenue intersection exists.'}`;
+            const unlock = rc.coverCheckGate && rc.coverCheckGate.missingDates.length
+              ? `add covers_day revenue_covers and revenue_net_pence for ${rc.coverCheckGate.missingDates.join(', ')} to clear the gate`
+              : 'select a window containing an eligible trading date with covers_day revenue coverage';
+            return S.rcc.panel({
+              title: 'OpenTable £/cover cross-check', sub: 'OpenTable POS revenue vs Lightspeed net',
+              body: `<div class="r-empty"><b>OpenTable £/cover cross-check withheld</b><br>${esc(blocker)}<div class="r-unlock">Coverage needed: ${esc(unlock)}</div></div>`,
+            });
+          })();
 
       return `<div class="r-grid r-kpi-grid">${kpis}</div>${kpiCaption}
         <div class="r-grid recon-grid">${tenderPanel}${formulaPanel}</div>
