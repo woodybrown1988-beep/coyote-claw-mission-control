@@ -168,7 +168,12 @@ test('drawer: the pay queue is the primary surface — grouped, totaled, every r
       JSON.stringify({ moves: ['mv-a', 'mv-b', 'mv-c'], queued: 3, lines: [
         { moveId: 'mv-a', supplier: 'George Cockburn & Son Ltd', subject: 's1', ref: '15072', totalPence: 18590, onwardPath: '03 SUPPLIERS/Other suppliers', ageDays: 7 },
         { moveId: 'mv-b', supplier: 'George Cockburn & Son Ltd', subject: 's2', ref: '15453', totalPence: 27040, onwardPath: '03 SUPPLIERS/Other suppliers', ageDays: 15 },
-        { moveId: 'mv-c', supplier: 'Cartmel Sticky Toffee Pudding Co. Ltd', subject: 'Statement from Cartmel for COYOTE', ref: null, totalPence: null, onwardPath: null, ageDays: 9 },
+        // A genuinely UNREADABLE INVOICE. It used to be a Cartmel STATEMENT, and that fixture
+        // quietly encoded the confusion the panel now fixes: a statement carries no payable
+        // amount of its own, so it was never what should hold back "TOTAL INVOICES TO PAY".
+        // The gate property asserted below is unchanged — only the document that triggers it is
+        // now one that really is unread debt.
+        { moveId: 'mv-c', supplier: 'Cartmel Sticky Toffee Pudding Co. Ltd', subject: 'Cartmel Sticky Toffee Pudding Co. Ltd - Invoice', ref: null, totalPence: null, onwardPath: null, ageDays: 9 },
       ] }));
   }), () => {
     const out = render();
@@ -177,7 +182,7 @@ test('drawer: the pay queue is the primary surface — grouped, totaled, every r
     assert.match(out.body, /£456\.30/, 'the group subtotal (185.90 + 270.40)');
     assert.equal((out.body.match(/George Cockburn &amp; Son Ltd/g) || []).length, 1, 'the name prints ONCE, not once per invoice');
     // An unpriced row is identifiable: its subject and age travel with it.
-    assert.match(out.body, /Statement from Cartmel for COYOTE/, 'the subject is the identifier when there is no ref');
+    assert.match(out.body, /Cartmel Sticky Toffee Pudding Co. Ltd - Invoice/, 'the subject is the identifier when there is no ref');
     assert.match(out.body, /15d/, 'ages render');
     // The total keeps its gate: something unread → no payment label.
     assert.ok(!/TOTAL INVOICES TO PAY/.test(out.body), 'the payment label is withheld while anything is unread');
@@ -460,6 +465,116 @@ test('drawer: an armed run with NO supplier positions renders the queue unchange
     assert.match(out.body, /PAY QUEUE/, 'the queue still renders');
     assert.ok(!/Checked against the bank/.test(out.body), 'and no empty ledger header appears');
     assert.ok(!/on record/.test(out.body));
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════
+// STATEMENTS IN THE PAY QUEUE (operator ask 2026-09-01: "fix the 5 statements so they read too")
+//
+// Six of the twenty-three queued documents were supplier statements, and every one rendered
+// "not read" — the same two words the panel uses for an invoice whose PDF defeated the parser.
+// Two different situations: one is work to go and do, the other is nothing to pay.
+// ═══════════════════════════════════════════════════════════════════════════════════════════
+
+test('drawer: a statement says what it is, and never withholds the payment total', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-stmt-'));
+  withEnv(fixture(dir, (db) => {
+    armedWith(db, {
+      moves: ['mv1', 'mv2'], folder: '00 INVOICES TO PAY', queued: 2,
+      lines: [
+        { moveId: 'mv1', supplier: 'MCEdge Ltd', subject: 'Invoice 016808 from MCEdge Ltd', ref: '016808', totalPence: 15000, onwardPath: '03 SUPPLIERS/Other suppliers', ageDays: 12, isStatement: false },
+        { moveId: 'mv2', supplier: 'MCEdge Ltd', subject: 'Statement from MCEDGE LTD for coyote burger', ref: null, totalPence: null, onwardPath: '03 SUPPLIERS/Other suppliers', ageDays: 7, isStatement: true },
+      ],
+    });
+  }), () => {
+    const out = render();
+    assert.match(out.body, /statement — nothing to pay from it/, 'the row says what it is');
+    assert.match(out.body, /TOTAL INVOICES TO PAY = £150\.00/, 'and the gate goes green on the invoice alone');
+    assert.match(out.body, /1 statement not in this total/, 'what was set aside is NAMED, not silently dropped');
+    assert.match(out.body, /would pay the same debt twice/, 'with the reason, so the exclusion is auditable');
+    assert.match(out.body, /1 INVOICE · 1 STATEMENT/, 'the strip header counts the two kinds apart');
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('drawer: an unread INVOICE still withholds the total, statements or no statements', () => {
+  // THE NEGATIVE CONTROL. Excluding statements must not quietly become excluding everything
+  // awkward — an invoice nobody could read is exactly the case the label exists to protect.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-stmt-'));
+  withEnv(fixture(dir, (db) => {
+    armedWith(db, {
+      moves: ['mv1', 'mv2', 'mv3'], folder: '00 INVOICES TO PAY', queued: 3,
+      lines: [
+        { moveId: 'mv1', supplier: 'MCEdge Ltd', subject: 'Invoice 016808', ref: '016808', totalPence: 15000, onwardPath: '03 SUPPLIERS/x', ageDays: 12, isStatement: false },
+        { moveId: 'mv2', supplier: 'MCEdge Ltd', subject: 'Statement from MCEDGE LTD', ref: null, totalPence: null, onwardPath: '03 SUPPLIERS/x', ageDays: 7, isStatement: true },
+        { moveId: 'mv3', supplier: 'Unity1 Electrical', subject: 'Bill INV-0094 is due', ref: null, totalPence: null, onwardPath: '03 SUPPLIERS/x', ageDays: 9, isStatement: false },
+      ],
+    });
+  }), () => {
+    const out = render();
+    assert.ok(!/TOTAL INVOICES TO PAY/.test(out.body), 'one unread invoice is still enough');
+    assert.match(out.body, /TOTAL OF THE 1 READ = £150\.00/);
+    assert.match(out.body, /1 invoice still unread/, 'and it counts the INVOICE, not the statement');
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('drawer: the supplier’s own stated balance is compared with what we hold', () => {
+  // THE LIVE CASE, and the sharpest double-payment signal this panel has: Cockburn's seven queued
+  // invoices come to £1,332.73 while their own statement says £1,062.33. The difference is exactly
+  // invoice 15453 (£270.40) — a supplier saying you owe LESS than you are about to pay.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-stmt-'));
+  withEnv(fixture(dir, (db) => {
+    armedWith(db, {
+      moves: ['a', 'b'], folder: '00 INVOICES TO PAY', queued: 2,
+      lines: [
+        { moveId: 'a', supplier: 'George Cockburn & Son Ltd', subject: 'Invoice 15453', ref: '15453', totalPence: 27040, onwardPath: '03 SUPPLIERS/x', ageDays: 12, isStatement: false },
+        { moveId: 'b', supplier: 'George Cockburn & Son Ltd', subject: 'Invoice 15251', ref: '15251', totalPence: 18877, onwardPath: '03 SUPPLIERS/x', ageDays: 20, isStatement: false },
+      ],
+      suppliers: [{
+        supplier: 'George Cockburn & Son Ltd', key: 'cockburn', paidCountYear: 12, seenSince: '2018-11-24',
+        lastPaid: { amountPence: 90000, txnDate: '2026-08-12', account: 'Santander' },
+        statedTotalPence: 18877, statedAt: '2026-08-06',
+      }],
+    });
+  }), () => {
+    const out = render();
+    assert.match(out.body, /Their statement dated 2026-08-06/, 'the statement’s OWN date is printed');
+    assert.match(out.body, /£188\.77/, 'their figure');
+    assert.match(out.body, /£459\.17/, 'and ours');
+    assert.match(out.body, /you hold <b>£270\.40<\/b> MORE than they say is owed/, 'the difference, named');
+    assert.match(out.body, /unless their statement predates one of these/,
+      'as a QUESTION — a statement older than an invoice explains the gap innocently');
+    // The panel still may not accuse.
+    assert.ok(!/\bunpaid\b/i.test(withoutDisclaimer(out.body)));
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('drawer: an incomplete queue is NOT reconciled — a difference would mean nothing', () => {
+  // The gate on the comparison itself. If one of our own amounts is unread, "they say less than
+  // we hold" is arithmetic about a number we do not have, and printing it would invent a
+  // discrepancy out of our own ignorance.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-stmt-'));
+  withEnv(fixture(dir, (db) => {
+    armedWith(db, {
+      moves: ['a', 'b'], folder: '00 INVOICES TO PAY', queued: 2,
+      lines: [
+        { moveId: 'a', supplier: 'Black Isle Brewing Co Ltd', subject: 'Invoice 48548', ref: '48548', totalPence: 30527, onwardPath: '03 SUPPLIERS/x', ageDays: 12, isStatement: false },
+        { moveId: 'b', supplier: 'Black Isle Brewing Co Ltd', subject: 'Invoice from Black Isle', ref: null, totalPence: null, onwardPath: '03 SUPPLIERS/x', ageDays: 8, isStatement: false },
+      ],
+      suppliers: [{
+        supplier: 'Black Isle Brewing Co Ltd', key: 'black-isle', paidCountYear: 49, seenSince: '2018-11-24',
+        lastPaid: null, statedTotalPence: 316255, statedAt: null,
+      }],
+    });
+  }), () => {
+    const out = render();
+    assert.match(out.body, /£3,162\.55/, 'their stated balance is still the most useful number on the row');
+    assert.match(out.body, /not comparable yet, 1 amount here still unread/);
+    assert.ok(!/MORE than they say is owed/.test(out.body), 'no difference is claimed over a number we do not have');
+    assert.match(out.body, /\(undated\)/, 'an undated statement says so rather than implying it is current');
   });
   fs.rmSync(dir, { recursive: true, force: true });
 });

@@ -96,8 +96,27 @@ function invoiceRunBlock(events, folders) {
     if (!at.has(k)) { at.set(k, groups.length); groups.push({ supplier: String(l.supplier || '?'), rows: [] }); }
     groups[at.get(k)].rows.push(l);
   }
-  const sumOf = (rs) => rs.every((r) => typeof r.totalPence === 'number' && r.totalPence > 0)
-    ? rs.reduce((a, r) => a + r.totalPence, 0) : null;
+  // A STATEMENT IS NOT AN INVOICE, AND EVERY SUM ON THIS PANEL HAS TO KNOW IT (operator ask
+  // 2026-09-01: "fix the 5 statements so they read too"). Six of the twenty-three queued
+  // documents were supplier statements and each one rendered "not read" — the same two words the
+  // panel uses for an invoice whose PDF genuinely defeated the parser. Two different situations,
+  // one of which is work and the other of which is nothing to pay.
+  //
+  // The consequence was not cosmetic. The total gate counts unread rows, so six statements alone
+  // withheld "TOTAL INVOICES TO PAY" from a queue in which every real invoice HAD been read.
+  // The engine marks the rows now (QueuedLine.isStatement); the fallback on the subject keeps an
+  // older armed payload rendering correctly rather than silently reverting to the old confusion.
+  const isStmt = (r) => r && (r.isStatement === true
+    || (r.isStatement === undefined && /\bstatements?\b/i.test(String(r.subject || ''))));
+  const invoicesIn = (rs) => rs.filter((r) => !isStmt(r));
+  const readAmount = (r) => (typeof r.totalPence === 'number' && r.totalPence > 0 ? r.totalPence : null);
+  // Subtotal over the INVOICES in a group: a group of statements has no payable subtotal at all,
+  // and a group that mixes them must not be held unpriced by the statement sitting in it.
+  const sumOf = (rs) => {
+    const inv = invoicesIn(rs);
+    return inv.length && inv.every((r) => readAmount(r) !== null)
+      ? inv.reduce((a, r) => a + r.totalPence, 0) : null;
+  };
   groups.sort((a, b) => (sumOf(b.rows) ?? -1) - (sumOf(a.rows) ?? -1));
 
   // The picker options: real move-target folders from the mirror, minus the action folders an
@@ -117,7 +136,10 @@ function invoiceRunBlock(events, folders) {
       ? `invoice ${LIFE.esc(String(l.ref))}`
       : `<span style="${muted}">\u201c${LIFE.esc(String(l.subject || '').slice(0, 52))}${String(l.subject || '').length > 52 ? '\u2026' : ''}\u201d</span>`;
     const price = typeof l.totalPence === 'number' && l.totalPence > 0
-      ? `<b>${gbp(l.totalPence)}</b>` : `<span style="${muted}">not read</span>`;
+      ? `<b>${gbp(l.totalPence)}</b>`
+      : isStmt(l)
+        ? `<span style="font-size:11.5px;color:#8fa8c8">statement \u2014 nothing to pay from it</span>`
+        : `<span style="${muted}">not read</span>`;
     const act = l.onwardPath
       ? btnCmd('Paid \u2014 file it', 'mail_paid', { moveId: String(l.moveId) })
       : (opts
@@ -154,6 +176,53 @@ function invoiceRunBlock(events, folders) {
       return sk === k || sk.startsWith(k) || k.startsWith(sk);
     }) || null;
   };
+  // ── THE SUPPLIER'S OWN NUMBER, BESIDE OURS ────────────────────────────────────────────────
+  // The only figure in this system that comes from the other side of the transaction. Comparing
+  // it with what we hold is the sharpest double-payment signal available: a supplier saying you
+  // owe LESS than you are about to pay is exactly the thing worth stopping for. Live at build
+  // time: Cockburn — 7 invoices totalling £1,332.73 here against £1,062.33 stated, a difference
+  // of £270.40, which is precisely invoice 15453.
+  //
+  // Written as a QUESTION, not an accusation. A statement that predates an invoice in the queue
+  // explains a gap completely innocently, which is why the statement's own date is printed beside
+  // it — without that the reader cannot tell a real discrepancy from a stale document.
+  const reconcileLine = (name, allRows) => {
+    const sp = posOf(name);
+    if (!sp || typeof sp.statedTotalPence !== 'number' || sp.statedTotalPence <= 0) return '';
+    // Compared against the INVOICES only. Including the statement row itself would compare the
+    // supplier's total against a list containing that very total.
+    const rows = invoicesIn(allRows);
+    const ours = rows.reduce((a, r) => a + (readAmount(r) ?? 0), 0);
+    const allRead = rows.length > 0 && rows.every((r) => readAmount(r) !== null);
+    const said = sp.statedTotalPence;
+    const dated = sp.statedAt ? ` dated ${LIFE.esc(String(sp.statedAt))}` : ' (undated)';
+    if (!rows.length) {
+      // A supplier whose only queued document IS the statement. Nothing to compare, and the
+      // stated balance is the whole answer: this is what they say you owe, and no invoice of
+      // theirs is waiting in this run.
+      return `<div style="${muted};padding:1px 0 3px">They say you owe <b style="color:#c8d3de">${gbp(said)}</b>${dated}`
+        + ` \u2014 no invoice of theirs is in this run, so there is nothing here to pay against it.</div>`;
+    }
+    if (!allRead) {
+      // Ours is incomplete, so a difference means nothing. The stated total is still the most
+      // useful number on the row — it is what the supplier thinks the balance is.
+      const short = rows.filter((r) => readAmount(r) === null).length;
+      return `<div style="${muted};padding:1px 0 3px">Their statement${dated}: <b style="color:#c8d3de">${gbp(said)}</b>`
+        + ` \u2014 not comparable yet, ${short} amount${short === 1 ? '' : 's'} here still unread.</div>`;
+    }
+    const diff = said - ours;
+    if (diff === 0) {
+      return `<div style="${muted};padding:1px 0 3px">Their statement${dated}: <b style="color:#7fd6a2">${gbp(said)}</b> \u2014 agrees with the ${rows.length} here.</div>`;
+    }
+    const weHoldMore = diff < 0;
+    return `<div style="font-size:11.5px;color:${weHoldMore ? '#f5c96b' : '#9aa3ad'};padding:1px 0 3px">`
+      + `Their statement${dated}: <b>${gbp(said)}</b> \u00b7 ${rows.length} here total <b>${gbp(ours)}</b> \u00b7 `
+      + (weHoldMore
+        ? `you hold <b>${gbp(-diff)}</b> MORE than they say is owed \u2014 worth checking before paying, unless their statement predates one of these.`
+        : `they say <b>${gbp(diff)}</b> more than is queued here \u2014 an invoice may not have arrived yet.`)
+      + `</div>`;
+  };
+
   const ledgerLine = (name) => {
     const sp = posOf(name);
     if (!sp) return '';
@@ -179,25 +248,36 @@ function invoiceRunBlock(events, folders) {
       + `<div style="font-size:13px"><b>${i + 1}) ${LIFE.esc(g.supplier)}</b>`
       + (home.length === 1 ? ` <span style="${muted}">\u2192 ${LIFE.esc(home[0])}</span>` : '') + `</div>`
       + `<div style="font-size:12.5px">${sub !== null ? `<b>${gbp(sub)}</b>` : `<span style="${muted}">${g.rows.length === 1 ? 'amount' : 'amounts'} not read</span>`}</div></div>`
-      + ledgerLine(g.supplier)
+      + ledgerLine(g.supplier) + reconcileLine(g.supplier, g.rows)
       + gHint + g.rows.map(rowHtml).join('') + `</div>`;
   }).join('');
 
   // THE TOTAL KEEPS ITS GATE. "TOTAL INVOICES TO PAY" only when every invoice is read — a payment
   // total standing over unread debt is the one number that could make him pay the wrong amount.
-  const priced = lines.filter((l) => typeof l.totalPence === 'number' && l.totalPence > 0);
-  const unread = lines.length - priced.length;
+  const invoiceLines = invoicesIn(lines);
+  const stmtCount = lines.length - invoiceLines.length;
+  const priced = invoiceLines.filter((l) => readAmount(l) !== null);
+  const unread = invoiceLines.length - priced.length;
   const sum = priced.reduce((a, l) => a + l.totalPence, 0);
-  const total = unread === 0
-    ? `<div style="font-size:13.5px;padding-top:8px;border-top:1px solid rgba(255,255,255,.12)"><b>TOTAL INVOICES TO PAY = ${gbp(sum)}</b></div>`
+  // Named, never silently dropped: a gate that reaches green by excluding rows has to say which
+  // rows it excluded, or "TOTAL INVOICES TO PAY" quietly means something narrower than it says.
+  const setAside = stmtCount
+    ? `<div style="${muted};padding-top:4px">${stmtCount} statement${stmtCount === 1 ? '' : 's'} not in this total \u2014 `
+      + `${stmtCount === 1 ? 'a statement summarises' : 'statements summarise'} invoices, and adding ${stmtCount === 1 ? 'it' : 'them'} would pay the same debt twice.</div>`
+    : '';
+  const total = invoiceLines.length === 0
+    ? `<div style="${muted};padding-top:8px;border-top:1px solid rgba(255,255,255,.12)">No invoices to pay \u2014 ${stmtCount === 1 ? 'the only queued document is a statement' : `all ${stmtCount} queued documents are statements`}.</div>`
+    : unread === 0
+    ? `<div style="font-size:13.5px;padding-top:8px;border-top:1px solid rgba(255,255,255,.12)"><b>TOTAL INVOICES TO PAY = ${gbp(sum)}</b>${setAside}</div>`
     : priced.length === 0
-      ? `<div style="${muted};padding-top:8px;border-top:1px solid rgba(255,255,255,.12)">No total: none of these ${lines.length} amounts has been read off its document.</div>`
+      ? `<div style="${muted};padding-top:8px;border-top:1px solid rgba(255,255,255,.12)">No total: none of these ${invoiceLines.length} amounts has been read off its document.${setAside}</div>`
       : `<div style="font-size:13px;padding-top:8px;border-top:1px solid rgba(255,255,255,.12)"><b>TOTAL OF THE ${priced.length} READ = ${gbp(sum)}</b>`
-        + `<div style="${muted}">${unread} still unread \u2014 not the payment total until ${unread === 1 ? 'it is' : 'they are'} read.</div></div>`;
+        + `<div style="${muted}">${unread} invoice${unread === 1 ? '' : 's'} still unread \u2014 not the payment total until ${unread === 1 ? 'it is' : 'they are'} read.</div>${setAside}</div>`;
 
   return `<div style="margin:2px 0 12px">`
     + `<div class="lc-row" style="justify-content:space-between;align-items:baseline;margin-bottom:2px">`
-    + `<div style="font-size:11px;letter-spacing:.06em;color:#9aa3ad">PAY QUEUE \u00b7 ${lines.length} INVOICE${lines.length === 1 ? '' : 'S'}</div>`
+    + `<div style="font-size:11px;letter-spacing:.06em;color:#9aa3ad">PAY QUEUE \u00b7 ${invoiceLines.length} INVOICE${invoiceLines.length === 1 ? '' : 'S'}`
+      + `${stmtCount ? ` \u00b7 ${stmtCount} STATEMENT${stmtCount === 1 ? '' : 'S'}` : ''}</div>`
     + `<div style="${muted}">tap Paid when one is paid \u2014 it files to its supplier folder and leaves this list</div></div>`
     + ((suppliers || []).length
       // SAY WHAT THE CHECK CAN SEE, ONCE. Without this the per-supplier lines below read as a
