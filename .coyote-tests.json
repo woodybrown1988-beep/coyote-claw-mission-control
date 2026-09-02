@@ -260,7 +260,7 @@
     },
     {
       "name": "mission-control-costs-cogs-posting",
-      "command": "node --require ./test/tmpdir.js --test test/mission-control-costs-cogs-posting.test.js",
+      "command": "node --require ./test/tmpdir.js --test test/mission-control-costs-cogs-posting.test.js"
     },
     {
       "name": "mission-control-life-autonomy-count",
