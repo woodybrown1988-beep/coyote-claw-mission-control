@@ -101,6 +101,86 @@ function median(arr) {
   return a.length % 2 ? a[mid] : (a[mid - 1] + a[mid]) / 2;
 }
 
+// BANK-RECORD COMPLETENESS (2026-09-02, the Munro direct-debit incident). settledMonthFrom above
+// asks the JOURNAL side "has this month been booked?". Nobody was asking the BANK side the same
+// question, and it has the same hole for the same reason: qb_bank_txns is built from QuickBooks'
+// ACCOUNTING entities (Deposit / Purchase / Transfer), and a bank line only becomes one of those
+// when a human categorises it — Intuit exposes no API for the uncategorised "For Review" queue.
+// So the table holds CATEGORISED payments only. Measured live 2026-09-02: about five pounds in six
+// of July and August's outgoing money is missing from it while MAX(txn_date) is TODAY. Fresh and
+// nearly empty at the same time — which is why every "is this data stale?" watch certified it green,
+// and why the owner was told a supplier's direct debit had stopped when it had collected twice.
+//
+// THE CLASS: a check that reasons "has X been paid?" over a table that is missing the payments
+// prints absence as fact. Every panel on this page that reads qb_bank_txns purchases — the supplier
+// scorecard, the cash calendar, the P&L-vs-cash table — was doing exactly that, and the Executive
+// tab's own posting gate (buildExecutive) was the only one asking. The standing rule: a check may
+// only speak when its inputs are COMPLETE; where the record is holed the output is an explicit
+// "cannot tell" carrying the reason — never silence, never a confident sentence, never a total that
+// quietly omits what is not there yet.
+//
+// Completeness is measured from the table's OWN SHAPE, never from anything the hole could distort
+// (the engine's first draft gated on the supplier's learned payment method, which is learned FROM
+// this table — disarmed precisely in the worst case). Categorising is batch human work, so a
+// backlog is a cliff in monthly row COUNT at the recent edge while older months stay flat.
+//
+// THIS MIRRORS src/finance/invoiceLedger.ts feedCompleteness() IN THE ENGINE REPO, RULE FOR RULE,
+// AND MUST BE CHANGED IN STEP WITH IT. Mission Control cannot import engine code, so the rule is
+// copied, not shared — the engine file is the canon and this is its shadow:
+//   • monthly COUNT of qb_bank_txns purchases over the trailing 400 days (months holding rows);
+//   • the CURRENT calendar month is never judged (partial because it is not over) and never sets
+//     a baseline;
+//   • fewer than 8 settled months → no verdict ("not enough history"), never a guess;
+//   • edge = the last 4 settled months; baseline = the UPPER median of the 8 settled months before
+//     the edge — sorted[floor(n/2)], the engine's exact pick, NOT this file's averaging median();
+//   • a month in the edge under 60% of that baseline is HOLED (set well under any seasonal dip);
+//   • holedFrom = the first month of the UNBROKEN holed run ending at the last settled month. One
+//     quiet month a year ago is history, not a backlog; a backlog runs to today because nobody has
+//     caught up yet.
+// Live 2026-09-02: baseline 192 rows; Jul 94 (0.49) and Aug 63 (0.33) holed → holedFrom '2026-07'.
+const FEED_LOOKBACK_DAYS = 400;
+const FEED_BASELINE_MONTHS = 8;
+const FEED_EDGE_MONTHS = 4;
+const FEED_HOLED_BELOW = 0.6;
+/** Returns { months, holedFrom, baselineRows, judged, holed } — `judged` false means the record is
+ *  too short to say either way (which is ALSO not "complete"). `holed` lists the holed edge months
+ *  so a caption can say how thin each one is. */
+function feedCompleteness(q, now) {
+  const since = new Date(now - FEED_LOOKBACK_DAYS * 86400000).toISOString().slice(0, 10);
+  const months = rowsOf(q(
+    `SELECT substr(txn_date, 1, 7) m, COUNT(*) n FROM qb_bank_txns
+      WHERE txn_kind = 'purchase' AND txn_date >= ? GROUP BY m ORDER BY m`, [since]))
+    .map((r) => ({ month: String(r.m), rows: num(r.n) || 0, baselineRows: 0, ratio: 1, holed: false }));
+  const thisMonth = new Date(now).toISOString().slice(0, 7);
+  const settled = months.filter((mo) => mo.month !== thisMonth);
+  if (settled.length < FEED_BASELINE_MONTHS) return { months, holedFrom: null, baselineRows: null, judged: false, holed: [] };
+  const edge = settled.slice(-FEED_EDGE_MONTHS);
+  const base = settled.slice(-(FEED_EDGE_MONTHS + FEED_BASELINE_MONTHS), -FEED_EDGE_MONTHS);
+  // MEDIAN, not mean: one exceptional month (a refit, a quarterly VAT payment) must not move the
+  // yardstick enough to hide a real cliff behind it. Upper median — the engine's pick, kept in step.
+  const sorted = base.map((mo) => mo.rows).sort((a, b) => a - b);
+  const baselineRows = sorted.length ? sorted[Math.floor(sorted.length / 2)] : 0;
+  for (const mo of months) {
+    mo.baselineRows = baselineRows;
+    mo.ratio = baselineRows ? mo.rows / baselineRows : 1;
+    mo.holed = baselineRows > 0 && edge.includes(mo) && mo.ratio < FEED_HOLED_BELOW;
+  }
+  let holedFrom = null;
+  for (let i = edge.length - 1; i >= 0; i--) {
+    if (!edge[i].holed) break;
+    holedFrom = edge[i].month;
+  }
+  return { months, holedFrom, baselineRows, judged: true, holed: edge.filter((mo) => mo.holed) };
+}
+/** The one sentence every caveat on this page opens with, so the reader meets the same fact in the
+ *  same words on every tab. Names the month AND the rows, because "incomplete" alone invites
+ *  "how incomplete?" — and the answer (about a third of a normal month) is the whole point. */
+function feedHoleSentence(feed) {
+  if (!feed || !feed.holedFrom) return '';
+  const thin = feed.holed.map((mo) => `${monthLabel(mo.month)} has ${mo.rows} categorised payment(s) where a normal month has about ${feed.baselineRows}`).join('; ');
+  return `the bank record and the P&L are both incomplete from ${monthLabel(feed.holedFrom)} — ${thin}. That is a categorisation backlog in QuickBooks (a bank line reaches neither the bank table nor the P&L until a human categorises it), not a quiet trading period: the deposit side of the same table is unaffected.`;
+}
+
 const readCanonicalItemSales = S.readCanonicalItemSales;
 
 /** Recipe economics shared by Recipe Margins and COGS & Inventory. A recipe is complete only
@@ -356,8 +436,27 @@ const BEHAVIOUR_TONE = { fixed: 'info', semi: 'warn', variable: '' };
 // recurs when the 6-month purchase window holds ≥3 payment DAYS (same-day txns collapse to one)
 // whose day-gaps sit near a regular cadence: median gap m in [2, 45] days and every gap within
 // [max(1, 0.5m − 3), 1.5m + 3]. One-off history NEVER projects.
+//
+// THE HOLE (2026-09-02, the Munro incident): `hole` is the categorisation backlog from
+// feedCompleteness — { from: first day of holedFrom }, or null on a complete record. On a complete
+// record a gap outside the band is fatal, as before. Inside a holed record a gap is BRIDGED when a
+// whole multiple of the cadence fits it (g ≈ k·m, k ≥ 2) AND the first collection the bridge
+// presumes lands on or after hole.from: those k−1 collections are presumed uncategorised, not
+// skipped, and the supplier is KEPT and MARKED (bridged / missing) so the projection can say it is
+// anchored on stale data. Before this, ONE uncategorised July collection deleted a live
+// direct-debit supplier from the calendar under an empty-state reading "No recurring bank-outflow
+// pattern detected" — the record's hole presented as the supplier's absence. THE CLASS: a detector
+// that requires every observation to be present classifies a hole in the record as a break in the
+// pattern. A gap the hole cannot explain (its missing collections fall BEFORE hole.from) stays
+// fatal — the band is not loosened; only the record's known blind spot is accounted for.
 const RECUR_WINDOW_DAYS = 183;
-function detectRecurrence(dayRows) {
+/** Smallest k ≥ 2 such that g/k sits inside [lo, hi] — the number of cadences a gap spans — or 0
+ *  when no whole multiple fits (a gap that is merely irregular, not a run of missed collections). */
+function bridgeableBy(g, lo, hi) {
+  for (let k = 2; g / k >= lo; k++) if (g / k <= hi) return k;
+  return 0;
+}
+function detectRecurrence(dayRows, hole) {
   // dayRows: [{cp, d, p}] one row per counterparty × date (p = that day's total pence), any order.
   const byCp = new Map();
   for (const r of dayRows) {
@@ -375,7 +474,17 @@ function detectRecurrence(dayRows) {
     const m = median(gaps);
     if (!(m >= 2 && m <= 45)) continue;
     const lo = Math.max(1, 0.5 * m - 3); const hi = 1.5 * m + 3;
-    if (!gaps.every((g) => g >= lo && g <= hi)) continue;
+    let bridged = 0; let missing = 0; let broken = false;
+    for (let i = 0; i < gaps.length; i++) {
+      const g = gaps[i];
+      if (g >= lo && g <= hi) continue;
+      const k = hole ? bridgeableBy(g, lo, hi) : 0;
+      // gap i runs from days[i] to days[i + 1]; the first presumed collection is one cadence after
+      // days[i] and must itself sit inside the hole, else this is a real break, hole or no hole.
+      if (k >= 2 && K.shiftDays(days[i].d, Math.round(g / k)) >= hole.from) { bridged += 1; missing += k - 1; continue; }
+      broken = true; break;
+    }
+    if (broken) continue;
     out.push({
       cp,
       n: days.length,
@@ -383,6 +492,8 @@ function detectRecurrence(dayRows) {
       medianPence: median(days.map((x) => x.p)),
       lastDate: days[days.length - 1].d,
       spendPence: days.reduce((s, x) => s + x.p, 0),
+      bridged,  // gaps the hole had to explain
+      missing,  // collections presumed uncategorised inside it
     });
   }
   out.sort((a, b) => b.spendPence - a.spendPence);
@@ -652,6 +763,14 @@ function buildCash(q, now) {
   const todayIso = new Date(now).toISOString().slice(0, 10);
   c.todayIso = todayIso;
   if (bankMax) {
+    // ---- is the record we are about to project from actually there? (see feedCompleteness) ----
+    c.feed = feedCompleteness(q, now);
+    // The hole is declared on the calendar only when the recurrence window reaches into it; a
+    // backlog is always at the recent edge, so with a live bankMax it always does — but that is
+    // measured, not assumed.
+    const holeFrom = c.feed.holedFrom ? `${c.feed.holedFrom}-01` : null;
+    const hole = holeFrom && bankMax >= holeFrom ? { from: holeFrom, holedFrom: c.feed.holedFrom } : null;
+    c.hole = hole;
     // ---- recurrence detection over the trailing 6 months of bank purchases ----
     const from = K.shiftDays(bankMax, -(RECUR_WINDOW_DAYS - 1));
     const dayRows = rowsOf(q(
@@ -660,7 +779,13 @@ function buildCash(q, now) {
         GROUP BY counterparty, txn_date`, [from, bankMax]))
       .map((r) => ({ cp: String(r.cp), d: String(r.d), p: num(r.p) || 0 }));
     c.window = { from, to: bankMax };
-    c.recurring = detectRecurrence(dayRows);
+    c.recurring = detectRecurrence(dayRows, hole);
+    // STALE ANCHOR: the projection is lastDate + k·cadence. Inside a holed record that anchor is
+    // suspect in two shapes — the last categorised payment predates the hole (every collection
+    // since is presumed uncategorised, so the calendar is projecting from a June payment in
+    // September), or the pattern only survived by bridging a gap inside it. Either way the pattern
+    // is ASSUMED to have continued; this record cannot confirm it. Marked, never silently trusted.
+    for (const rec of c.recurring) rec.staleAnchor = !!hole && (rec.lastDate < hole.from || rec.bridged > 0);
     // SURVEILLANCE BOUNDARY (the standing labour ruling, applied here): person-named
     // counterparties (payroll payees) are recurring cash outflows — a real commitment — but
     // people render as AGGREGATES, never as per-person £ lines. Pool them into ONE 'Staff
@@ -676,6 +801,9 @@ function buildCash(q, now) {
         lastDate: persons.map((p) => p.lastDate).sort().pop(),
         spendPence: persons.reduce((s2, p) => s2 + p.spendPence, 0),
         members: persons, // kept for the week-landing projection (per-payee cadence, pooled label)
+        bridged: persons.reduce((s2, p) => s2 + p.bridged, 0),
+        missing: persons.reduce((s2, p) => s2 + p.missing, 0),
+        staleAnchor: persons.some((p) => p.staleAnchor), // one stale payee makes the pooled line stale
       };
       c.recurring.push(agg);
       c.recurring.sort((a, b) => b.spendPence - a.spendPence);
@@ -712,7 +840,8 @@ function buildCash(q, now) {
         w.items.set(rec.cp, (w.items.get(rec.cp) || 0) + 1);
       }
     }
-    c.weeks = weeks.map((w) => ({ monday: w.monday, totalPence: w.totalPence, items: [...w.items.entries()].map(([cp, n]) => ({ cp, n })) }));
+    const staleCps = new Set(c.recurring.filter((r) => r.staleAnchor).map((r) => (r.isAggregate ? 'Staff payroll' : r.cp)));
+    c.weeks = weeks.map((w) => ({ monday: w.monday, totalPence: w.totalPence, items: [...w.items.entries()].map(([cp, n]) => ({ cp, n, stale: staleCps.has(cp) })) }));
     // ---- P&L cost vs cash paid: month grain, trailing 6 ending the bank-max month ----
     const cashYm = bankMax.slice(0, 7);
     const months = []; for (let i = 5; i >= 0; i--) months.push(monthShift(cashYm, -i));
@@ -727,7 +856,14 @@ function buildCash(q, now) {
       [months[0], months[months.length - 1]]));
     const jBy = new Map(jRows.map((r) => [String(r.m), num(r.p)]));
     const bBy = new Map(bRows.map((r) => [String(r.m), num(r.p)]));
-    c.plVsCash = months.map((ym) => ({ ym, pl: jBy.get(ym) ?? null, cash: bBy.get(ym) ?? null, partial: ym === cashYm && refMonthOf(bankMax) !== cashYm }));
+    // A month on or after holedFrom is incomplete in BOTH series at once (the same uncategorised
+    // bank line is missing from the journal too), so its delta is a posting gap before it is
+    // anything else — carried as `holed` so the table withholds it rather than print it as timing.
+    c.plVsCash = months.map((ym) => ({
+      ym, pl: jBy.get(ym) ?? null, cash: bBy.get(ym) ?? null,
+      partial: ym === cashYm && refMonthOf(bankMax) !== cashYm,
+      holed: !!c.feed.holedFrom && ym >= c.feed.holedFrom,
+    }));
     // ---- working-capital controls: the honest cash-out cadence set (90d) ----
     const from90 = K.shiftDays(bankMax, -89);
     const w = rowsOf(q(
@@ -840,9 +976,17 @@ function buildSuppliers(q, now) {
   }
   const total = rows.reduce((a, r) => a + r.spend, 0);
   s.total = total; s.window = { from, to: bankMax };
+  // POSTING GATE (2026-09-02). The Executive tab withholds its supplier delta when the purchase
+  // window is un-posted; this scorecard had no such gate, so with July and August ~80% uncategorised
+  // every "vs prior yr" read as a collapse and every 12-month spend quietly understated. Same class
+  // as the Executive finding: a delta whose current side is missing is not a delta. When the
+  // trailing-12 window reaches into the hole the trend is WITHHELD (not "—", which reads as "no
+  // prior year"), and the spend/share columns are captioned as the POSTED record only.
+  s.feed = feedCompleteness(q, now);
+  s.trendWithheld = !!s.feed.holedFrom && bankMax >= `${s.feed.holedFrom}-01`;
   s.suppliers = rows.slice(0, 12).map((r) => ({
     ...r, sharePct: total > 0 ? (r.spend / total) * 100 : 0,
-    trendPct: r.prev != null && r.prev > 0 ? ((r.spend - r.prev) / r.prev) * 100 : null,
+    trendPct: !s.trendWithheld && r.prev != null && r.prev > 0 ? ((r.spend - r.prev) / r.prev) * 100 : null,
   }));
   // concentration: top-1 and top-3 shares of the total
   s.concentration = total > 0 ? {
@@ -899,6 +1043,8 @@ module.exports = {
   sub: 'Costs & supplier command centre · QB ledger shadow + bank truth',
   buildRecipeEconomics,
   readCanonicalItemSales,
+  feedCompleteness,   // exported so the mirror of the engine rule can be pinned month by month
+  detectRecurrence,   // exported so the hole-bridging has a direct negative control
 
   getSection(db, ctx) {
     const q = ctx && ctx.q;
@@ -1298,22 +1444,42 @@ module.exports = {
       // ---- (1) 13-week cash commitment calendar — the corrected premise ----
       let calBody;
       const rentNote = S.rcc.note(`Rent (via Workman) — contractual, lease canon: ${rentStepText(c.rentDays != null ? c.rentDays : rentStepDaysUntil(now))}. Quarterly-billed; payment dates are observed when they land, never projected.`);
+      // THE HOLE, DECLARED (see feedCompleteness). The window this calendar projects from reaches
+      // into a categorisation backlog: patterns anchored on a payment that predates it, or kept
+      // alive by bridging a missing collection inside it, are projected on the ASSUMPTION they
+      // continued. This record cannot confirm that, so the calendar says so before any row does.
+      const hole = c.hole || null;
+      const holeNote = hole
+        ? S.rcc.note(`This window includes a holed period: ${feedHoleSentence(c.feed)} Patterns marked "anchored on stale data" below are projected from their last CATEGORISED payment and assume the pattern continued through the backlog — whether it did cannot be told from this record. A collection that should have landed inside the hole is presumed uncategorised, not missed; the supplier stays on the calendar rather than vanishing under "no pattern detected".`)
+        : '';
+      const holeTag = hole ? S.rcc.tag(`bank record incomplete from ${monthLabel(hole.holedFrom)}`, 'warn') : '';
       if (c.bankMax && (c.recurring || []).length) {
-        const weekRows = c.weeks.map((w) => `<tr><td class="mono">wk of ${esc(w.monday)}</td><td class="r-num mono">${w.totalPence > 0 ? esc(gbp0(w.totalPence)) : '—'}</td><td>${w.items.length ? esc(w.items.map((it) => it.n > 1 ? `${it.cp} ×${it.n}` : it.cp).join(' · ')) : '<span class="ash">no projected pattern lands</span>'}</td></tr>`).join('');
-        const recRows = c.recurring.map((r) => `<tr><td>${esc(r.cp)}</td><td class="r-num mono">${int(r.n)}</td><td class="r-num mono">~${int(r.cadenceDays)}d</td><td class="r-num mono">${esc(gbp0(r.medianPence))}</td><td class="mono">${r.nextDate ? esc(r.nextDate) : '—'}</td><td>${S.rcc.tag('projected from observed cadence', 'warn')}</td></tr>`).join('');
-        calBody = `${rentNote}
+        const weekRows = c.weeks.map((w) => `<tr><td class="mono">wk of ${esc(w.monday)}</td><td class="r-num mono">${w.totalPence > 0 ? esc(gbp0(w.totalPence)) : '—'}</td><td>${w.items.length ? esc(w.items.map((it) => `${it.cp}${it.n > 1 ? ` ×${it.n}` : ''}${it.stale ? ' (stale anchor)' : ''}`).join(' · ')) : '<span class="ash">no projected pattern lands</span>'}</td></tr>`).join('');
+        const basisOf = (r) => (r.staleAnchor
+          ? `${S.rcc.tag('projected · anchored on stale data', 'bad')}${r.missing > 0 ? ` <span class="ash">${int(r.missing)} collection(s) presumed uncategorised inside the hole</span>` : ` <span class="ash">last categorised payment ${esc(r.lastDate)} predates the hole</span>`}`
+          : S.rcc.tag('projected from observed cadence', 'warn'));
+        const recRows = c.recurring.map((r) => `<tr><td>${esc(r.cp)}</td><td class="r-num mono">${int(r.n)}</td><td class="r-num mono">~${int(r.cadenceDays)}d</td><td class="r-num mono">${esc(gbp0(r.medianPence))}</td><td class="mono">${r.nextDate ? esc(r.nextDate) : '—'}</td><td>${basisOf(r)}</td></tr>`).join('');
+        calBody = `${rentNote}${holeNote}
           <div class="r-grid r-two-col" style="margin-top:12px">
             <div><div style="overflow:auto"><table><thead><tr><th>Counterparty</th><th class="r-num">Days paid · 6mo</th><th class="r-num">Cadence</th><th class="r-num">Median £</th><th>Next projected</th><th>Basis</th></tr></thead><tbody>${recRows}</tbody></table></div></div>
             <div><div style="overflow:auto"><table><thead><tr><th>Week</th><th class="r-num">Projected outflow</th><th>Patterns landing</th></tr></thead><tbody>${weekRows}</tbody></table></div></div>
           </div>
-          <div class="r-mini-note">every projected row is PROJECTED FROM OBSERVED CADENCE — bank purchases ${esc(c.window.from)} → ${esc(c.window.to)} (qb_bank_txns): a counterparty recurs at ≥3 payment days with near-regular gaps (median gap 2–45d, every gap within ±half-a-cadence ±3d); projection = last payment + k × median cadence at the median day-£ · a one-off is history, NEVER projected · person-named payroll counterparties pool into ONE Staff-payroll line — people render as aggregates (the surveillance-boundary ruling), the payment pattern itself is a cash fact · no bills ledger exists (qb_bills dead — see AP ageing), so due dates cannot be the source.</div>`;
+          <div class="r-mini-note">every projected row is PROJECTED FROM OBSERVED CADENCE — bank purchases ${esc(c.window.from)} → ${esc(c.window.to)} (qb_bank_txns): a counterparty recurs at ≥3 payment days with near-regular gaps (median gap 2–45d, every gap within ±half-a-cadence ±3d${hole ? `; inside the holed period a gap of a whole number of cadences is bridged, not fatal` : ''}); projection = last payment + k × median cadence at the median day-£ · a one-off is history, NEVER projected · person-named payroll counterparties pool into ONE Staff-payroll line — people render as aggregates (the surveillance-boundary ruling), the payment pattern itself is a cash fact · no bills ledger exists (qb_bills dead — see AP ageing), so due dates cannot be the source${hole ? ` · the window includes a holed period from ${esc(hole.from)} — categorised payments only; the calendar is complete only for what has been categorised` : ''}.</div>`;
       } else if (c.bankMax) {
-        calBody = `${rentNote}<div style="margin-top:12px">${S.rcc.emptyState({ title: '13-week cash commitment calendar', blocker: 'No recurring bank-outflow pattern detected in the trailing 6 months (≥3 near-regular payment days) — one-off history is never projected.', unlock: 'more bank history (qb_bank_txns)' })}</div>`;
+        // On a holed record "no pattern detected" is not a finding — it is the hole. Say which.
+        calBody = `${rentNote}${holeNote}<div style="margin-top:12px">${S.rcc.emptyState({
+          title: '13-week cash commitment calendar',
+          blocker: hole
+            ? `No recurring bank-outflow pattern is visible in the trailing 6 months of CATEGORISED purchases — and the bank record is incomplete from ${monthLabel(hole.holedFrom)}, so whether the patterns exist cannot be told from this record; absence here is the backlog, not a finding.`
+            : 'No recurring bank-outflow pattern detected in the trailing 6 months (≥3 near-regular payment days) — one-off history is never projected.',
+          unlock: hole ? 'categorising the QuickBooks "For Review" bank lines' : 'more bank history (qb_bank_txns)',
+        })}</div>`;
       } else {
         calBody = `${rentNote}<div style="margin-top:12px">${S.rcc.emptyState({ title: '13-week cash commitment calendar', blocker: 'No bank purchases recorded (qb_bank_txns).', unlock: 'the QuickBooks bank ingest' })}</div>`;
       }
       const calPanel = S.rcc.panel({
         title: '13-week cash commitment calendar', sub: 'recurring bank-outflow patterns + contractual lines · NOT bill due dates (no bills ledger — stated)',
+        headRight: holeTag,
         body: calBody,
       });
 
@@ -1329,10 +1495,22 @@ module.exports = {
       if (c.plVsCash && c.plVsCash.some((r) => r.pl != null || r.cash != null)) {
         const rows = c.plVsCash.map((r) => {
           const delta = r.pl != null && r.cash != null ? r.cash - r.pl : null;
-          return `<tr><td class="mono">${esc(monthLabel(r.ym))}${r.partial ? ' <span class="ash">(in progress)</span>' : ''}</td><td class="r-num mono">${esc(gbp0(r.pl))}</td><td class="r-num mono">${esc(gbp0(r.cash))}</td><td class="r-num mono">${delta != null ? `${delta >= 0 ? '+' : '−'}${esc(gbp0(Math.abs(delta)))}` : '—'}</td></tr>`;
+          // A holed month's delta is withheld outright: both sides are partial for the same reason,
+          // so the number would measure the backlog and be read as basis or timing.
+          const deltaCell = r.holed ? '<span class="ash">cannot tell — posting backlog</span>'
+            : delta != null ? `${delta >= 0 ? '+' : '−'}${esc(gbp0(Math.abs(delta)))}` : '—';
+          return `<tr><td class="mono">${esc(monthLabel(r.ym))}${r.partial ? ' <span class="ash">(in progress)</span>' : ''}${r.holed ? ' <span class="ash">(incomplete — posting backlog)</span>' : ''}</td><td class="r-num mono">${esc(gbp0(r.pl))}</td><td class="r-num mono">${esc(gbp0(r.cash))}</td><td class="r-num mono">${deltaCell}</td></tr>`;
         }).join('');
+        // The caption named two causes (basis, timing) for a delta whose live cause is a THIRD: a
+        // posting backlog in BOTH series at once. With the bank side AND the P&L side each missing
+        // the same uncategorised lines, every July/August margin figure reads better than the
+        // truth — the delta was never the risk, the shared absence was. On a complete record the
+        // basis + timing sentence stands as written.
+        const backlogLine = c.feed && c.feed.holedFrom
+          ? `the delta is BASIS + TIMING only where both series are posted — ${esc(feedHoleSentence(c.feed))} For the months from ${esc(monthLabel(c.feed.holedFrom))} the first cause of any gap is the backlog, not basis or timing, and every margin figure built on them reads better than the truth; their deltas are withheld above rather than printed as a finding.`
+          : 'the delta is BASIS + TIMING, stated not hidden.';
         pvBody = `<div style="overflow:auto"><table><thead><tr><th>Month</th><th class="r-num">P&amp;L expense (journal)</th><th class="r-num">Cash paid (bank)</th><th class="r-num">Delta</th></tr></thead><tbody>${rows}</tbody></table></div>
-          <div class="r-mini-note">month grain, trailing 6 to the bank record's latest month · P&amp;L = qb_journal_lines expense-classified accounts (debit − credit) · cash = qb_bank_txns purchases — which include VAT, payroll, HMRC and capital items the P&amp;L expense line does not · the delta is BASIS + TIMING, stated not hidden.</div>`;
+          <div class="r-mini-note">month grain, trailing 6 to the bank record's latest month · P&amp;L = qb_journal_lines expense-classified accounts (debit − credit) · cash = qb_bank_txns purchases — which include VAT, payroll, HMRC and capital items the P&amp;L expense line does not · ${backlogLine}</div>`;
       } else {
         pvBody = S.rcc.emptyState({ title: 'P&L cost versus cash paid', blocker: 'Needs both the journal and the bank record for a month.', unlock: 'the QuickBooks ingests (qb_journal_lines + qb_bank_txns)' });
       }
@@ -1438,16 +1616,26 @@ module.exports = {
         return S.rcc.panel({ title: 'Supplier scorecard', sub: 'from bank purchases (qb_bank_txns)',
           body: S.rcc.emptyState({ title: 'Supplier scorecard', blocker: 'no bank purchases recorded (qb_bank_txns).', unlock: 'the QuickBooks bank ingest' }) });
       }
-      const rows = s.suppliers.map((r) => `<tr><td>${esc(r.cp)}${r.isAggregate ? ` ${S.rcc.tag('aggregated', 'info')}` : ''}</td><td class="r-num mono">${esc(gbp0(r.spend))}</td><td class="r-num mono">${r.n != null ? int(r.n) : '—'}</td><td class="r-num mono">${r.sharePct.toFixed(1)}%</td><td class="r-num mono">${r.trendPct != null ? `<span style="color:${r.trendPct > 0 ? S.rcc.tokens.bad : S.rcc.tokens.good}">${r.trendPct >= 0 ? '+' : ''}${r.trendPct.toFixed(0)}%</span>` : '<span class="ash">—</span>'}</td></tr>`).join('');
+      // POSTING GATE (see buildSuppliers): inside a holed record the trend column is "cannot tell",
+      // not "—" — a dash reads as "no prior year", which is a different, false claim.
+      const holed = !!s.trendWithheld;
+      const trendCell = (r) => (holed ? '<span class="ash">cannot tell — record incomplete</span>'
+        : r.trendPct != null ? `<span style="color:${r.trendPct > 0 ? S.rcc.tokens.bad : S.rcc.tokens.good}">${r.trendPct >= 0 ? '+' : ''}${r.trendPct.toFixed(0)}%</span>` : '<span class="ash">—</span>');
+      const rows = s.suppliers.map((r) => `<tr><td>${esc(r.cp)}${r.isAggregate ? ` ${S.rcc.tag('aggregated', 'info')}` : ''}</td><td class="r-num mono">${esc(gbp0(r.spend))}</td><td class="r-num mono">${r.n != null ? int(r.n) : '—'}</td><td class="r-num mono">${r.sharePct.toFixed(1)}%</td><td class="r-num mono">${trendCell(r)}</td></tr>`).join('');
+      const holeNote = holed
+        ? S.rcc.note(`Posting backlog: ${feedHoleSentence(s.feed)} Spend and share below are the POSTED record only and understate from ${monthLabel(s.feed.holedFrom)}; the vs-prior-year trend cannot be told — its current side is missing — and is withheld rather than shown as a collapse.`)
+        : '';
       const scorePanel = S.rcc.panel({ title: 'Supplier scorecard', sub: `bank purchases by counterparty · ${esc(s.window.from)} → ${esc(s.window.to)} (trailing 12mo) · TRUE supplier-spend wire (qb_bills is dead)`,
-        body: `<div style="overflow:auto"><table><thead><tr><th>Counterparty</th><th class="r-num">Spend 12mo</th><th class="r-num">Payments</th><th class="r-num">Share</th><th class="r-num">vs prior yr</th></tr></thead><tbody>${rows}</tbody></table></div>
-          <div class="r-mini-note">spend = qb_bank_txns purchases (VAT-inclusive; includes non-food outflows — rent agent, HMRC, utilities) · person-named payees pool into ONE Staff-payroll line (the surveillance boundary) · a supplier scorecard'\''s delivery/quality axis needs data no wire holds — see the dependency matrix.</div>` });
+        headRight: holed ? S.rcc.tag(`bank record incomplete from ${monthLabel(s.feed.holedFrom)}`, 'warn') : '',
+        body: `${holeNote}<div style="overflow:auto"><table><thead><tr><th>Counterparty</th><th class="r-num">Spend 12mo${holed ? ' (posted)' : ''}</th><th class="r-num">Payments</th><th class="r-num">Share</th><th class="r-num">vs prior yr</th></tr></thead><tbody>${rows}</tbody></table></div>
+          <div class="r-mini-note">spend = qb_bank_txns purchases (VAT-inclusive; includes non-food outflows — rent agent, HMRC, utilities)${holed ? ` · CATEGORISED purchases only — incomplete from ${esc(monthLabel(s.feed.holedFrom))}, stated above` : ''} · person-named payees pool into ONE Staff-payroll line (the surveillance boundary) · a supplier scorecard'\''s delivery/quality axis needs data no wire holds — see the dependency matrix.</div>` });
       const con = s.concentration;
       const concPanel = S.rcc.panel({ title: 'Supplier spend concentration', sub: 'dependency risk',
+        headRight: holed ? S.rcc.tag(`posted record only · incomplete from ${monthLabel(s.feed.holedFrom)}`, 'warn') : '',
         body: con ? `<div class="r-grid" style="grid-template-columns:1fr 1fr;gap:12px">
-            <div class="r-card r-kpi"><div class="r-kpi-label">Top supplier share</div><div class="r-kpi-value">${con.top1.toFixed(1)}%</div><div class="r-kpi-sub">of 12mo purchase spend</div></div>
+            <div class="r-card r-kpi"><div class="r-kpi-label">Top supplier share</div><div class="r-kpi-value">${con.top1.toFixed(1)}%</div><div class="r-kpi-sub">of 12mo purchase spend${holed ? ' (posted only)' : ''}</div></div>
             <div class="r-card r-kpi"><div class="r-kpi-label">Top-3 share</div><div class="r-kpi-value">${con.top3.toFixed(1)}%</div><div class="r-kpi-sub">${int(con.n)} counterparties total</div></div>
-          </div><div class="r-mini-note">concentration = the exposure if a top supplier fails or raises prices · Booker-led food supply is the single largest dependency.</div>`
+          </div><div class="r-mini-note">concentration = the exposure if a top supplier fails or raises prices · Booker-led food supply is the single largest dependency${holed ? ` · shares are of the POSTED record, which is incomplete from ${esc(monthLabel(s.feed.holedFrom))} — a supplier whose recent collections are uncategorised is under-weighted here` : ''}.</div>`
           : S.rcc.emptyState({ title: 'Concentration', blocker: 'no purchase spend in the window.' }) });
       const ppvPanel = S.rcc.panel({ title: 'Purchase price variance', sub: 'per-unit price movement', headRight: S.rcc.tag('invoice-line gated', 'warn'),
         body: S.rcc.emptyState({ title: 'Purchase price variance', blocker: INVOICE_LINE_BLOCKER, unlock: INVOICE_LINE_UNLOCK }) });
@@ -1620,7 +1808,9 @@ module.exports = {
     let stamp;
     if (tab === 'executive' && m.exec && m.exec.refMonth) stamp = `month ${monthLabel(m.exec.refMonth)} · QB ledger + day-net canon`;
     else if (tab === 'fixed' && m.fixed && m.fixed.qbMax) stamp = `QB ledger to ${monthLabel(m.fixed.qbMax)}`;
-    else if (tab === 'cash' && m.cash && m.cash.bankMax) stamp = `bank truth to ${m.cash.bankMax}`;
+    // FRESHNESS IS NOT COMPLETENESS: "bank truth to <today>" over a holed record is the exact
+    // sentence that certified the backlog green. The stamp carries the hole with the date.
+    else if (tab === 'cash' && m.cash && m.cash.bankMax) stamp = `bank truth to ${m.cash.bankMax}${m.cash.hole ? ` · incomplete from ${monthLabel(m.cash.hole.holedFrom)}` : ''}`;
     else stamp = 'QB ledger shadow + bank truth';
     return { stamp, body };
   },
