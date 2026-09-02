@@ -98,6 +98,10 @@
     },
     {
       "module": "mission-control/ui/pages/claw/agents.js",
+      "export": "deriveBlockedHeldAge"
+    },
+    {
+      "module": "mission-control/ui/pages/claw/agents.js",
       "export": "render"
     },
     {
@@ -133,6 +137,18 @@
       "export": "buildMenuPortfolio"
     },
     {
+      "module": "mission-control/ui/pages/coyote/reports.js",
+      "export": "deriveSittingCaptionState"
+    },
+    {
+      "module": "mission-control/ui/pages/coyote/reports.js",
+      "export": "deriveCoversCaptionState"
+    },
+    {
+      "module": "mission-control/ui/pages/coyote/reports.js",
+      "export": "deriveReconciliationCaptionState"
+    },
+    {
       "module": "mission-control/ui/pages/coyote/costs.js",
       "export": "buildRecipeEconomics"
     },
@@ -151,6 +167,14 @@
     {
       "module": "mission-control/ui/pages/coyote/overview.js",
       "export": "buildOverviewRecipeEconomics"
+    },
+    {
+      "module": "mission-control/ui/pages/life/today.js",
+      "export": "getSection"
+    },
+    {
+      "module": "mission-control/ui/pages/life/today.js",
+      "export": "render"
     }
   ],
   "tests": [
@@ -211,6 +235,10 @@
       "command": "node --test test/mission-control-claw-queue-depth.test.js"
     },
     {
+      "name": "mission-control-claw-held-age",
+      "command": "node --test test/mission-control-claw-held-age.test.js"
+    },
+    {
       "name": "mission-control-overview-kpi",
       "command": "node --test test/mission-control-overview-kpi.test.js"
     },
@@ -223,12 +251,20 @@
       "command": "node --test test/mission-control-rcc-p5-menu.test.js"
     },
     {
+      "name": "mission-control-report-caption-logic",
+      "command": "node --test test/mission-control-reports-caption-logic.test.js"
+    },
+    {
       "name": "mission-control-costs-recipe-economics",
       "command": "node --test test/mission-control-costs-centre-c2c3.test.js"
     },
     {
       "name": "mission-control-costs-cogs-posting",
-      "command": "node --test test/mission-control-costs-cogs-posting.test.js"
+      "command": "node --require ./test/tmpdir.js --test test/mission-control-costs-cogs-posting.test.js",
+    },
+    {
+      "name": "mission-control-life-autonomy-count",
+      "command": "node --require ./test/tmpdir.js --test test/mission-control-life-autonomy-count.test.js"
     }
   ],
   "mutants": [
