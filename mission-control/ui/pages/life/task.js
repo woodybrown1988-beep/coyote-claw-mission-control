@@ -261,7 +261,7 @@ function invoiceRunBlock(events, folders) {
     const from = holedFromOf(br);
     if (!sp.lastPaid) {
       // The old horizon ("goes back to 2018") is the far edge of the record. The edge that
-      // matters before a payment is the NEAR one \u2014 the month from which the record is holed \u2014
+      // matters before a payment is the NEAR one — the month from which the record is holed —
       // and the line carries it, because "no payment on record" over a holed month is the
       // exact sentence that told the owner a live direct debit had stopped.
       const since = sp.seenSince ? ` (${br ? 'categorised ' : ''}bank data goes back to ${LIFE.esc(String(sp.seenSince))})` : '';
@@ -311,7 +311,7 @@ function invoiceRunBlock(events, folders) {
   // caption is about the BANK side. Until the record is complete the sum stands over invoices
   // whose payment is structurally invisible, so the label keeps its name and gains the one
   // sentence that stops it being read as a debt: some of these may already be paid. Both sums
-  // carry it \u2014 a partial total is no more able to see a categorisation backlog than a full one.
+  // carry it — a partial total is no more able to see a categorisation backlog than a full one.
   const holedCaption = holed
     ? `<div style="${attention};font-size:11.5px;font-weight:400;padding-top:2px">the bank record is incomplete${holedFromOf(holed)} \u2014 some of these may already be paid</div>`
     : '';
@@ -334,7 +334,7 @@ function invoiceRunBlock(events, folders) {
       // verdict; with it they read as evidence, which is what they are. There are TWO
       // blindnesses and the header names both: the count of suppliers with nothing on record
       // is how blind the check is per supplier INSIDE the record, and the INCOMPLETE clause is
-      // how blind the record itself is \u2014 the second is the one that produced the incident, and
+      // how blind the record itself is — the second is the one that produced the incident, and
       // a count alone measured the wrong one. The clause carries the engine's own note verbatim
       // (it names the months and the mechanism), in the attention colour, ahead of the count it
       // qualifies.
