@@ -860,13 +860,23 @@ function buildCogs(q, now) {
   const salesMax = salesMx && salesMx.d ? String(salesMx.d) : null;
   const qbMx = rowsOf(q(`SELECT MAX(month) m FROM qb_pl_monthly`))[0];
   const qbMax = qbMx && qbMx.m ? String(qbMx.m) : null;
-  const refM = refMonthOf(salesMax) || qbMax;
-  if (!refM) return c;
-  c.refMonth = refM;
-  const qb = qbMonths(q, [refM]);
-  const mm = qb.get(refM);
-  const net = monthNet(q, refM);
+  const desiredMonth = refMonthOf(salesMax) || qbMax;
+  if (!desiredMonth) return c;
+  c.refMonth = desiredMonth;
+  const settled = settledMonthFrom(q, desiredMonth, rowsOf, num);
+  c.postingSettled = settled.unsettled.length === 0;
+  const net = monthNet(q, desiredMonth);
   c.net = net ? net.net : null;
+  c.recipe = buildRecipeEconomics(q, desiredMonth);
+  c.recipeLines = c.recipe.recipeLines;
+  c.cogsTotal = null;
+  c.cogsPct = null;
+  c.cogsCats = [];
+  c.otherVar = [];
+  if (!c.postingSettled) return c;
+
+  const qb = qbMonths(q, [desiredMonth]);
+  const mm = qb.get(desiredMonth);
   c.cogsTotal = mm && mm.any ? mm.cogs : null;
   c.cogsPct = c.net && c.net > 0 && c.cogsTotal != null ? (c.cogsTotal / c.net) * 100 : null;
   // actual COGS by category (the COGS-bucket accounts for the month)
@@ -876,8 +886,6 @@ function buildCogs(q, now) {
   // etc.) — the honest non-COGS variable set, real at QB category grain.
   c.otherVar = (mm && mm.any ? mm.accounts.filter((a) => a.bucket === 'overhead' && behaviourOf(a.name) === 'variable') : [])
     .sort((a, b) => b.p - a.p).map((a) => ({ name: a.name, p: a.p }));
-  c.recipe = buildRecipeEconomics(q, refM);
-  c.recipeLines = c.recipe.recipeLines;
   return c;
 }
 
@@ -1461,6 +1469,11 @@ module.exports = {
       }
       const recipe = c.recipe || {};
       const monthly = recipe.monthly || null;
+      const postingGated = c.postingSettled === false;
+      const gatePanel = postingGated
+        ? S.rcc.panel({ title: 'COGS posting gate', sub: `${esc(monthLabel(c.refMonth))} · purchase posting incomplete`, headRight: S.rcc.tag('ratio withheld', 'warn'),
+          body: plainEmpty('COGS ratio withheld', `Purchase posting is incomplete for ${monthLabel(c.refMonth)}, so the COGS ratio and recorded purchase-cost figures are withheld. ${c.net != null ? `Complete automatic-feed sales remain available: ${gbp0(c.net)}.` : 'Complete automatic-feed sales are not available for this month.'} The COGS figure returns automatically once posting is complete.`) })
+        : '';
       const categoryMap = new Map();
       for (const a of c.cogsCats || []) categoryMap.set(a.name, { name: a.name, actual: a.p, theoretical: null });
       for (const a of (monthly && monthly.byCategory) || []) {
@@ -1471,20 +1484,27 @@ module.exports = {
       const categories = [...categoryMap.values()].sort((a, b) =>
         (b.actual || 0) - (a.actual || 0) || (b.theoretical || 0) - (a.theoretical || 0) || a.name.localeCompare(b.name));
       const catRows = categories.length
-        ? categories.map((a) => `<tr><td>${esc(a.name)}</td><td class="r-num mono">${a.actual == null ? '<span class="ash">—</span>' : esc(gbp0(a.actual))}</td><td class="r-num mono">${a.theoretical == null ? '<span class="ash">—</span>' : esc(gbp0(a.theoretical))}</td></tr>`).join('')
-        : `<tr><td colspan="3" class="ash">No COGS categories or completely costed product sales in ${esc(monthLabel(c.refMonth))}.</td></tr>`;
+        ? categories.map((a) => `<tr><td>${esc(a.name)}</td><td class="r-num mono">${postingGated ? '<span class="ash">withheld</span>' : a.actual == null ? '<span class="ash">—</span>' : esc(gbp0(a.actual))}</td><td class="r-num mono">${a.theoretical == null ? '<span class="ash">—</span>' : esc(gbp0(a.theoretical))}</td></tr>`).join('')
+        : postingGated
+          ? `<tr><td colspan="3" class="ash">Actual COGS is withheld for ${esc(monthLabel(c.refMonth))} while purchase posting is incomplete.</td></tr>`
+          : `<tr><td colspan="3" class="ash">No COGS categories or completely costed product sales in ${esc(monthLabel(c.refMonth))}.</td></tr>`;
       const coverageCopy = monthly && monthly.allNet > 0
         ? `Complete recipes cover ${pct1(monthly.coveragePct)} of ${esc(monthLabel(c.refMonth))} ex-VAT item sales (${gbp0(monthly.coveredNet)} of ${gbp0(monthly.allNet)}).`
         : `No item-level sales are available for ${esc(monthLabel(c.refMonth))}.`;
       const theoreticalTotal = recipe.recipeLines > 0 && monthly && monthly.coveredNet > 0
         ? esc(gbp0(monthly.theoretical)) : '—';
-      const avtPanel = S.rcc.panel({ title: 'Actual versus theoretical by category', sub: `${esc(monthLabel(c.refMonth))} · actual = QB COGS accounts · theoretical = units sold × complete recipe unit cost${c.cogsPct != null ? ` · actual COGS ${c.cogsPct.toFixed(1)}% of net` : ''}`,
-        body: `<div style="overflow:auto"><table><thead><tr><th>Category</th><th class="r-num">Actual COGS</th><th class="r-num">Theoretical COGS</th></tr></thead><tbody>${catRows}</tbody><tfoot><tr><th>Total</th><th class="r-num mono">${c.cogsTotal == null ? '—' : esc(gbp0(c.cogsTotal))}</th><th class="r-num mono">${theoreticalTotal}</th></tr></tfoot></table></div>
+      const avtPanel = S.rcc.panel({ title: 'Actual versus theoretical by category', sub: postingGated
+        ? `${esc(monthLabel(c.refMonth))} · actual COGS withheld while purchase posting is incomplete · theoretical = units sold × complete recipe unit cost`
+        : `${esc(monthLabel(c.refMonth))} · actual = QB COGS accounts · theoretical = units sold × complete recipe unit cost${c.cogsPct != null ? ` · actual COGS ${c.cogsPct.toFixed(1)}% of net` : ''}`,
+        body: `<div style="overflow:auto"><table><thead><tr><th>Category</th><th class="r-num">Actual COGS</th><th class="r-num">Theoretical COGS</th></tr></thead><tbody>${catRows}</tbody><tfoot><tr><th>Total</th><th class="r-num mono">${postingGated ? '<span class="ash">withheld</span>' : c.cogsTotal == null ? '—' : esc(gbp0(c.cogsTotal))}</th><th class="r-num mono">${theoreticalTotal}</th></tr></tfoot></table></div>
           <div class="r-mini-note">${coverageCopy} Bookkeeping categories and menu categories are shown by their own names; matching names share a row.</div>` });
 
       let bridgeBody; let bridgeTag = '';
       const hasCoveredSales = monthly && monthly.coveredNet > 0;
-      if (recipe.recipeLines === 0) {
+      if (postingGated) {
+        bridgeTag = S.rcc.tag('ratio withheld', 'warn');
+        bridgeBody = plainEmpty('COGS variance bridge', `Recorded COGS for ${monthLabel(c.refMonth)} is withheld because purchase posting is incomplete. The comparison returns automatically once posting is complete.`);
+      } else if (recipe.recipeLines === 0) {
         bridgeBody = plainEmpty('COGS variance bridge', 'No recipes have been added yet, so expected food cost cannot be calculated.', 'Add complete recipes in Recipes & Costs.');
       } else if (!hasCoveredSales) {
         bridgeBody = plainEmpty('COGS variance bridge', `No ${monthLabel(c.refMonth)} sales have a complete recipe, so there is no theoretical total to compare.`, 'Complete recipes for products sold in this month.');
@@ -1512,13 +1532,13 @@ module.exports = {
         body: plainEmpty('Ingredient price watch', 'Supplier records currently show total spend by category, not each ingredient’s pack price, pack size and usable quantity.', 'Add itemised supplier invoices to compare ingredient prices over time.') });
       const stockPanel = S.rcc.panel({ title: 'Stock and waste control', sub: 'physical counts and waste records', headRight: S.rcc.tag('not recorded', 'info'),
         body: plainEmpty('Stock and waste control', 'No stock counts or waste logs have been recorded, so expected use cannot yet be compared with what was actually used.', 'Start regular stock counts and record waste quantities and reasons.') });
-      const otherRows = c.otherVar.length
+      const otherRows = !postingGated && c.otherVar.length
         ? c.otherVar.map((a) => `<tr><td>${esc(a.name)}</td><td class="r-num mono">${esc(gbp0(a.p))}</td></tr>`).join('')
-        : `<tr><td colspan="2" class="ash">no other-variable accounts in ${esc(monthLabel(c.refMonth))}</td></tr>`;
+        : `<tr><td colspan="2" class="ash">${postingGated ? `Recorded variable costs are withheld for ${esc(monthLabel(c.refMonth))} while purchase posting is incomplete.` : `no other-variable accounts in ${esc(monthLabel(c.refMonth))}`}</td></tr>`;
       const otherPanel = S.rcc.panel({ title: 'Other variable cost control', sub: `${esc(monthLabel(c.refMonth))} · non-COGS variable accounts (packaging, cleaning, consumables)`,
         body: `<div style="overflow:auto"><table><thead><tr><th>Account</th><th class="r-num">Actual £</th></tr></thead><tbody>${otherRows}</tbody></table></div>
           <div class="r-mini-note">variable/COGS classification is a presentation judgment based on QuickBooks account names.</div>` });
-      return `${avtPanel}<div class="r-grid r-two-col">${bridgePanel}${pricePanel}</div><div class="r-grid r-two-col">${stockPanel}${otherPanel}</div>`;
+      return `${gatePanel}${avtPanel}<div class="r-grid r-two-col">${bridgePanel}${pricePanel}</div><div class="r-grid r-two-col">${stockPanel}${otherPanel}</div>`;
     };
 
     // ============================ RECIPE MARGINS (C3) ============================

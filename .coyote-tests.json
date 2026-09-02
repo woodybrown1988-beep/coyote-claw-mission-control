@@ -153,6 +153,14 @@
       "export": "buildRecipeEconomics"
     },
     {
+      "module": "mission-control/ui/pages/coyote/costs.js",
+      "export": "getSection"
+    },
+    {
+      "module": "mission-control/ui/pages/coyote/costs.js",
+      "export": "render"
+    },
+    {
       "module": "mission-control/ui/shared.js",
       "export": "readCanonicalItemSales"
     },
@@ -253,6 +261,10 @@
     {
       "name": "mission-control-costs-recipe-economics",
       "command": "node --test test/mission-control-costs-centre-c2c3.test.js"
+    },
+    {
+      "name": "mission-control-costs-cogs-posting",
+      "command": "node --require ./test/tmpdir.js --test test/mission-control-costs-cogs-posting.test.js"
     },
     {
       "name": "mission-control-life-autonomy-count",
