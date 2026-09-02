@@ -71,11 +71,10 @@ const SALE_WHERE = `r.cancelled = 0 AND (r.type IS NULL OR r.type NOT IN ('VOID'
 const CPT_BAND = [1.9, 2.0];
 
 // ---- SITTINGS CAPTURE GATE (2026-08-19, from a live wrong-number report) ----------------------
-// The current sitting population has two observable grains: receipts clustered at a physical table,
-// and a closed "Order N" tab kept as one standalone sitting. Order counters are never clustered with
-// each other: they identify individual closed tabs, not a reusable place. The panel derives both the
-// population mix and capture from the current window's rows so its caption cannot deny a receipt used
-// by its figure.
+// The current sitting population has three observable grains: receipts clustered at a physical
+// table, a closed "Order N" tab kept as one standalone sitting, and a STOREKIT channel slot sharing
+// one raw table name for the business day. The panel derives both the population mix and capture from
+// the current window's rows so its caption cannot deny a receipt used by its figure.
 //
 // The arithmetic was never wrong — a biased sample was being presented as a channel verdict. So the
 // panel must STATE the capture rate and REFUSE the comparison when the sample cannot carry it.
@@ -94,7 +93,7 @@ function sittingCaptureVerdict(cap) {
   const spread = Math.abs(qr - served);
   if (low.length) {
     return { ok: false, qr, served, spread,
-      reason: `only ${low.join(' and ')} of that channel's net maps to a sitting (numbered table cluster or standalone Order N receipt) — too little of it is captured to read a per-party figure` };
+      reason: `only ${low.join(' and ')} of that channel's net maps to a sitting (numbered table cluster, standalone Order N tab or QR channel slot) — too little of it is captured to read a per-party figure` };
   }
   if (spread > SITTING_MAX_SPREAD) {
     return { ok: false, qr, served, spread,
@@ -125,30 +124,73 @@ function plural(n, one, many) { return `${n} ${n === 1 ? one : many}`; }
 function deriveSittingCaptionState(sittingRows, receiptCaptureRows) {
   const sittings = Array.isArray(sittingRows) ? sittingRows : [];
   const receipts = Array.isArray(receiptCaptureRows) ? receiptCaptureRows : [];
-  let tableClusters = 0; let standaloneOrders = 0; let unclassified = 0;
+  let tableClusters = 0; let standaloneOrders = 0; let channelSlots = 0; let unclassified = 0;
+  const unknownBasisCounts = new Map();
   const populationMissing = new Set();
+  const captureMissing = new Set();
+  const capturedNet = { QR: 0, served: 0 };
+  if (!sittings.length) captureMissing.add('current-window sitting rows');
+  // Old fixture databases predate the basis column. Preserve their table-name classification as a
+  // schema-compatibility seam; once a result set carries basis, every row must carry a valid value.
+  const basisAware = sittings.some((row) => row && Object.prototype.hasOwnProperty.call(row, 'basis'));
   for (const row of sittings) {
     const tableName = rowValue(row, ['tableName', 'table_name', 'tbl']);
     const receiptCount = num(rowValue(row, ['receiptCount', 'receipt_count', 'rcpts']));
+    const channelValue = rowValue(row, ['channel']);
+    const netValue = rowValue(row, ['net', 'net_pence']);
     if (tableName === undefined) populationMissing.add('table_name');
     if (receiptCount == null) populationMissing.add('receipt_count');
-    const name = tableName == null ? '' : String(tableName);
-    if (/Table\s+\d/i.test(name)) tableClusters++;
-    else if (/^Order\s+\d+$/i.test(name) && receiptCount === 1) standaloneOrders++;
-    else unclassified++;
+    if (channelValue === undefined || channelValue === null || String(channelValue).trim() === '') captureMissing.add('channel on sitting rows');
+    if (netValue === undefined || num(netValue) == null) captureMissing.add('net_pence on sitting rows');
+    if (channelValue != null && num(netValue) != null) {
+      const channel = String(channelValue);
+      if (channel === 'QR' || channel === 'served') capturedNet[channel] += num(netValue);
+    }
+    const basisValue = rowValue(row, ['basis']);
+    if (basisValue === undefined && !basisAware) {
+      const name = tableName == null ? '' : String(tableName);
+      if (/Table\s+\d/i.test(name)) tableClusters++;
+      else if (/^Order\s+\d+$/i.test(name) && receiptCount === 1) standaloneOrders++;
+      else unclassified++;
+      continue;
+    }
+    if (basisValue === undefined || basisValue === null || String(basisValue).trim() === '') {
+      populationMissing.add('basis');
+      unclassified++;
+      continue;
+    }
+    const basis = String(basisValue);
+    if (basis === 'table-cluster') tableClusters++;
+    else if (basis === 'order-tab') standaloneOrders++;
+    else if (basis === 'channel-slot') channelSlots++;
+    else unknownBasisCounts.set(basis, (unknownBasisCounts.get(basis) || 0) + 1);
   }
+  const unknownBases = Object.fromEntries(unknownBasisCounts);
   const total = sittings.length;
   const pct = (value) => total > 0 ? `${((100 * value) / total).toFixed(1)}%` : '0.0%';
   const populationSupported = populationMissing.size === 0 && unclassified === 0;
+  const knownGrains = [
+    `basis "table-cluster": ${plural(tableClusters, 'clustered table-served receipt group', 'clustered table-served receipt groups')} (${pct(tableClusters)})`,
+    `basis "order-tab": ${plural(standaloneOrders, 'standalone served Order N tab', 'standalone served Order N tabs')} (${pct(standaloneOrders)})`,
+    `basis "channel-slot": ${plural(channelSlots, 'QR session slot', 'QR session slots')}—STOREKIT receipts sharing one (business_date, raw table_name), with the ruled session slot spanning the business day (${pct(channelSlots)})`,
+  ];
+  const unknownBasisCaption = Object.entries(unknownBases).map(([basis, count]) => (
+    `${plural(count, 'sitting', 'sittings')} ${count === 1 ? 'carries' : 'carry'} basis "${basis}", which this page does not yet describe`
+  )).join('; ');
+  const captureGrains = knownGrains.concat(Object.entries(unknownBases).map(([basis, count]) => (
+    `basis "${basis}": ${plural(count, 'sitting', 'sittings')} (not yet described)`
+  )));
   const populationCaption = !total
     ? 'No sitting rows exist in the current window.'
     : (populationSupported
-      ? `${plural(total, 'sitting', 'sittings')}: ${plural(tableClusters, 'clustered table-served receipt group', 'clustered table-served receipt groups')} (${pct(tableClusters)}) + ${plural(standaloneOrders, 'standalone Order N receipt', 'standalone Order N receipts')} (${pct(standaloneOrders)}).`
-      : `Sitting population unavailable — missing ${[...populationMissing].join(', ') || 'a supported table cluster or standalone Order N classification'} on current-window sitting rows.`);
+      ? `${plural(total, 'sitting', 'sittings')}: ${knownGrains.join(' + ')}.${unknownBasisCaption ? ` ${unknownBasisCaption}.` : ''}`
+      : `Sitting population unavailable — missing ${[...populationMissing].join(', ') || 'a valid sitting basis classification'} on current-window sitting rows.`);
 
-  const captureMissing = new Set();
   if (!receipts.length) captureMissing.add('current-window receipt rows');
-  const pool = { QR: { net: 0, sittingNet: 0 }, served: { net: 0, sittingNet: 0 } };
+  const pool = {
+    QR: { net: 0, sittingNet: basisAware ? capturedNet.QR : 0 },
+    served: { net: 0, sittingNet: basisAware ? capturedNet.served : 0 },
+  };
   const byLabel = {};
   for (const row of receipts) {
     const labelValue = rowValue(row, ['label', 'channelLabel', 'channel_label', 'lbl']);
@@ -156,15 +198,14 @@ function deriveSittingCaptionState(sittingRows, receiptCaptureRows) {
     const sittingNetValue = rowValue(row, ['sittingNet', 'sitting_net', 'cnet']);
     if (labelValue === undefined || labelValue === null) captureMissing.add('channel_label');
     if (netValue === undefined || num(netValue) == null) captureMissing.add('net_without_tax_pence');
-    if (sittingNetValue === undefined || num(sittingNetValue) == null) captureMissing.add('sittingNet');
-    if (captureMissing.size) continue;
+    if (!basisAware && (sittingNetValue === undefined || num(sittingNetValue) == null)) captureMissing.add('sittingNet');
+    if (labelValue === undefined || labelValue === null || netValue === undefined || num(netValue) == null) continue;
     const label = String(labelValue);
     const net = num(netValue) || 0;
-    const sittingNet = num(sittingNetValue) || 0;
     const group = label === QR_LABEL ? 'QR' : 'served';
     pool[group].net += net;
-    pool[group].sittingNet += sittingNet;
-    if (net > 0) byLabel[label] = sittingNet / net;
+    if (!basisAware && num(sittingNetValue) != null) pool[group].sittingNet += num(sittingNetValue);
+    if (!unknownBasisCounts.size && net > 0 && num(sittingNetValue) != null) byLabel[label] = num(sittingNetValue) / net;
   }
   const capture = { supported: captureMissing.size === 0, byLabel };
   if (capture.supported) {
@@ -173,11 +214,12 @@ function deriveSittingCaptionState(sittingRows, receiptCaptureRows) {
     if (capture.served == null) captureMissing.add('served channel net');
     capture.supported = captureMissing.size === 0;
   }
+  const labelCapture = Object.entries(byLabel).map(([label, value]) => `${label} ${(100 * value).toFixed(1)}%`).join(' · ');
   const captureCaption = capture.supported
-    ? `Capture by the same population (table clusters and standalone Order N receipts): QR ${(100 * capture.QR).toFixed(1)}% · served ${(100 * capture.served).toFixed(1)}% of current-window channel net (${Object.entries(byLabel).map(([label, value]) => `${label} ${(100 * value).toFixed(1)}%`).join(' · ')}).`
+    ? `Capture by the same population (${captureGrains.join(' + ')}): QR ${(100 * capture.QR).toFixed(1)}% · served ${(100 * capture.served).toFixed(1)}% of current-window channel net${labelCapture ? ` (${labelCapture})` : ''}.`
     : `Capture unavailable — missing ${[...captureMissing].join(', ')}; no capture percentage is shown.`;
   return {
-    population: { total, tableClusters, standaloneOrders, unclassified, supported: populationSupported },
+    population: { total, tableClusters, standaloneOrders, channelSlots, unknownBases, unclassified, supported: populationSupported },
     capture,
     populationCaption,
     captureCaption,
@@ -683,7 +725,8 @@ function buildDrivers(q, maxDate, rv2) {
     }
 
     // ---- SITTINGS (2026-07-31): the honest per-PARTY QR-vs-served basis. dine_in_sittings holds
-    // physical-table receipt clusters plus standalone closed Order-N tabs; net_pence is ex-VAT.
+    // physical-table receipt clusters, standalone closed Order-N tabs and STOREKIT channel slots;
+    // net_pence is ex-VAT.
     // Absent/empty table → d.sit stays null → the panel gates. Per-cover here is OVERALL (dine-in
     // net ÷ OpenTable covers) — covers are channel-agnostic and "POS guest-count is never covers". ----
     const sitRows = rowsOf(q(
@@ -714,25 +757,23 @@ function buildDrivers(q, maxDate, rv2) {
           WHERE r.business_date IN ${covDays} AND ${SALE_WHERE}
             AND m.channel_label IN ('EAT IN','MON-FRI DEAL','STOREKIT ORDER & PAY')`, [from, apiMax]))[0];
       // How much of each channel's net can actually FORM a sitting (see SITTING_MIN_CAPTURE above).
-      // Denominator = all dine-in net for the channel; numerator = table-clusterable receipts plus
-      // standalone Order-N tabs, the same two-part population described by the rendered caption.
+      // Denominator = all dine-in receipt net for the channel; numerator comes from these returned
+      // sitting rows, so table clusters, Order-N tabs, STOREKIT business-day channel slots and any
+      // future non-empty basis are counted without maintaining a second closed enum over receipts.
+      // SELECT * keeps pre-basis fixture databases readable while exposing the authoritative basis
+      // value wherever the current schema supplies it.
       const populationResult = q(
-        `SELECT channel, table_name tableName, receipt_count receiptCount, net_pence net
+        `SELECT *
            FROM dine_in_sittings WHERE business_date BETWEEN ? AND ?`, [from, apiMax]);
       const capResult = q(
         `SELECT m.channel_label lbl, SUM(r.net_without_tax_pence) net,
-                -- CLUSTERABLE = whatever the engine can actually form a sitting from. Since
-                -- 2026-08-19 that is a physical table OR a closed "Order N" tab (a tab is already
-                -- one party's whole visit; only the RECYCLING of the counter ever made Order-N
-                -- unclusterable, and tabs are still never grouped with each other). Keeping this
-                -- predicate in step with src/lightspeed-api/sittings.ts is the whole point of the
-                -- gate: if the two drift apart, the capture rate reported here stops describing
-                -- the population the sittings were actually drawn from.
-                SUM(CASE WHEN r.table_name LIKE '%Table %' OR r.table_name LIKE 'Order %' THEN r.net_without_tax_pence ELSE 0 END) cnet
+                -- Legacy-only numerator for fixture/old-schema compatibility. Current basis-aware
+                -- rows derive their captured net above from dine_in_sittings itself.
+                SUM(CASE WHEN m.channel_label = ? OR r.table_name LIKE '%Table %' OR r.table_name LIKE 'Order %' THEN r.net_without_tax_pence ELSE 0 END) cnet
            FROM sales_receipts_api r JOIN sales_channel_map_api m ON m.account_profile_code = COALESCE(r.account_profile_code,'')
           WHERE r.business_date BETWEEN ? AND ? AND ${SALE_WHERE}
             AND m.channel_label IN ('EAT IN','MON-FRI DEAL','STOREKIT ORDER & PAY')
-          GROUP BY m.channel_label`, [from, apiMax]);
+          GROUP BY m.channel_label`, [QR_LABEL, from, apiMax]);
       const populationRows = populationResult && populationResult.ok
         ? populationResult.rows
         : Array.from({ length: totSit }, () => ({ receiptCount: null }));
@@ -1985,7 +2026,7 @@ module.exports = {
       const perSit = (x) => (x && x.sittings > 0 ? gbp(Math.round(x.net / x.sittings)) : '—');
       const chOf = (k) => (sit && sit.by[k] && sit.by[k].sittings > 0 ? sit.by[k] : null);
       const qrSit = chOf('QR'), servedSit = chOf('served'), mixedSit = chOf('mixed');
-      // The per-party figures only stand if enough of each channel maps to the two-part sitting
+      // The per-party figures only stand if enough of each channel maps to the three-part sitting
       // population (SITTING_MIN_CAPTURE). When it does not, the value is WITHHELD rather than shown
       // with a caveat underneath — a number on a KPI tile gets read, whatever the small print says.
       const sitV = sit && sit.verdict ? sit.verdict : null;
@@ -1997,14 +2038,14 @@ module.exports = {
         S.rcc.kpi({
           label: 'Net / QR sitting', value: capBlocked ? '—' : perSit(qrSit),
           sub: capBlocked
-            ? (sittingFieldsMissing ? `withheld — ${sitV.reason}` : `withheld — only ${capPct(sit.capture && sit.capture.QR)} of QR net maps to a table cluster or standalone Order N sitting`)
+            ? (sittingFieldsMissing ? `withheld — ${sitV.reason}` : `withheld — only ${capPct(sit.capture && sit.capture.QR)} of QR net maps to a numbered table cluster, standalone Order N tab or QR channel slot`)
             : (qrSit ? `${int(qrSit.sittings)} QR sittings · ${(qrSit.rcpts / qrSit.sittings).toFixed(2)} receipts/sitting`
               : (sit ? 'no QR sittings in the window' : 'no sittings yet — run: lightspeed-api -- sittings-backfill')),
         }),
         S.rcc.kpi({
           label: 'Net / served sitting', value: capBlocked ? '—' : perSit(servedSit),
           sub: capBlocked
-            ? (sittingFieldsMissing ? `withheld — ${sitV.reason}` : `withheld — only ${capPct(sit.capture && sit.capture.served)} of served net maps to a table cluster or standalone Order N sitting`)
+            ? (sittingFieldsMissing ? `withheld — ${sitV.reason}` : `withheld — only ${capPct(sit.capture && sit.capture.served)} of served net maps to a numbered table cluster, standalone Order N tab or QR channel slot`)
             : (servedSit ? `${int(servedSit.sittings)} served sittings (EAT IN + MON-FRI DEAL)`
               : (sit ? 'no served sittings in the window' : 'dine_in_sittings not populated')),
         }),
@@ -2021,7 +2062,7 @@ module.exports = {
         ? `<div class="rv2-caption"><strong>Capture:</strong> ${esc(sit.captionState ? sit.captionState.captureCaption : (labelCap ? `${labelCap} of each channel's net.` : 'capture could not be measured.'))}${capBlocked ? ` <strong>The per-party comparison is withheld:</strong> ${esc(sitV.reason)}. It becomes readable when current-window receipts carry the required net and channel fields and either tables are assigned on the POS or the standalone Order N identifier is retained.` : ''}</div>`
         : '';
       const sitCaption = sit
-        ? capLine + `<div class="rv2-caption">${esc(sit.captionState ? sit.captionState.populationCaption : `${int(sit.totSit)} current-window sittings.`)} Sittings 28d to ${esc(sit.to)} · population = clustered table-served receipt groups plus standalone Order N receipts, derived from dine_in_sittings rows in this window (20-min table clustering, ex-VAT). Per-cover is OVERALL: OpenTable covers are day-total + channel-agnostic, so it is not split by channel.${mixNote}</div>`
+        ? capLine + `<div class="rv2-caption">${esc(sit.captionState ? sit.captionState.populationCaption : `${int(sit.totSit)} current-window sittings.`)} Sittings 28d to ${esc(sit.to)} · population = table-cluster receipt groups + standalone served order-tab sittings + STOREKIT channel-slot sessions on one (business_date, raw table_name), with each channel slot spanning the business day; derived from dine_in_sittings rows in this window (20-min table clustering, ex-VAT). Per-cover is OVERALL: OpenTable covers are day-total + channel-agnostic, so it is not split by channel.${mixNote}</div>`
         : `<div class="rv2-caption">dine_in_sittings not populated yet — after the derivation deploys, run <code>npm run lightspeed-api -- sittings-backfill</code> (ongoing days fill at ingest); until then this gates honestly.</div>`;
       const sitPanel = S.rcc.panel({
         title: 'Sittings — net per party by channel',

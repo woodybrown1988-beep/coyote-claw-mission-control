@@ -7,53 +7,108 @@ const reports = require('../mission-control/ui/pages/coyote/reports.js');
 
 const {
   deriveSittingCaptionState,
+  sittingCaptureVerdict,
   deriveCoversCaptionState,
   deriveReconciliationCaptionState,
 } = reports;
 
-test('sitting population and capture follow current-window table clusters plus standalone Order receipts', () => {
-  const clustered = [
-    { channel: 'QR', tableName: '27 Bank Street, Table 4', receiptCount: 2, net: 6000 },
-    { channel: 'served', tableName: 'Table 7', receiptCount: 1, net: 4000 },
+test('sitting population and capture name and count all three known basis grains', () => {
+  const sittings = [
+    { basis: 'table-cluster', channel: 'served', tableName: 'Table 7', receiptCount: 2, net: 6000 },
+    { basis: 'order-tab', channel: 'served', tableName: 'Order 19', receiptCount: 1, net: 3000 },
+    { basis: 'channel-slot', channel: 'QR', tableName: 'Order 8', receiptCount: 3, net: 8400 },
   ];
-  const withOrder = clustered.concat(
-    { channel: 'served', tableName: 'Order 19', receiptCount: 1, net: 3000 },
-  );
-  const captureWithoutOrder = [
-    { label: 'STOREKIT ORDER & PAY', net: 6000, sittingNet: 6000 },
-    { label: 'EAT IN', net: 7000, sittingNet: 4000 },
-  ];
-  const captureWithOrder = [
-    { label: 'STOREKIT ORDER & PAY', net: 6000, sittingNet: 6000 },
-    { label: 'EAT IN', net: 7000, sittingNet: 7000 },
+  const captureRows = [
+    { label: 'STOREKIT ORDER & PAY', net: 8400, sittingNet: 8400 },
+    { label: 'EAT IN', net: 9000, sittingNet: 9000 },
   ];
 
-  const before = deriveSittingCaptionState(clustered, captureWithoutOrder);
-  const after = deriveSittingCaptionState(withOrder, captureWithOrder);
+  const state = deriveSittingCaptionState(sittings, captureRows);
 
-  assert.equal(before.population.total, 2);
-  assert.equal(after.population.total, 3);
-  assert.equal(after.population.tableClusters, 2);
-  assert.equal(after.population.standaloneOrders, 1);
-  assert.notEqual(before.populationCaption, after.populationCaption);
-  assert.match(after.populationCaption, /2 clustered table-served receipt groups \(66\.7%\)/);
-  assert.match(after.populationCaption, /1 standalone Order N receipt \(33\.3%\)/);
-  assert.match(after.captureCaption, /table clusters and standalone Order N receipts/);
-  assert.match(after.captureCaption, /QR 100\.0%/);
-  assert.match(after.captureCaption, /served 100\.0%/);
-  assert.match(before.captureCaption, /served 57\.1%/);
-  assert.notEqual(before.captureCaption, after.captureCaption);
-  assert.doesNotMatch(after.captureCaption, /only form from.*numbered table/i);
+  assert.equal(state.population.total, 3);
+  assert.equal(state.population.tableClusters, 1);
+  assert.equal(state.population.standaloneOrders, 1);
+  assert.equal(state.population.channelSlots, 1);
+  assert.equal(state.population.supported, true, 'channel-slot is a supported population, so it must not withhold the panel');
+  assert.match(state.populationCaption, /basis "table-cluster".*1 clustered table-served receipt group/);
+  assert.match(state.populationCaption, /basis "order-tab".*1 standalone served Order N tab/);
+  assert.match(state.populationCaption, /basis "channel-slot".*1 QR session slot/);
+  assert.match(state.populationCaption, /STOREKIT receipts sharing one \(business_date, raw table_name\)/);
+  for (const basis of ['table-cluster', 'order-tab', 'channel-slot']) assert.match(state.captureCaption, new RegExp(basis));
+  assert.match(state.captureCaption, /QR 100\.0%/);
+  assert.match(state.captureCaption, /served 100\.0%/);
+  assert.equal(sittingCaptureVerdict(state.capture).ok, true);
 });
 
-test('sitting capture withholds unsupported percentages and names the missing current-row field', () => {
+test('an unknown non-empty sitting basis is reported literally without withholding supported channel figures', () => {
+  const state = deriveSittingCaptionState([
+    { basis: 'table-cluster', channel: 'served', tableName: 'Table 7', receiptCount: 2, net: 6000 },
+    { basis: 'order-tab', channel: 'served', tableName: 'Order 19', receiptCount: 1, net: 3000 },
+    { basis: 'channel-slot', channel: 'QR', tableName: 'Order 8', receiptCount: 3, net: 8400 },
+    { basis: 'future-grain', channel: 'served', tableName: 'Walk-in 2', receiptCount: 1, net: 2000 },
+    { basis: 'future-grain', channel: 'served', tableName: 'Walk-in 3', receiptCount: 1, net: 1000 },
+  ], [
+    { label: 'STOREKIT ORDER & PAY', net: 8400, sittingNet: 8400 },
+    { label: 'EAT IN', net: 12000, sittingNet: 12000 },
+  ]);
+
+  assert.equal(state.population.total, 5);
+  assert.equal(state.population.unknownBases['future-grain'], 2);
+  assert.equal(state.population.supported, true);
+  assert.match(state.populationCaption, /2 sittings carry basis "future-grain", which this page does not yet describe/);
+  assert.match(state.captureCaption, /basis "future-grain": 2 sittings \(not yet described\)/);
+  assert.equal(state.capture.supported, true);
+  assert.equal(state.capture.QR, 1);
+  assert.equal(state.capture.served, 1);
+  const verdict = sittingCaptureVerdict(state.capture);
+  assert.equal(verdict.ok, true, 'the QR and served figures remain renderable');
+
+  const body = reports.render({
+    tab: 'drivers',
+    drivers: {
+      apiMax: '2026-08-31',
+      sit: {
+        to: '2026-08-31', totSit: 5,
+        by: {
+          QR: { sittings: 1, net: 8400, rcpts: 3 },
+          served: { sittings: 4, net: 12000, rcpts: 5 },
+        },
+        capture: state.capture, captureByLabel: state.capture.byLabel,
+        captionState: state, verdict,
+      },
+    },
+  }, {}).body;
+  assert.match(body, /Net \/ QR sitting<\/div><div class="r-kpi-value">£84\.00</);
+  assert.match(body, /Net \/ served sitting<\/div><div class="r-kpi-value">£30\.00</);
+});
+
+test('an explicitly missing basis retains the sitting-population withholding guard', () => {
   const state = deriveSittingCaptionState(
-    [{ channel: 'served', tableName: 'Order 8', receiptCount: 1, net: 3000 }],
-    [{ label: 'EAT IN', net: 3000 }],
+    [{ basis: null, channel: 'served', tableName: 'Table 7', receiptCount: 1, net: 3000 }],
+    [
+      { label: 'STOREKIT ORDER & PAY', net: 3000, sittingNet: 3000 },
+      { label: 'EAT IN', net: 3000, sittingNet: 3000 },
+    ],
+  );
+
+  assert.equal(state.population.supported, false);
+  assert.match(state.populationCaption, /Sitting population unavailable — missing basis/);
+});
+
+test('sitting capture withholds unsupported percentages and names a missing basis-row net', () => {
+  const state = deriveSittingCaptionState(
+    [
+      { basis: 'channel-slot', channel: 'QR', tableName: 'Order 8', receiptCount: 1, net: 3000 },
+      { basis: 'order-tab', channel: 'served', tableName: 'Order 9', receiptCount: 1 },
+    ],
+    [
+      { label: 'STOREKIT ORDER & PAY', net: 3000 },
+      { label: 'EAT IN', net: 3000 },
+    ],
   );
 
   assert.equal(state.capture.supported, false);
-  assert.match(state.captureCaption, /missing sittingNet/);
+  assert.match(state.captureCaption, /missing net_pence on sitting rows/);
   assert.doesNotMatch(state.captureCaption, /\b\d+(?:\.\d+)?%/);
 });
 
