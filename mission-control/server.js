@@ -119,8 +119,8 @@ function handleRequest(req, res) {
     }
   }
 
-  // The ONE narrow write-path (Step 2). TIER 2 of the two-tier boundary: a fixed allowlist of
-  // safe/reversible ops (mark TA/OT responded, snooze, log an action) via a SEPARATE write handle.
+  // The ONE narrow write-path (Step 2). TIER 2 of the two-tier boundary: fixed allowlists of
+  // safe/reversible ops (review state/action + QuickBooks processor-fee input) via a SEPARATE write handle.
   // Everything else — all DATA rendering — uses the read-only handle. There is no op that posts to
   // Google (replyToReview stays the box-side Telegram-gated tap; the board has no token/nonce/path).
   if (req.method === 'POST' && url.pathname === '/api/review-action') {
@@ -564,6 +564,46 @@ function openWritableDatabase() {
 // to make the board post — and none exists. mark_responded is TA/OT-only (the SQL WHERE excludes
 // Google), so even "responded" can't touch a Google review (its lifecycle is the Telegram tap).
 const REVIEW_ACTION_OPS = new Set(['mark_responded', 'skip', 'snooze', 'log_action']);
+const QB_SALES_FEE_OPS = new Set(['set_qb_sales_fee']);
+const QB_SALES_FEE_LINES = new Set(['pos_fee', 'online_fee']);
+
+/** Persist one signed, integer-pence processor fee at the exact (month, line) key. */
+function applyQuickBooksSalesFee(db, body, now) {
+  const op = body && body.op;
+  if (!QB_SALES_FEE_OPS.has(op)) return { ok: false, status: 400, error: 'unknown op' };
+  const allowedFields = new Set(['op', 'month', 'line', 'value_pence']);
+  if (!body || Object.keys(body).some((key) => !allowedFields.has(key))) {
+    return { ok: false, status: 400, error: 'unknown field' };
+  }
+  const month = typeof body.month === 'string' ? body.month : '';
+  if (!/^\d{4}-(?:0[1-9]|1[0-2])$/.test(month)) {
+    return { ok: false, status: 400, error: 'month must be YYYY-MM' };
+  }
+  const line = typeof body.line === 'string' ? body.line : '';
+  if (!QB_SALES_FEE_LINES.has(line)) {
+    return { ok: false, status: 400, error: 'line must be pos_fee or online_fee' };
+  }
+  if (typeof body.value_pence !== 'number' || !Number.isSafeInteger(body.value_pence)) {
+    return { ok: false, status: 400, error: 'value_pence must be a signed integer' };
+  }
+  try {
+    db.exec(`CREATE TABLE IF NOT EXISTS qb_sales_fees (
+      month TEXT NOT NULL,
+      line TEXT NOT NULL CHECK (line IN ('pos_fee','online_fee')),
+      value_pence INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (month, line)
+    )`);
+    db.prepare(`INSERT INTO qb_sales_fees (month, line, value_pence, updated_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(month, line) DO UPDATE SET value_pence=excluded.value_pence, updated_at=excluded.updated_at`)
+      .run(month, line, body.value_pence, now);
+    const stored = db.prepare(`SELECT value_pence FROM qb_sales_fees WHERE month=? AND line=?`).get(month, line);
+    return { ok: true, status: 200, op, month, line, value_pence: stored.value_pence };
+  } catch (_) {
+    return { ok: false, status: 500, error: 'write failed' };
+  }
+}
 
 /**
  * Apply ONE narrow review action against a writable db. Pure over (db, body, now) for testability.
@@ -644,7 +684,9 @@ function handleReviewAction(req, res) {
       return;
     }
     try {
-      const result = applyReviewAction(opened.db, parsed, Date.now());
+      const result = parsed && QB_SALES_FEE_OPS.has(parsed.op)
+        ? applyQuickBooksSalesFee(opened.db, parsed, Date.now())
+        : applyReviewAction(opened.db, parsed, Date.now());
       sendJson(res, result.status || (result.ok ? 200 : 400), result);
     } finally {
       try {
@@ -4000,6 +4042,9 @@ module.exports = {
   renderReviews,
   applyReviewAction,
   REVIEW_ACTION_OPS,
+  applyQuickBooksSalesFee,
+  QB_SALES_FEE_OPS,
+  QB_SALES_FEE_LINES,
   applyRecipeAction,
   applyRecipeImport,
   RECIPE_ACTION_OPS,

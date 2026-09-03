@@ -42,7 +42,7 @@ test('revenue contract after the nav restructure (page-map amendment 2026-07-21)
 
 test('the old YoY headline + long-range grammar is deleted from EVERY tab (absorbed into Forecast)', () => {
   const db = makeDb();
-  for (const tab of ['executive', 'drivers', 'menu', 'reconciliation', 'forecast']) {
+  for (const tab of ['executive', 'drivers', 'menu', 'reconciliation', 'forecast', 'qbsales']) {
     const ctx = ctxFor(db, tab);
     const body = reports.render(reports.getSection(db, ctx), ctx).body;
     assert.doesNotMatch(body, /class="rp-yoy"/, `${tab}: old headline bar gone`);
@@ -54,13 +54,13 @@ test('the old YoY headline + long-range grammar is deleted from EVERY tab (absor
   db.close();
 });
 
-test('every tab still renders inside the RCC shell with the 5-link subnav', () => {
+test('every tab still renders inside the RCC shell with the 6-link subnav', () => {
   const db = makeDb();
-  for (const tab of ['executive', 'drivers', 'menu', 'reconciliation', 'forecast']) {
+  for (const tab of ['executive', 'drivers', 'menu', 'reconciliation', 'forecast', 'qbsales']) {
     const ctx = ctxFor(db, tab);
     const body = reports.render(reports.getSection(db, ctx), ctx).body;
     assert.match(body, /<div class="rcc">/, `${tab}: rcc wrapper`);
-    assert.equal((body.match(/class="r-tab[ "]/g) || []).length, 5, `${tab}: 5 subtab links`);
+    assert.equal((body.match(/class="r-tab[ "]/g) || []).length, 6, `${tab}: 6 subtab links`);
   }
   db.close();
 });

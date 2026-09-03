@@ -138,6 +138,18 @@
     },
     {
       "module": "mission-control/ui/pages/coyote/reports.js",
+      "export": "latestCompleteMonth"
+    },
+    {
+      "module": "mission-control/ui/pages/coyote/reports.js",
+      "export": "calculateQuickBooksSales"
+    },
+    {
+      "module": "mission-control/server.js",
+      "export": "applyQuickBooksSalesFee"
+    },
+    {
+      "module": "mission-control/ui/pages/coyote/reports.js",
       "export": "deriveSittingCaptionState"
     },
     {
@@ -253,6 +265,10 @@
     {
       "name": "mission-control-menu-growth",
       "command": "node --test test/mission-control-rcc-p5-menu.test.js"
+    },
+    {
+      "name": "mission-control-quickbooks-sales-entry",
+      "command": "node --require ./test/tmpdir.js --test test/mission-control-qb-sales.test.js"
     },
     {
       "name": "mission-control-report-caption-logic",
