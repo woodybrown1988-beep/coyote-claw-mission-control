@@ -1,8 +1,8 @@
 'use strict';
 // Reports — the REVENUE COMMAND CENTRE (RCC Stage 2, ruled 2026-07-21). ONE route (/coyote/reports),
-// five subtabs per the operator mock (docs/revenue-command-centre/ gap map + reference/mock-*.png):
+// six subtabs (the five operator-mock RCC views plus the finance-entry workflow):
 //   executive (P1 BUILT) · drivers (P2 BUILT) · menu (P5 BUILT) · reconciliation (P3 BUILT)
-//   · forecast (P4 BUILT) — ALL FIVE LIVE.
+//   · forecast (P4 BUILT) · QuickBooks Sales Entry — ALL SIX LIVE.
 // Contract unchanged: { key, route, title, sub, getSection, render }. SELECT-only via ctx.q.
 // ONE HOME PER FACT (the absorb rule): the old projection panel + long-range + YoY headline are
 // ABSORBED by the Forecast tab; the old channel-mix stack/QR hero by the Executive donut (the
@@ -59,6 +59,7 @@ const TABS = [
   { key: 'menu', label: 'Menu Growth' },
   { key: 'reconciliation', label: 'Reconciliation' },
   { key: 'forecast', label: 'Revenue Forecast' },
+  { key: 'qbsales', label: 'QuickBooks Sales Entry' },
 ];
 const TAB_KEYS = TABS.map((t) => t.key);
 
@@ -341,6 +342,191 @@ const DECLINE_FLOOR_PENCE = 5000; // decline watch: net decline ≥ £50
 
 // RCC donut palette in the mock's order: accent → blue → accent2 → purple → greys.
 const DONUT_COLORS = ['#e44b36', '#67a7ff', '#ffb34d', '#ad8cff', '#56616e', '#7d8da5'];
+
+// QuickBooks sales-entry rules. STOREKIT card takings arrive as STR; LivePepper is deliberately
+// separate on LP (row 8), so it is not in this closed row-2 allowlist.
+const QB_CARD_CODES = new Set(['LSPAY_ADYEN_TERMINAL_API_LOCAL', 'STR']);
+const QB_IN_HOUSE_CHANNELS = new Set(['EAT IN', 'STOREKIT ORDER & PAY', 'MON-FRI DEAL']);
+
+function latestCompleteMonth(now) {
+  const date = new Date(now == null ? Date.now() : now);
+  const valid = Number.isFinite(date.getTime()) ? date : new Date();
+  return new Date(Date.UTC(valid.getUTCFullYear(), valid.getUTCMonth() - 1, 1)).toISOString().slice(0, 7);
+}
+
+function calendarMonthWindow(month) {
+  const match = String(month || '').match(/^(\d{4})-(\d{2})$/);
+  if (!match || Number(match[2]) < 1 || Number(match[2]) > 12) return null;
+  const year = Number(match[1]);
+  const monthNumber = Number(match[2]);
+  const days = new Date(Date.UTC(year, monthNumber, 0)).getUTCDate();
+  const dates = Array.from({ length: days }, (_, index) => `${match[1]}-${match[2]}-${pad2(index + 1)}`);
+  return { month: `${match[1]}-${match[2]}`, from: dates[0], to: dates[dates.length - 1], dates };
+}
+
+function qbPence(value) {
+  const n = Number(value);
+  return Number.isSafeInteger(n) ? n : 0;
+}
+
+function uniqueApiRows(rows, keyOf) {
+  const found = new Map();
+  for (const row of (Array.isArray(rows) ? rows : [])) {
+    const key = keyOf(row || {});
+    if (key && !found.has(key)) found.set(key, row);
+  }
+  return [...found.values()];
+}
+
+/**
+ * Build the ten-line QuickBooks sales receipt from raw API-grain rows. This is deliberately pure:
+ * database reads stay in getSection, while identifier deduplication, filters and every penny of the
+ * balancing identity live here and are pinned by node:test.
+ */
+function calculateQuickBooksSales(input) {
+  const source = input || {};
+  const window = calendarMonthWindow(source.month);
+  if (!window) return null;
+  const receiptRows = uniqueApiRows(source.receipts, (row) => String(row.receipt_id || row.receiptId || ''))
+    .filter((row) => inRequestedWindow(rowDate(row), window));
+  const eligibleReceipts = receiptRows.filter((row) => (
+    !qbPence(row.cancelled) && ['SALE', 'SPLIT'].includes(String(row.type || '').toUpperCase())
+  ));
+  const channelOf = (row) => String(row.channel_label || row.channelLabel || '').trim().toUpperCase();
+  const receiptGross = (row) => qbPence(rowValue(row, ['net_with_tax_pence', 'netWithTaxPence', 'gross_pence']));
+  const inHouse = eligibleReceipts.filter((row) => QB_IN_HOUSE_CHANNELS.has(channelOf(row)));
+  const unmappedReceipts = eligibleReceipts.filter((row) => !channelOf(row));
+  const onlineReceiptIds = new Set(eligibleReceipts.filter((row) => channelOf(row) === 'ONLINE ORDER')
+    .map((row) => String(row.receipt_id || row.receiptId)));
+
+  const lineRows = uniqueApiRows(source.lines, (row) => {
+    const receiptId = String(row.receipt_id || row.receiptId || '');
+    const lineId = String(row.line_id || row.lineId || '');
+    return receiptId && lineId ? `${receiptId}|${lineId}` : '';
+  }).filter((row) => inRequestedWindow(rowDate(row), window));
+  const accountingGroupNames = new Map((Array.isArray(source.accountingGroups) ? source.accountingGroups : [])
+    .map((group) => [String(group.code), String(group.name || '').trim().toUpperCase()]));
+  const groupNameOf = (line) => {
+    const direct = rowValue(line, ['accounting_group_name', 'accountingGroupName']);
+    if (direct != null && String(direct).trim()) return String(direct).trim().toUpperCase();
+    const raw = rowValue(line, ['accounting_group', 'accountingGroup']);
+    return accountingGroupNames.get(String(raw)) || String(raw || '').trim().toUpperCase();
+  };
+  const onlineLines = lineRows.filter((line) => onlineReceiptIds.has(String(line.receipt_id || line.receiptId)));
+  const shakeRootKeys = new Set(onlineLines.filter((line) => groupNameOf(line) === 'SHAKES').map((line) => (
+    `${String(line.receipt_id || line.receiptId)}|${String(line.line_id || line.lineId)}`
+  )));
+  const shakeLines = onlineLines.filter((line) => {
+    const receiptId = String(line.receipt_id || line.receiptId);
+    const lineId = String(line.line_id || line.lineId);
+    const parentId = String(line.parent_line_id || line.parentLineId || '');
+    return shakeRootKeys.has(`${receiptId}|${lineId}`) || (parentId && shakeRootKeys.has(`${receiptId}|${parentId}`));
+  });
+  const shakeKeys = new Set(shakeLines.map((line) => `${String(line.receipt_id || line.receiptId)}|${String(line.line_id || line.lineId)}`));
+  const onlineTwentyLines = onlineLines.filter((line) => !shakeKeys.has(`${String(line.receipt_id || line.receiptId)}|${String(line.line_id || line.lineId)}`));
+  const lineGross = (line) => qbPence(rowValue(line, ['net_with_tax_pence', 'netWithTaxPence', 'gross_pence']));
+
+  const paymentRows = uniqueApiRows(source.payments, (row) => {
+    const paymentId = rowValue(row, ['payment_id', 'paymentId']);
+    if (paymentId != null && String(paymentId)) return String(paymentId);
+    const receiptId = String(row.receipt_id || row.receiptId || '');
+    const sequence = rowValue(row, ['payment_seq', 'paymentSeq']);
+    return receiptId && sequence != null ? `${receiptId}|${String(sequence)}` : '';
+  }).filter((row) => inRequestedWindow(rowDate(row), window));
+  const paymentCode = (row) => String(row.code || '').trim().toUpperCase();
+  const paymentGrossWithTip = (row) => qbPence(rowValue(row, ['net_with_tax_pence', 'netWithTaxPence']))
+    + qbPence(rowValue(row, ['tip_pence', 'tipPence']));
+  const cardPayments = paymentRows.filter((row) => QB_CARD_CODES.has(paymentCode(row)));
+  const cashPayments = paymentRows.filter((row) => paymentCode(row) === 'CASH');
+  const onlinePayments = paymentRows.filter((row) => paymentCode(row) === 'LP');
+
+  const feeSource = source.fees && typeof source.fees === 'object' ? source.fees : {};
+  const hasPosFee = Object.prototype.hasOwnProperty.call(feeSource, 'pos_fee') && Number.isSafeInteger(feeSource.pos_fee);
+  const hasOnlineFee = Object.prototype.hasOwnProperty.call(feeSource, 'online_fee') && Number.isSafeInteger(feeSource.online_fee);
+  const sourceWindow = `${window.from} → ${window.to} inclusive`;
+  const excludedReceipts = receiptRows.length - eligibleReceipts.length;
+  const rows = [
+    {
+      line: 1, key: 'in_house_sales', label: 'In-house sales', amountPence: inHouse.reduce((sum, row) => sum + receiptGross(row), 0), entered: true,
+      vatTreatment: '20% VAT', includedCount: inHouse.length,
+      derivation: `${inHouse.length} of ${eligibleReceipts.length} eligible receipt(s): SALE/SPLIT only; ${excludedReceipts} cancelled or excluded-state receipt(s) removed; mapped EAT IN, STOREKIT ORDER & PAY or MON-FRI DEAL; receipt_id deduplicated.`,
+      sourceGrain: 'sales_receipts_api · receipt_id', window: sourceWindow,
+    },
+    {
+      line: 2, key: 'card_payments', label: 'Card payments', amountPence: -cardPayments.reduce((sum, row) => sum + paymentGrossWithTip(row), 0), entered: true,
+      vatTreatment: 'No VAT · settlement', includedCount: cardPayments.length,
+      derivation: `${cardPayments.length} of ${paymentRows.length} payment(s) on the closed Lightspeed/STOREKIT allowlist (${[...QB_CARD_CODES].join(', ')}); negative SUM(net_with_tax_pence + tip_pence); API payment identifiers deduplicated.`,
+      sourceGrain: 'sales_payments_api · receipt_id + payment_seq', window: sourceWindow,
+    },
+    {
+      line: 3, key: 'tips_payable', label: 'Tips payable', amountPence: cardPayments.reduce((sum, row) => sum + qbPence(rowValue(row, ['tip_pence', 'tipPence'])), 0), entered: true,
+      vatTreatment: 'Outside scope', includedCount: cardPayments.length,
+      derivation: `${cardPayments.length} allowlisted card payment(s), the same population as row 2; positive SUM(tip_pence); API payment identifiers deduplicated.`,
+      sourceGrain: 'sales_payments_api · receipt_id + payment_seq', window: sourceWindow,
+    },
+    {
+      line: 4, key: 'cash_payments', label: 'Cash payments', amountPence: -cashPayments.reduce((sum, row) => sum + paymentGrossWithTip(row), 0), entered: true,
+      vatTreatment: 'No VAT · settlement', includedCount: cashPayments.length,
+      derivation: `${cashPayments.length} of ${paymentRows.length} payment(s) where code=CASH; negative SUM(net_with_tax_pence + tip_pence); API payment identifiers deduplicated.`,
+      sourceGrain: 'sales_payments_api · receipt_id + payment_seq', window: sourceWindow,
+    },
+    {
+      line: 5, key: 'pos_fee', label: 'POS card fees', amountPence: hasPosFee ? feeSource.pos_fee : null, entered: hasPosFee,
+      vatTreatment: 'No VAT · operator entry', includedCount: hasPosFee ? 1 : 0,
+      derivation: hasPosFee ? '1 persisted operator value used verbatim; never calculated.' : '0 persisted operator values; treated as zero only for the current residual.',
+      sourceGrain: 'qb_sales_fees · month + line', window: sourceWindow,
+    },
+    {
+      line: 6, key: 'online_twenty_sales', label: 'Online 20% sales', amountPence: onlineTwentyLines.reduce((sum, line) => sum + lineGross(line), 0), entered: true,
+      vatTreatment: '20% VAT', includedCount: onlineTwentyLines.length,
+      derivation: `${onlineTwentyLines.length} of ${onlineLines.length} line(s) on eligible SALE/SPLIT receipts mapped ONLINE ORDER; row 7's SHAKES roots and direct-child subtree excluded; receipt_id + line_id deduplicated.`,
+      sourceGrain: 'sales_receipt_lines_api · receipt_id + line_id', window: sourceWindow,
+    },
+    {
+      line: 7, key: 'online_zero_sales', label: 'Online zero-rated sales', amountPence: shakeLines.reduce((sum, line) => sum + lineGross(line), 0), entered: true,
+      vatTreatment: 'Zero-rated VAT', includedCount: shakeLines.length,
+      derivation: `${shakeLines.length} of ${onlineLines.length} online line(s): SHAKES accounting-group roots plus lines whose parent_line_id directly references a shake line; receipt_id + line_id deduplicated.`,
+      sourceGrain: 'sales_receipt_lines_api + acct_groups_api · receipt_id + line_id', window: sourceWindow,
+    },
+    {
+      line: 8, key: 'online_card_payments', label: 'Online card payments', amountPence: -onlinePayments.reduce((sum, row) => sum + paymentGrossWithTip(row), 0), entered: true,
+      vatTreatment: 'No VAT · settlement', includedCount: onlinePayments.length,
+      derivation: `${onlinePayments.length} of ${paymentRows.length} payment(s) where code=LP; negative SUM(net_with_tax_pence + tip_pence); API payment identifiers deduplicated.`,
+      sourceGrain: 'sales_payments_api · receipt_id + payment_seq', window: sourceWindow,
+    },
+    {
+      line: 9, key: 'online_fee', label: 'Online card fees', amountPence: hasOnlineFee ? feeSource.online_fee : null, entered: hasOnlineFee,
+      vatTreatment: 'No VAT · operator entry', includedCount: hasOnlineFee ? 1 : 0,
+      derivation: hasOnlineFee ? '1 persisted operator value used verbatim; never calculated.' : '0 persisted operator values; treated as zero only for the current residual.',
+      sourceGrain: 'qb_sales_fees · month + line', window: sourceWindow,
+    },
+  ];
+  const subtotalPence = rows.reduce((sum, row) => sum + (row.amountPence == null ? 0 : row.amountPence), 0);
+  rows.push({
+    line: 10, key: 'over_short', label: 'Over/Short', amountPence: subtotalPence === 0 ? 0 : -subtotalPence, entered: true,
+    vatTreatment: 'No VAT · balancing line', includedCount: 9,
+    derivation: `Exact negative residual of rows 1–9 (${subtotalPence} pence); no balancing-round adjustment.`,
+    sourceGrain: 'derived · rows 1–9', window: sourceWindow,
+  });
+  const balancePence = rows.reduce((sum, row) => sum + (row.amountPence == null ? 0 : row.amountPence), 0);
+  const seenSalesDates = new Set((Array.isArray(source.salesDates) ? source.salesDates : []).map((row) => (
+    typeof row === 'string' ? row : rowDate(row)
+  )).filter((date) => inRequestedWindow(date, window)));
+  const missingDates = window.dates.filter((date) => !seenSalesDates.has(date));
+  const vatGrossPence = rows[0].amountPence + rows[5].amountPence;
+  const vatBaseExact = vatGrossPence % 6 === 0;
+  const vatBasePence = Math.round((vatGrossPence * 5) / 6);
+  const unmapped = {
+    count: unmappedReceipts.length,
+    valuePence: unmappedReceipts.reduce((sum, row) => sum + receiptGross(row), 0),
+  };
+  return {
+    month: window.month, from: window.from, to: window.to, rows, subtotalPence, balancePence,
+    missingDates, unmapped, vatGrossPence, vatBasePence, vatBaseExact,
+    feeMissing: [!hasPosFee ? 'POS card fees' : null, !hasOnlineFee ? 'Online card fees' : null].filter(Boolean),
+    complete: missingDates.length === 0 && unmapped.count === 0 && hasPosFee && hasOnlineFee && vatBaseExact,
+  };
+}
 
 // London wall-clock hour of an epoch instant (daypart ruling cuts on LOCAL hour; the per-UTC-hour
 // bucket midpoint is offset-constant, so bucket-level conversion is exact incl. DST switch days).
@@ -1124,6 +1310,37 @@ function buildP4(q, nowYm) {
   return p4;
 }
 
+function buildQuickBooksSales(q, month) {
+  const window = calendarMonthWindow(month);
+  if (!window) return null;
+  const receipts = rowsOf(q(
+    `SELECT r.receipt_id, r.business_date, r.type, r.cancelled, r.account_profile_code,
+            r.net_with_tax_pence, m.channel_label
+       FROM sales_receipts_api r
+       LEFT JOIN sales_channel_map_api m ON m.account_profile_code = COALESCE(r.account_profile_code,'')
+      WHERE r.business_date BETWEEN ? AND ?`, [window.from, window.to]));
+  const lines = rowsOf(q(
+    `SELECT receipt_id, line_id, parent_line_id, business_date, accounting_group, net_with_tax_pence
+       FROM sales_receipt_lines_api WHERE business_date BETWEEN ? AND ?`, [window.from, window.to]));
+  const payments = rowsOf(q(
+    `SELECT receipt_id, payment_seq, business_date, code, net_with_tax_pence, tip_pence
+       FROM sales_payments_api WHERE business_date BETWEEN ? AND ?`, [window.from, window.to]));
+  const accountingGroups = rowsOf(q(`SELECT code, name FROM acct_groups_api`));
+  const salesDates = rowsOf(q(
+    `SELECT business_date FROM sales_api_ingest_runs
+      WHERE source='kseries-sales-daily' AND status='ok' AND business_date BETWEEN ? AND ?
+      ORDER BY business_date`, [window.from, window.to]));
+  const feeRows = rowsOf(q(
+    `SELECT line, value_pence FROM qb_sales_fees WHERE month = ? AND line IN ('pos_fee','online_fee')`,
+    [window.month]));
+  const fees = {};
+  for (const row of feeRows) {
+    const line = String(row.line || '');
+    if ((line === 'pos_fee' || line === 'online_fee') && Number.isSafeInteger(row.value_pence)) fees[line] = row.value_pence;
+  }
+  return calculateQuickBooksSales({ month: window.month, receipts, lines, payments, accountingGroups, salesDates, fees });
+}
+
 // Per-month channel stats from the per-receipt record (complete or MTD months only — the kept
 // rules): feeds the Executive migration expand (its ONE remaining consumer since the P2 build
 // deleted the drivers-tab ATV small-multiples).
@@ -1139,16 +1356,17 @@ module.exports = {
   CPT_BAND,
   SITTING_MIN_CAPTURE, SITTING_MAX_SPREAD, sittingCaptureVerdict,
   deriveSittingCaptionState, deriveCoversCaptionState, deriveReconciliationCaptionState,
-  buildMenuPortfolio,
+  buildMenuPortfolio, latestCompleteMonth, calculateQuickBooksSales,
   key: 'revenue', route: '/coyote/revenue', workspace: 'coyote', title: 'Revenue',
-  sub: 'Revenue Command Centre — all five tabs live · menu contribution uses completed recipes · covers live via OpenTable (spend/cover derived)',
+  sub: 'Revenue Command Centre — all six tabs live · menu contribution uses completed recipes · covers live via OpenTable (spend/cover derived)',
 
   getSection(db, ctx) {
     const q = ctx && ctx.q;
     const now = (ctx && ctx.now) || Date.now();
     const query = (ctx && ctx.query) || {};
     const tab = TAB_KEYS.includes(String(query.tab || '')) ? String(query.tab) : 'executive';
-    if (typeof q !== 'function') return { now, tab, rv2: null };
+    const qbMonth = calendarMonthWindow(query.month) ? String(query.month) : latestCompleteMonth(now);
+    if (typeof q !== 'function') return { now, tab, rv2: null, qbsales: tab === 'qbsales' ? calculateQuickBooksSales({ month: qbMonth }) : null };
 
     // ---- shared: the monthly revenue-of-record + projection (P1/P4 canon source).
     // REVENUE-OF-RECORD (operator ruling 2026-08-10, duplication wave): monthly net reads the
@@ -1227,9 +1445,11 @@ module.exports = {
       m.drivers = buildDrivers(q, maxDate, rv2);
     } else if (tab === 'reconciliation') {
       m.recon = buildRecon(q, rv2);
-    } else {
+    } else if (tab === 'menu') {
       // menu (P5) — the line-grain product ledger joined read-only to complete recipe cost
       m.menu = buildMenu(q, rv2);
+    } else {
+      m.qbsales = buildQuickBooksSales(q, qbMonth);
     }
     return m;
   },
@@ -1377,6 +1597,24 @@ module.exports = {
       .rcc .recipe-missing:hover{text-decoration:underline}
       .rcc .rv2-caption a,.rcc .r-mini-note a{color:var(--raccent2);text-decoration:none}
       .rcc .rv2-caption a:hover,.rcc .r-mini-note a:hover{text-decoration:underline}
+      /* QuickBooks sales entry: one ten-line accounting bundle plus adjacent diagnostics. */
+      .rcc .qb-toolbar{display:flex;align-items:end;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:14px}
+      .rcc .qb-month{display:grid;gap:5px;color:#9ca6af;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.06em}
+      .rcc .qb-month input{background:#11161a;border:1px solid #37414a;border-radius:8px;color:#fff;padding:8px 10px;font:12px var(--font-mono,monospace)}
+      .rcc .qb-warnings{display:grid;gap:7px;margin-bottom:12px}
+      .rcc .qb-warning{border:1px solid rgba(240,182,79,.45);background:rgba(240,182,79,.08);border-radius:9px;color:#f0c46c;padding:9px 11px;font-size:11px;line-height:1.45}
+      .rcc .qb-ok{border-color:rgba(69,196,134,.4);background:rgba(69,196,134,.08);color:#7fe0ae}
+      .rcc .qb-table{min-width:1120px}
+      .rcc .qb-table td{vertical-align:top;line-height:1.4}
+      .rcc .qb-table .qb-line{font-weight:900;color:#fff;white-space:nowrap}
+      .rcc .qb-table .qb-derivation{min-width:310px;color:#aab3bc;font-size:10px}
+      .rcc .qb-table .qb-source,.rcc .qb-table .qb-window{color:#89949f;font-size:10px}
+      .rcc .qb-balance{display:flex;gap:8px;align-items:center;justify-content:flex-end;flex-wrap:wrap}
+      .rcc .qb-fee-entry{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:6px}
+      .rcc .qb-fee-entry input{width:112px;background:#11161a;border:1px solid #37414a;border-radius:7px;color:#fff;padding:6px 8px;font:11px var(--font-mono,monospace)}
+      .rcc .qb-fee-entry button{border:0;border-radius:7px;background:var(--raccent);color:#fff;padding:7px 9px;font-size:10px;font-weight:800;cursor:pointer}
+      .rcc .qb-diagnostic{margin-top:12px;border:1px solid #333c45;border-radius:10px;padding:11px;color:#aab3bc;font-size:11px;line-height:1.5}
+      .rcc .qb-diagnostic strong{color:#fff}
       /* surviving legacy grammar (the expands + decomp/scorecard tables keep their pre-restyle form) */
       .rp-yoy-up{color:var(--green,#34d399)} .rp-yoy-down{color:var(--red,#f87171)}
       .rp-yoy-na{color:var(--muted,#7a8);font-style:italic}
@@ -1390,7 +1628,7 @@ module.exports = {
       .rv2-caption{font-family:var(--font-mono,monospace);font-size:10.5px;color:var(--muted,#7a8);margin:8px 2px 2px;line-height:1.55}
     </style>`;
 
-    // ---- subtab nav: 5 links, mock's .tabs/.tab grammar; ?tab only (nothing else preserved) ----
+    // ---- subtab nav: 6 links, following the existing ?tab-only grammar ----
     const tabsNav = `<div class="r-tabs">${TABS.map((t) =>
       `<a class="r-tab${t.key === tab ? ' active' : ''}" href="/coyote/revenue?tab=${t.key}">${esc(t.label)}</a>`).join('')}</div>`;
 
@@ -2231,6 +2469,87 @@ module.exports = {
         ${coverCheckPanel}`;
     };
 
+    // ============================ QUICKBOOKS SALES ENTRY ============================
+    const renderQuickBooksSales = () => {
+      const qb = m.qbsales || calculateQuickBooksSales({ month: latestCompleteMonth(m.now) });
+      const warnings = [];
+      if (qb.missingDates.length) {
+        warnings.push(`Expected sales dates absent from the completed daily K-Series ingest (${qb.missingDates.length}): ${qb.missingDates.join(', ')}. This calendar month is partial.`);
+      }
+      if (qb.unmapped.count) {
+        warnings.push(`${plural(qb.unmapped.count, 'receipt lacks', 'receipts lack')} a channel mapping, gross value ${gbp(qb.unmapped.valuePence)}. They remain outside the ten QuickBooks lines.`);
+      }
+      if (qb.feeMissing.length) {
+        warnings.push(`QuickBooks sales receipt incomplete — missing ${qb.feeMissing.join(' and ')}. Each unentered fee is treated as zero, so the residual currently absorbs the missing fee.`);
+      }
+      if (!qb.vatBaseExact) {
+        warnings.push(`VAT-base precision warning — (row 1 + row 6) / 1.2 does not resolve to an integer penny; ${gbp(qb.vatBasePence)} is display rounding only and no QuickBooks row was altered.`);
+      }
+      if (!warnings.length) warnings.push('Complete — every expected date is present, every receipt is mapped, both fees are entered and the VAT base resolves to the penny.');
+      const warningHtml = `<div class="qb-warnings">${warnings.map((warning) => `<div class="qb-warning${qb.complete ? ' qb-ok' : ''}">${esc(warning)}</div>`).join('')}</div>`;
+      const monthPicker = `<form class="qb-month" method="get" action="/coyote/revenue">
+          <input type="hidden" name="tab" value="qbsales">
+          <label for="qb-month">Calendar month</label>
+          <input id="qb-month" name="month" type="month" value="${esc(qb.month)}" onchange="this.form.submit()">
+        </form>`;
+      const stateTag = qb.complete ? S.rcc.tag('COMPLETE', 'good') : S.rcc.tag('INCOMPLETE', 'warn');
+      const feeControl = (row) => `<div class="qb-fee-entry">
+          <input class="qb-fee-value" type="number" step="1" inputmode="numeric" data-qb-line="${row.key}" value="${row.entered ? row.amountPence : ''}" placeholder="signed pence" aria-label="${esc(row.label)} signed pence">
+          <button class="qb-fee-save" type="button" data-qb-line="${row.key}">Save signed pence</button>
+          <span class="qb-fee-out r-mini-note" data-qb-line="${row.key}"></span>
+        </div>`;
+      const tableRows = qb.rows.map((row) => {
+        const feeBlank = (row.key === 'pos_fee' || row.key === 'online_fee') && !row.entered;
+        const amount = feeBlank ? '—' : gbp(Math.abs(row.amountPence));
+        const sign = feeBlank ? '—' : (row.amountPence < 0 ? '−' : '+');
+        const feeNote = feeBlank
+          ? '<div class="r-mini-note">Operator input required — from the card processor statement; not held on this box.</div>'
+          : '';
+        const label = row.line === 10
+          ? `<div class="qb-balance"><span>${esc(row.label)}</span>${S.rcc.tag(`ten-row balance subtotal ${gbp(qb.balancePence)}`, qb.balancePence === 0 ? 'good' : 'bad')}</div>`
+          : esc(row.label);
+        return `<tr data-qb-line="${row.line}">
+            <td class="qb-line">${row.line}. ${label}</td>
+            <td class="r-num mono">${sign}</td>
+            <td class="r-num mono">${amount}${feeNote}${row.key === 'pos_fee' || row.key === 'online_fee' ? feeControl(row) : ''}</td>
+            <td>${esc(row.vatTreatment)}</td>
+            <td class="qb-derivation">${esc(row.derivation)}</td>
+            <td class="qb-source">${esc(row.sourceGrain)}</td>
+            <td class="qb-window mono">${esc(row.window)}</td>
+          </tr>`;
+      }).join('');
+      const bundle = S.rcc.panel({
+        title: `QuickBooks sales receipt · ${monthLabel(qb.month)}`,
+        sub: 'ten lines · integer pence · gross sales and settlement movements',
+        headRight: stateTag,
+        body: `${warningHtml}<div style="overflow:auto"><table class="qb-table"><thead><tr><th>QuickBooks line</th><th class="r-num">Sign</th><th class="r-num">Amount</th><th>VAT treatment</th><th>Plain-English derivation</th><th>Source grain</th><th>Exact date window</th></tr></thead><tbody>${tableRows}</tbody></table></div>
+          <div class="qb-diagnostic"><strong>Unmapped receipts diagnostic</strong> — ${plural(qb.unmapped.count, 'receipt', 'receipts')} · ${gbp(qb.unmapped.valuePence)} gross. Eligible SALE/SPLIT receipt identifiers with no channel_label are deduplicated, counted here and never assigned to an invented channel.</div>`,
+      });
+      const checks = `<div class="r-grid r-two-col">
+        ${S.rcc.panel({
+          title: '20% VAT base', sub: '(row 1 + row 6) / 1.2 · diagnostic only',
+          headRight: S.rcc.tag(qb.vatBaseExact ? 'PENNY EXACT' : 'DISPLAY ROUNDING', qb.vatBaseExact ? 'good' : 'warn'),
+          body: `<div class="r-kpi-value mono">${gbp(qb.vatBasePence)}</div><div class="r-mini-note">(${gbp(qb.rows[0].amountPence)} + ${gbp(qb.rows[5].amountPence)}) / 1.2 = ${gbp(qb.vatBasePence)}${qb.vatBaseExact ? ' exactly' : ' after display rounding'}. This check never alters rows 1 or 6.</div>`,
+        })}
+        ${S.rcc.panel({
+          title: 'SPLIT receipt rule', sub: 'permanent inclusion · April 2026 context',
+          headRight: S.rcc.tag('PERMANENT', 'info'),
+          body: '<div class="qb-diagnostic"><strong>SPLIT receipts are sales.</strong> The April 2026 review established that these are legitimate split-bill receipts, not cancelled transactions. Row 1 therefore includes both SALE and SPLIT permanently; cancelled, VOID, CANCEL and RECALL states remain excluded.</div>',
+        })}
+      </div>`;
+      const script = `<script>(function(){
+        var busy=false;
+        document.addEventListener('click',function(e){var b=e.target.closest&&e.target.closest('.qb-fee-save');if(!b||busy)return;
+          var line=b.getAttribute('data-qb-line'),input=document.querySelector('.qb-fee-value[data-qb-line="'+line+'"]'),out=document.querySelector('.qb-fee-out[data-qb-line="'+line+'"]'),raw=input?input.value.trim():'';
+          if(!/^-?\\d+$/.test(raw)||!Number.isSafeInteger(Number(raw))){if(out)out.textContent='enter signed whole pence';return;}
+          busy=true;b.disabled=true;
+          fetch('/api/review-action',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({op:'set_qb_sales_fee',month:'${esc(qb.month)}',line:line,value_pence:Number(raw)})})
+            .then(function(x){return x.json();}).then(function(j){if(j&&j.ok&&j.value_pence===Number(raw)){(window.__lcReload||function(){location.reload();})();}else{if(out)out.textContent=(j&&j.error)||'save failed';busy=false;b.disabled=false;}})
+            .catch(function(){if(out)out.textContent='network error';busy=false;b.disabled=false;});
+        });})();</script>`;
+      return `<div class="qb-toolbar"><div><div class="r-panel-title">QuickBooks Sales Entry</div><div class="r-panel-sub">inclusive calendar month · latest completed month by default</div></div>${monthPicker}</div>${bundle}${checks}${script}`;
+    };
+
     // ============================ MENU GROWTH (P5) ============================
     const renderMenu = () => {
       const mg = m.menu || {};
@@ -2392,7 +2711,8 @@ module.exports = {
     else if (tab === 'executive') tabBody = renderExecutive();
     else if (tab === 'drivers') tabBody = renderDrivers();
     else if (tab === 'reconciliation') tabBody = renderReconciliation();
-    else tabBody = renderMenu();
+    else if (tab === 'menu') tabBody = renderMenu();
+    else tabBody = renderQuickBooksSales();
 
     const body = `<div class="rcc">`
       + styles

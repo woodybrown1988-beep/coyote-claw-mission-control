@@ -1,7 +1,7 @@
 'use strict';
 // RCC Stage 2 (P1 Executive + P4 Forecast) — the restructured /coyote/reports shell.
 // Pinned here:
-//   (a) SHELL: default tab = executive, ?tab= switches, 5 subtab links, everything inside .rcc;
+//   (a) SHELL: default tab = executive, ?tab= switches, 6 subtab links, everything inside .rcc;
 //   (b) EXECUTIVE: real last-full-week KPIs vs weekday-aligned LY; covers = NOT WIRED with zero
 //       digits (POS guest-count is never covers); decision feed carries REAL rota £ verdicts +
 //       a reconciliation line; daypart states the ONLINE exclusion £; donut legend sums to the
@@ -127,12 +127,12 @@ const render = (db, query) => {
 
 // ---------------- (a) the shell ----------------
 
-test('shell: default tab executive, ?tab=forecast switches, 5 links, everything inside .rcc', () => {
+test('shell: default tab executive, ?tab=forecast switches, 6 links, everything inside .rcc', () => {
   const db = makeDb();
   seedExecutive(db);
   const body = render(db);
   assert.match(body, /class="r-tab active" href="\/coyote\/revenue\?tab=executive"/, 'executive is the default');
-  assert.equal((body.match(/class="r-tab[ "]/g) || []).length, 5, '5 subtab links');
+  assert.equal((body.match(/class="r-tab[ "]/g) || []).length, 6, '6 subtab links');
   for (const t of ['executive', 'drivers', 'menu', 'reconciliation', 'forecast']) assert.ok(body.includes(`href="/coyote/revenue?tab=${t}"`), `link to ${t}`);
   const fc = render(db, { tab: 'forecast' });
   assert.match(fc, /class="r-tab active" href="\/coyote\/revenue\?tab=forecast"/, '?tab=forecast switches');
