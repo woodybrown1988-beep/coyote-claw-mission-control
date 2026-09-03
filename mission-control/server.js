@@ -565,9 +565,54 @@ function openWritableDatabase() {
 // Google), so even "responded" can't touch a Google review (its lifecycle is the Telegram tap).
 const REVIEW_ACTION_OPS = new Set(['mark_responded', 'skip', 'snooze', 'log_action']);
 const QB_SALES_FEE_OPS = new Set(['set_qb_sales_fee']);
-const QB_SALES_FEE_LINES = new Set(['pos_fee', 'online_fee']);
+const QB_SALES_FEE_LINES = new Set([
+  'pos_fee',
+  'online_fee',
+  'refund_pos_card',
+  'refund_pos_cash',
+  'refund_online_card',
+  'free_gift_cards',
+]);
+const QB_SALES_FEE_LINE_SQL = "'pos_fee','online_fee','refund_pos_card','refund_pos_cash','refund_online_card','free_gift_cards'";
 
-/** Persist one signed, integer-pence processor fee at the exact (month, line) key. */
+function createQuickBooksSalesFeesTable(db, tableName) {
+  const ifNotExists = tableName === 'qb_sales_fees' ? 'IF NOT EXISTS ' : '';
+  db.exec(`CREATE TABLE ${ifNotExists}${tableName} (
+    month TEXT NOT NULL,
+    line TEXT NOT NULL CHECK (line IN (${QB_SALES_FEE_LINE_SQL})),
+    value_pence INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (month, line)
+  )`);
+}
+
+function ensureQuickBooksSalesFeesTable(db) {
+  const existing = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='qb_sales_fees'").get();
+  if (!existing) {
+    createQuickBooksSalesFeesTable(db, 'qb_sales_fees');
+    return;
+  }
+  const schema = String(existing.sql || '');
+  if ([...QB_SALES_FEE_LINES].every((line) => schema.includes(`'${line}'`))) return;
+
+  // SQLite cannot widen an inline CHECK in place. Rebuild this same persistence table
+  // transactionally so installations created by the two-fee schema retain their values.
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    createQuickBooksSalesFeesTable(db, 'qb_sales_fees_rebuild');
+    db.exec(`INSERT INTO qb_sales_fees_rebuild (month, line, value_pence, updated_at)
+      SELECT month, line, value_pence, updated_at FROM qb_sales_fees
+      WHERE line IN (${QB_SALES_FEE_LINE_SQL})`);
+    db.exec('DROP TABLE qb_sales_fees');
+    db.exec('ALTER TABLE qb_sales_fees_rebuild RENAME TO qb_sales_fees');
+    db.exec('COMMIT');
+  } catch (error) {
+    try { db.exec('ROLLBACK'); } catch (_) { /* preserve the original migration error */ }
+    throw error;
+  }
+}
+
+/** Persist one non-positive, integer-pence sales-entry input at the exact (month, line) key. */
 function applyQuickBooksSalesFee(db, body, now) {
   const op = body && body.op;
   if (!QB_SALES_FEE_OPS.has(op)) return { ok: false, status: 400, error: 'unknown op' };
@@ -581,19 +626,16 @@ function applyQuickBooksSalesFee(db, body, now) {
   }
   const line = typeof body.line === 'string' ? body.line : '';
   if (!QB_SALES_FEE_LINES.has(line)) {
-    return { ok: false, status: 400, error: 'line must be pos_fee or online_fee' };
+    return { ok: false, status: 400, error: 'unsupported QuickBooks sales-entry line' };
   }
   if (typeof body.value_pence !== 'number' || !Number.isSafeInteger(body.value_pence)) {
     return { ok: false, status: 400, error: 'value_pence must be a signed integer' };
   }
+  if (body.value_pence > 0) {
+    return { ok: false, status: 400, error: `${line} value_pence must be zero or a negative amount` };
+  }
   try {
-    db.exec(`CREATE TABLE IF NOT EXISTS qb_sales_fees (
-      month TEXT NOT NULL,
-      line TEXT NOT NULL CHECK (line IN ('pos_fee','online_fee')),
-      value_pence INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL,
-      PRIMARY KEY (month, line)
-    )`);
+    ensureQuickBooksSalesFeesTable(db);
     db.prepare(`INSERT INTO qb_sales_fees (month, line, value_pence, updated_at)
       VALUES (?, ?, ?, ?)
       ON CONFLICT(month, line) DO UPDATE SET value_pence=excluded.value_pence, updated_at=excluded.updated_at`)

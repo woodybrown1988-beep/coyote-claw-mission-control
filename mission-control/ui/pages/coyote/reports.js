@@ -347,6 +347,21 @@ const DONUT_COLORS = ['#e44b36', '#67a7ff', '#ffb34d', '#ad8cff', '#56616e', '#7
 // separate on LP (row 8), so it is not in this closed row-2 allowlist.
 const QB_CARD_CODES = new Set(['LSPAY_ADYEN_TERMINAL_API_LOCAL', 'STR', 'POSERROR']);
 const QB_IN_HOUSE_CHANNELS = new Set(['EAT IN', 'STOREKIT ORDER & PAY', 'MON-FRI DEAL']);
+const QB_SALES_ADJUSTMENTS = [
+  { key: 'refund_pos_card', label: 'Refunds not on POS — via card', salesLine: 1, counterpartLine: 2, counterpartLabel: 'Card payments' },
+  { key: 'refund_pos_cash', label: 'Refunds not on POS — via cash', salesLine: 1, counterpartLine: 4, counterpartLabel: 'Cash payments' },
+  { key: 'refund_online_card', label: 'Refunds not on Online', salesLine: 6, counterpartLine: 8, counterpartLabel: 'Online card payments' },
+  { key: 'free_gift_cards', label: 'Free gift cards issued', salesLine: 1, counterpartLine: null, counterpartLabel: null },
+];
+
+function formatQuickBooksOperand(pence) {
+  if (!Number.isSafeInteger(pence)) return '—';
+  const integerPence = BigInt(pence);
+  const negative = integerPence < 0n;
+  const magnitude = negative ? -integerPence : integerPence;
+  const sign = negative ? '−' : integerPence > 0n ? '+' : '';
+  return `${sign}£${(magnitude / 100n).toLocaleString('en-GB')}.${String(magnitude % 100n).padStart(2, '0')}`;
+}
 
 function latestCompleteMonth(now) {
   const date = new Date(now == null ? Date.now() : now);
@@ -443,6 +458,33 @@ function calculateQuickBooksSales(input) {
   const feeSource = source.fees && typeof source.fees === 'object' ? source.fees : {};
   const hasPosFee = Object.prototype.hasOwnProperty.call(feeSource, 'pos_fee') && Number.isSafeInteger(feeSource.pos_fee);
   const hasOnlineFee = Object.prototype.hasOwnProperty.call(feeSource, 'online_fee') && Number.isSafeInteger(feeSource.online_fee);
+  const adjustments = QB_SALES_ADJUSTMENTS.map((definition) => {
+    const entered = Object.prototype.hasOwnProperty.call(feeSource, definition.key)
+      && Number.isSafeInteger(feeSource[definition.key]);
+    const salesOperandPence = entered ? feeSource[definition.key] : null;
+    return {
+      ...definition,
+      amountPence: salesOperandPence,
+      entered,
+      salesOperandPence,
+      counterpartOperandPence: entered && definition.counterpartLine != null
+        ? (salesOperandPence === 0 ? 0 : -salesOperandPence)
+        : null,
+      overShortEffectPence: entered && definition.counterpartLine == null
+        ? (salesOperandPence === 0 ? 0 : -salesOperandPence)
+        : null,
+    };
+  });
+  const adjustmentByKey = new Map(adjustments.map((adjustment) => [adjustment.key, adjustment]));
+  const refundPosCard = adjustmentByKey.get('refund_pos_card');
+  const refundPosCash = adjustmentByKey.get('refund_pos_cash');
+  const refundOnlineCard = adjustmentByKey.get('refund_online_card');
+  const freeGiftCards = adjustmentByKey.get('free_gift_cards');
+  const appliedSalesOperand = (adjustment) => adjustment.entered ? adjustment.salesOperandPence : 0;
+  const appliedCounterpartOperand = (adjustment) => adjustment.entered ? adjustment.counterpartOperandPence : 0;
+  const adjustmentOperandText = (adjustment, operandKey) => adjustment.entered
+    ? formatQuickBooksOperand(adjustment[operandKey])
+    : '— (unentered; no operand applied)';
   const grossCardTakingsPence = cardPayments.reduce((sum, row) => sum + paymentGrossWithTip(row), 0);
   const grossOnlineTakingsPence = onlinePayments.reduce((sum, row) => sum + paymentGrossWithTip(row), 0);
   const cardSettlementPence = grossCardTakingsPence + (hasPosFee ? feeSource.pos_fee : 0);
@@ -451,17 +493,19 @@ function calculateQuickBooksSales(input) {
   const excludedReceipts = receiptRows.length - eligibleReceipts.length;
   const rows = [
     {
-      line: 1, key: 'in_house_sales', label: 'In-house sales', amountPence: inHouse.reduce((sum, row) => sum + receiptGross(row), 0), entered: true,
+      line: 1, key: 'in_house_sales', label: 'In-house sales', amountPence: inHouse.reduce((sum, row) => sum + receiptGross(row), 0)
+        + appliedSalesOperand(refundPosCard) + appliedSalesOperand(refundPosCash) + appliedSalesOperand(freeGiftCards), entered: true,
       vatTreatment: '20% VAT', includedCount: inHouse.length,
-      derivation: `${inHouse.length} of ${eligibleReceipts.length} eligible receipt(s): SALE/SPLIT only; ${excludedReceipts} cancelled or excluded-state receipt(s) removed; mapped EAT IN, STOREKIT ORDER & PAY or MON-FRI DEAL; receipt_id deduplicated.`,
+      derivation: `${inHouse.length} of ${eligibleReceipts.length} eligible receipt(s): SALE/SPLIT only; ${excludedReceipts} cancelled or excluded-state receipt(s) removed; mapped EAT IN, STOREKIT ORDER & PAY or MON-FRI DEAL; receipt_id deduplicated. Sales Income operands: ${refundPosCard.label} ${adjustmentOperandText(refundPosCard, 'salesOperandPence')}; ${refundPosCash.label} ${adjustmentOperandText(refundPosCash, 'salesOperandPence')}; ${freeGiftCards.label} ${adjustmentOperandText(freeGiftCards, 'salesOperandPence')}. Free gift cards have no receipt-line counterpart; their ${adjustmentOperandText(freeGiftCards, 'overShortEffectPence')} effect reaches Over/Short only through row 10's formula.`,
       sourceGrain: 'sales_receipts_api · receipt_id', window: sourceWindow,
     },
     {
-      line: 2, key: 'card_payments', label: 'Card payments', amountPence: -cardSettlementPence, entered: true,
+      line: 2, key: 'card_payments', label: 'Card payments', amountPence: -cardSettlementPence
+        + appliedCounterpartOperand(refundPosCard), entered: true,
       vatTreatment: 'No VAT · settlement', includedCount: cardPayments.length,
       derivation: `${cardPayments.length} of ${paymentRows.length} payment(s) on the closed Lightspeed/STOREKIT allowlist (${[...QB_CARD_CODES].join(', ')}); ${hasPosFee
-        ? `gross card takings ${grossCardTakingsPence} pence − deducted POS processor fee ${Math.abs(feeSource.pos_fee)} pence = net ${cardSettlementPence} pence`
-        : `gross card takings ${grossCardTakingsPence} pence — no processor fee entered for this month`}; API payment identifiers deduplicated.`,
+        ? `gross card takings ${formatQuickBooksOperand(grossCardTakingsPence)} + POS processor fee ${formatQuickBooksOperand(feeSource.pos_fee)} = settlement ${formatQuickBooksOperand(cardSettlementPence)}, giving row operand ${formatQuickBooksOperand(-cardSettlementPence)}`
+        : `gross card takings ${formatQuickBooksOperand(grossCardTakingsPence)} — no processor fee entered for this month, giving row operand ${formatQuickBooksOperand(-cardSettlementPence)}`}; ${refundPosCard.label} computed counterpart operand ${adjustmentOperandText(refundPosCard, 'counterpartOperandPence')}; API payment identifiers deduplicated.`,
       sourceGrain: 'sales_payments_api · receipt_id + payment_seq', window: sourceWindow,
     },
     {
@@ -471,9 +515,10 @@ function calculateQuickBooksSales(input) {
       sourceGrain: 'sales_payments_api · receipt_id + payment_seq', window: sourceWindow,
     },
     {
-      line: 4, key: 'cash_payments', label: 'Cash payments', amountPence: -cashPayments.reduce((sum, row) => sum + paymentGrossWithTip(row), 0), entered: true,
+      line: 4, key: 'cash_payments', label: 'Cash payments', amountPence: -cashPayments.reduce((sum, row) => sum + paymentGrossWithTip(row), 0)
+        + appliedCounterpartOperand(refundPosCash), entered: true,
       vatTreatment: 'No VAT · settlement', includedCount: cashPayments.length,
-      derivation: `${cashPayments.length} of ${paymentRows.length} payment(s) where code=CASH; negative SUM(net_with_tax_pence + tip_pence); API payment identifiers deduplicated.`,
+      derivation: `${cashPayments.length} of ${paymentRows.length} payment(s) where code=CASH; negative SUM(net_with_tax_pence + tip_pence); ${refundPosCash.label} computed counterpart operand ${adjustmentOperandText(refundPosCash, 'counterpartOperandPence')}; API payment identifiers deduplicated.`,
       sourceGrain: 'sales_payments_api · receipt_id + payment_seq', window: sourceWindow,
     },
     {
@@ -483,9 +528,10 @@ function calculateQuickBooksSales(input) {
       sourceGrain: 'qb_sales_fees · month + line', window: sourceWindow,
     },
     {
-      line: 6, key: 'online_twenty_sales', label: 'Online 20% sales', amountPence: onlineTwentyLines.reduce((sum, line) => sum + lineGross(line), 0), entered: true,
+      line: 6, key: 'online_twenty_sales', label: 'Online 20% sales', amountPence: onlineTwentyLines.reduce((sum, line) => sum + lineGross(line), 0)
+        + appliedSalesOperand(refundOnlineCard), entered: true,
       vatTreatment: '20% VAT', includedCount: onlineTwentyLines.length,
-      derivation: `${onlineTwentyLines.length} of ${onlineLines.length} line(s) on eligible SALE/SPLIT receipts mapped ONLINE ORDER; row 7's SHAKES roots and direct-child subtree excluded; receipt_id + line_id deduplicated.`,
+      derivation: `${onlineTwentyLines.length} of ${onlineLines.length} line(s) on eligible SALE/SPLIT receipts mapped ONLINE ORDER; row 7's SHAKES roots and direct-child subtree excluded; receipt_id + line_id deduplicated. Sales Income operand: ${refundOnlineCard.label} ${adjustmentOperandText(refundOnlineCard, 'salesOperandPence')}.`,
       sourceGrain: 'sales_receipt_lines_api · receipt_id + line_id', window: sourceWindow,
     },
     {
@@ -495,11 +541,12 @@ function calculateQuickBooksSales(input) {
       sourceGrain: 'sales_receipt_lines_api + acct_groups_api · receipt_id + line_id', window: sourceWindow,
     },
     {
-      line: 8, key: 'online_card_payments', label: 'Online card payments', amountPence: -onlineSettlementPence, entered: true,
+      line: 8, key: 'online_card_payments', label: 'Online card payments', amountPence: -onlineSettlementPence
+        + appliedCounterpartOperand(refundOnlineCard), entered: true,
       vatTreatment: 'No VAT · settlement', includedCount: onlinePayments.length,
       derivation: `${onlinePayments.length} of ${paymentRows.length} payment(s) where code=LP; ${hasOnlineFee
-        ? `gross LP takings ${grossOnlineTakingsPence} pence − deducted online processor fee ${Math.abs(feeSource.online_fee)} pence = net ${onlineSettlementPence} pence`
-        : `gross LP takings ${grossOnlineTakingsPence} pence — no processor fee entered for this month`}; API payment identifiers deduplicated.`,
+        ? `gross LP takings ${formatQuickBooksOperand(grossOnlineTakingsPence)} + online processor fee ${formatQuickBooksOperand(feeSource.online_fee)} = settlement ${formatQuickBooksOperand(onlineSettlementPence)}, giving row operand ${formatQuickBooksOperand(-onlineSettlementPence)}`
+        : `gross LP takings ${formatQuickBooksOperand(grossOnlineTakingsPence)} — no processor fee entered for this month, giving row operand ${formatQuickBooksOperand(-onlineSettlementPence)}`}; ${refundOnlineCard.label} computed counterpart operand ${adjustmentOperandText(refundOnlineCard, 'counterpartOperandPence')}; API payment identifiers deduplicated.`,
       sourceGrain: 'sales_payments_api · receipt_id + payment_seq', window: sourceWindow,
     },
     {
@@ -513,7 +560,7 @@ function calculateQuickBooksSales(input) {
   rows.push({
     line: 10, key: 'over_short', label: 'Over/Short', amountPence: subtotalPence === 0 ? 0 : -subtotalPence, entered: true,
     vatTreatment: 'No VAT · balancing line', includedCount: 9,
-    derivation: `Exact negative residual of rows 1–9 (${subtotalPence} pence); no balancing-round adjustment.`,
+    derivation: `Exact negative of every other receipt row: rows 1–9 subtotal ${formatQuickBooksOperand(subtotalPence)} gives Over/Short ${formatQuickBooksOperand(subtotalPence === 0 ? 0 : -subtotalPence)}; no hard-coded adjustment or balancing-round tuning.`,
     sourceGrain: 'derived · rows 1–9', window: sourceWindow,
   });
   const balancePence = rows.reduce((sum, row) => sum + (row.amountPence == null ? 0 : row.amountPence), 0);
@@ -528,11 +575,13 @@ function calculateQuickBooksSales(input) {
     count: unmappedReceipts.length,
     valuePence: unmappedReceipts.reduce((sum, row) => sum + receiptGross(row), 0),
   };
+  const adjustmentMissing = adjustments.filter((adjustment) => !adjustment.entered).map((adjustment) => adjustment.label);
   return {
     month: window.month, from: window.from, to: window.to, rows, subtotalPence, balancePence,
-    missingDates, unmapped, vatGrossPence, vatBasePence, vatBaseExact,
+    missingDates, unmapped, vatGrossPence, vatBasePence, vatBaseExact, adjustments, adjustmentMissing,
     feeMissing: [!hasPosFee ? 'POS card fees' : null, !hasOnlineFee ? 'Online card fees' : null].filter(Boolean),
-    complete: missingDates.length === 0 && unmapped.count === 0 && hasPosFee && hasOnlineFee && vatBaseExact,
+    complete: missingDates.length === 0 && unmapped.count === 0 && hasPosFee && hasOnlineFee
+      && adjustmentMissing.length === 0 && vatBaseExact,
   };
 }
 
@@ -1339,12 +1388,14 @@ function buildQuickBooksSales(q, month) {
       WHERE source='kseries-sales-daily' AND status='ok' AND business_date BETWEEN ? AND ?
       ORDER BY business_date`, [window.from, window.to]));
   const feeRows = rowsOf(q(
-    `SELECT line, value_pence FROM qb_sales_fees WHERE month = ? AND line IN ('pos_fee','online_fee')`,
+    `SELECT line, value_pence FROM qb_sales_fees
+      WHERE month = ? AND line IN ('pos_fee','online_fee','refund_pos_card','refund_pos_cash','refund_online_card','free_gift_cards')`,
     [window.month]));
+  const allowedLines = new Set(['pos_fee', 'online_fee', ...QB_SALES_ADJUSTMENTS.map((adjustment) => adjustment.key)]);
   const fees = {};
   for (const row of feeRows) {
     const line = String(row.line || '');
-    if ((line === 'pos_fee' || line === 'online_fee') && Number.isSafeInteger(row.value_pence)) fees[line] = row.value_pence;
+    if (allowedLines.has(line) && Number.isSafeInteger(row.value_pence)) fees[line] = row.value_pence;
   }
   return calculateQuickBooksSales({ month: window.month, receipts, lines, payments, accountingGroups, salesDates, fees });
 }
@@ -1364,7 +1415,7 @@ module.exports = {
   CPT_BAND,
   SITTING_MIN_CAPTURE, SITTING_MAX_SPREAD, sittingCaptureVerdict,
   deriveSittingCaptionState, deriveCoversCaptionState, deriveReconciliationCaptionState,
-  buildMenuPortfolio, latestCompleteMonth, calculateQuickBooksSales,
+  buildMenuPortfolio, latestCompleteMonth, formatQuickBooksOperand, calculateQuickBooksSales,
   key: 'revenue', route: '/coyote/revenue', workspace: 'coyote', title: 'Revenue',
   sub: 'Revenue Command Centre — all six tabs live · menu contribution uses completed recipes · covers live via OpenTable (spend/cover derived)',
 
@@ -1621,6 +1672,12 @@ module.exports = {
       .rcc .qb-fee-entry{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:6px}
       .rcc .qb-fee-entry input{width:112px;background:#11161a;border:1px solid #37414a;border-radius:7px;color:#fff;padding:6px 8px;font:11px var(--font-mono,monospace)}
       .rcc .qb-fee-entry button{border:0;border-radius:7px;background:var(--raccent);color:#fff;padding:7px 9px;font-size:10px;font-weight:800;cursor:pointer}
+      .rcc .qb-adjustments{display:grid;gap:7px;margin-top:9px}
+      .rcc .qb-adjustment{border:1px solid #333c45;border-radius:8px;padding:8px;background:rgba(255,255,255,.015)}
+      .rcc .qb-adjustment-head{display:flex;justify-content:space-between;gap:8px;color:#fff}
+      .rcc .qb-adjustment-value{white-space:nowrap;font:11px var(--font-mono,monospace);color:#dce3e8}
+      .rcc .qb-currency-input{display:flex;align-items:center;border:1px solid #37414a;border-radius:7px;background:#11161a;color:#9ca6af;padding-left:7px}
+      .rcc .qb-currency-input input{border:0;padding-left:4px;width:94px}
       .rcc .qb-diagnostic{margin-top:12px;border:1px solid #333c45;border-radius:10px;padding:11px;color:#aab3bc;font-size:11px;line-height:1.5}
       .rcc .qb-diagnostic strong{color:#fff}
       /* surviving legacy grammar (the expands + decomp/scorecard tables keep their pre-restyle form) */
@@ -2490,10 +2547,13 @@ module.exports = {
       if (qb.feeMissing.length) {
         warnings.push(`QuickBooks sales receipt incomplete — missing ${qb.feeMissing.join(' and ')}. The affected settlement row remains gross because no processor fee was entered for this month.`);
       }
+      if (qb.adjustmentMissing.length) {
+        warnings.push(`QuickBooks sales receipt incomplete — missing ${qb.adjustmentMissing.join(' and ')}. Each unentered adjustment remains — with no operand applied; explicitly enter £0.00 when none occurred.`);
+      }
       if (!qb.vatBaseExact) {
         warnings.push(`VAT-base precision warning — (row 1 + row 6) / 1.2 does not resolve to an integer penny; ${gbp(qb.vatBasePence)} is display rounding only and no QuickBooks row was altered.`);
       }
-      if (!warnings.length) warnings.push('Complete — every expected date is present, every receipt is mapped, both fees are entered and the VAT base resolves to the penny.');
+      if (!warnings.length) warnings.push('Complete — every expected date is present, every receipt is mapped, both fees and all four adjustments are entered, and the VAT base resolves to the penny.');
       const warningHtml = `<div class="qb-warnings">${warnings.map((warning) => `<div class="qb-warning${qb.complete ? ' qb-ok' : ''}">${esc(warning)}</div>`).join('')}</div>`;
       const monthPicker = `<form class="qb-month" method="get" action="/coyote/revenue">
           <input type="hidden" name="tab" value="qbsales">
@@ -2502,10 +2562,31 @@ module.exports = {
         </form>`;
       const stateTag = qb.complete ? S.rcc.tag('COMPLETE', 'good') : S.rcc.tag('INCOMPLETE', 'warn');
       const feeControl = (row) => `<div class="qb-fee-entry">
-          <input class="qb-fee-value" type="number" step="1" inputmode="numeric" data-qb-line="${row.key}" value="${row.entered ? row.amountPence : ''}" placeholder="signed pence" aria-label="${esc(row.label)} signed pence">
+          <input class="qb-fee-value" type="number" step="1" inputmode="numeric" data-qb-unit="pence" data-qb-line="${row.key}" value="${row.entered ? row.amountPence : ''}" placeholder="signed pence" aria-label="${esc(row.label)} signed pence">
           <button class="qb-fee-save" type="button" data-qb-line="${row.key}">Save signed pence</button>
           <span class="qb-fee-out r-mini-note" data-qb-line="${row.key}"></span>
         </div>`;
+      const adjustmentControl = (adjustment) => {
+        const displayedValue = adjustment.entered ? formatQuickBooksOperand(adjustment.amountPence) : '—';
+        const inputValue = adjustment.entered
+          ? displayedValue.replace(/^−£/, '-').replace(/^\+?£/, '').replaceAll(',', '')
+          : '';
+        const derivation = adjustment.counterpartLine == null
+          ? `Sales Income operand ${formatQuickBooksOperand(adjustment.salesOperandPence)} · no receipt-line counterpart · Over/Short formula effect ${formatQuickBooksOperand(adjustment.overShortEffectPence)}.`
+          : `Sales Income operand ${formatQuickBooksOperand(adjustment.salesOperandPence)} · ${adjustment.counterpartLabel}, line ${adjustment.counterpartLine} computed −x operand ${formatQuickBooksOperand(adjustment.counterpartOperandPence)}.`;
+        return `<div class="qb-adjustment" data-qb-adjustment="${adjustment.key}">
+          <div class="qb-adjustment-head"><strong>${esc(adjustment.label)}</strong><span class="qb-adjustment-value">${displayedValue}</span></div>
+          <div class="r-mini-note">${esc(derivation)}</div>
+          <div class="qb-fee-entry"><label class="qb-currency-input"><span aria-hidden="true">£</span><input class="qb-fee-value" type="number" step="0.01" inputmode="decimal" data-qb-unit="pounds" data-qb-line="${adjustment.key}" value="${inputValue}" placeholder="0.00 or negative" aria-label="${esc(adjustment.label)} pounds sterling"></label>
+            <button class="qb-fee-save" type="button" data-qb-line="${adjustment.key}">Save amount</button>
+            <span class="qb-fee-out r-mini-note" data-qb-line="${adjustment.key}"></span>
+          </div>
+        </div>`;
+      };
+      const adjustmentControlsForLine = (line) => {
+        const controls = qb.adjustments.filter((adjustment) => adjustment.salesLine === line).map(adjustmentControl);
+        return controls.length ? `<div class="qb-adjustments">${controls.join('')}</div>` : '';
+      };
       const tableRows = qb.rows.map((row) => {
         const feeBlank = (row.key === 'pos_fee' || row.key === 'online_fee') && !row.entered;
         const amount = feeBlank ? '—' : gbp(Math.abs(row.amountPence));
@@ -2521,7 +2602,7 @@ module.exports = {
             <td class="r-num mono">${sign}</td>
             <td class="r-num mono">${amount}${feeNote}${row.key === 'pos_fee' || row.key === 'online_fee' ? feeControl(row) : ''}</td>
             <td>${esc(row.vatTreatment)}</td>
-            <td class="qb-derivation">${esc(row.derivation)}</td>
+            <td class="qb-derivation">${esc(row.derivation)}${adjustmentControlsForLine(row.line)}</td>
             <td class="qb-source">${esc(row.sourceGrain)}</td>
             <td class="qb-window mono">${esc(row.window)}</td>
           </tr>`;
@@ -2531,6 +2612,7 @@ module.exports = {
         sub: 'ten lines · integer pence · gross sales and settlement movements',
         headRight: stateTag,
         body: `${warningHtml}<div style="overflow:auto"><table class="qb-table"><thead><tr><th>QuickBooks line</th><th class="r-num">Sign</th><th class="r-num">Amount</th><th>VAT treatment</th><th>Plain-English derivation</th><th>Source grain</th><th>Exact date window</th></tr></thead><tbody>${tableRows}</tbody></table></div>
+          <div class="qb-diagnostic"><strong>Free gift cards issued</strong> — reduce Sales Income and flow into Over/Short through the exact row-10 formula because this receipt has no honest tender counterpart. No card, cash, gift-card-liability or invented balancing line is used; gift-card redemptions are journalled separately by the operator.</div>
           <div class="qb-diagnostic"><strong>Unmapped receipts diagnostic</strong> — ${plural(qb.unmapped.count, 'receipt', 'receipts')} · ${gbp(qb.unmapped.valuePence)} gross. Eligible SALE/SPLIT receipt identifiers with no channel_label are deduplicated, counted here and never assigned to an invented channel.</div>`,
       });
       const checks = `<div class="r-grid r-two-col">
@@ -2549,10 +2631,20 @@ module.exports = {
         var busy=false;
         document.addEventListener('click',function(e){var b=e.target.closest&&e.target.closest('.qb-fee-save');if(!b||busy)return;
           var line=b.getAttribute('data-qb-line'),input=document.querySelector('.qb-fee-value[data-qb-line="'+line+'"]'),out=document.querySelector('.qb-fee-out[data-qb-line="'+line+'"]'),raw=input?input.value.trim():'';
-          if(!/^-?\\d+$/.test(raw)||!Number.isSafeInteger(Number(raw))){if(out)out.textContent='enter signed whole pence';return;}
+          var value;
+          if(input&&input.getAttribute('data-qb-unit')==='pounds'){
+            var parts=raw.match(/^(-?)(\\d+)(?:\\.(\\d{1,2}))?$/);
+            if(!parts){if(out)out.textContent='enter pounds and pence, using zero or a negative amount';return;}
+            var pennies=(parts[3]||'').padEnd(2,'0');
+            value=(Number(parts[2])*100+Number(pennies||0))*(parts[1]? -1:1);
+          }else{
+            if(!/^-?\\d+$/.test(raw)){if(out)out.textContent='enter signed whole pence';return;}
+            value=Number(raw);
+          }
+          if(!Number.isSafeInteger(value)){if(out)out.textContent='amount is outside the supported range';return;}
           busy=true;b.disabled=true;
-          fetch('/api/review-action',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({op:'set_qb_sales_fee',month:'${esc(qb.month)}',line:line,value_pence:Number(raw)})})
-            .then(function(x){return x.json();}).then(function(j){if(j&&j.ok&&j.value_pence===Number(raw)){(window.__lcReload||function(){location.reload();})();}else{if(out)out.textContent=(j&&j.error)||'save failed';busy=false;b.disabled=false;}})
+          fetch('/api/review-action',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({op:'set_qb_sales_fee',month:'${esc(qb.month)}',line:line,value_pence:value})})
+            .then(function(x){return x.json();}).then(function(j){if(j&&j.ok&&j.value_pence===value){(window.__lcReload||function(){location.reload();})();}else{if(out)out.textContent=(j&&j.error)||'save failed';busy=false;b.disabled=false;}})
             .catch(function(){if(out)out.textContent='network error';busy=false;b.disabled=false;});
         });})();</script>`;
       return `<div class="qb-toolbar"><div><div class="r-panel-title">QuickBooks Sales Entry</div><div class="r-panel-sub">inclusive calendar month · latest completed month by default</div></div>${monthPicker}</div>${bundle}${checks}${script}`;

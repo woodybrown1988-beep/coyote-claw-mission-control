@@ -142,6 +142,10 @@
     },
     {
       "module": "mission-control/ui/pages/coyote/reports.js",
+      "export": "formatQuickBooksOperand"
+    },
+    {
+      "module": "mission-control/ui/pages/coyote/reports.js",
       "export": "calculateQuickBooksSales"
     },
     {
