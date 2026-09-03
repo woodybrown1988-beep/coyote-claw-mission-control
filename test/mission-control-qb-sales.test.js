@@ -10,6 +10,7 @@ const { applyQuickBooksSalesFee } = require('../mission-control/server.js');
 
 const {
   calculateQuickBooksSales,
+  formatQuickBooksFeeDerivation,
   latestCompleteMonth,
 } = reports;
 
@@ -107,12 +108,35 @@ test('persisted POS fee nets row 2 while row 5 remains the unchanged negative fe
 
   assert.equal(result.rows[1].amountPence, -12300, '£126.00 gross less £3.00 fee is a £123.00 card settlement');
   assert.equal(result.rows[4].amountPence, -300);
-  assert.match(result.rows[1].derivation, /gross card takings 12600 pence.*deducted POS processor fee 300 pence.*net 12300 pence/i);
+  assert.match(result.rows[1].derivation, /gross card takings 12600 pence \+ signed POS processor fee -300 pence \(deducted\) = net 12300 pence/i);
 
   fixture.fees.pos_fee = 0;
   const zeroFee = calculateQuickBooksSales(fixture);
   assert.equal(zeroFee.rows[1].amountPence, -12600, 'a persisted zero is still an entered fee');
-  assert.match(zeroFee.rows[1].derivation, /deducted POS processor fee 0 pence.*net 12600 pence/i);
+  assert.match(zeroFee.rows[1].derivation, /gross card takings 12600 pence \+ signed POS processor fee 0 pence = unchanged at 12600 pence/i);
+  assert.doesNotMatch(zeroFee.rows[1].derivation, /deducted|\bnet\b/i);
+});
+
+test('historic positive POS and online fees render honestly as additions', () => {
+  const fixture = aprilFixture();
+  fixture.fees = { pos_fee: 300, online_fee: 100 };
+  const result = calculateQuickBooksSales(fixture);
+
+  assert.equal(result.rows[1].amountPence, -12900);
+  assert.equal(result.rows[7].amountPence, -7900);
+  assert.match(result.rows[1].derivation, /gross card takings 12600 pence \+ signed POS processor fee \+300 pence \(added\) = 12900 pence/i);
+  assert.match(result.rows[7].derivation, /gross LP takings 7800 pence \+ signed online processor fee \+100 pence \(added\) = 7900 pence/i);
+  assert.doesNotMatch(result.rows[1].derivation, /deducted|\bnet\b/i);
+  assert.doesNotMatch(result.rows[7].derivation, /deducted|\bnet\b/i);
+
+  const body = reports.render({ tab: 'qbsales', qbsales: result }, {}).body;
+  const renderedRow2 = body.match(/<tr data-qb-line="2">[\s\S]*?<\/tr>/);
+  const renderedRow8 = body.match(/<tr data-qb-line="8">[\s\S]*?<\/tr>/);
+  assert.ok(renderedRow2 && renderedRow8);
+  assert.match(renderedRow2[0], /signed POS processor fee \+300 pence \(added\) = 12900 pence/i);
+  assert.match(renderedRow8[0], /signed online processor fee \+100 pence \(added\) = 7900 pence/i);
+  assert.doesNotMatch(renderedRow2[0], /deducted|\bnet\b/i);
+  assert.doesNotMatch(renderedRow8[0], /deducted|\bnet\b/i);
 });
 
 test('missing POS fee leaves row 2 gross and never describes it as net', () => {
@@ -130,12 +154,71 @@ test('persisted online fee nets row 8 while row 9 remains the unchanged negative
 
   assert.equal(result.rows[7].amountPence, -7700, '£78.00 gross less £1.00 fee is a £77.00 LP settlement');
   assert.equal(result.rows[8].amountPence, -100);
-  assert.match(result.rows[7].derivation, /gross LP takings 7800 pence.*deducted online processor fee 100 pence.*net 7700 pence/i);
+  assert.match(result.rows[7].derivation, /gross LP takings 7800 pence \+ signed online processor fee -100 pence \(deducted\) = net 7700 pence/i);
 
   fixture.fees.online_fee = 0;
   const zeroFee = calculateQuickBooksSales(fixture);
   assert.equal(zeroFee.rows[7].amountPence, -7800, 'a persisted zero is still an entered fee');
-  assert.match(zeroFee.rows[7].derivation, /deducted online processor fee 0 pence.*net 7800 pence/i);
+  assert.match(zeroFee.rows[7].derivation, /gross LP takings 7800 pence \+ signed online processor fee 0 pence = unchanged at 7800 pence/i);
+  assert.doesNotMatch(zeroFee.rows[7].derivation, /deducted|\bnet\b/i);
+});
+
+test('shared fee formatter keeps signed operands, results, wording and plausibility aligned', () => {
+  assert.deepEqual(formatQuickBooksFeeDerivation({
+    grossPence: 10000, feePence: -500, grossLabel: 'card', feeLabel: 'POS',
+  }), {
+    resultPence: 9500,
+    explanation: 'gross card takings 10000 pence + signed POS processor fee -500 pence (deducted) = net 9500 pence',
+    warning: null,
+  });
+  assert.deepEqual(formatQuickBooksFeeDerivation({
+    grossPence: 10000, feePence: 500, grossLabel: 'LP', feeLabel: 'online',
+  }), {
+    resultPence: 10500,
+    explanation: 'gross LP takings 10000 pence + signed online processor fee +500 pence (added) = 10500 pence',
+    warning: null,
+  });
+  assert.deepEqual(formatQuickBooksFeeDerivation({
+    grossPence: 10000, feePence: 0, grossLabel: 'card', feeLabel: 'POS',
+  }), {
+    resultPence: 10000,
+    explanation: 'gross card takings 10000 pence + signed POS processor fee 0 pence = unchanged at 10000 pence',
+    warning: null,
+  });
+  assert.deepEqual(formatQuickBooksFeeDerivation({
+    grossPence: 10000, feePence: null, grossLabel: 'card', feeLabel: 'POS',
+  }), {
+    resultPence: 10000,
+    explanation: 'gross card takings 10000 pence — no processor fee entered for this month',
+    warning: null,
+  });
+});
+
+test('implausible POS and online fee ratios warn beside their derivations without blocking output', () => {
+  const fixture = aprilFixture();
+  fixture.fees = { pos_fee: -1300, online_fee: -1000 };
+  const result = calculateQuickBooksSales(fixture);
+
+  assert.match(result.rows[1].feeWarning, /Suspicious POS processor fee: -1300 pence is 10\.3% of positive gross takings, exceeding the named 10% plausibility threshold\./);
+  assert.match(result.rows[7].feeWarning, /Suspicious online processor fee: -1000 pence is 12\.8% of positive gross takings, exceeding the named 10% plausibility threshold\./);
+  const body = reports.render({ tab: 'qbsales', qbsales: result }, {}).body;
+  assert.match(body, /data-qb-line="2"[\s\S]*?Suspicious POS processor fee/);
+  assert.match(body, /data-qb-line="8"[\s\S]*?Suspicious online processor fee/);
+});
+
+test('plausible fee ratios do not warn, while a non-zero fee without positive gross does', () => {
+  const plausible = aprilFixture();
+  plausible.fees = { pos_fee: -1260, online_fee: -780 };
+  const plausibleResult = calculateQuickBooksSales(plausible);
+  assert.equal(plausibleResult.rows[1].feeWarning, null, 'the named 10% threshold is permitted');
+  assert.equal(plausibleResult.rows[7].feeWarning, null);
+  assert.doesNotMatch(reports.render({ tab: 'qbsales', qbsales: plausibleResult }, {}).body, /Suspicious (?:POS|online) processor fee/);
+
+  const noGross = aprilFixture();
+  noGross.payments = noGross.payments.filter((payment) => payment.code !== 'LP');
+  noGross.fees = { online_fee: -100 };
+  const noGrossResult = calculateQuickBooksSales(noGross);
+  assert.match(noGrossResult.rows[7].feeWarning, /Suspicious online processor fee: -100 pence with gross takings 0 pence; no meaningful percentage exists when gross is zero or negative\./);
 });
 
 test('missing online fee leaves row 8 gross and row 9 explicitly unentered', () => {
@@ -210,6 +293,22 @@ test('fee persistence validates month, line and signed integer pence and preserv
     { month: '2026-04', line: 'online_fee', value_pence: -100 },
     { month: '2026-04', line: 'pos_fee', value_pence: 0 },
   ]);
+  db.close();
+});
+
+test('fee persistence rejects positive POS and online writes with field-specific sign errors', () => {
+  const db = new sqlite.DatabaseSync(':memory:');
+  const pos = applyQuickBooksSalesFee(db, {
+    op: 'set_qb_sales_fee', month: '2026-04', line: 'pos_fee', value_pence: 1,
+  }, 126);
+  const online = applyQuickBooksSalesFee(db, {
+    op: 'set_qb_sales_fee', month: '2026-04', line: 'online_fee', value_pence: 500,
+  }, 127);
+
+  assert.deepEqual(pos, { ok: false, status: 400, error: 'pos_fee must be zero or negative.' });
+  assert.deepEqual(online, { ok: false, status: 400, error: 'online_fee must be zero or negative.' });
+  assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='qb_sales_fees'").get(), undefined,
+    'validation happens before persistence');
   db.close();
 });
 

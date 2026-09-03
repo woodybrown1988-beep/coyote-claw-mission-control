@@ -347,6 +347,7 @@ const DONUT_COLORS = ['#e44b36', '#67a7ff', '#ffb34d', '#ad8cff', '#56616e', '#7
 // separate on LP (row 8), so it is not in this closed row-2 allowlist.
 const QB_CARD_CODES = new Set(['LSPAY_ADYEN_TERMINAL_API_LOCAL', 'STR', 'POSERROR']);
 const QB_IN_HOUSE_CHANNELS = new Set(['EAT IN', 'STOREKIT ORDER & PAY', 'MON-FRI DEAL']);
+const QB_FEE_PLAUSIBILITY_THRESHOLD = 0.10;
 
 function latestCompleteMonth(now) {
   const date = new Date(now == null ? Date.now() : now);
@@ -367,6 +368,42 @@ function calendarMonthWindow(month) {
 function qbPence(value) {
   const n = Number(value);
   return Number.isSafeInteger(n) ? n : 0;
+}
+
+/** Keep settlement arithmetic, signed fee wording and its independent plausibility check together. */
+function formatQuickBooksFeeDerivation({ grossPence, feePence, grossLabel, feeLabel }) {
+  const hasFee = Number.isSafeInteger(feePence);
+  const resultPence = grossPence + (hasFee ? feePence : 0);
+  const grossCopy = `gross ${grossLabel} takings ${grossPence} pence`;
+  if (!hasFee) {
+    return {
+      resultPence,
+      explanation: `${grossCopy} — no processor fee entered for this month`,
+      warning: null,
+    };
+  }
+
+  const signedFee = feePence > 0 ? `+${feePence}` : String(feePence);
+  let explanation;
+  if (feePence < 0) {
+    explanation = `${grossCopy} + signed ${feeLabel} processor fee ${signedFee} pence (deducted) = net ${resultPence} pence`;
+  } else if (feePence > 0) {
+    explanation = `${grossCopy} + signed ${feeLabel} processor fee ${signedFee} pence (added) = ${resultPence} pence`;
+  } else {
+    explanation = `${grossCopy} + signed ${feeLabel} processor fee 0 pence = unchanged at ${resultPence} pence`;
+  }
+
+  let warning = null;
+  if (feePence !== 0 && grossPence > 0) {
+    const ratio = Math.abs(feePence) / grossPence;
+    if (ratio > QB_FEE_PLAUSIBILITY_THRESHOLD) {
+      warning = `Suspicious ${feeLabel} processor fee: ${signedFee} pence is ${(ratio * 100).toFixed(1)}% of positive gross takings, exceeding the named 10% plausibility threshold.`;
+    }
+  } else if (feePence !== 0) {
+    warning = `Suspicious ${feeLabel} processor fee: ${signedFee} pence with gross takings ${grossPence} pence; no meaningful percentage exists when gross is zero or negative.`;
+  }
+
+  return { resultPence, explanation, warning };
 }
 
 function uniqueApiRows(rows, keyOf) {
@@ -445,8 +482,20 @@ function calculateQuickBooksSales(input) {
   const hasOnlineFee = Object.prototype.hasOwnProperty.call(feeSource, 'online_fee') && Number.isSafeInteger(feeSource.online_fee);
   const grossCardTakingsPence = cardPayments.reduce((sum, row) => sum + paymentGrossWithTip(row), 0);
   const grossOnlineTakingsPence = onlinePayments.reduce((sum, row) => sum + paymentGrossWithTip(row), 0);
-  const cardSettlementPence = grossCardTakingsPence + (hasPosFee ? feeSource.pos_fee : 0);
-  const onlineSettlementPence = grossOnlineTakingsPence + (hasOnlineFee ? feeSource.online_fee : 0);
+  const posFeeDerivation = formatQuickBooksFeeDerivation({
+    grossPence: grossCardTakingsPence,
+    feePence: hasPosFee ? feeSource.pos_fee : null,
+    grossLabel: 'card',
+    feeLabel: 'POS',
+  });
+  const onlineFeeDerivation = formatQuickBooksFeeDerivation({
+    grossPence: grossOnlineTakingsPence,
+    feePence: hasOnlineFee ? feeSource.online_fee : null,
+    grossLabel: 'LP',
+    feeLabel: 'online',
+  });
+  const cardSettlementPence = posFeeDerivation.resultPence;
+  const onlineSettlementPence = onlineFeeDerivation.resultPence;
   const sourceWindow = `${window.from} → ${window.to} inclusive`;
   const excludedReceipts = receiptRows.length - eligibleReceipts.length;
   const rows = [
@@ -459,9 +508,8 @@ function calculateQuickBooksSales(input) {
     {
       line: 2, key: 'card_payments', label: 'Card payments', amountPence: -cardSettlementPence, entered: true,
       vatTreatment: 'No VAT · settlement', includedCount: cardPayments.length,
-      derivation: `${cardPayments.length} of ${paymentRows.length} payment(s) on the closed Lightspeed/STOREKIT allowlist (${[...QB_CARD_CODES].join(', ')}); ${hasPosFee
-        ? `gross card takings ${grossCardTakingsPence} pence − deducted POS processor fee ${Math.abs(feeSource.pos_fee)} pence = net ${cardSettlementPence} pence`
-        : `gross card takings ${grossCardTakingsPence} pence — no processor fee entered for this month`}; API payment identifiers deduplicated.`,
+      derivation: `${cardPayments.length} of ${paymentRows.length} payment(s) on the closed Lightspeed/STOREKIT allowlist (${[...QB_CARD_CODES].join(', ')}); ${posFeeDerivation.explanation}; API payment identifiers deduplicated.`,
+      feeWarning: posFeeDerivation.warning,
       sourceGrain: 'sales_payments_api · receipt_id + payment_seq', window: sourceWindow,
     },
     {
@@ -497,9 +545,8 @@ function calculateQuickBooksSales(input) {
     {
       line: 8, key: 'online_card_payments', label: 'Online card payments', amountPence: -onlineSettlementPence, entered: true,
       vatTreatment: 'No VAT · settlement', includedCount: onlinePayments.length,
-      derivation: `${onlinePayments.length} of ${paymentRows.length} payment(s) where code=LP; ${hasOnlineFee
-        ? `gross LP takings ${grossOnlineTakingsPence} pence − deducted online processor fee ${Math.abs(feeSource.online_fee)} pence = net ${onlineSettlementPence} pence`
-        : `gross LP takings ${grossOnlineTakingsPence} pence — no processor fee entered for this month`}; API payment identifiers deduplicated.`,
+      derivation: `${onlinePayments.length} of ${paymentRows.length} payment(s) where code=LP; ${onlineFeeDerivation.explanation}; API payment identifiers deduplicated.`,
+      feeWarning: onlineFeeDerivation.warning,
       sourceGrain: 'sales_payments_api · receipt_id + payment_seq', window: sourceWindow,
     },
     {
@@ -1362,9 +1409,10 @@ function channelMonthStats(rv2) {
 
 module.exports = {
   CPT_BAND,
+  QB_FEE_PLAUSIBILITY_THRESHOLD,
   SITTING_MIN_CAPTURE, SITTING_MAX_SPREAD, sittingCaptureVerdict,
   deriveSittingCaptionState, deriveCoversCaptionState, deriveReconciliationCaptionState,
-  buildMenuPortfolio, latestCompleteMonth, calculateQuickBooksSales,
+  buildMenuPortfolio, latestCompleteMonth, formatQuickBooksFeeDerivation, calculateQuickBooksSales,
   key: 'revenue', route: '/coyote/revenue', workspace: 'coyote', title: 'Revenue',
   sub: 'Revenue Command Centre — all six tabs live · menu contribution uses completed recipes · covers live via OpenTable (spend/cover derived)',
 
@@ -1616,6 +1664,8 @@ module.exports = {
       .rcc .qb-table td{vertical-align:top;line-height:1.4}
       .rcc .qb-table .qb-line{font-weight:900;color:#fff;white-space:nowrap}
       .rcc .qb-table .qb-derivation{min-width:310px;color:#aab3bc;font-size:10px}
+      .rcc .qb-fee-warning{margin-top:7px;border-left:3px solid var(--rwarn);background:rgba(240,182,79,.08);color:#f0c46c;padding:7px 8px;line-height:1.45}
+      .rcc .qb-fee-warning strong{color:#ffd98b}
       .rcc .qb-table .qb-source,.rcc .qb-table .qb-window{color:#89949f;font-size:10px}
       .rcc .qb-balance{display:flex;gap:8px;align-items:center;justify-content:flex-end;flex-wrap:wrap}
       .rcc .qb-fee-entry{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:6px}
@@ -2521,7 +2571,7 @@ module.exports = {
             <td class="r-num mono">${sign}</td>
             <td class="r-num mono">${amount}${feeNote}${row.key === 'pos_fee' || row.key === 'online_fee' ? feeControl(row) : ''}</td>
             <td>${esc(row.vatTreatment)}</td>
-            <td class="qb-derivation">${esc(row.derivation)}</td>
+            <td class="qb-derivation">${esc(row.derivation)}${row.feeWarning ? `<div class="qb-fee-warning" role="note"><strong>Fee plausibility warning</strong> — ${esc(row.feeWarning)}</div>` : ''}</td>
             <td class="qb-source">${esc(row.sourceGrain)}</td>
             <td class="qb-window mono">${esc(row.window)}</td>
           </tr>`;

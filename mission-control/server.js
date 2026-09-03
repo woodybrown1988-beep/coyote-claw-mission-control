@@ -567,7 +567,7 @@ const REVIEW_ACTION_OPS = new Set(['mark_responded', 'skip', 'snooze', 'log_acti
 const QB_SALES_FEE_OPS = new Set(['set_qb_sales_fee']);
 const QB_SALES_FEE_LINES = new Set(['pos_fee', 'online_fee']);
 
-/** Persist one signed, integer-pence processor fee at the exact (month, line) key. */
+/** Persist one non-positive, integer-pence processor fee at the exact (month, line) key. */
 function applyQuickBooksSalesFee(db, body, now) {
   const op = body && body.op;
   if (!QB_SALES_FEE_OPS.has(op)) return { ok: false, status: 400, error: 'unknown op' };
@@ -585,6 +585,9 @@ function applyQuickBooksSalesFee(db, body, now) {
   }
   if (typeof body.value_pence !== 'number' || !Number.isSafeInteger(body.value_pence)) {
     return { ok: false, status: 400, error: 'value_pence must be a signed integer' };
+  }
+  if (body.value_pence > 0) {
+    return { ok: false, status: 400, error: `${line} must be zero or negative.` };
   }
   try {
     db.exec(`CREATE TABLE IF NOT EXISTS qb_sales_fees (

@@ -191,6 +191,10 @@
     {
       "module": "mission-control/ui/pages/life/today.js",
       "export": "render"
+    },
+    {
+      "module": "mission-control/ui/pages/coyote/reports.js",
+      "export": "formatQuickBooksFeeDerivation"
     }
   ],
   "tests": [
