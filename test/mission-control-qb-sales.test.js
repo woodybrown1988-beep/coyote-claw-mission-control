@@ -83,6 +83,85 @@ test('calculation includes SPLIT, shake children and tips, while exact residual 
   assert.equal(result.vatBaseExact, true);
 });
 
+test('POSERROR payments contribute their gross and tips to card settlement and Tips payable', () => {
+  const fixture = aprilFixture();
+  fixture.payments.push({
+    receipt_id: 'pos-error', payment_seq: 0, business_date: '2026-04-08', code: 'POSERROR',
+    net_with_tax_pence: 400, tip_pence: 50,
+  });
+  const result = calculateQuickBooksSales(fixture);
+
+  assert.equal(result.rows[1].amountPence, -13050, 'row 2 includes the POSERROR gross payment and tip');
+  assert.equal(result.rows[2].amountPence, 650, 'row 3 includes the POSERROR tip');
+  assert.match(result.rows[1].derivation, /POSERROR/, 'the generated row-2 derivation lists the payment code');
+  const body = reports.render({ tab: 'qbsales', qbsales: result }, {}).body;
+  const renderedRow2 = body.match(/<tr data-qb-line="2">[\s\S]*?<\/tr>/);
+  assert.ok(renderedRow2);
+  assert.match(renderedRow2[0], /POSERROR/, 'the on-page row-2 derivation visibly lists the payment code');
+});
+
+test('persisted POS fee nets row 2 while row 5 remains the unchanged negative fee', () => {
+  const fixture = aprilFixture();
+  fixture.fees = { pos_fee: -300 };
+  const result = calculateQuickBooksSales(fixture);
+
+  assert.equal(result.rows[1].amountPence, -12300, '£126.00 gross less £3.00 fee is a £123.00 card settlement');
+  assert.equal(result.rows[4].amountPence, -300);
+  assert.match(result.rows[1].derivation, /gross card takings 12600 pence.*deducted POS processor fee 300 pence.*net 12300 pence/i);
+
+  fixture.fees.pos_fee = 0;
+  const zeroFee = calculateQuickBooksSales(fixture);
+  assert.equal(zeroFee.rows[1].amountPence, -12600, 'a persisted zero is still an entered fee');
+  assert.match(zeroFee.rows[1].derivation, /deducted POS processor fee 0 pence.*net 12600 pence/i);
+});
+
+test('missing POS fee leaves row 2 gross and never describes it as net', () => {
+  const result = calculateQuickBooksSales(aprilFixture());
+
+  assert.equal(result.rows[1].amountPence, -12600);
+  assert.match(result.rows[1].derivation, /gross card takings 12600 pence — no processor fee entered for this month/i);
+  assert.doesNotMatch(result.rows[1].derivation, /\bnet\b/i);
+});
+
+test('persisted online fee nets row 8 while row 9 remains the unchanged negative fee', () => {
+  const fixture = aprilFixture();
+  fixture.fees = { online_fee: -100 };
+  const result = calculateQuickBooksSales(fixture);
+
+  assert.equal(result.rows[7].amountPence, -7700, '£78.00 gross less £1.00 fee is a £77.00 LP settlement');
+  assert.equal(result.rows[8].amountPence, -100);
+  assert.match(result.rows[7].derivation, /gross LP takings 7800 pence.*deducted online processor fee 100 pence.*net 7700 pence/i);
+
+  fixture.fees.online_fee = 0;
+  const zeroFee = calculateQuickBooksSales(fixture);
+  assert.equal(zeroFee.rows[7].amountPence, -7800, 'a persisted zero is still an entered fee');
+  assert.match(zeroFee.rows[7].derivation, /deducted online processor fee 0 pence.*net 7800 pence/i);
+});
+
+test('missing online fee leaves row 8 gross and row 9 explicitly unentered', () => {
+  const result = calculateQuickBooksSales(aprilFixture());
+
+  assert.equal(result.rows[7].amountPence, -7800);
+  assert.equal(result.rows[8].amountPence, null);
+  assert.equal(result.rows[8].entered, false);
+  assert.match(result.rows[7].derivation, /gross LP takings 7800 pence — no processor fee entered for this month/i);
+  assert.doesNotMatch(result.rows[7].derivation, /\bnet\b/i);
+});
+
+test('fee presence does not close genuine residuals; Over/Short balances all ten rows and cash is unchanged', () => {
+  const missingFees = calculateQuickBooksSales(aprilFixture());
+  const persistedFixture = aprilFixture();
+  persistedFixture.fees = { pos_fee: -300, online_fee: -100 };
+  const persistedFees = calculateQuickBooksSales(persistedFixture);
+
+  for (const result of [missingFees, persistedFees]) {
+    assert.equal(result.rows.length, 10);
+    assert.equal(result.rows[3].amountPence, -3200, 'cash classification and calculation stay unchanged');
+    assert.equal(result.rows[9].amountPence, -400, 'the genuine fixture residual remains formula-driven');
+    assert.equal(result.rows.reduce((sum, row) => sum + (row.amountPence == null ? 0 : row.amountPence), 0), 0);
+  }
+});
+
 test('missing date and unmapped receipt stay visible, and absent fees stay explicitly unentered', () => {
   const result = calculateQuickBooksSales(aprilFixture());
   assert.deepEqual(result.missingDates, ['2026-04-12']);
@@ -98,7 +177,8 @@ test('missing date and unmapped receipt stay visible, and absent fees stay expli
   assert.match(body, /Unmapped receipts diagnostic/);
   assert.match(body, /1 receipt[^<]*£24\.00/);
   assert.match(body, /Operator input required — from the card processor statement; not held on this box\./);
-  assert.match(body, /residual currently absorbs the missing fee/);
+  assert.match(body, /settlement row remains gross because no processor fee was entered for this month/);
+  assert.doesNotMatch(body, /unentered fee is treated as zero|residual currently absorbs the missing fee/);
   assert.match(body, /April 2026/);
 });
 
@@ -140,7 +220,7 @@ test('entered processor fees are used verbatim and VAT imprecision is warned wit
   assert.equal(result.rows[4].amountPence, -300);
   assert.equal(result.rows[4].entered, true);
   assert.equal(result.rows[8].amountPence, -100);
-  assert.equal(result.rows[9].amountPence, 0);
+  assert.equal(result.rows[9].amountPence, -400, 'persisted fees do not erase the genuine residual');
 
   fixture.receipts[0].net_with_tax_pence += 1;
   result = calculateQuickBooksSales(fixture);
