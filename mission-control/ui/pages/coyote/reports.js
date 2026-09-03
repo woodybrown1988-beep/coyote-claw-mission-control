@@ -345,7 +345,7 @@ const DONUT_COLORS = ['#e44b36', '#67a7ff', '#ffb34d', '#ad8cff', '#56616e', '#7
 
 // QuickBooks sales-entry rules. STOREKIT card takings arrive as STR; LivePepper is deliberately
 // separate on LP (row 8), so it is not in this closed row-2 allowlist.
-const QB_CARD_CODES = new Set(['LSPAY_ADYEN_TERMINAL_API_LOCAL', 'STR']);
+const QB_CARD_CODES = new Set(['LSPAY_ADYEN_TERMINAL_API_LOCAL', 'STR', 'POSERROR']);
 const QB_IN_HOUSE_CHANNELS = new Set(['EAT IN', 'STOREKIT ORDER & PAY', 'MON-FRI DEAL']);
 
 function latestCompleteMonth(now) {
@@ -443,6 +443,10 @@ function calculateQuickBooksSales(input) {
   const feeSource = source.fees && typeof source.fees === 'object' ? source.fees : {};
   const hasPosFee = Object.prototype.hasOwnProperty.call(feeSource, 'pos_fee') && Number.isSafeInteger(feeSource.pos_fee);
   const hasOnlineFee = Object.prototype.hasOwnProperty.call(feeSource, 'online_fee') && Number.isSafeInteger(feeSource.online_fee);
+  const grossCardTakingsPence = cardPayments.reduce((sum, row) => sum + paymentGrossWithTip(row), 0);
+  const grossOnlineTakingsPence = onlinePayments.reduce((sum, row) => sum + paymentGrossWithTip(row), 0);
+  const cardSettlementPence = grossCardTakingsPence + (hasPosFee ? feeSource.pos_fee : 0);
+  const onlineSettlementPence = grossOnlineTakingsPence + (hasOnlineFee ? feeSource.online_fee : 0);
   const sourceWindow = `${window.from} → ${window.to} inclusive`;
   const excludedReceipts = receiptRows.length - eligibleReceipts.length;
   const rows = [
@@ -453,9 +457,11 @@ function calculateQuickBooksSales(input) {
       sourceGrain: 'sales_receipts_api · receipt_id', window: sourceWindow,
     },
     {
-      line: 2, key: 'card_payments', label: 'Card payments', amountPence: -cardPayments.reduce((sum, row) => sum + paymentGrossWithTip(row), 0), entered: true,
+      line: 2, key: 'card_payments', label: 'Card payments', amountPence: -cardSettlementPence, entered: true,
       vatTreatment: 'No VAT · settlement', includedCount: cardPayments.length,
-      derivation: `${cardPayments.length} of ${paymentRows.length} payment(s) on the closed Lightspeed/STOREKIT allowlist (${[...QB_CARD_CODES].join(', ')}); negative SUM(net_with_tax_pence + tip_pence); API payment identifiers deduplicated.`,
+      derivation: `${cardPayments.length} of ${paymentRows.length} payment(s) on the closed Lightspeed/STOREKIT allowlist (${[...QB_CARD_CODES].join(', ')}); ${hasPosFee
+        ? `gross card takings ${grossCardTakingsPence} pence − deducted POS processor fee ${Math.abs(feeSource.pos_fee)} pence = net ${cardSettlementPence} pence`
+        : `gross card takings ${grossCardTakingsPence} pence — no processor fee entered for this month`}; API payment identifiers deduplicated.`,
       sourceGrain: 'sales_payments_api · receipt_id + payment_seq', window: sourceWindow,
     },
     {
@@ -473,7 +479,7 @@ function calculateQuickBooksSales(input) {
     {
       line: 5, key: 'pos_fee', label: 'POS card fees', amountPence: hasPosFee ? feeSource.pos_fee : null, entered: hasPosFee,
       vatTreatment: 'No VAT · operator entry', includedCount: hasPosFee ? 1 : 0,
-      derivation: hasPosFee ? '1 persisted operator value used verbatim; never calculated.' : '0 persisted operator values; treated as zero only for the current residual.',
+      derivation: hasPosFee ? '1 persisted operator value used verbatim; never calculated.' : 'No persisted operator value; no processor fee entered for this month.',
       sourceGrain: 'qb_sales_fees · month + line', window: sourceWindow,
     },
     {
@@ -489,15 +495,17 @@ function calculateQuickBooksSales(input) {
       sourceGrain: 'sales_receipt_lines_api + acct_groups_api · receipt_id + line_id', window: sourceWindow,
     },
     {
-      line: 8, key: 'online_card_payments', label: 'Online card payments', amountPence: -onlinePayments.reduce((sum, row) => sum + paymentGrossWithTip(row), 0), entered: true,
+      line: 8, key: 'online_card_payments', label: 'Online card payments', amountPence: -onlineSettlementPence, entered: true,
       vatTreatment: 'No VAT · settlement', includedCount: onlinePayments.length,
-      derivation: `${onlinePayments.length} of ${paymentRows.length} payment(s) where code=LP; negative SUM(net_with_tax_pence + tip_pence); API payment identifiers deduplicated.`,
+      derivation: `${onlinePayments.length} of ${paymentRows.length} payment(s) where code=LP; ${hasOnlineFee
+        ? `gross LP takings ${grossOnlineTakingsPence} pence − deducted online processor fee ${Math.abs(feeSource.online_fee)} pence = net ${onlineSettlementPence} pence`
+        : `gross LP takings ${grossOnlineTakingsPence} pence — no processor fee entered for this month`}; API payment identifiers deduplicated.`,
       sourceGrain: 'sales_payments_api · receipt_id + payment_seq', window: sourceWindow,
     },
     {
       line: 9, key: 'online_fee', label: 'Online card fees', amountPence: hasOnlineFee ? feeSource.online_fee : null, entered: hasOnlineFee,
       vatTreatment: 'No VAT · operator entry', includedCount: hasOnlineFee ? 1 : 0,
-      derivation: hasOnlineFee ? '1 persisted operator value used verbatim; never calculated.' : '0 persisted operator values; treated as zero only for the current residual.',
+      derivation: hasOnlineFee ? '1 persisted operator value used verbatim; never calculated.' : 'No persisted operator value; no processor fee entered for this month.',
       sourceGrain: 'qb_sales_fees · month + line', window: sourceWindow,
     },
   ];
@@ -2480,7 +2488,7 @@ module.exports = {
         warnings.push(`${plural(qb.unmapped.count, 'receipt lacks', 'receipts lack')} a channel mapping, gross value ${gbp(qb.unmapped.valuePence)}. They remain outside the ten QuickBooks lines.`);
       }
       if (qb.feeMissing.length) {
-        warnings.push(`QuickBooks sales receipt incomplete — missing ${qb.feeMissing.join(' and ')}. Each unentered fee is treated as zero, so the residual currently absorbs the missing fee.`);
+        warnings.push(`QuickBooks sales receipt incomplete — missing ${qb.feeMissing.join(' and ')}. The affected settlement row remains gross because no processor fee was entered for this month.`);
       }
       if (!qb.vatBaseExact) {
         warnings.push(`VAT-base precision warning — (row 1 + row 6) / 1.2 does not resolve to an integer penny; ${gbp(qb.vatBasePence)} is display rounding only and no QuickBooks row was altered.`);
