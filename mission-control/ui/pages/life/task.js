@@ -176,6 +176,37 @@ function invoiceRunBlock(events, folders) {
       return sk === k || sk.startsWith(k) || k.startsWith(sk);
     }) || null;
   };
+  // ── WHAT THE RECORD IS MADE OF (audit 2026-09-02, the Munro direct debit) ─────────────────
+  // qb_bank_txns holds CATEGORISED transactions only. A bank line becomes a Purchase row when a
+  // human categorises it in QuickBooks, and Intuit exposes no API for the "For Review" lines
+  // that nobody has. So MAX(txn_date) is today while about five pounds in six of July and
+  // August's outgoing money is absent from the table — perfectly fresh and nearly empty. Every
+  // sentence on this panel is drawn from that table, and each one used to read as a fact about
+  // the BANK: "no payment to this supplier on record" was rendered over a supplier whose direct
+  // debit had collected twice, and the owner was told it had stopped.
+  //
+  // THE CLASS: a check speaking over a holed input as if it were complete. The engine measures
+  // the hole from the table's own shape (feedCompleteness in src/finance/invoiceLedger.ts:
+  // monthly purchase counts against the median of the months before) and stamps the verdict on
+  // every supplier position as bankRecord { complete, holedFrom, note }. This panel does NOT
+  // re-derive it — Mission Control cannot import engine code, and a second copy of the rule would
+  // drift — it only renders it: the source is named for what it is, and wherever the record is
+  // holed the reader is told from when, on every sentence that could otherwise license a payment.
+  //
+  // ADDITIVE, like `suppliers` and `isStatement` before it: an armed payload from before this
+  // shipped carries no bankRecord and renders exactly as it did. The field is the only evidence
+  // there is; inventing a verdict for an old payload would be the same failure facing the other way.
+  const recordOf = (sp) => (sp && sp.bankRecord && typeof sp.bankRecord === 'object' ? sp.bankRecord : null);
+  const holedFromOf = (br) => (br && br.complete === false ? ` from ${LIFE.esc(String(br.holedFrom || 'an unknown month'))}` : null);
+  const anyRecord = (suppliers || []).some((sp) => recordOf(sp));
+  // The run-level verdict: the engine stamps one completeness state on every position, so the
+  // first position that says incomplete speaks for the run. Read once, rendered on the header
+  // and on the total — the two places a reader forms the whole-queue judgement.
+  const holed = (suppliers || []).map(recordOf).find((br) => br && br.complete === false) || null;
+  // The engine's note is rendered verbatim and the count sentence follows it, so it is given a
+  // full stop if it arrived without one rather than running into "1 of 2 suppliers".
+  const holedNote = holed ? String(holed.note || '').trim().replace(/([^.!?])$/, '$1.') : '';
+  const attention = 'color:#f5c96b';
   // ── THE SUPPLIER'S OWN NUMBER, BESIDE OURS ────────────────────────────────────────────────
   // The only figure in this system that comes from the other side of the transaction. Comparing
   // it with what we hold is the sharpest double-payment signal available: a supplier saying you
@@ -226,13 +257,24 @@ function invoiceRunBlock(events, folders) {
   const ledgerLine = (name) => {
     const sp = posOf(name);
     if (!sp) return '';
+    const br = recordOf(sp);
+    const from = holedFromOf(br);
     if (!sp.lastPaid) {
-      return `<div style="${muted};padding:1px 0 3px">Ledger: no payment to this supplier on record`
-        + `${sp.seenSince ? ` (bank data goes back to ${LIFE.esc(String(sp.seenSince))})` : ''}.</div>`;
+      // The old horizon ("goes back to 2018") is the far edge of the record. The edge that
+      // matters before a payment is the NEAR one — the month from which the record is holed —
+      // and the line carries it, because "no payment on record" over a holed month is the
+      // exact sentence that told the owner a live direct debit had stopped.
+      const since = sp.seenSince ? ` (${br ? 'categorised ' : ''}bank data goes back to ${LIFE.esc(String(sp.seenSince))})` : '';
+      if (!br) return `<div style="${muted};padding:1px 0 3px">Ledger: no payment to this supplier on record${since}.</div>`;
+      return `<div style="${muted};padding:1px 0 3px">Ledger: no CATEGORISED payment on record${since}`
+        + (from !== null ? ` \u2014 the bank record is incomplete${from}, so this may already be paid` : '') + `.</div>`;
     }
-    return `<div style="${muted};padding:1px 0 3px">Ledger: last paid <b style="color:#c8d3de">${gbp(sp.lastPaid.amountPence)}</b>`
+    // Same treatment for a supplier the record CAN see: a last payment dated the month before
+    // the hole reads as "stopped" unless the line says the later months are not in yet.
+    return `<div style="${muted};padding:1px 0 3px">Ledger: ${br ? 'last categorised payment' : 'last paid'} <b style="color:#c8d3de">${gbp(sp.lastPaid.amountPence)}</b>`
       + ` on ${LIFE.esc(String(sp.lastPaid.txnDate))} \u00b7 ${LIFE.esc(String(sp.lastPaid.account))}`
-      + ` \u00b7 ${sp.paidCountYear} payment${sp.paidCountYear === 1 ? '' : 's'} in the last year</div>`;
+      + ` \u00b7 ${sp.paidCountYear} ${br ? 'categorised ' : ''}payment${sp.paidCountYear === 1 ? '' : 's'} in the last year`
+      + (from !== null ? ` \u2014 the bank record is incomplete${from}, so a later payment may not show yet` : '') + `</div>`;
   };
 
   const body = groups.map((g, i) => {
@@ -265,13 +307,21 @@ function invoiceRunBlock(events, folders) {
     ? `<div style="${muted};padding-top:4px">${stmtCount} statement${stmtCount === 1 ? '' : 's'} not in this total \u2014 `
       + `${stmtCount === 1 ? 'a statement summarises' : 'statements summarise'} invoices, and adding ${stmtCount === 1 ? 'it' : 'them'} would pay the same debt twice.</div>`
     : '';
+  // THE TOTAL OVER A HOLED RECORD. The gate above is about OUR side (every amount read); this
+  // caption is about the BANK side. Until the record is complete the sum stands over invoices
+  // whose payment is structurally invisible, so the label keeps its name and gains the one
+  // sentence that stops it being read as a debt: some of these may already be paid. Both sums
+  // carry it — a partial total is no more able to see a categorisation backlog than a full one.
+  const holedCaption = holed
+    ? `<div style="${attention};font-size:11.5px;font-weight:400;padding-top:2px">the bank record is incomplete${holedFromOf(holed)} \u2014 some of these may already be paid</div>`
+    : '';
   const total = invoiceLines.length === 0
     ? `<div style="${muted};padding-top:8px;border-top:1px solid rgba(255,255,255,.12)">No invoices to pay \u2014 ${stmtCount === 1 ? 'the only queued document is a statement' : `all ${stmtCount} queued documents are statements`}.</div>`
     : unread === 0
-    ? `<div style="font-size:13.5px;padding-top:8px;border-top:1px solid rgba(255,255,255,.12)"><b>TOTAL INVOICES TO PAY = ${gbp(sum)}</b>${setAside}</div>`
+    ? `<div style="font-size:13.5px;padding-top:8px;border-top:1px solid rgba(255,255,255,.12)"><b>TOTAL INVOICES TO PAY = ${gbp(sum)}</b>${holedCaption}${setAside}</div>`
     : priced.length === 0
       ? `<div style="${muted};padding-top:8px;border-top:1px solid rgba(255,255,255,.12)">No total: none of these ${invoiceLines.length} amounts has been read off its document.${setAside}</div>`
-      : `<div style="font-size:13px;padding-top:8px;border-top:1px solid rgba(255,255,255,.12)"><b>TOTAL OF THE ${priced.length} READ = ${gbp(sum)}</b>`
+      : `<div style="font-size:13px;padding-top:8px;border-top:1px solid rgba(255,255,255,.12)"><b>TOTAL OF THE ${priced.length} READ = ${gbp(sum)}</b>${holedCaption}`
         + `<div style="${muted}">${unread} invoice${unread === 1 ? '' : 's'} still unread \u2014 not the payment total until ${unread === 1 ? 'it is' : 'they are'} read.</div>${setAside}</div>`;
 
   return `<div style="margin:2px 0 12px">`
@@ -281,10 +331,18 @@ function invoiceRunBlock(events, folders) {
     + `<div style="${muted}">tap Paid when one is paid \u2014 it files to its supplier folder and leaves this list</div></div>`
     + ((suppliers || []).length
       // SAY WHAT THE CHECK CAN SEE, ONCE. Without this the per-supplier lines below read as a
-      // verdict; with it they read as evidence, which is what they are. The count of suppliers
-      // with nothing on record is the honest measure of how blind this panel currently is.
-      ? `<div style="${muted};margin:0 0 6px">Checked against the bank: `
-        + `${suppliers.filter((sp) => sp.lastPaid).length} of ${suppliers.length} suppliers here have a payment on record. `
+      // verdict; with it they read as evidence, which is what they are. There are TWO
+      // blindnesses and the header names both: the count of suppliers with nothing on record
+      // is how blind the check is per supplier INSIDE the record, and the INCOMPLETE clause is
+      // how blind the record itself is — the second is the one that produced the incident, and
+      // a count alone measured the wrong one. The clause carries the engine's own note verbatim
+      // (it names the months and the mechanism), in the attention colour, ahead of the count it
+      // qualifies.
+      ? `<div style="${muted};margin:0 0 6px">Checked against the ${anyRecord ? 'CATEGORISED bank record' : 'bank'}`
+        + (holed
+          ? ` <span style="${attention}">\u2014 INCOMPLETE${holedFromOf(holed)}${holedNote ? `: ${LIFE.esc(holedNote)}` : '.'}</span> `
+          : ': ')
+        + `${suppliers.filter((sp) => sp.lastPaid).length} of ${suppliers.length} suppliers here have a ${anyRecord ? 'categorised ' : ''}payment on record. `
         + `A line below is what was last SEEN going out \u2014 never a statement that an invoice is unpaid.</div>`
       : '')
     + body + total + `</div>`;

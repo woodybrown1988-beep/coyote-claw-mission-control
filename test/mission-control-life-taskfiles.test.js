@@ -578,3 +578,120 @@ test('drawer: an incomplete queue is NOT reconciled — a difference would mean 
   });
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════
+// THE CATEGORISED RECORD (audit 2026-09-02, the Munro direct debit)
+//
+// qb_bank_txns holds CATEGORISED transactions only — a bank line joins it when a human
+// categorises it in QuickBooks, and the "For Review" lines have no API. MAX(txn_date) was today
+// while five pounds in six of July and August's outgoing money was absent, and this panel printed
+// "no payment to this supplier on record" over a direct debit that had collected twice.
+//
+// The engine measures the hole (feedCompleteness) and stamps bankRecord { complete, holedFrom,
+// note } on every supplier position. These tests pin the four sentences that now carry it, and
+// the two negatives that keep it honest: a complete record renders NO caveat (a caveat on every
+// panel is noise he learns to skip), and a payload without the field renders exactly as before.
+//
+// The engine's note ends "Nothing dated on or after 2026-07 can be called unpaid on this
+// evidence." — a disclaimer of the same kind as the panel's own, and stripped the same way. The
+// strip is that exact sentence shape, not the whole clause, so a verdict smuggled into a note
+// would still trip the guard.
+// ═══════════════════════════════════════════════════════════════════════════════════════════
+
+const ENGINE_NOTE = 'The bank record thins out sharply from 2026-07: 2026-07 has 94 payments where a normal '
+  + 'month has about 192; 2026-08 has 63 payments where a normal month has about 192. That is a '
+  + 'categorisation backlog in QuickBooks, not a quiet trading period — the deposit side of the '
+  + 'same table is unaffected. Nothing dated on or after 2026-07 can be called unpaid on this evidence.';
+const HOLED = { complete: false, holedFrom: '2026-07', note: ENGINE_NOTE };
+const WHOLE = { complete: true, holedFrom: null, note: 'The bank record looks complete: recent months carry a normal number of payments.' };
+const withoutDisclaimers = (html) => withoutDisclaimer(html)
+  .replace(/Nothing dated on or after \d{4}-\d{2} can be called unpaid on this evidence\./g, '');
+
+const BLACK_ISLE = (bankRecord) => ({
+  supplier: 'Black Isle Brewing Co Ltd', key: 'black-isle', paidCountYear: 49, seenSince: '2018-11-24',
+  lastPaid: { amountPence: 120455, txnDate: '2026-04-30', account: 'Santander Bank Account (6288)' },
+  ...(bankRecord === undefined ? {} : { bankRecord }),
+});
+const UNITY = (bankRecord) => ({
+  supplier: 'Unity1 Electrical', key: 'unity', paidCountYear: 0, seenSince: '2018-11-24', lastPaid: null,
+  ...(bankRecord === undefined ? {} : { bankRecord }),
+});
+const TWO_LINES = [
+  { moveId: 'mv1', supplier: 'Black Isle Brewing Co Ltd', ref: '48548', totalPence: 30527, ageDays: 12 },
+  { moveId: 'mv2', supplier: 'Unity1 Electrical', ref: '7', totalPence: 9900, ageDays: 9 },
+];
+const renderWith = (payload) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-holed-'));
+  try {
+    return withEnv(fixture(dir, (db) => armedWith(db, { moves: ['mv1', 'mv2'], folder: '00 INVOICES TO PAY', queued: 2, ...payload })), render).body;
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+};
+
+test('drawer: the header names the CATEGORISED record and says from when it is INCOMPLETE, in the attention colour', () => {
+  const body = renderWith({ lines: TWO_LINES, suppliers: [BLACK_ISLE(HOLED), UNITY(HOLED)] });
+  assert.match(body, /Checked against the CATEGORISED bank record/, 'the source is named for what it is');
+  assert.ok(!/Checked against the bank:/.test(body), 'and no longer for what it is not');
+  assert.match(body, /<span style="color:#f5c96b">— INCOMPLETE from 2026-07: The bank record thins out sharply from 2026-07/,
+    'the hole is dated, the engine’s reason follows, and it is coloured as attention');
+  assert.match(body, /1 of 2 suppliers here have a categorised payment on record/, 'the per-supplier count survives, relabelled');
+  assert.match(body, /never a statement that an invoice is unpaid/, 'the panel still states its own limits');
+  assert.ok(!/\bunpaid\b/i.test(withoutDisclaimers(body)), 'no line declares an invoice unpaid');
+});
+
+test('drawer: a supplier with no CATEGORISED payment says the record is holed, so this may already be paid', () => {
+  // The exact sentence that told the owner a live direct debit had stopped, now carrying the
+  // one fact that would have stopped him acting on it.
+  const body = renderWith({ lines: TWO_LINES, suppliers: [BLACK_ISLE(HOLED), UNITY(HOLED)] });
+  assert.match(body,
+    /Ledger: no CATEGORISED payment on record \(categorised bank data goes back to 2018-11-24\) — the bank record is incomplete from 2026-07, so this may already be paid\./);
+  assert.ok(!/no payment to this supplier on record/.test(body), 'the old bare sentence is gone');
+  assert.ok(!/\bunpaid\b/i.test(withoutDisclaimers(body)));
+});
+
+test('drawer: "last paid" becomes "last categorised payment", and a holed record says a later one may not show', () => {
+  // A last payment dated before the hole reads as "stopped" without this — precisely the Munro
+  // sentence, one supplier over.
+  const body = renderWith({ lines: TWO_LINES, suppliers: [BLACK_ISLE(HOLED), UNITY(HOLED)] });
+  assert.match(body, /Ledger: last categorised payment <b style="color:#c8d3de">£1,204\.55<\/b> on 2026-04-30/);
+  assert.match(body, /49 categorised payments in the last year — the bank record is incomplete from 2026-07, so a later payment may not show yet/);
+  assert.ok(!/last paid/.test(body), 'the old label is gone');
+  assert.ok(!/\bunpaid\b/i.test(withoutDisclaimers(body)));
+});
+
+test('drawer: the TOTAL keeps its label and gains the caption — some of these may already be paid', () => {
+  const body = renderWith({ lines: TWO_LINES, suppliers: [BLACK_ISLE(HOLED), UNITY(HOLED)] });
+  assert.match(body, /TOTAL INVOICES TO PAY = £404\.27<\/b><div style="color:#f5c96b;[^"]*">the bank record is incomplete from 2026-07 — some of these may already be paid<\/div>/,
+    'the caption sits directly under the sum, in the attention colour');
+  // The partial total is no more able to see the backlog than the full one.
+  const partial = renderWith({
+    lines: [TWO_LINES[0], { ...TWO_LINES[1], ref: null, totalPence: null }],
+    suppliers: [BLACK_ISLE(HOLED), UNITY(HOLED)],
+  });
+  assert.match(partial, /TOTAL OF THE 1 READ = £305\.27<\/b><div style="color:#f5c96b;[^"]*">the bank record is incomplete from 2026-07 — some of these may already be paid<\/div>/);
+  assert.ok(!/\bunpaid\b/i.test(withoutDisclaimers(partial)));
+});
+
+test('drawer: NEGATIVE — a COMPLETE record is labelled categorised and carries no caveat anywhere', () => {
+  // The caveat has to be earned by the evidence. A panel that warned on every run would train
+  // him to skip the warning on the run that matters.
+  const body = renderWith({ lines: TWO_LINES, suppliers: [BLACK_ISLE(WHOLE), UNITY(WHOLE)] });
+  assert.match(body, /Checked against the CATEGORISED bank record: 1 of 2 suppliers here have a categorised payment on record\./);
+  assert.match(body, /Ledger: no CATEGORISED payment on record \(categorised bank data goes back to 2018-11-24\)\.<\/div>/);
+  assert.match(body, /Ledger: last categorised payment .* 49 categorised payments in the last year<\/div>/);
+  assert.match(body, /TOTAL INVOICES TO PAY = £404\.27<\/b><\/div>/, 'the sum stands alone');
+  assert.ok(!/INCOMPLETE|incomplete from|may already be paid|may not show yet|#f5c96b/.test(body), 'no caveat, no attention colour');
+  assert.ok(!/\bunpaid\b/i.test(withoutDisclaimers(body)));
+});
+
+test('drawer: NEGATIVE — a payload WITHOUT bankRecord renders exactly as before', () => {
+  // A run armed by the engine before A1 shipped has no field to read. It gets the old
+  // sentences, byte for byte, and none of the new words: the field is the only evidence there
+  // is, and a verdict invented for an old payload is the same failure facing the other way.
+  const body = renderWith({ lines: TWO_LINES, suppliers: [BLACK_ISLE(undefined), UNITY(undefined)] });
+  assert.match(body, /Checked against the bank: 1 of 2 suppliers here have a payment on record\. A line below is what was last SEEN going out — never a statement that an invoice is unpaid\.<\/div>/);
+  assert.match(body, /Ledger: no payment to this supplier on record \(bank data goes back to 2018-11-24\)\.<\/div>/);
+  assert.match(body, /Ledger: last paid <b style="color:#c8d3de">£1,204\.55<\/b> on 2026-04-30 · Santander Bank Account \(6288\) · 49 payments in the last year<\/div>/);
+  assert.match(body, /TOTAL INVOICES TO PAY = £404\.27<\/b><\/div>/);
+  assert.ok(!/categorised|CATEGORISED|INCOMPLETE|incomplete from|may already be paid|may not show yet/.test(body), 'none of the new vocabulary');
+  assert.ok(!/\bunpaid\b/i.test(withoutDisclaimer(body)));
+});
