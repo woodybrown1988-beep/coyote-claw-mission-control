@@ -39,29 +39,113 @@ function rows(res) {
 
 // A blocked job's wait starts when it ENTERED the status, not whenever the mutable job row was
 // last touched. In particular, renewLease() deliberately updates jobs.updated_at while a job is
-// parked at either human gate. The append-only status_change trail is the stable clock.
+// parked at either human gate (LEASEABLE_STATUSES includes them), so updated_at is NEVER a clock
+// for a held age — it would render every parked gate as "held 1 min" for ever. The append-only
+// status_change trail is the stable clock; when a job predates that trail, the gate's own opening
+// event (pr_opened / spec_submitted / plan_submitted — all engine-written, append-only) is the
+// honest fallback. With neither, the card says "held" and carries no number.
+const GATE_ENTRY_KINDS = new Set(['pr_opened', 'spec_submitted', 'plan_submitted']);
 function deriveBlockedHeldAge(job, eventRows, now) {
   if (!job || !HELD_STATUSES.has(job.status) || !Number.isFinite(now)) return null;
+  const valid = (event) => event && event.job_id === job.id
+    && typeof event.created_at === 'number' && Number.isFinite(event.created_at)
+    && event.created_at >= 0 && event.created_at <= now;
   const matching = [];
+  const entries = [];
   for (const event of Array.isArray(eventRows) ? eventRows : []) {
-    if (!event || event.job_id !== job.id || event.kind !== 'status_change') continue;
+    if (!valid(event)) continue;
+    if (GATE_ENTRY_KINDS.has(String(event.kind || ''))) { entries.push(event); continue; }
+    if (event.kind !== 'status_change') continue;
     let detail = event.detail;
     if (typeof detail === 'string') {
       try { detail = JSON.parse(detail); } catch (_) { detail = null; }
     }
     if (!detail || typeof detail !== 'object' || detail.to !== job.status) continue;
-    if (typeof event.created_at !== 'number' || !Number.isFinite(event.created_at)) continue;
     matching.push(event);
   }
-  if (!matching.length) return null;
-  matching.sort((a, b) => (b.created_at - a.created_at) || (num(b.id) - num(a.id)));
-  const age = now - matching[0].created_at;
+  const latest = (list) => list.sort((a, b) => (b.created_at - a.created_at) || (num(b.id) - num(a.id)))[0];
+  const clock = matching.length ? latest(matching) : (entries.length ? latest(entries) : null);
+  if (!clock) return null;
+  const age = now - clock.created_at;
   return Number.isFinite(age) && age >= 0 ? age : null;
 }
 
-function heldAgeUnavailable(status) {
-  return 'held age unavailable — missing valid status-change event entering ' + status
-    + '; resolve or retask this job to clear it';
+function parseObject(value) {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+  if (typeof value !== 'string' || !value.trim()) return null;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function prNumberFrom(value) {
+  if (typeof value === 'number' && Number.isInteger(value) && value > 0) return value;
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  const urlMatch = text.match(/\/pull\/(\d+)(?:\b|\/|$)/i);
+  if (urlMatch) return Number(urlMatch[1]);
+  const numberMatch = text.match(/^#?(\d+)$/);
+  return numberMatch && Number(numberMatch[1]) > 0 ? Number(numberMatch[1]) : null;
+}
+
+function prNumberIn(source) {
+  if (!source || typeof source !== 'object') return null;
+  for (const key of ['pr_number', 'prNumber', 'pull_request', 'pullRequest', 'pr', 'pr_id', 'number']) {
+    const number = prNumberFrom(source[key]);
+    if (number !== null) return number;
+  }
+  for (const key of ['pr_url', 'prUrl', 'pull_request_url', 'pullRequestUrl', 'html_url', 'url']) {
+    const number = prNumberFrom(source[key]);
+    if (number !== null) return number;
+  }
+  for (const key of ['pull_request', 'pullRequest', 'github', 'result']) {
+    const nested = parseObject(source[key]);
+    const number = nested && nested !== source ? prNumberIn(nested) : null;
+    if (number !== null) return number;
+  }
+  return null;
+}
+
+// GitHub/PR facts already reach the read-only board through job payloads + the job-event trail.
+// Resolve the latest state fact for the job's referenced PR; this never mutates the stale gate.
+function gatePrState(job, eventRows) {
+  if (!job || job.status !== 'awaiting_signoff') return null;
+  const events = (Array.isArray(eventRows) ? eventRows : [])
+    .filter((event) => event && event.job_id === job.id)
+    .slice()
+    .sort((a, b) => (num(b.created_at) - num(a.created_at)) || (num(b.id) - num(a.id)));
+  const payload = parseObject(job.payload) || {};
+  let prNumber = prNumberIn(payload);
+  if (prNumber === null) {
+    for (const event of events) {
+      prNumber = prNumberIn(parseObject(event.detail));
+      if (prNumber !== null) break;
+    }
+  }
+  if (prNumber === null) return null;
+
+  for (const event of events) {
+    const detail = parseObject(event.detail) || {};
+    const eventPr = prNumberIn(detail);
+    if (eventPr !== null && eventPr !== prNumber) continue;
+    const kind = String(event.kind || '').trim().toLowerCase().replace(/-/g, '_');
+    const prDetail = parseObject(detail.pull_request) || parseObject(detail.pullRequest) || detail;
+    const rawState = prDetail.pr_state ?? prDetail.prState ?? prDetail.state ?? prDetail.status;
+    const state = String(rawState || '').trim().toLowerCase();
+    const merged = prDetail.merged === true || prDetail.merged_at || prDetail.mergedAt
+      || kind === 'merge_fired' || kind === 'pr_merged' || kind === 'pull_request_merged';
+    if (merged || state === 'merged') return { number: prNumber, state: 'merged' };
+    const closed = prDetail.closed === true || prDetail.closed_at || prDetail.closedAt
+      || kind === 'pr_closed' || kind === 'pull_request_closed';
+    if (closed || state === 'closed') return { number: prNumber, state: 'closed' };
+    if (state === 'open' || kind === 'pr_opened' || kind === 'pr_reopened') {
+      return { number: prNumber, state: 'open' };
+    }
+  }
+  return { number: prNumber, state: null };
 }
 
 function nullableInt(v) {
@@ -219,6 +303,7 @@ function readQueueDepth(q, now) {
 // =================================================================================================
 module.exports = {
   deriveBlockedHeldAge,
+  gatePrState,
   key: 'agents',
   route: '/claw/agents', workspace: 'claw',
   title: 'Agents',
@@ -241,14 +326,13 @@ module.exports = {
     const terminalRecent = rows(q(`SELECT ${cols} FROM jobs WHERE status IN ('done','failed') ORDER BY updated_at DESC LIMIT 60`));
     const allJobs = nonTerminal.concat(terminalRecent);
 
-    // The age carried into blocked cards comes only from the immutable transition trail. A missing
-    // or malformed event stays null all the way to rendering; jobs.updated_at is intentionally not
-    // a fallback because a lease renewal would turn that into a plausible but false short wait.
+    // Prefer the immutable transition trail for held age, while retaining updated_at as the
+    // compatibility fallback for older jobs that have no valid status-change event.
     const heldJobs = allJobs.filter((job) => HELD_STATUSES.has(job.status));
     const heldEventRows = heldJobs.length
       ? rows(q(
         `SELECT id, job_id, created_at, kind, detail FROM job_events
-          WHERE kind = 'status_change' AND job_id IN (${heldJobs.map(() => '?').join(',')})
+          WHERE job_id IN (${heldJobs.map(() => '?').join(',')})
           ORDER BY created_at DESC, id DESC`,
         heldJobs.map((job) => job.id),
       ))
@@ -256,6 +340,10 @@ module.exports = {
     const heldAgeByJob = new Map(heldJobs.map((job) => [
       job.id,
       deriveBlockedHeldAge(job, heldEventRows, now),
+    ]));
+    const gatePrByJob = new Map(heldJobs.map((job) => [
+      job.id,
+      gatePrState(job, heldEventRows),
     ]));
 
     // parents that have an active (in-flight) child → that parent is waiting on the child's dept
@@ -311,13 +399,13 @@ module.exports = {
     }
 
     // --- Worker roster: ONE card PER live worker (named), carrying its OWN identity ----------------
-    // Sources (SELECT-only): worker_heartbeat (fresh non-lead rows = who's alive + their STABLE name,
+    // Sources (SELECT-only): every worker_heartbeat row (who's alive + their STABLE name,
     // idle-aware because the beat fires even when idle) + jobs grouped by owner_id (each worker mints
     // ONE owner_id for both its beat and its claims). A worker is keyed by WORKER_NAME (stable across
-    // restarts) else owner_id; label = name ?? host:pid (never blank, never fabricated). Stale
-    // heartbeats (>120s) are dropped. In-flight jobs whose owner has no fresh beat are STILL shown
-    // (work is never hidden). With no heartbeat table at all it degrades to one card per job-owner —
-    // never losing a job (the honest in-between before workers restart with their names).
+    // restarts) else owner_id; label = name ?? host:pid (never blank, never fabricated). Any
+    // non-idle phase is work, independent of transient jobs.status changes. Stale non-idle beats
+    // stay visible with their last-seen age. With no heartbeat table at all it degrades to one card
+    // per job-owner — never losing a job (the honest in-between before workers restart with names).
     //
     // THE BUG THIS FIXES (live 2026-08-13): this was `coderSlots`, and it took EVERY non-lead
     // heartbeat as a coder. It was written when coder-1/coder-2 were the only named workers; the
@@ -332,8 +420,9 @@ module.exports = {
     }
     function workerSlots(coderJobs) {
       const hb = rows(q(
-        `SELECT owner_id, worker_name, last_beat_at FROM worker_heartbeat WHERE owner_id NOT LIKE 'lead:%' ORDER BY last_beat_at DESC`,
+        `SELECT * FROM worker_heartbeat ORDER BY last_beat_at DESC`,
       ));
+      let leadHeartbeat = null;
       const inFlightPlaceholders = IN_FLIGHT.map(() => '?').join(',');
       const loadResult = q(
         `SELECT h.owner_id, h.worker_name, COUNT(j.id) AS in_flight
@@ -369,7 +458,20 @@ module.exports = {
       const cancelledIds = new Set(
         rows(q(`SELECT DISTINCT job_id FROM job_events WHERE kind = 'cancelled'`)).map((r) => r.job_id),
       );
-      const slots = new Map(); // key → { label, fresh, jobs, inFlightCount }
+      // WORKING elapsed: worker_heartbeat carries NO phase-start column, and its updated_at moves on
+      // every 30s beat — so "on it for N min" can only come from the job's own append-only trail: the
+      // latest gate approval, spec/build submission or status change at or before now (a build starts
+      // the moment its spec is approved; a spec turn starts at the claim). Absent that, the card says
+      // "working now" and carries no number — never "0 min" from a timestamp that just got refreshed.
+      const hbJobIds = [...new Set(hb.map((r) => (r.job_id == null ? '' : String(r.job_id))).filter(Boolean))];
+      const workStartByJob = new Map(hbJobIds.length ? rows(q(
+        `SELECT job_id, MAX(created_at) started_at FROM job_events
+          WHERE job_id IN (${hbJobIds.map(() => '?').join(',')})
+            AND kind IN ('gate_decision','spec_submitted','build_submitted','status_change','pr_opened','claimed')
+            AND created_at <= ?
+          GROUP BY job_id`, [...hbJobIds, now],
+      )).map((r) => [String(r.job_id), nullableInt(r.started_at)]) : []);
+      const slots = new Map(); // key → { label, fresh, heartbeat, jobs, inFlightCount }
       const workerLoad = (workerName, ownerId) => {
         if (!workerLoadsKnown) return null;
         if (workerName) return num(inFlightByName.get(workerName));
@@ -381,6 +483,7 @@ module.exports = {
           slots.set(key, {
             label,
             fresh: false,
+            heartbeat: null,
             jobs: [],
             inFlightCount: workerLoad(workerName, ownerId),
             // WHO this worker is, from its OWN name (coder-2 → Coder, accountant-1 → Accountant).
@@ -391,11 +494,32 @@ module.exports = {
         }
         return slots.get(key);
       };
-      // 1) fresh non-lead workers = the idle-aware roster (stale dropped), deduped by name||owner
+      // 1) all non-lead heartbeat rows, deduped by stable name||owner. Fresh idle rows form the
+      // at-home roster; a stale row survives only while its last recorded phase is non-idle.
       for (const r of hb) {
-        if (now - num(r.last_beat_at) > HEARTBEAT_FRESH_MS) continue;
         const wn = r.worker_name && String(r.worker_name).trim();
-        slotFor(wn || r.owner_id, wn || shortOwner(r.owner_id), wn, r.owner_id).fresh = true;
+        const lastBeatAt = nullableInt(r.last_beat_at);
+        const fresh = lastBeatAt !== null && now - lastBeatAt <= HEARTBEAT_FRESH_MS;
+        const heartbeat = {
+          ownerId: r.owner_id == null ? '' : String(r.owner_id),
+          workerName: wn || '',
+          jobId: r.job_id == null ? '' : String(r.job_id),
+          phase: r.phase == null ? '' : String(r.phase).trim(),
+          startedAt: r.job_id == null ? null : (workStartByJob.get(String(r.job_id)) ?? null),
+          lastBeatAt,
+          fresh,
+        };
+        if (heartbeat.ownerId.startsWith('lead:')) {
+          if (!leadHeartbeat || num(heartbeat.lastBeatAt) > num(leadHeartbeat.lastBeatAt)) {
+            leadHeartbeat = heartbeat;
+          }
+          continue;
+        }
+        const slot = slotFor(wn || r.owner_id, wn || shortOwner(r.owner_id), wn, r.owner_id);
+        slot.fresh = slot.fresh || fresh;
+        if (!slot.heartbeat || num(r.last_beat_at) > num(slot.heartbeat.lastBeatAt)) {
+          slot.heartbeat = heartbeat;
+        }
       }
       // 2) attribute each worker's CURRENT state to its slot: claimed/gated jobs (not queued), a RECENT terminal,
       // or a genuine GIVE-UP (unmarked escalated). Deliberate cancels + stale terminal are NOT worker state
@@ -423,11 +547,24 @@ module.exports = {
       }
       // 3) a rep per slot; a fresh worker with no live job → idle "standing by"; drop empty non-roster slots
       const out = [];
+      const jobsById = new Map(coderJobs.map((job) => [String(job.id), job]));
       for (const s of slots.values()) {
-        if (!s.jobs.length && !s.fresh) continue;
+        const heartbeatWorking = !!(s.heartbeat && s.heartbeat.phase
+          && s.heartbeat.phase.toLowerCase() !== 'idle');
+        if (!s.jobs.length && !s.fresh && !heartbeatWorking) continue;
         // An unnamed beat still gets the right desk if its own work says which one.
         const agentKey = s.agentKey || (s.jobs.length ? agentForType(s.jobs[0].type) : null);
-        out.push({ label: s.label, rep: pickRep(s.jobs), inFlightCount: s.inFlightCount, agentKey }); // pickRep([]) → idle "standing by"
+        let rep = pickRep(s.jobs);
+        if (heartbeatWorking) {
+          // Heartbeat is the authority for WORKING. Its job can already have crossed a transient
+          // jobs.status boundary (or be absent from the selected job slice) without hiding work.
+          rep = {
+            bucket: 'working',
+            job: jobsById.get(s.heartbeat.jobId) || rep.job || null,
+            heartbeat: s.heartbeat,
+          };
+        }
+        out.push({ label: s.label, rep, inFlightCount: s.inFlightCount, agentKey }); // pickRep([]) → idle "standing by"
       }
       if (!out.length) {
         out.push({
@@ -440,6 +577,7 @@ module.exports = {
       return {
         slots: out.sort((a, b) => (a.label < b.label ? -1 : a.label > b.label ? 1 : 0)),
         unattributed,
+        leadHeartbeat,
       };
     }
 
@@ -480,24 +618,33 @@ module.exports = {
         c.workerGauge = { known: inFlightCount !== null, count: inFlightCount };
       }
       const summary = job ? describeJob(job) || String(job.type) : null;
+      const heartbeat = rep.heartbeat || null;
       // A life-dispatched rep job links its card back to the task (board↔task, 2026-08-13).
       // Set AFTER the bucket branches below so a blocked-on-you card keeps its gate button.
       const lifeRep = job ? lifeTaskOf(job) : null;
       if (rep.bucket === 'blocked_you') {
         const cp = youCopy(meta.key, job.status);
         const heldAge = HELD_STATUSES.has(job.status) ? heldAgeByJob.get(job.id) : undefined;
+        const pr = job.status === 'awaiting_signoff' ? gatePrByJob.get(job.id) : null;
+        const staleGate = pr && (pr.state === 'merged' || pr.state === 'closed');
         c.col = 'blocked';
         c.variant = 'you';
-        c.task = { strong: summary, tail: ' — ' + cp.verb + '.' };
-        c.waitPill = { tone: 'you', text: cp.pill };
-        c.button = { label: cp.btn };
+        c.task = staleGate
+          ? { strong: 'PR #' + pr.number + ' ' + pr.state + ' — gate record stale' }
+          : { strong: summary, tail: ' — ' + cp.verb + '.' };
+        c.waitPill = { tone: 'you', text: staleGate ? 'Gate record stale' : cp.pill };
+        if (!staleGate) c.button = { label: cp.btn };
         c.talkJobId = job.id; // "Talk about this" → MC Chat, where close/retask live
-        c.time = heldAge === null
-          ? heldAgeUnavailable(job.status)
-          : job.status === 'awaiting_signoff'
-            ? 'waiting on the operator · ' + fmtDur(heldAge)
-            : 'held ' + S.agoLabel(heldAge === undefined ? now - num(job.updated_at) : heldAge);
-        if (heldAge !== undefined) c._ageMs = heldAge;
+        // HONESTY ABOUT WHAT THIS BOARD CAN SEE (2026-09-04): nothing on the box writes a PR's merged/
+        // closed state today — a merge made outside the Telegram tap never reaches the job trail. So
+        // a gate that is NOT provably stale is not thereby provably live; say so next to the tap rather
+        // than let "Needs your merge tap" imply the PR is still open.
+        const prNote = pr && !staleGate ? ' · PR #' + pr.number + ' — merged/closed state is not tracked on this box' : '';
+        c.time = (job.status === 'awaiting_signoff'
+          ? heldAge === null ? 'waiting on the operator' : 'waiting on the operator · ' + fmtDur(heldAge)
+          : heldAge === null ? 'held'
+            : 'held ' + S.agoLabel(heldAge)) + prNote;
+        if (heldAge !== undefined && heldAge !== null) c._ageMs = heldAge;
         c._trackJob = job.id;
         c._trackMode = 'gate';
         trackJobIds.add(job.id);
@@ -510,11 +657,30 @@ module.exports = {
       } else if (rep.bucket === 'working') {
         c.col = 'working';
         c.variant = 'w';
-        c.task = { strong: summary, tail: '.' };
-        c.time = 'running ' + fmtDur(now - num(job.updated_at));
-        c._trackJob = job.id;
+        if (heartbeat) {
+          const workName = summary || (heartbeat.jobId ? 'Job ' + heartbeat.jobId : 'Current work');
+          const facts = [];
+          if (heartbeat.jobId) facts.push('job ' + heartbeat.jobId);
+          facts.push('phase ' + heartbeat.phase);
+          c.task = { strong: workName, tail: ' — ' + facts.join(' · ') + '.' };
+          if (heartbeat.fresh) {
+            const elapsed = heartbeat.startedAt === null ? null : now - heartbeat.startedAt;
+            c.time = Number.isFinite(elapsed) && elapsed >= 0
+              ? Math.floor(elapsed / 60000) + ' min'
+              : 'working now';
+          } else {
+            const seen = heartbeat.lastBeatAt === null ? null : now - heartbeat.lastBeatAt;
+            c.time = Number.isFinite(seen) && seen >= 0
+              ? 'last seen ' + Math.floor(seen / 60000) + ' min ago'
+              : 'last seen time unknown';
+          }
+        } else {
+          c.task = { strong: summary, tail: '.' };
+          c.time = 'running ' + fmtDur(now - num(job.updated_at));
+        }
+        c._trackJob = heartbeat && heartbeat.jobId ? heartbeat.jobId : job && job.id;
         c._trackMode = 'working';
-        trackJobIds.add(job.id);
+        if (c._trackJob) trackJobIds.add(c._trackJob);
       } else if (rep.bucket === 'queued') {
         c.col = 'queued';
         c.variant = 'q';
@@ -556,8 +722,21 @@ module.exports = {
 
     // Lead by job state (one Lead). Coder: ONE card PER live worker, named (Coder-1 / Coder-2), each
     // showing its own job state — replaces the single collapsed "Coder" so two workers are both visible.
-    cards.push(agentCard(idOf('lead'), pickRep(byAgent.lead)));
     const workerRoster = workerSlots(workerJobs);
+    let leadRep = pickRep(byAgent.lead);
+    const leadHeartbeat = workerRoster.leadHeartbeat;
+    if (leadHeartbeat && leadHeartbeat.phase && leadHeartbeat.phase.toLowerCase() !== 'idle') {
+      leadRep = {
+        bucket: 'working',
+        job: byAgent.lead.find((job) => String(job.id) === leadHeartbeat.jobId) || leadRep.job || null,
+        heartbeat: leadHeartbeat,
+      };
+    }
+    const leadId = idOf('lead');
+    cards.push(agentCard(
+      leadHeartbeat && leadHeartbeat.workerName ? { ...leadId, name: leadHeartbeat.workerName } : leadId,
+      leadRep,
+    ));
     for (const slot of workerRoster.slots) {
       // The INSTANCE keeps its own name (coder-1, accountant-1) — the operator needs to know which
       // worker — while the identity underneath it comes from the roster, so each desk reads as
@@ -632,12 +811,24 @@ module.exports = {
       if (b === 'blocked_you') {
         const cp = youCopy(null, j.status);
         const heldAge = HELD_STATUSES.has(j.status) ? heldAgeByJob.get(j.id) : undefined;
-        const waiting = heldAge === null
-          ? heldAgeUnavailable(j.status)
-          : j.status === 'awaiting_signoff'
-            ? 'waiting on the operator · ' + fmtDur(heldAge)
-            : 'held ' + S.agoLabel(heldAge === undefined ? now - num(j.updated_at) : heldAge);
-        cards.push(Object.assign(base, { col: 'blocked', variant: 'you', task: { strong: typeLabel, tail: ' — ' + cp.verb + '.' }, waitPill: { tone: 'you', text: cp.pill }, button: { label: cp.btn }, talkJobId: j.id, time: waiting, _ageMs: heldAge === undefined ? now - num(j.updated_at) : heldAge, _trackJob: j.id, _trackMode: 'gate' }));
+        const pr = j.status === 'awaiting_signoff' ? gatePrByJob.get(j.id) : null;
+        const staleGate = pr && (pr.state === 'merged' || pr.state === 'closed');
+        const prNote = pr && !staleGate ? ' · PR #' + pr.number + ' — merged/closed state is not tracked on this box' : '';
+        const waiting = (j.status === 'awaiting_signoff'
+          ? heldAge === null ? 'waiting on the operator' : 'waiting on the operator · ' + fmtDur(heldAge)
+          : heldAge === null ? 'held' : 'held ' + S.agoLabel(heldAge)) + prNote;
+        const blocked = {
+          col: 'blocked', variant: 'you',
+          task: staleGate
+            ? { strong: 'PR #' + pr.number + ' ' + pr.state + ' — gate record stale' }
+            : { strong: typeLabel, tail: ' — ' + cp.verb + '.' },
+          waitPill: { tone: 'you', text: staleGate ? 'Gate record stale' : cp.pill },
+          talkJobId: j.id, time: waiting,
+          _ageMs: heldAge === undefined ? now - num(j.updated_at) : heldAge,
+          _trackJob: j.id, _trackMode: 'gate',
+        };
+        if (!staleGate) blocked.button = { label: cp.btn };
+        cards.push(Object.assign(base, blocked));
         trackJobIds.add(j.id);
       } else if (b === 'blocked_dept') {
         cards.push(Object.assign(base, { col: 'blocked', variant: 'dept', task: { strong: typeLabel, tail: ' — awaiting another desk.' }, waitPill: { tone: 'dept', text: 'Waiting on ' + deptNameFor(j) + ' Dept' }, time: 'blocked ' + S.agoLabel(now - num(j.updated_at)), _ageMs: now - num(j.updated_at), button: lifeBtn || undefined }));
@@ -869,7 +1060,7 @@ module.exports = {
     const EMPTY_COPY = {
       idle: 'Every agent has work or has just finished.',
       queued: 'Nothing waiting — the fleet is keeping up.',
-      working: 'Nothing running this second. Jobs finish in seconds, so this is usually empty — see Today above for what has actually run.',
+      working: 'No worker is building right now. Builds typically run 10–30 minutes.',
       blocked: 'Nothing is waiting on you. ✓',
       done: 'Nothing finished recently.',
     };
