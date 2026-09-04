@@ -14,6 +14,23 @@ const {
   latestCompleteMonth,
 } = reports;
 
+// qb_sales_fees is DECLARED BY THE ENGINE (coyote-claw src/schema.sql) and applied there at every
+// open; server.js never creates it. Fixtures build it with the engine's exact shape so the write
+// path under test is the live one. Keep this DDL identical to the engine's declaration.
+const QB_SALES_FEES_DDL = `CREATE TABLE IF NOT EXISTS qb_sales_fees (
+  month       TEXT    NOT NULL,
+  line        TEXT    NOT NULL CHECK (line IN ('pos_fee','online_fee')),
+  value_pence INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL,
+  PRIMARY KEY (month, line)
+)`;
+
+function feeDb() {
+  const db = new sqlite.DatabaseSync(':memory:');
+  db.exec(QB_SALES_FEES_DDL);
+  return db;
+}
+
 function aprilFixture() {
   const salesDates = [];
   for (let day = 1; day <= 30; day++) {
@@ -266,7 +283,7 @@ test('missing date and unmapped receipt stay visible, and absent fees stay expli
 });
 
 test('fee persistence validates month, line and signed integer pence and preserves zero as entered', () => {
-  const db = new sqlite.DatabaseSync(':memory:');
+  const db = feeDb();
   for (const body of [
     { op: 'set_qb_sales_fee', month: '2026-4', line: 'pos_fee', value_pence: -100 },
     { op: 'set_qb_sales_fee', month: '2026-13', line: 'pos_fee', value_pence: -100 },
@@ -297,7 +314,7 @@ test('fee persistence validates month, line and signed integer pence and preserv
 });
 
 test('fee persistence rejects positive POS and online writes with field-specific sign errors', () => {
-  const db = new sqlite.DatabaseSync(':memory:');
+  const db = feeDb();
   const pos = applyQuickBooksSalesFee(db, {
     op: 'set_qb_sales_fee', month: '2026-04', line: 'pos_fee', value_pence: 1,
   }, 126);
@@ -307,7 +324,7 @@ test('fee persistence rejects positive POS and online writes with field-specific
 
   assert.deepEqual(pos, { ok: false, status: 400, error: 'pos_fee must be zero or negative.' });
   assert.deepEqual(online, { ok: false, status: 400, error: 'online_fee must be zero or negative.' });
-  assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='qb_sales_fees'").get(), undefined,
+  assert.equal(db.prepare('SELECT count(*) AS c FROM qb_sales_fees').get().c, 0,
     'validation happens before persistence');
   db.close();
 });
@@ -344,6 +361,7 @@ test('page read seam reloads the exact persisted month/line fee values', () => {
       PRIMARY KEY (receipt_id, payment_seq));
     CREATE TABLE acct_groups_api (code TEXT PRIMARY KEY, name TEXT);
   `);
+  db.exec(QB_SALES_FEES_DDL);
   db.prepare(`INSERT INTO sales_channel_map_api VALUES ('LOCAL','EAT IN')`).run();
   db.prepare(`INSERT INTO sales_receipts_api VALUES ('r1','2026-04-01','SPLIT',0,'LOCAL',12000)`).run();
   const ctx = {
@@ -363,4 +381,42 @@ test('page read seam reloads the exact persisted month/line fee values', () => {
   assert.equal(reloaded.rows[8].amountPence, 0);
   assert.equal(reloaded.rows[8].entered, true, 'stored zero remains distinct from no row');
   db.close();
+});
+
+// ---- the table is the ENGINE's — this write path must never create it ---------------------------
+
+test('fee persistence NEVER creates qb_sales_fees: with the engine schema unapplied it refuses loudly and writes nothing', () => {
+  const db = new sqlite.DatabaseSync(':memory:');   // no engine schema — the table is absent
+  const refused = applyQuickBooksSalesFee(db, {
+    op: 'set_qb_sales_fee', month: '2026-04', line: 'pos_fee', value_pence: -100,
+  }, 300);
+  assert.equal(refused.ok, false);
+  assert.equal(refused.status, 503);
+  assert.match(refused.error, /qb_sales_fees table missing/);
+  assert.match(refused.error, /coyote-claw src\/schema\.sql/, 'the error names the owner of the declaration');
+  assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='qb_sales_fees'").get(), undefined,
+    'the write path did not create a divergent copy of the table');
+  db.close();
+});
+
+test('fee persistence surfaces a store-shape disagreement (allowlist wider than the CHECK) in SQLite\'s words, not a bare "write failed"', () => {
+  const db = new sqlite.DatabaseSync(':memory:');
+  // An engine declaration NARROWER than this server's allowlist — the exact drift the runtime
+  // CREATE used to paper over by winning the race to create the table.
+  db.exec(`CREATE TABLE qb_sales_fees (month TEXT NOT NULL, line TEXT NOT NULL CHECK (line IN ('pos_fee')),
+    value_pence INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (month, line))`);
+  const refused = applyQuickBooksSalesFee(db, {
+    op: 'set_qb_sales_fee', month: '2026-04', line: 'online_fee', value_pence: -100,
+  }, 301);
+  assert.equal(refused.ok, false);
+  assert.equal(refused.status, 500);
+  assert.match(refused.error, /^write failed: /);
+  assert.match(refused.error, /CHECK/i, 'the constraint that refused is named');
+  assert.equal(db.prepare('SELECT count(*) AS c FROM qb_sales_fees').get().c, 0);
+  db.close();
+});
+
+test('no CREATE TABLE for qb_sales_fees survives anywhere in server.js — the engine owns the declaration', () => {
+  const src = require('node:fs').readFileSync(require.resolve('../mission-control/server.js'), 'utf8');
+  assert.doesNotMatch(src, /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?["'`]?qb_sales_fees/i);
 });

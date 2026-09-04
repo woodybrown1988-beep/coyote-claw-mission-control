@@ -567,6 +567,18 @@ const REVIEW_ACTION_OPS = new Set(['mark_responded', 'skip', 'snooze', 'log_acti
 const QB_SALES_FEE_OPS = new Set(['set_qb_sales_fee']);
 const QB_SALES_FEE_LINES = new Set(['pos_fee', 'online_fee']);
 
+// qb_sales_fees is DECLARED BY THE ENGINE — coyote-claw src/schema.sql, the canonical table list,
+// applied idempotently at every openDb. Mission Control WRITES it and never creates it. Until
+// 2026-09-04 this path ran a CREATE TABLE IF NOT EXISTS on first write, so the table existed only
+// because a web server happened to write first: invisible to that list, to anyone reading the
+// schema, and to the audit surfaces that enumerate from it — and free to drift from it (a second
+// copy of the line CHECK lived here). If the engine has not applied its schema, refuse loudly.
+const QB_SALES_FEES_MISSING = 'qb_sales_fees table missing — the engine (coyote-claw src/schema.sql) declares it and applies it at open; Mission Control never creates it. Nothing was written.';
+
+function qbSalesFeesTableExists(db) {
+  return Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='qb_sales_fees'").get());
+}
+
 /** Persist one non-positive, integer-pence processor fee at the exact (month, line) key. */
 function applyQuickBooksSalesFee(db, body, now) {
   const op = body && body.op;
@@ -589,22 +601,23 @@ function applyQuickBooksSalesFee(db, body, now) {
   if (body.value_pence > 0) {
     return { ok: false, status: 400, error: `${line} must be zero or negative.` };
   }
+  if (!qbSalesFeesTableExists(db)) {
+    console.error(QB_SALES_FEES_MISSING);
+    return { ok: false, status: 503, error: QB_SALES_FEES_MISSING };
+  }
   try {
-    db.exec(`CREATE TABLE IF NOT EXISTS qb_sales_fees (
-      month TEXT NOT NULL,
-      line TEXT NOT NULL CHECK (line IN ('pos_fee','online_fee')),
-      value_pence INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL,
-      PRIMARY KEY (month, line)
-    )`);
     db.prepare(`INSERT INTO qb_sales_fees (month, line, value_pence, updated_at)
       VALUES (?, ?, ?, ?)
       ON CONFLICT(month, line) DO UPDATE SET value_pence=excluded.value_pence, updated_at=excluded.updated_at`)
       .run(month, line, body.value_pence, now);
     const stored = db.prepare(`SELECT value_pence FROM qb_sales_fees WHERE month=? AND line=?`).get(month, line);
     return { ok: true, status: 200, op, month, line, value_pence: stored.value_pence };
-  } catch (_) {
-    return { ok: false, status: 500, error: 'write failed' };
+  } catch (err) {
+    // A CHECK failure here means this allowlist and the engine's declaration disagree. Say so in
+    // SQLite's own words — a bare 'write failed' hides which side moved.
+    const detail = err && err.message ? err.message : String(err);
+    console.error(`qb_sales_fees write failed for ${month}/${line}: ${detail}`);
+    return { ok: false, status: 500, error: `write failed: ${detail}` };
   }
 }
 
