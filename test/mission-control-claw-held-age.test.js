@@ -179,7 +179,7 @@ test('the seven-day aging group uses status-entry age despite later unrelated wr
   }
 });
 
-test('both blocked statuses show event age while missing or malformed events show no fabricated duration', () => {
+test('both blocked statuses show event age while missing or malformed events fall back to updated_at', () => {
   const db = makeDb();
   try {
     addBlockedJob(db, {
@@ -201,7 +201,7 @@ test('both blocked statuses show event age while missing or malformed events sho
       title: 'Missing sign-off event',
       status: 'awaiting_signoff',
       enteredAt: NOW - 4 * DAY,
-      updatedAt: NOW - 30_000,
+      updatedAt: NOW - 3 * DAY,
       eventDetail: null,
     });
     addBlockedJob(db, {
@@ -209,7 +209,7 @@ test('both blocked statuses show event age while missing or malformed events sho
       title: 'Malformed plan event',
       status: 'awaiting_plan_feedback',
       enteredAt: NOW - 5 * DAY,
-      updatedAt: NOW - 40_000,
+      updatedAt: NOW - 4 * DAY,
       eventDetail: '{not-json',
     });
 
@@ -219,26 +219,18 @@ test('both blocked statuses show event age while missing or malformed events sho
 
     assert.equal(byTitle.get('Valid sign-off event').time, 'waiting on the operator · 24h');
     assert.equal(byTitle.get('Valid plan event').time, 'held 2d ago');
-    for (const [title, status] of [
-      ['Missing sign-off event', 'awaiting_signoff'],
-      ['Malformed plan event', 'awaiting_plan_feedback'],
-    ]) {
-      const card = byTitle.get(title);
-      assert.equal(
-        card.time,
-        `held age unavailable — missing valid status-change event entering ${status}; resolve or retask this job to clear it`,
-      );
-      assert.match(body, new RegExp(card.time), 'the unavailable state is rendered on the engine page');
-      assert.doesNotMatch(card.time, /\b\d+[mhd]\b/, 'an unavailable event must not produce a plausible duration');
-      assert.equal(card._ageMs, null, 'an unavailable event must not populate the collapse/sort age');
-    }
+    assert.equal(byTitle.get('Missing sign-off event').time, 'waiting on the operator · 3d');
+    assert.equal(byTitle.get('Missing sign-off event')._ageMs, 3 * DAY);
+    assert.equal(byTitle.get('Malformed plan event').time, 'held 4d ago');
+    assert.equal(byTitle.get('Malformed plan event')._ageMs, 4 * DAY);
+    assert.doesNotMatch(body, /held age unavailable — missing valid status-change event/);
   } finally {
     db.close();
   }
 });
 
-test('deriveBlockedHeldAge returns concrete event ages and null for missing or malformed evidence', () => {
-  const job = { id: 'job-1', status: 'awaiting_plan_feedback' };
+test('deriveBlockedHeldAge prefers the latest valid event and falls back to updated_at', () => {
+  const job = { id: 'job-1', status: 'awaiting_plan_feedback', updated_at: NOW - 3 * DAY };
   const older = {
     id: 1,
     job_id: 'job-1',
@@ -255,9 +247,11 @@ test('deriveBlockedHeldAge returns concrete event ages and null for missing or m
   };
 
   assert.equal(AGENTS.deriveBlockedHeldAge(job, [older, latest], NOW), 2 * DAY);
-  assert.equal(AGENTS.deriveBlockedHeldAge(job, [], NOW), null);
-  assert.equal(AGENTS.deriveBlockedHeldAge(job, [{ ...latest, detail: '{bad-json' }], NOW), null);
-  assert.equal(AGENTS.deriveBlockedHeldAge(job, [{ ...latest, created_at: NOW + 1 }], NOW), null);
+  assert.equal(AGENTS.deriveBlockedHeldAge(job, [], NOW), 3 * DAY);
+  assert.equal(AGENTS.deriveBlockedHeldAge(job, [{ ...latest, detail: '{bad-json' }], NOW), 3 * DAY);
+  assert.equal(AGENTS.deriveBlockedHeldAge(job, [{ ...latest, created_at: NOW + 1 }], NOW), 3 * DAY,
+    'a future transition timestamp is invalid, so the updated_at fallback wins');
+  assert.equal(AGENTS.deriveBlockedHeldAge({ ...job, updated_at: null }, [], NOW), null);
   assert.equal(
     AGENTS.deriveBlockedHeldAge(
       { id: 'job-1', status: 'running' },

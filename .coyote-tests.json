@@ -102,6 +102,10 @@
     },
     {
       "module": "mission-control/ui/pages/claw/agents.js",
+      "export": "gatePrState"
+    },
+    {
+      "module": "mission-control/ui/pages/claw/agents.js",
       "export": "render"
     },
     {
