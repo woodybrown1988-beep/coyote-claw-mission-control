@@ -345,8 +345,23 @@ const DONUT_COLORS = ['#e44b36', '#67a7ff', '#ffb34d', '#ad8cff', '#56616e', '#7
 
 // QuickBooks sales-entry rules. STOREKIT card takings arrive as STR; LivePepper is deliberately
 // separate on LP (row 8), so it is not in this closed row-2 allowlist.
-const QB_CARD_CODES = new Set(['LSPAY_ADYEN_TERMINAL_API_LOCAL', 'STR', 'POSERROR']);
+// Card tenders by PROCESSOR (operator rulings 2026-09-04): both "POS error" buttons are the Adyen
+// standalone reader and belong to Lightspeed Payments; STR is Storekit. VISA and MC are the retired
+// manual house-card tenders and are NEVER a processor (their 2026 use is gift-card loads keyed on the
+// wrong button) — the residual they leave is reported, not absorbed.
+const QB_LIGHTSPEED_CODES = new Set(['LSPAY_ADYEN_TERMINAL_API_LOCAL', 'POSERROR', 'POS ERROR - PAID ON DOJO']);
+const QB_STOREKIT_CODES = new Set(['STR']);
+const QB_ONLINE_CODES = new Set(['LP']);
+const QB_NEVER_CARD_CODES = new Set(['VISA', 'MC']);
+const QB_CARD_CODES = new Set([...QB_LIGHTSPEED_CODES, ...QB_STOREKIT_CODES]);
 const QB_IN_HOUSE_CHANNELS = new Set(['EAT IN', 'STOREKIT ORDER & PAY', 'MON-FRI DEAL']);
+// The till-basis comparison admits walk-in takeaway too (it is POS trade, not LivePepper).
+const QB_TILL_COMPARISON_CHANNELS = new Set([...QB_IN_HOUSE_CHANNELS, 'TAKE-AWAY']);
+// Lightspeed's own daily Total = SALE + SPLIT + VOID + RECALL + TRANSITORY; the reversal types carry
+// real money movements (voids, re-rings, day-close ghosts) and belong on the sales side of a till figure.
+const QB_TILL_SALES_TYPES = new Set(['SALE', 'SPLIT', 'VOID', 'RECALL', 'TRANSITORY']);
+const QB_GIFT_REDEEM_TYPES = new Set(['SALE', 'SPLIT', 'RECALL']);
+const QB_OPERATOR_INPUTS = ['pos_fee', 'online_fee', 'online_refunds'];
 const QB_FEE_PLAUSIBILITY_THRESHOLD = 0.10;
 
 function latestCompleteMonth(now) {
@@ -354,88 +369,80 @@ function latestCompleteMonth(now) {
   const valid = Number.isFinite(date.getTime()) ? date : new Date();
   return new Date(Date.UTC(valid.getUTCFullYear(), valid.getUTCMonth() - 1, 1)).toISOString().slice(0, 7);
 }
-
 function calendarMonthWindow(month) {
-  const match = String(month || '').match(/^(\d{4})-(\d{2})$/);
-  if (!match || Number(match[2]) < 1 || Number(match[2]) > 12) return null;
-  const year = Number(match[1]);
-  const monthNumber = Number(match[2]);
-  const days = new Date(Date.UTC(year, monthNumber, 0)).getUTCDate();
-  const dates = Array.from({ length: days }, (_, index) => `${match[1]}-${match[2]}-${pad2(index + 1)}`);
-  return { month: `${match[1]}-${match[2]}`, from: dates[0], to: dates[dates.length - 1], dates };
+  const match = String(month || '').match(/^(\d{4})-(0[1-9]|1[0-2])$/);
+  if (!match) return null;
+  const y = Number(match[1]); const m = Number(match[2]);
+  const days = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  const dates = [];
+  for (let day = 1; day <= days; day++) dates.push(`${match[1]}-${match[2]}-${pad2(day)}`);
+  return { month: `${match[1]}-${match[2]}`, from: dates[0], to: dates[dates.length - 1], dates,
+    fromMs: Date.UTC(y, m - 1, 1), toMs: Date.UTC(y, m, 1) };
 }
-
 function qbPence(value) {
+  if (value === null || value === undefined || value === '') return 0;
   const n = Number(value);
   return Number.isSafeInteger(n) ? n : 0;
 }
-
-/** Keep settlement arithmetic, signed fee wording and its independent plausibility check together. */
 function formatQuickBooksFeeDerivation({ grossPence, feePence, grossLabel, feeLabel }) {
   const hasFee = Number.isSafeInteger(feePence);
   const resultPence = grossPence + (hasFee ? feePence : 0);
-  const grossCopy = `gross ${grossLabel} takings ${grossPence} pence`;
-  if (!hasFee) {
-    return {
-      resultPence,
-      explanation: `${grossCopy} — no processor fee entered for this month`,
-      warning: null,
-    };
-  }
-
-  const signedFee = feePence > 0 ? `+${feePence}` : String(feePence);
   let explanation;
-  if (feePence < 0) {
-    explanation = `${grossCopy} + signed ${feeLabel} processor fee ${signedFee} pence (deducted) = net ${resultPence} pence`;
-  } else if (feePence > 0) {
-    explanation = `${grossCopy} + signed ${feeLabel} processor fee ${signedFee} pence (added) = ${resultPence} pence`;
-  } else {
-    explanation = `${grossCopy} + signed ${feeLabel} processor fee 0 pence = unchanged at ${resultPence} pence`;
-  }
-
+  if (!hasFee) explanation = `gross ${grossLabel} takings ${grossPence} pence — no processor fee entered for this month`;
+  else if (feePence < 0) explanation = `gross ${grossLabel} takings ${grossPence} pence + signed ${feeLabel} processor fee ${feePence} pence (deducted) = net ${resultPence} pence`;
+  else if (feePence > 0) explanation = `gross ${grossLabel} takings ${grossPence} pence + signed ${feeLabel} processor fee +${feePence} pence (added) = ${resultPence} pence`;
+  else explanation = `gross ${grossLabel} takings ${grossPence} pence + signed ${feeLabel} processor fee 0 pence = unchanged at ${grossPence} pence`;
   let warning = null;
-  if (feePence !== 0 && grossPence > 0) {
-    const ratio = Math.abs(feePence) / grossPence;
-    if (ratio > QB_FEE_PLAUSIBILITY_THRESHOLD) {
-      warning = `Suspicious ${feeLabel} processor fee: ${signedFee} pence is ${(ratio * 100).toFixed(1)}% of positive gross takings, exceeding the named 10% plausibility threshold.`;
+  if (hasFee && feePence !== 0) {
+    if (grossPence <= 0) warning = `Suspicious ${feeLabel} processor fee: ${feePence} pence with gross takings ${grossPence} pence; no meaningful percentage exists when gross is zero or negative.`;
+    else {
+      const ratio = Math.abs(feePence) / grossPence;
+      if (ratio > QB_FEE_PLAUSIBILITY_THRESHOLD) warning = `Suspicious ${feeLabel} processor fee: ${feePence} pence is ${(ratio * 100).toFixed(1)}% of positive gross takings, exceeding the named ${Math.round(QB_FEE_PLAUSIBILITY_THRESHOLD * 100)}% plausibility threshold.`;
     }
-  } else if (feePence !== 0) {
-    warning = `Suspicious ${feeLabel} processor fee: ${signedFee} pence with gross takings ${grossPence} pence; no meaningful percentage exists when gross is zero or negative.`;
   }
-
   return { resultPence, explanation, warning };
 }
-
 function uniqueApiRows(rows, keyOf) {
-  const found = new Map();
-  for (const row of (Array.isArray(rows) ? rows : [])) {
-    const key = keyOf(row || {});
-    if (key && !found.has(key)) found.set(key, row);
+  const seen = new Set(); const out = [];
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const key = keyOf(row);
+    if (!key || seen.has(key)) continue;
+    seen.add(key); out.push(row);
   }
-  return [...found.values()];
+  return out;
 }
 
-/**
- * Build the ten-line QuickBooks sales receipt from raw API-grain rows. This is deliberately pure:
- * database reads stay in getSection, while identifier deduplication, filters and every penny of the
- * balancing identity live here and are pinned by node:test.
- */
+/** The QuickBooks monthly Daily Sales receipt on the SETTLEMENT BASIS (operator ruling 2026-09-04:
+ *  "we shouldn't have overspills changing the sales values — do it the way our Power BI is worked").
+ *
+ *  Each processor is a block that nets to zero: Sales = card gross − tips; Card = −(gross − fee);
+ *  Tips = +tips; Fee = −fee. Cash takings are a block of their own. Gift cards are the liability
+ *  account: cards SOLD (+) and REDEEMED (−), so row 1 also takes + redeemed − sold. Over/Short is
+ *  therefore 0.00 BY CONSTRUCTION and says so; it is not a residual and nothing is balanced through it.
+ *
+ *  SOURCES, declared on every row: processor settlement rows for the month when they exist
+ *  (processor_settlement_rows — gross, fee, refunds per processor), otherwise the TILL as a
+ *  labelled proxy (tender totals by processor code). Tips are always the till's. Fees and online
+ *  refunds are operator inputs unless settlement supplies them; an operator-entered value wins and
+ *  the derivation says so. The till's own sales figure survives only as a diagnostic comparison
+ *  below the receipt and feeds no row. */
 function calculateQuickBooksSales(input) {
   const source = input || {};
   const window = calendarMonthWindow(source.month);
   if (!window) return null;
   const receiptRows = uniqueApiRows(source.receipts, (row) => String(row.receipt_id || row.receiptId || ''))
     .filter((row) => inRequestedWindow(rowDate(row), window));
-  const eligibleReceipts = receiptRows.filter((row) => (
-    !qbPence(row.cancelled) && ['SALE', 'SPLIT'].includes(String(row.type || '').toUpperCase())
-  ));
+  const typeOf = (row) => String(row.type || '').trim().toUpperCase();
   const channelOf = (row) => String(row.channel_label || row.channelLabel || '').trim().toUpperCase();
   const receiptGross = (row) => qbPence(rowValue(row, ['net_with_tax_pence', 'netWithTaxPence', 'gross_pence']));
-  const inHouse = eligibleReceipts.filter((row) => QB_IN_HOUSE_CHANNELS.has(channelOf(row)));
+  const notCancelled = (row) => !qbPence(row.cancelled);
+  const receiptById = new Map(receiptRows.map((row) => [String(row.receipt_id || row.receiptId), row]));
+  const eligibleReceipts = receiptRows.filter((row) => notCancelled(row) && (typeOf(row) === 'SALE' || typeOf(row) === 'SPLIT'));
   const unmappedReceipts = eligibleReceipts.filter((row) => !channelOf(row));
   const onlineReceiptIds = new Set(eligibleReceipts.filter((row) => channelOf(row) === 'ONLINE ORDER')
     .map((row) => String(row.receipt_id || row.receiptId)));
 
+  // ---- online 0% (milkshakes): unchanged receipt-item rule, restricted to online-order receipts ----
   const lineRows = uniqueApiRows(source.lines, (row) => {
     const receiptId = String(row.receipt_id || row.receiptId || '');
     const lineId = String(row.line_id || row.lineId || '');
@@ -459,10 +466,10 @@ function calculateQuickBooksSales(input) {
     const parentId = String(line.parent_line_id || line.parentLineId || '');
     return shakeRootKeys.has(`${receiptId}|${lineId}`) || (parentId && shakeRootKeys.has(`${receiptId}|${parentId}`));
   });
-  const shakeKeys = new Set(shakeLines.map((line) => `${String(line.receipt_id || line.receiptId)}|${String(line.line_id || line.lineId)}`));
-  const onlineTwentyLines = onlineLines.filter((line) => !shakeKeys.has(`${String(line.receipt_id || line.receiptId)}|${String(line.line_id || line.lineId)}`));
   const lineGross = (line) => qbPence(rowValue(line, ['net_with_tax_pence', 'netWithTaxPence', 'gross_pence']));
+  const shakePence = shakeLines.reduce((sum, line) => sum + lineGross(line), 0);
 
+  // ---- tenders (the till) ----
   const paymentRows = uniqueApiRows(source.payments, (row) => {
     const paymentId = rowValue(row, ['payment_id', 'paymentId']);
     if (paymentId != null && String(paymentId)) return String(paymentId);
@@ -471,99 +478,168 @@ function calculateQuickBooksSales(input) {
     return receiptId && sequence != null ? `${receiptId}|${String(sequence)}` : '';
   }).filter((row) => inRequestedWindow(rowDate(row), window));
   const paymentCode = (row) => String(row.code || '').trim().toUpperCase();
-  const paymentGrossWithTip = (row) => qbPence(rowValue(row, ['net_with_tax_pence', 'netWithTaxPence']))
-    + qbPence(rowValue(row, ['tip_pence', 'tipPence']));
-  const cardPayments = paymentRows.filter((row) => QB_CARD_CODES.has(paymentCode(row)));
-  const cashPayments = paymentRows.filter((row) => paymentCode(row) === 'CASH');
-  const onlinePayments = paymentRows.filter((row) => paymentCode(row) === 'LP');
+  const payNet = (row) => qbPence(rowValue(row, ['net_with_tax_pence', 'netWithTaxPence']));
+  const payTip = (row) => qbPence(rowValue(row, ['tip_pence', 'tipPence']));
+  const sumBy = (rows, f) => rows.reduce((sum, row) => sum + f(row), 0);
+  const tillBlock = (codes) => {
+    const rows = paymentRows.filter((row) => codes.has(paymentCode(row)));
+    return { rows, grossPence: sumBy(rows, (row) => payNet(row) + payTip(row)), tipPence: sumBy(rows, payTip) };
+  };
+  const tillLightspeed = tillBlock(QB_LIGHTSPEED_CODES);
+  const tillStorekit = tillBlock(QB_STOREKIT_CODES);
+  const tillOnline = tillBlock(QB_ONLINE_CODES);
+  const cashRows = paymentRows.filter((row) => paymentCode(row) === 'CASH');
+  const cashPence = sumBy(cashRows, payNet);                 // tip_pence EXCLUDED — cash tips are not the business's
+  const cashTipPence = sumBy(cashRows, payTip);
+  const neverCardRows = paymentRows.filter((row) => QB_NEVER_CARD_CODES.has(paymentCode(row)));
+  const neverCardPence = sumBy(neverCardRows, (row) => payNet(row) + payTip(row));
 
+  // ---- gift cards: the liability account, both sides from the IKGIFT tender ----
+  const giftRows = paymentRows.filter((row) => paymentCode(row) === 'IKGIFT');
+  const giftSoldRows = giftRows.filter((row) => payNet(row) < 0 && typeOf(receiptById.get(String(row.receipt_id || row.receiptId)) || {}) === 'TRANSFER');
+  const giftRedeemedRows = giftRows.filter((row) => {
+    const receipt = receiptById.get(String(row.receipt_id || row.receiptId));
+    return payNet(row) > 0 && receipt && notCancelled(receipt) && QB_GIFT_REDEEM_TYPES.has(typeOf(receipt));
+  });
+  const giftSoldPence = -sumBy(giftSoldRows, payNet);
+  const giftRedeemedPence = sumBy(giftRedeemedRows, payNet);
+
+  // ---- settlement rows override the till proxy for gross / fee / refunds (never tips) ----
+  const settlementRows = Array.isArray(source.settlement) ? source.settlement : [];
+  const settlementFor = (name) => settlementRows.find((row) => String(row.processor || '').toLowerCase() === name) || null;
+  const stLightspeed = settlementFor('lightspeed');
+  const stStorekit = settlementFor('storekit');
+  const stOnline = settlementFor('livepepper');
+  const grossOf = (st, till) => (st && Number.isSafeInteger(st.grossPence) ? { pence: st.grossPence, source: 'settlement' } : { pence: till.grossPence, source: 'till proxy' });
+  const lightspeedGross = grossOf(stLightspeed, tillLightspeed);
+  const storekitGross = grossOf(stStorekit, tillStorekit);
+  const onlineGross = grossOf(stOnline, tillOnline);
+  const cardGrossPence = lightspeedGross.pence + storekitGross.pence;
+  const cardTipPence = tillLightspeed.tipPence + tillStorekit.tipPence;
+  const cardSource = lightspeedGross.source === 'settlement' && storekitGross.source === 'settlement' ? 'settlement'
+    : (lightspeedGross.source === 'settlement' || storekitGross.source === 'settlement' ? 'mixed (settlement + till proxy)' : 'till proxy');
+
+  // ---- operator inputs (qb_sales_fees, all ≤ 0). Operator-entered beats settlement, and says so. ----
   const feeSource = source.fees && typeof source.fees === 'object' ? source.fees : {};
-  const hasPosFee = Object.prototype.hasOwnProperty.call(feeSource, 'pos_fee') && Number.isSafeInteger(feeSource.pos_fee);
-  const hasOnlineFee = Object.prototype.hasOwnProperty.call(feeSource, 'online_fee') && Number.isSafeInteger(feeSource.online_fee);
-  const grossCardTakingsPence = cardPayments.reduce((sum, row) => sum + paymentGrossWithTip(row), 0);
-  const grossOnlineTakingsPence = onlinePayments.reduce((sum, row) => sum + paymentGrossWithTip(row), 0);
-  const posFeeDerivation = formatQuickBooksFeeDerivation({
-    grossPence: grossCardTakingsPence,
-    feePence: hasPosFee ? feeSource.pos_fee : null,
-    grossLabel: 'card',
-    feeLabel: 'POS',
-  });
-  const onlineFeeDerivation = formatQuickBooksFeeDerivation({
-    grossPence: grossOnlineTakingsPence,
-    feePence: hasOnlineFee ? feeSource.online_fee : null,
-    grossLabel: 'LP',
-    feeLabel: 'online',
-  });
-  const cardSettlementPence = posFeeDerivation.resultPence;
-  const onlineSettlementPence = onlineFeeDerivation.resultPence;
+  const entered = (key) => Object.prototype.hasOwnProperty.call(feeSource, key) && Number.isSafeInteger(feeSource[key]);
+  const resolveInput = (key, settlementValue, label) => {
+    if (entered(key)) {
+      const note = Number.isSafeInteger(settlementValue)
+        ? `operator-entered ${label} ${feeSource[key]} pence used; settlement carried ${settlementValue} pence — operator entry wins by precedence`
+        : `operator-entered ${label} ${feeSource[key]} pence`;
+      return { pence: feeSource[key], present: true, source: 'operator input', note };
+    }
+    if (Number.isSafeInteger(settlementValue)) return { pence: settlementValue, present: true, source: 'settlement', note: `${label} ${settlementValue} pence from settlement rows` };
+    return { pence: null, present: false, source: 'missing', note: `no ${label} entered for this month and no settlement rows` };
+  };
+  const settlementFee = (rows) => rows.filter(Boolean).every((row) => Number.isSafeInteger(row.feePence)) && rows.filter(Boolean).length
+    ? rows.filter(Boolean).reduce((sum, row) => sum + row.feePence, 0) : null;
+  const posFee = resolveInput('pos_fee', (stLightspeed && stStorekit) ? settlementFee([stLightspeed, stStorekit]) : null, 'POS fee');
+  const onlineFee = resolveInput('online_fee', stOnline ? settlementFee([stOnline]) : null, 'online fee');
+  const onlineRefunds = resolveInput('online_refunds', stOnline && Number.isSafeInteger(stOnline.refundPence) ? stOnline.refundPence : null, 'online refunds');
+
+  // ---- the processor blocks ----
+  const lightspeedSalesPence = lightspeedGross.pence - tillLightspeed.tipPence;
+  const storekitSalesPence = storekitGross.pence - tillStorekit.tipPence;
+  const onlineNetSalesPence = onlineGross.pence + (onlineRefunds.present ? onlineRefunds.pence : 0);
+  const cardNetPence = cardGrossPence + (posFee.present ? posFee.pence : 0);
+  const onlineNetPayoutPence = onlineNetSalesPence + (onlineFee.present ? onlineFee.pence : 0);
+  const inHouseSalesPence = lightspeedSalesPence + storekitSalesPence + cashPence + giftRedeemedPence - giftSoldPence;
+  const posFeeDerivation = formatQuickBooksFeeDerivation({ grossPence: cardGrossPence, feePence: posFee.present ? posFee.pence : null, grossLabel: 'card', feeLabel: 'POS' });
+  const onlineFeeDerivation = formatQuickBooksFeeDerivation({ grossPence: onlineNetSalesPence, feePence: onlineFee.present ? onlineFee.pence : null, grossLabel: 'online (net of refunds)', feeLabel: 'online' });
   const sourceWindow = `${window.from} → ${window.to} inclusive`;
-  const excludedReceipts = receiptRows.length - eligibleReceipts.length;
+  const proxyNote = (s) => (s === 'till proxy' ? ' [TILL PROXY — settlement export not yet loaded for this month]' : ` [${s}]`);
+  const refundsNote = onlineRefunds.present ? `${onlineRefunds.note}` : 'online refunds UNKNOWN — none entered and no settlement rows; online figures are gross until they are';
+
   const rows = [
     {
-      line: 1, key: 'in_house_sales', label: 'In-house sales', amountPence: inHouse.reduce((sum, row) => sum + receiptGross(row), 0), entered: true,
-      vatTreatment: '20% VAT', includedCount: inHouse.length,
-      derivation: `${inHouse.length} of ${eligibleReceipts.length} eligible receipt(s): SALE/SPLIT only; ${excludedReceipts} cancelled or excluded-state receipt(s) removed; mapped EAT IN, STOREKIT ORDER & PAY or MON-FRI DEAL; receipt_id deduplicated.`,
-      sourceGrain: 'sales_receipts_api · receipt_id', window: sourceWindow,
+      line: 1, key: 'in_house_sales', label: 'Sales income (in-house)', amountPence: inHouseSalesPence, entered: true,
+      vatTreatment: '20% VAT', includedCount: tillLightspeed.rows.length + tillStorekit.rows.length + cashRows.length + giftSoldRows.length + giftRedeemedRows.length,
+      derivation: `Settlement basis: Lightspeed Payments (gross ${lightspeedGross.pence} − tips ${tillLightspeed.tipPence} = ${lightspeedSalesPence})${proxyNote(lightspeedGross.source)} + Storekit (gross ${storekitGross.pence} − tips ${tillStorekit.tipPence} = ${storekitSalesPence})${proxyNote(storekitGross.source)} + cash takings ${cashPence} + gift cards redeemed ${giftRedeemedPence} − gift cards sold ${giftSoldPence} = ${inHouseSalesPence} pence. Tips are always the till's. VISA/MC are never a processor (this month: ${neverCardRows.length} payment(s), ${neverCardPence} pence, left outside the receipt).`,
+      sourceGrain: `${cardSource} · sales_payments_api tenders by processor code`, window: sourceWindow,
     },
     {
-      line: 2, key: 'card_payments', label: 'Card payments', amountPence: -cardSettlementPence, entered: true,
-      vatTreatment: 'No VAT · settlement', includedCount: cardPayments.length,
-      derivation: `${cardPayments.length} of ${paymentRows.length} payment(s) on the closed Lightspeed/STOREKIT allowlist (${[...QB_CARD_CODES].join(', ')}); ${posFeeDerivation.explanation}; API payment identifiers deduplicated.`,
+      line: 2, key: 'card_payments', label: 'Card payments', amountPence: -cardNetPence, entered: true,
+      vatTreatment: 'No VAT · settlement', includedCount: tillLightspeed.rows.length + tillStorekit.rows.length,
+      derivation: `Lightspeed Payments ${lightspeedGross.pence} (codes ${[...QB_LIGHTSPEED_CODES].join(', ')})${proxyNote(lightspeedGross.source)} + Storekit ${storekitGross.pence} (STR)${proxyNote(storekitGross.source)} = gross ${cardGrossPence}; ${posFeeDerivation.explanation}; ${posFee.note}.`,
       feeWarning: posFeeDerivation.warning,
-      sourceGrain: 'sales_payments_api · receipt_id + payment_seq', window: sourceWindow,
+      sourceGrain: `${cardSource} · net_with_tax_pence + tip_pence`, window: sourceWindow,
     },
     {
-      line: 3, key: 'tips_payable', label: 'Tips payable', amountPence: cardPayments.reduce((sum, row) => sum + qbPence(rowValue(row, ['tip_pence', 'tipPence'])), 0), entered: true,
-      vatTreatment: 'Outside scope', includedCount: cardPayments.length,
-      derivation: `${cardPayments.length} allowlisted card payment(s), the same population as row 2; positive SUM(tip_pence); API payment identifiers deduplicated.`,
-      sourceGrain: 'sales_payments_api · receipt_id + payment_seq', window: sourceWindow,
+      line: 3, key: 'tips_payable', label: 'Tips payable', amountPence: cardTipPence, entered: true,
+      vatTreatment: 'Outside scope', includedCount: tillLightspeed.rows.length + tillStorekit.rows.length,
+      derivation: `Card processors only: Lightspeed Payments tips ${tillLightspeed.tipPence} + Storekit tips ${tillStorekit.tipPence} = ${cardTipPence} pence (till tip_pence). Cash tips (${cashTipPence} pence this month) are not the business's money and enter no row.`,
+      sourceGrain: 'till · sales_payments_api tip_pence', window: sourceWindow,
     },
     {
-      line: 4, key: 'cash_payments', label: 'Cash payments', amountPence: -cashPayments.reduce((sum, row) => sum + paymentGrossWithTip(row), 0), entered: true,
-      vatTreatment: 'No VAT · settlement', includedCount: cashPayments.length,
-      derivation: `${cashPayments.length} of ${paymentRows.length} payment(s) where code=CASH; negative SUM(net_with_tax_pence + tip_pence); API payment identifiers deduplicated.`,
-      sourceGrain: 'sales_payments_api · receipt_id + payment_seq', window: sourceWindow,
+      line: 4, key: 'cash_payments', label: 'Cash payments', amountPence: -cashPence, entered: true,
+      vatTreatment: 'No VAT · settlement', includedCount: cashRows.length,
+      derivation: `${cashRows.length} payment(s) where code=CASH; negative SUM(net_with_tax_pence) = ${cashPence} pence; tip_pence (${cashTipPence}) excluded by operator ruling 2026-09-04.`,
+      sourceGrain: 'till · sales_payments_api', window: sourceWindow,
     },
     {
-      line: 5, key: 'pos_fee', label: 'POS card fees', amountPence: hasPosFee ? feeSource.pos_fee : null, entered: hasPosFee,
-      vatTreatment: 'No VAT · operator entry', includedCount: hasPosFee ? 1 : 0,
-      derivation: hasPosFee ? '1 persisted operator value used verbatim; never calculated.' : 'No persisted operator value; no processor fee entered for this month.',
-      sourceGrain: 'qb_sales_fees · month + line', window: sourceWindow,
+      line: 5, key: 'pos_fee', label: 'POS card fees', amountPence: posFee.present ? posFee.pence : null, entered: posFee.present,
+      vatTreatment: 'No VAT · fee', includedCount: posFee.present ? 1 : 0,
+      derivation: `${posFee.note}; Lightspeed + Storekit combined, signed ≤ 0.`,
+      sourceGrain: `${posFee.source} · qb_sales_fees pos_fee`, window: sourceWindow,
     },
     {
-      line: 6, key: 'online_twenty_sales', label: 'Online 20% sales', amountPence: onlineTwentyLines.reduce((sum, line) => sum + lineGross(line), 0), entered: true,
-      vatTreatment: '20% VAT', includedCount: onlineTwentyLines.length,
-      derivation: `${onlineTwentyLines.length} of ${onlineLines.length} line(s) on eligible SALE/SPLIT receipts mapped ONLINE ORDER; row 7's SHAKES roots and direct-child subtree excluded; receipt_id + line_id deduplicated.`,
-      sourceGrain: 'sales_receipt_lines_api · receipt_id + line_id', window: sourceWindow,
+      line: 6, key: 'online_twenty_sales', label: 'Online 20% sales', amountPence: onlineNetSalesPence - shakePence, entered: true,
+      vatTreatment: '20% VAT', includedCount: tillOnline.rows.length,
+      derivation: `Online gross ${onlineGross.pence}${proxyNote(onlineGross.source)} ${onlineRefunds.present ? `+ refunds ${onlineRefunds.pence}` : '(refunds not applied)'} = net online sales ${onlineNetSalesPence}, less row 7 (${shakePence}) = ${onlineNetSalesPence - shakePence} pence. ${refundsNote}.`,
+      sourceGrain: `${onlineGross.source} · LP tender; refunds ${onlineRefunds.source}`, window: sourceWindow,
     },
     {
-      line: 7, key: 'online_zero_sales', label: 'Online zero-rated sales', amountPence: shakeLines.reduce((sum, line) => sum + lineGross(line), 0), entered: true,
+      line: 7, key: 'online_zero_sales', label: 'Online zero-rated sales', amountPence: shakePence, entered: true,
       vatTreatment: 'Zero-rated VAT', includedCount: shakeLines.length,
       derivation: `${shakeLines.length} of ${onlineLines.length} online line(s): SHAKES accounting-group roots plus lines whose parent_line_id directly references a shake line; receipt_id + line_id deduplicated.`,
-      sourceGrain: 'sales_receipt_lines_api + acct_groups_api · receipt_id + line_id', window: sourceWindow,
+      sourceGrain: 'receipt items · sales_receipt_lines_api + acct_groups_api', window: sourceWindow,
     },
     {
-      line: 8, key: 'online_card_payments', label: 'Online card payments', amountPence: -onlineSettlementPence, entered: true,
-      vatTreatment: 'No VAT · settlement', includedCount: onlinePayments.length,
-      derivation: `${onlinePayments.length} of ${paymentRows.length} payment(s) where code=LP; ${onlineFeeDerivation.explanation}; API payment identifiers deduplicated.`,
+      line: 8, key: 'online_card_payments', label: 'Online card payments', amountPence: -onlineNetPayoutPence, entered: true,
+      vatTreatment: 'No VAT · settlement', includedCount: tillOnline.rows.length,
+      derivation: `${onlineFeeDerivation.explanation}; ${onlineFee.note}. ${refundsNote}.`,
       feeWarning: onlineFeeDerivation.warning,
-      sourceGrain: 'sales_payments_api · receipt_id + payment_seq', window: sourceWindow,
+      sourceGrain: `${onlineGross.source} · LP tender; fee ${onlineFee.source}`, window: sourceWindow,
     },
     {
-      line: 9, key: 'online_fee', label: 'Online card fees', amountPence: hasOnlineFee ? feeSource.online_fee : null, entered: hasOnlineFee,
-      vatTreatment: 'No VAT · operator entry', includedCount: hasOnlineFee ? 1 : 0,
-      derivation: hasOnlineFee ? '1 persisted operator value used verbatim; never calculated.' : 'No persisted operator value; no processor fee entered for this month.',
-      sourceGrain: 'qb_sales_fees · month + line', window: sourceWindow,
+      line: 9, key: 'online_fee', label: 'Online card fees', amountPence: onlineFee.present ? onlineFee.pence : null, entered: onlineFee.present,
+      vatTreatment: 'No VAT · fee', includedCount: onlineFee.present ? 1 : 0,
+      derivation: `${onlineFee.note}; signed ≤ 0.`,
+      sourceGrain: `${onlineFee.source} · qb_sales_fees online_fee`, window: sourceWindow,
+    },
+    {
+      line: 10, key: 'gift_sold', label: 'Gift cards sold (liability +)', amountPence: giftSoldPence, entered: true,
+      vatTreatment: 'Outside scope · liability', includedCount: giftSoldRows.length,
+      derivation: `${giftSoldRows.length} card load(s): IKGIFT negative on TRANSFER receipts, any paying tender including the free-voucher codes; magnitude ${giftSoldPence} pence credits Gift Card Liability.`,
+      sourceGrain: 'till · sales_payments_api IKGIFT on TRANSFER', window: sourceWindow,
+    },
+    {
+      line: 11, key: 'gift_redeemed', label: 'Gift card redemptions (liability −)', amountPence: -giftRedeemedPence, entered: true,
+      vatTreatment: 'Outside scope · liability', includedCount: giftRedeemedRows.length,
+      derivation: `${giftRedeemedRows.length} redemption(s): IKGIFT positive on non-cancelled SALE/SPLIT/RECALL receipts; ${giftRedeemedPence} pence debits Gift Card Liability. The meals themselves are in row 1 via + redeemed.`,
+      sourceGrain: 'till · sales_payments_api IKGIFT on sales', window: sourceWindow,
     },
   ];
-  const subtotalPence = rows.reduce((sum, row) => sum + (row.amountPence == null ? 0 : row.amountPence), 0);
+  const balanceOfRows = (list) => list.reduce((sum, row) => sum + (row.amountPence == null ? 0 : row.amountPence), 0);
+  const subtotalPence = balanceOfRows(rows);
   rows.push({
-    line: 10, key: 'over_short', label: 'Over/Short', amountPence: subtotalPence === 0 ? 0 : -subtotalPence, entered: true,
-    vatTreatment: 'No VAT · balancing line', includedCount: 9,
-    derivation: `Exact negative residual of rows 1–9 (${subtotalPence} pence); no balancing-round adjustment.`,
-    sourceGrain: 'derived · rows 1–9', window: sourceWindow,
+    line: 12, key: 'over_short', label: 'Over/Short', amountPence: 0, entered: true,
+    vatTreatment: 'No VAT · by construction', includedCount: 0,
+    derivation: `0.00 by construction: each processor block nets to zero (Sales = gross − tips; Card = −(gross − fee); Tips = +tips; Fee = −fee), cash and gift cards are their own blocks. Rows 1–11 sum to ${subtotalPence} pence. Nothing is balanced through this row; the till comparison below is where differences show.`,
+    sourceGrain: 'derived · rows 1–11', window: sourceWindow,
   });
-  const balancePence = rows.reduce((sum, row) => sum + (row.amountPence == null ? 0 : row.amountPence), 0);
+  const balancePence = balanceOfRows(rows);
+
+  // ---- the till, kept visible and OUT of the numbers ----
+  const tillReceipts = receiptRows.filter((row) => notCancelled(row) && QB_TILL_SALES_TYPES.has(typeOf(row)) && QB_TILL_COMPARISON_CHANNELS.has(channelOf(row)));
+  const tillSalesPence = tillReceipts.reduce((sum, row) => sum + receiptGross(row), 0);
+  const tillComparison = {
+    tillSalesPence, settlementSalesPence: inHouseSalesPence, differencePence: tillSalesPence - inHouseSalesPence,
+    receipts: tillReceipts.length,
+    caption: `Till in-house sales (Lightspeed basis: SALE+SPLIT+VOID+RECALL+TRANSITORY, in-house channels incl. Take-Away) ${tillSalesPence} pence; settlement-basis row 1 ${inHouseSalesPence} pence; difference ${tillSalesPence - inHouseSalesPence} pence. Diagnostic only — feeds no row.`,
+  };
+
   const seenSalesDates = new Set((Array.isArray(source.salesDates) ? source.salesDates : []).map((row) => (
     typeof row === 'string' ? row : rowDate(row)
   )).filter((date) => inRequestedWindow(date, window)));
@@ -571,15 +647,23 @@ function calculateQuickBooksSales(input) {
   const vatGrossPence = rows[0].amountPence + rows[5].amountPence;
   const vatBaseExact = vatGrossPence % 6 === 0;
   const vatBasePence = Math.round((vatGrossPence * 5) / 6);
-  const unmapped = {
-    count: unmappedReceipts.length,
-    valuePence: unmappedReceipts.reduce((sum, row) => sum + receiptGross(row), 0),
-  };
+  const unmapped = { count: unmappedReceipts.length, valuePence: unmappedReceipts.reduce((sum, row) => sum + receiptGross(row), 0) };
+  const feeMissing = [!posFee.present ? 'POS card fees' : null, !onlineFee.present ? 'Online card fees' : null, !onlineRefunds.present ? 'Online refunds' : null].filter(Boolean);
+  const sources = { card: cardSource, online: onlineGross.source, posFee: posFee.source, onlineFee: onlineFee.source, onlineRefunds: onlineRefunds.source };
+  const sourceCaption = cardSource === 'settlement' && onlineGross.source === 'settlement'
+    ? 'Card and online figures from processor settlement rows for this month.'
+    : `Card gross ${cardSource === 'till proxy' ? 'from till tenders — settlement export not yet loaded' : cardSource}; online ${onlineGross.source === 'till proxy' ? 'from the LP tender — settlement export not yet loaded' : onlineGross.source}${onlineRefunds.present ? '' : '; online refunds unknown'}.`;
   return {
     month: window.month, from: window.from, to: window.to, rows, subtotalPence, balancePence,
-    missingDates, unmapped, vatGrossPence, vatBasePence, vatBaseExact,
-    feeMissing: [!hasPosFee ? 'POS card fees' : null, !hasOnlineFee ? 'Online card fees' : null].filter(Boolean),
-    complete: missingDates.length === 0 && unmapped.count === 0 && hasPosFee && hasOnlineFee && vatBaseExact,
+    missingDates, unmapped, vatGrossPence, vatBasePence, vatBaseExact, feeMissing, sources, sourceCaption, tillComparison,
+    blocks: {
+      lightspeed: { grossPence: lightspeedGross.pence, tipPence: tillLightspeed.tipPence, salesPence: lightspeedSalesPence, source: lightspeedGross.source },
+      storekit: { grossPence: storekitGross.pence, tipPence: tillStorekit.tipPence, salesPence: storekitSalesPence, source: storekitGross.source },
+      online: { grossPence: onlineGross.pence, refundsPence: onlineRefunds.present ? onlineRefunds.pence : null, netSalesPence: onlineNetSalesPence, source: onlineGross.source },
+      cash: { pence: cashPence, tipPence: cashTipPence }, gift: { soldPence: giftSoldPence, redeemedPence: giftRedeemedPence },
+      neverCard: { count: neverCardRows.length, pence: neverCardPence },
+    },
+    complete: missingDates.length === 0 && posFee.present && onlineFee.present && onlineRefunds.present && vatBaseExact,
   };
 }
 
@@ -1386,14 +1470,27 @@ function buildQuickBooksSales(q, month) {
       WHERE source='kseries-sales-daily' AND status='ok' AND business_date BETWEEN ? AND ?
       ORDER BY business_date`, [window.from, window.to]));
   const feeRows = rowsOf(q(
-    `SELECT line, value_pence FROM qb_sales_fees WHERE month = ? AND line IN ('pos_fee','online_fee')`,
+    `SELECT line, value_pence FROM qb_sales_fees WHERE month = ? AND line IN ('pos_fee','online_fee','online_refunds')`,
     [window.month]));
   const fees = {};
   for (const row of feeRows) {
     const line = String(row.line || '');
-    if ((line === 'pos_fee' || line === 'online_fee') && Number.isSafeInteger(row.value_pence)) fees[line] = row.value_pence;
+    if (QB_OPERATOR_INPUTS.includes(line) && Number.isSafeInteger(row.value_pence)) fees[line] = row.value_pence;
   }
-  return calculateQuickBooksSales({ month: window.month, receipts, lines, payments, accountingGroups, salesDates, fees });
+  // Processor settlement rows (the engine's ingest of the operator's payout exports). The table may
+  // not exist yet: q() then answers ok:false, rowsOf gives [], and the calculator falls back to the
+  // labelled till proxy. Stored magnitudes become the receipt's signed (≤ 0) fee and refund operands.
+  const settlement = rowsOf(q(
+    `SELECT processor, SUM(amount_pence) gross_pence, SUM(fee_pence) fee_pence, SUM(refund_pence) refund_pence, COUNT(*) n
+       FROM processor_settlement_rows WHERE occurred_at >= ? AND occurred_at < ? GROUP BY processor`,
+    [window.fromMs, window.toMs])).map((row) => ({
+    processor: String(row.processor || '').toLowerCase(),
+    grossPence: num(row.gross_pence) || 0,
+    feePence: row.fee_pence == null ? null : -Math.abs(num(row.fee_pence) || 0),
+    refundPence: row.refund_pence == null ? null : -Math.abs(num(row.refund_pence) || 0),
+    rows: num(row.n) || 0,
+  }));
+  return calculateQuickBooksSales({ month: window.month, receipts, lines, payments, accountingGroups, salesDates, fees, settlement });
 }
 
 // Per-month channel stats from the per-receipt record (complete or MTD months only — the kept
@@ -2535,15 +2632,15 @@ module.exports = {
         warnings.push(`Expected sales dates absent from the completed daily K-Series ingest (${qb.missingDates.length}): ${qb.missingDates.join(', ')}. This calendar month is partial.`);
       }
       if (qb.unmapped.count) {
-        warnings.push(`${plural(qb.unmapped.count, 'receipt lacks', 'receipts lack')} a channel mapping, gross value ${gbp(qb.unmapped.valuePence)}. They remain outside the ten QuickBooks lines.`);
+        warnings.push(`${plural(qb.unmapped.count, 'receipt lacks', 'receipts lack')} a channel mapping, gross value ${gbp(qb.unmapped.valuePence)}. On the settlement basis their card and cash payments are still counted; only the till comparison below is affected.`);
       }
       if (qb.feeMissing.length) {
-        warnings.push(`QuickBooks sales receipt incomplete — missing ${qb.feeMissing.join(' and ')}. The affected settlement row remains gross because no processor fee was entered for this month.`);
+        warnings.push(`QuickBooks sales receipt incomplete — missing ${qb.feeMissing.join(', ')}. Rows that depend on a missing input stay gross and say so in their derivation; Over/Short stays 0.00 because no row balances through it.`);
       }
       if (!qb.vatBaseExact) {
         warnings.push(`VAT-base precision warning — (row 1 + row 6) / 1.2 does not resolve to an integer penny; ${gbp(qb.vatBasePence)} is display rounding only and no QuickBooks row was altered.`);
       }
-      if (!warnings.length) warnings.push('Complete — every expected date is present, every receipt is mapped, both fees are entered and the VAT base resolves to the penny.');
+      if (!warnings.length) warnings.push('Complete — every expected date is present, both fees and the online refunds are entered, and the VAT base resolves to the penny.');
       const warningHtml = `<div class="qb-warnings">${warnings.map((warning) => `<div class="qb-warning${qb.complete ? ' qb-ok' : ''}">${esc(warning)}</div>`).join('')}</div>`;
       const monthPicker = `<form class="qb-month" method="get" action="/coyote/revenue">
           <input type="hidden" name="tab" value="qbsales">
@@ -2556,20 +2653,27 @@ module.exports = {
           <button class="qb-fee-save" type="button" data-qb-line="${row.key}">Save signed pence</button>
           <span class="qb-fee-out r-mini-note" data-qb-line="${row.key}"></span>
         </div>`;
+      const refundsEntered = qb.blocks && qb.blocks.online && Number.isSafeInteger(qb.blocks.online.refundsPence);
+      const refundsControl = () => `<div class="qb-fee-entry">
+          <span class="r-mini-note">Online refunds this month (signed pence, ≤ 0) — from the LivePepper/Stripe export until the settlement ingest carries them</span>
+          <input class="qb-fee-value" type="number" step="1" inputmode="numeric" data-qb-line="online_refunds" value="${refundsEntered ? qb.blocks.online.refundsPence : ''}" placeholder="signed pence" aria-label="Online refunds signed pence">
+          <button class="qb-fee-save" type="button" data-qb-line="online_refunds">Save signed pence</button>
+          <span class="qb-fee-out r-mini-note" data-qb-line="online_refunds"></span>
+        </div>`;
       const tableRows = qb.rows.map((row) => {
         const feeBlank = (row.key === 'pos_fee' || row.key === 'online_fee') && !row.entered;
         const amount = feeBlank ? '—' : gbp(Math.abs(row.amountPence));
-        const sign = feeBlank ? '—' : (row.amountPence < 0 ? '−' : '+');
+        const sign = feeBlank ? '—' : (row.amountPence < 0 ? '−' : (row.amountPence > 0 ? '+' : '0'));
         const feeNote = feeBlank
           ? '<div class="r-mini-note">Operator input required — from the card processor statement; not held on this box.</div>'
           : '';
-        const label = row.line === 10
-          ? `<div class="qb-balance"><span>${esc(row.label)}</span>${S.rcc.tag(`ten-row balance subtotal ${gbp(qb.balancePence)}`, qb.balancePence === 0 ? 'good' : 'bad')}</div>`
+        const label = row.key === 'over_short'
+          ? `<div class="qb-balance"><span>${esc(row.label)}</span>${S.rcc.tag(`0.00 by construction · rows 1–11 sum ${gbp(qb.subtotalPence)}`, qb.subtotalPence === 0 ? 'good' : 'bad')}</div>`
           : esc(row.label);
         return `<tr data-qb-line="${row.line}">
             <td class="qb-line">${row.line}. ${label}</td>
             <td class="r-num mono">${sign}</td>
-            <td class="r-num mono">${amount}${feeNote}${row.key === 'pos_fee' || row.key === 'online_fee' ? feeControl(row) : ''}</td>
+            <td class="r-num mono">${amount}${feeNote}${row.key === 'pos_fee' || row.key === 'online_fee' ? feeControl(row) : ''}${row.key === 'online_card_payments' ? refundsControl() : ''}</td>
             <td>${esc(row.vatTreatment)}</td>
             <td class="qb-derivation">${esc(row.derivation)}${row.feeWarning ? `<div class="qb-fee-warning" role="note"><strong>Fee plausibility warning</strong> — ${esc(row.feeWarning)}</div>` : ''}</td>
             <td class="qb-source">${esc(row.sourceGrain)}</td>
@@ -2578,10 +2682,11 @@ module.exports = {
       }).join('');
       const bundle = S.rcc.panel({
         title: `QuickBooks sales receipt · ${monthLabel(qb.month)}`,
-        sub: 'ten lines · integer pence · gross sales and settlement movements',
+        sub: 'twelve lines · integer pence · settlement basis — each processor block nets to zero',
         headRight: stateTag,
-        body: `${warningHtml}<div style="overflow:auto"><table class="qb-table"><thead><tr><th>QuickBooks line</th><th class="r-num">Sign</th><th class="r-num">Amount</th><th>VAT treatment</th><th>Plain-English derivation</th><th>Source grain</th><th>Exact date window</th></tr></thead><tbody>${tableRows}</tbody></table></div>
-          <div class="qb-diagnostic"><strong>Unmapped receipts diagnostic</strong> — ${plural(qb.unmapped.count, 'receipt', 'receipts')} · ${gbp(qb.unmapped.valuePence)} gross. Eligible SALE/SPLIT receipt identifiers with no channel_label are deduplicated, counted here and never assigned to an invented channel.</div>`,
+        body: `${warningHtml}<div class="qb-diagnostic"><strong>Sources</strong> — ${esc(qb.sourceCaption)}</div><div style="overflow:auto"><table class="qb-table"><thead><tr><th>QuickBooks line</th><th class="r-num">Sign</th><th class="r-num">Amount</th><th>VAT treatment</th><th>Plain-English derivation</th><th>Source</th><th>Exact date window</th></tr></thead><tbody>${tableRows}</tbody></table></div>
+          <div class="qb-diagnostic"><strong>Till comparison (diagnostic only — feeds no row)</strong> — till in-house sales on Lightspeed's basis (SALE+SPLIT+VOID+RECALL+TRANSITORY, in-house channels incl. Take-Away) ${gbp(qb.tillComparison.tillSalesPence)} · settlement-basis row 1 ${gbp(qb.tillComparison.settlementSalesPence)} · difference ${qb.tillComparison.differencePence < 0 ? '−' : ''}${gbp(Math.abs(qb.tillComparison.differencePence))}. Gift cards redeemed but not sold this month, uncaptured "paid on reader" tickets, reader tips not keyed, and processor orders that never reached the till all live in this difference.</div>
+          <div class="qb-diagnostic"><strong>Unmapped receipts diagnostic</strong> — ${plural(qb.unmapped.count, 'receipt', 'receipts')} · ${gbp(qb.unmapped.valuePence)} gross. Eligible SALE/SPLIT receipt identifiers with no channel_label are deduplicated, counted here and never assigned to an invented channel; their payments are still counted on the settlement basis.</div>`,
       });
       const checks = `<div class="r-grid r-two-col">
         ${S.rcc.panel({
@@ -2590,9 +2695,9 @@ module.exports = {
           body: `<div class="r-kpi-value mono">${gbp(qb.vatBasePence)}</div><div class="r-mini-note">(${gbp(qb.rows[0].amountPence)} + ${gbp(qb.rows[5].amountPence)}) / 1.2 = ${gbp(qb.vatBasePence)}${qb.vatBaseExact ? ' exactly' : ' after display rounding'}. This check never alters rows 1 or 6.</div>`,
         })}
         ${S.rcc.panel({
-          title: 'SPLIT receipt rule', sub: 'permanent inclusion · April 2026 context',
-          headRight: S.rcc.tag('PERMANENT', 'info'),
-          body: '<div class="qb-diagnostic"><strong>SPLIT receipts are sales.</strong> The April 2026 review established that these are legitimate split-bill receipts, not cancelled transactions. Row 1 therefore includes both SALE and SPLIT permanently; cancelled, VOID, CANCEL and RECALL states remain excluded.</div>',
+          title: 'Settlement basis', sub: 'operator ruling 2026-09-04 · the Power BI method',
+          headRight: S.rcc.tag('BY CONSTRUCTION', 'info'),
+          body: `<div class="qb-diagnostic"><strong>Each processor is a block that nets to zero.</strong> Lightspeed Payments: sales ${gbp(qb.blocks.lightspeed.salesPence)} = gross ${gbp(qb.blocks.lightspeed.grossPence)} − tips ${gbp(qb.blocks.lightspeed.tipPence)} [${esc(qb.blocks.lightspeed.source)}]. Storekit: sales ${gbp(qb.blocks.storekit.salesPence)} = gross ${gbp(qb.blocks.storekit.grossPence)} − tips ${gbp(qb.blocks.storekit.tipPence)} [${esc(qb.blocks.storekit.source)}]. Online: net sales ${gbp(qb.blocks.online.netSalesPence)} = gross ${gbp(qb.blocks.online.grossPence)} ${qb.blocks.online.refundsPence == null ? '(refunds unknown)' : `less refunds ${gbp(Math.abs(qb.blocks.online.refundsPence))}`} [${esc(qb.blocks.online.source)}]. Cash takings ${gbp(qb.blocks.cash.pence)} (till cash tips ${gbp(qb.blocks.cash.tipPence)} excluded). Gift cards: sold ${gbp(qb.blocks.gift.soldPence)}, redeemed ${gbp(qb.blocks.gift.redeemedPence)} — the liability account. VISA/MC never a processor: ${qb.blocks.neverCard.count} payment(s), ${gbp(qb.blocks.neverCard.pence)}, outside the receipt.</div>`,
         })}
       </div>`;
       const script = `<script>(function(){

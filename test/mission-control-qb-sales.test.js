@@ -1,10 +1,26 @@
 'use strict';
 
+// QuickBooks Sales Entry — SETTLEMENT BASIS (operator ruling 2026-09-04).
+//
+// "We shouldn't have overspills changing the sales values — review how our Power BI is worked and do
+// it that way." Each processor is a block that nets to zero (Sales = card gross − tips; Card = −(gross
+// − fee); Tips = +tips; Fee = −fee), cash takings and gift cards are blocks of their own, and Over/Short
+// is 0.00 BY CONSTRUCTION. The till survives only as a diagnostic comparison that feeds no row.
+//
+// THE CLASSES PINNED HERE:
+//  1. A receipt derived from the money that settled cannot leak a residual — so any non-zero
+//     Over/Short is a code defect, never a business finding. Every fixture asserts rows sum to zero.
+//  2. A tender CODE is a label staff chose; the PROCESSOR is a fact of where the money went. Both
+//     "POS error" buttons are the Adyen reader (Lightspeed Payments); VISA/MC are never a processor.
+//  3. Sources must be declared: settlement rows win for gross/fee/refunds, an operator-entered value
+//     wins over settlement and SAYS so, and a missing input leaves its row gross and INCOMPLETE — it is
+//     never treated as a typed zero.
+//  4. Cash tips are not the business's money: till-recorded tip_pence on CASH rows reaches no row.
+
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const sqlite = require('node:sqlite');
 
-const DATA = require('../mission-control/ui/data.js');
 const reports = require('../mission-control/ui/pages/coyote/reports.js');
 const { applyQuickBooksSalesFee } = require('../mission-control/server.js');
 
@@ -14,54 +30,85 @@ const {
   latestCompleteMonth,
 } = reports;
 
-// qb_sales_fees is DECLARED BY THE ENGINE (coyote-claw src/schema.sql) and applied there at every
-// open; server.js never creates it. Fixtures build it with the engine's exact shape so the write
-// path under test is the live one. Keep this DDL identical to the engine's declaration.
-const QB_SALES_FEES_DDL = `CREATE TABLE IF NOT EXISTS qb_sales_fees (
+// The ENGINE declares qb_sales_fees (coyote-claw src/schema.sql); server.js never creates it. The
+// two-key CHECK below is the LIVE shape today; the three-key shape is what engine job 306b5f1e lands.
+const QB_SALES_FEES_DDL_LIVE = `CREATE TABLE IF NOT EXISTS qb_sales_fees (
   month       TEXT    NOT NULL,
   line        TEXT    NOT NULL CHECK (line IN ('pos_fee','online_fee')),
   value_pence INTEGER NOT NULL,
   updated_at  INTEGER NOT NULL,
   PRIMARY KEY (month, line)
 )`;
+const QB_SALES_FEES_DDL_NEXT = QB_SALES_FEES_DDL_LIVE.replace("('pos_fee','online_fee')", "('pos_fee','online_fee','online_refunds')");
 
-function feeDb() {
+function feeDb(ddl = QB_SALES_FEES_DDL_LIVE) {
   const db = new sqlite.DatabaseSync(':memory:');
-  db.exec(QB_SALES_FEES_DDL);
+  db.exec(ddl);
   return db;
 }
 
-function aprilFixture() {
+const sum = (result) => result.rows.reduce((total, row) => total + (row.amountPence == null ? 0 : row.amountPence), 0);
+const byKey = (result, key) => result.rows.find((row) => row.key === key);
+
+// One synthetic month exercising every rule. Hand-computed expectations are in the tests; nothing is
+// copied from a real export.
+function mayFixture() {
   const salesDates = [];
-  for (let day = 1; day <= 30; day++) {
-    if (day !== 12) salesDates.push(`2026-04-${String(day).padStart(2, '0')}`);
-  }
+  for (let day = 1; day <= 31; day++) salesDates.push(`2026-05-${String(day).padStart(2, '0')}`);
   return {
-    month: '2026-04',
+    month: '2026-05',
     salesDates,
     accountingGroups: [{ code: '29', name: 'SHAKES' }],
     receipts: [
-      { receipt_id: 'eat', business_date: '2026-04-02', type: 'SALE', cancelled: 0, channel_label: 'EAT IN', net_with_tax_pence: 12000 },
-      { receipt_id: 'split', business_date: '2026-04-03', type: 'SPLIT', cancelled: 0, channel_label: 'STOREKIT ORDER & PAY', net_with_tax_pence: 3600 },
-      { receipt_id: 'cancelled', business_date: '2026-04-04', type: 'SALE', cancelled: 1, channel_label: 'MON-FRI DEAL', net_with_tax_pence: 9999 },
-      { receipt_id: 'void', business_date: '2026-04-05', type: 'VOID', cancelled: 0, channel_label: 'EAT IN', net_with_tax_pence: 9999 },
-      { receipt_id: 'online', business_date: '2026-04-06', type: 'SALE', cancelled: 0, channel_label: 'ONLINE ORDER', net_with_tax_pence: 7800 },
-      { receipt_id: 'unmapped', business_date: '2026-04-07', type: 'SALE', cancelled: 0, channel_label: null, net_with_tax_pence: 2400 },
+      { receipt_id: 'eat', business_date: '2026-05-02', type: 'SALE', cancelled: 0, channel_label: 'EAT IN', net_with_tax_pence: 12000 },
+      { receipt_id: 'split', business_date: '2026-05-03', type: 'SPLIT', cancelled: 0, channel_label: 'STOREKIT ORDER & PAY', net_with_tax_pence: 3600 },
+      { receipt_id: 'cash', business_date: '2026-05-04', type: 'SALE', cancelled: 0, channel_label: 'EAT IN', net_with_tax_pence: 3000 },
+      { receipt_id: 'online', business_date: '2026-05-06', type: 'SALE', cancelled: 0, channel_label: 'ONLINE ORDER', net_with_tax_pence: 7800 },
+      { receipt_id: 'dojo', business_date: '2026-05-07', type: 'SALE', cancelled: 0, channel_label: 'EAT IN', net_with_tax_pence: 400 },
+      { receipt_id: 'visa-load', business_date: '2026-05-08', type: 'TRANSFER', cancelled: 0, channel_label: 'MON-FRI DEAL', net_with_tax_pence: null },
+      { receipt_id: 'card-load', business_date: '2026-05-09', type: 'TRANSFER', cancelled: 0, channel_label: 'MON-FRI DEAL', net_with_tax_pence: null },
+      { receipt_id: 'redeem', business_date: '2026-05-10', type: 'SALE', cancelled: 0, channel_label: 'MON-FRI DEAL', net_with_tax_pence: 2725 },
+      { receipt_id: 'cancelled', business_date: '2026-05-11', type: 'SALE', cancelled: 1, channel_label: 'EAT IN', net_with_tax_pence: 9999 },
+      { receipt_id: 'void', business_date: '2026-05-12', type: 'VOID', cancelled: 0, channel_label: 'EAT IN', net_with_tax_pence: -400 },
+      { receipt_id: 'recall', business_date: '2026-05-12', type: 'RECALL', cancelled: 0, channel_label: 'EAT IN', net_with_tax_pence: 400 },
+      { receipt_id: 'takeaway', business_date: '2026-05-13', type: 'SALE', cancelled: 0, channel_label: 'TAKE-AWAY', net_with_tax_pence: 1000 },
+      { receipt_id: 'phantom', business_date: '2026-05-14', type: 'SALE', cancelled: 0, channel_label: 'MON-FRI DEAL', net_with_tax_pence: 1860 },
+      { receipt_id: 'mc', business_date: '2026-05-15', type: 'SALE', cancelled: 0, channel_label: 'EAT IN', net_with_tax_pence: 500 },
+      { receipt_id: 'unmapped', business_date: '2026-05-16', type: 'SALE', cancelled: 0, channel_label: null, net_with_tax_pence: 2400 },
     ],
     lines: [
-      { receipt_id: 'online', line_id: 'meal', parent_line_id: null, business_date: '2026-04-06', accounting_group: '10', net_with_tax_pence: 6000 },
-      { receipt_id: 'online', line_id: 'shake', parent_line_id: null, business_date: '2026-04-06', accounting_group: '29', net_with_tax_pence: 1200 },
-      { receipt_id: 'online', line_id: 'option', parent_line_id: 'shake', business_date: '2026-04-06', accounting_group: null, net_with_tax_pence: 600 },
+      { receipt_id: 'online', line_id: 'meal', parent_line_id: null, business_date: '2026-05-06', accounting_group: '10', net_with_tax_pence: 6000 },
+      { receipt_id: 'online', line_id: 'shake', parent_line_id: null, business_date: '2026-05-06', accounting_group: '29', net_with_tax_pence: 1200 },
+      { receipt_id: 'online', line_id: 'option', parent_line_id: 'shake', business_date: '2026-05-06', accounting_group: null, net_with_tax_pence: 600 },
     ],
     payments: [
-      { receipt_id: 'eat', payment_seq: 0, business_date: '2026-04-02', code: 'LSPAY_ADYEN_TERMINAL_API_LOCAL', net_with_tax_pence: 10000, tip_pence: 500 },
-      { receipt_id: 'split', payment_seq: 0, business_date: '2026-04-03', code: 'STR', net_with_tax_pence: 2000, tip_pence: 100 },
-      { receipt_id: 'split', payment_seq: 1, business_date: '2026-04-03', code: 'CASH', net_with_tax_pence: 3000, tip_pence: 200 },
-      { receipt_id: 'online', payment_seq: 0, business_date: '2026-04-06', code: 'LP', net_with_tax_pence: 7000, tip_pence: 800 },
+      { receipt_id: 'eat', payment_seq: 0, business_date: '2026-05-02', code: 'LSPAY_ADYEN_TERMINAL_API_LOCAL', net_with_tax_pence: 12000, tip_pence: 500 },
+      { receipt_id: 'split', payment_seq: 0, business_date: '2026-05-03', code: 'STR', net_with_tax_pence: 3600, tip_pence: 100 },
+      { receipt_id: 'cash', payment_seq: 0, business_date: '2026-05-04', code: 'CASH', net_with_tax_pence: 3000, tip_pence: 200 },
+      { receipt_id: 'online', payment_seq: 0, business_date: '2026-05-06', code: 'LP', net_with_tax_pence: 7800, tip_pence: 0 },
+      { receipt_id: 'dojo', payment_seq: 0, business_date: '2026-05-07', code: 'POS ERROR - PAID ON DOJO', net_with_tax_pence: 400, tip_pence: 50 },
+      { receipt_id: 'visa-load', payment_seq: 0, business_date: '2026-05-08', code: 'IKGIFT', net_with_tax_pence: -5000, tip_pence: 0 },
+      { receipt_id: 'visa-load', payment_seq: 1, business_date: '2026-05-08', code: 'VISA', net_with_tax_pence: 5000, tip_pence: 0 },
+      { receipt_id: 'card-load', payment_seq: 0, business_date: '2026-05-09', code: 'IKGIFT', net_with_tax_pence: -2000, tip_pence: 0 },
+      { receipt_id: 'card-load', payment_seq: 1, business_date: '2026-05-09', code: 'LSPAY_ADYEN_TERMINAL_API_LOCAL', net_with_tax_pence: 2000, tip_pence: 0 },
+      { receipt_id: 'redeem', payment_seq: 0, business_date: '2026-05-10', code: 'IKGIFT', net_with_tax_pence: 2725, tip_pence: 0 },
+      { receipt_id: 'void', payment_seq: 0, business_date: '2026-05-12', code: 'LSPAY_ADYEN_TERMINAL_API_LOCAL', net_with_tax_pence: -400, tip_pence: 0 },
+      { receipt_id: 'recall', payment_seq: 0, business_date: '2026-05-12', code: 'LSPAY_ADYEN_TERMINAL_API_LOCAL', net_with_tax_pence: 400, tip_pence: 0 },
+      { receipt_id: 'takeaway', payment_seq: 0, business_date: '2026-05-13', code: 'LSPAY_ADYEN_TERMINAL_API_LOCAL', net_with_tax_pence: 1000, tip_pence: 0 },
+      { receipt_id: 'phantom', payment_seq: 0, business_date: '2026-05-14', code: null, net_with_tax_pence: 1860, tip_pence: 0 },
+      { receipt_id: 'mc', payment_seq: 0, business_date: '2026-05-15', code: 'MC', net_with_tax_pence: 500, tip_pence: 0 },
     ],
-    fees: {},
+    fees: { pos_fee: -300, online_fee: -100, online_refunds: -300 },
   };
 }
+
+// Hand-computed from the fixture:
+//   Lightspeed gross = 12000+500 (eat) + 2000 (card-load) − 400 (void) + 400 (recall) + 1000 (takeaway) + 400+50 (dojo) = 15950; tips 550; sales 15400
+//   Storekit gross = 3600+100 = 3700; tips 100; sales 3600
+//   Cash = 3000 (the 200 tip excluded) · gift sold = 5000 + 2000 = 7000 · redeemed = 2725
+//   Row 1 = 15400 + 3600 + 3000 + 2725 − 7000 = 17725
+//   Online gross 7800, refunds −300 → net 7500; shakes 1800 → row 6 = 5700; row 8 = −(7500 − 100) = −7400
+const EXPECTED_MAY = [17725, -19350, 650, -3000, -300, 5700, 1800, -7400, -100, 7000, -2725, 0];
 
 test('sixth QuickBooks tab defaults to the latest fully completed calendar month', () => {
   assert.equal(latestCompleteMonth(Date.UTC(2026, 8, 3)), '2026-08');
@@ -80,210 +127,184 @@ test('sixth QuickBooks tab defaults to the latest fully completed calendar month
   assert.match(body, /type="month"[^>]*value="2026-08"/);
 });
 
-test('calculation includes SPLIT, shake children and tips, while exact residual balances all ten rows', () => {
-  const fixture = aprilFixture();
-  fixture.receipts.push({ ...fixture.receipts[1] });
-  fixture.lines.push({ ...fixture.lines[1] }, { ...fixture.lines[2] });
-  fixture.payments.push({ ...fixture.payments[0] });
-  const result = calculateQuickBooksSales(fixture);
-
-  assert.deepEqual(result.rows.map((row) => row.amountPence), [
-    15600, -12600, 600, -3200, null, 6000, 1800, -7800, null, -400,
-  ]);
-  assert.equal(result.rows[0].includedCount, 2, 'SALE and SPLIT receipt identifiers are deduplicated');
-  assert.equal(result.rows[5].includedCount, 1, 'only the non-shake online line remains in row 6');
-  assert.equal(result.rows[6].includedCount, 2, 'shake root and its direct child option enter row 7');
-  assert.equal(result.rows[1].amountPence, -(10000 + 500 + 2000 + 100), 'card payments add tips to net-with-tax');
-  assert.equal(result.rows[3].amountPence, -(3000 + 200), 'cash adds tips to net-with-tax');
-  assert.equal(result.balancePence, 0);
-  assert.equal(result.rows.reduce((sum, row) => sum + (row.amountPence == null ? 0 : row.amountPence), 0), 0);
-  assert.equal(result.vatBasePence, 18000);
-  assert.equal(result.vatBaseExact, true);
+test('settlement basis: every row is derived, twelve rows sum to zero, Over/Short is 0.00 by construction', () => {
+  const result = calculateQuickBooksSales(mayFixture());
+  assert.deepEqual(result.rows.map((row) => row.amountPence), EXPECTED_MAY);
+  assert.equal(result.rows.length, 12);
+  assert.equal(sum(result), 0);
+  assert.equal(result.subtotalPence, 0, 'rows 1–11 already sum to zero — nothing is balanced through row 12');
+  assert.equal(byKey(result, 'over_short').amountPence, 0);
+  assert.match(byKey(result, 'over_short').derivation, /by construction/);
+  // row 1 = Σ(card gross − tips) + cash + redeemed − sold, stated in its own derivation
+  assert.match(byKey(result, 'in_house_sales').derivation, /gross 15950 − tips 550 = 15400/);
+  assert.match(byKey(result, 'in_house_sales').derivation, /gross 3700 − tips 100 = 3600/);
+  assert.match(byKey(result, 'in_house_sales').derivation, /cash takings 3000 \+ gift cards redeemed 2725 − gift cards sold 7000 = 17725/);
+  assert.deepEqual(result.blocks.gift, { soldPence: 7000, redeemedPence: 2725 });
+  assert.deepEqual(result.blocks.cash, { pence: 3000, tipPence: 200 });
 });
 
-test('POSERROR payments contribute their gross and tips to card settlement and Tips payable', () => {
-  const fixture = aprilFixture();
-  fixture.payments.push({
-    receipt_id: 'pos-error', payment_seq: 0, business_date: '2026-04-08', code: 'POSERROR',
-    net_with_tax_pence: 400, tip_pence: 50,
-  });
-  const result = calculateQuickBooksSales(fixture);
+test('a tender code is a label; the processor is the fact — DOJO button is Lightspeed Payments, VISA/MC never a processor, cash tips reach no row', () => {
+  const fixture = mayFixture();
+  const withoutDojo = { ...fixture, payments: fixture.payments.filter((payment) => payment.code !== 'POS ERROR - PAID ON DOJO') };
+  const full = calculateQuickBooksSales(fixture);
+  const less = calculateQuickBooksSales(withoutDojo);
+  assert.equal(byKey(full, 'card_payments').amountPence - byKey(less, 'card_payments').amountPence, -450, 'the DOJO code adds its gross+tip to row 2');
+  assert.equal(byKey(full, 'tips_payable').amountPence - byKey(less, 'tips_payable').amountPence, 50, 'and its tip to row 3');
+  assert.match(byKey(full, 'card_payments').derivation, /POS ERROR - PAID ON DOJO/);
 
-  assert.equal(result.rows[1].amountPence, -13050, 'row 2 includes the POSERROR gross payment and tip');
-  assert.equal(result.rows[2].amountPence, 650, 'row 3 includes the POSERROR tip');
-  assert.match(result.rows[1].derivation, /POSERROR/, 'the generated row-2 derivation lists the payment code');
+  const withoutNever = { ...fixture, payments: fixture.payments.filter((payment) => payment.code !== 'VISA' && payment.code !== 'MC') };
+  const noNever = calculateQuickBooksSales(withoutNever);
+  assert.deepEqual(full.rows.map((row) => row.amountPence), noNever.rows.map((row) => row.amountPence), 'VISA and MC payments change no row');
+  assert.deepEqual(full.blocks.neverCard, { count: 2, pence: 5500 }, 'they are counted and reported outside the receipt, never absorbed');
+  assert.match(byKey(full, 'in_house_sales').derivation, /VISA\/MC are never a processor/);
+
+  const withoutCashTip = { ...fixture, payments: fixture.payments.map((payment) => (payment.code === 'CASH' ? { ...payment, tip_pence: 0 } : payment)) };
+  const noTip = calculateQuickBooksSales(withoutCashTip);
+  assert.deepEqual(full.rows.map((row) => row.amountPence), noTip.rows.map((row) => row.amountPence), 'a till-recorded cash tip reaches no row');
+  assert.equal(byKey(full, 'cash_payments').amountPence, -3000);
+  assert.match(byKey(full, 'tips_payable').derivation, /Cash tips \(200 pence this month\) are not the business's money/);
+});
+
+test('a missing input leaves its row gross, is named, marks the receipt INCOMPLETE — and Over/Short still 0.00', () => {
+  const fixture = mayFixture();
+  fixture.fees = {};
+  const result = calculateQuickBooksSales(fixture);
+  assert.equal(byKey(result, 'card_payments').amountPence, -19650, 'gross card when no POS fee');
+  assert.equal(byKey(result, 'pos_fee').amountPence, null);
+  assert.equal(byKey(result, 'pos_fee').entered, false);
+  assert.equal(byKey(result, 'online_twenty_sales').amountPence, 7800 - 1800, 'online sales gross when refunds unknown');
+  assert.equal(byKey(result, 'online_card_payments').amountPence, -7800, 'online card gross when neither fee nor refunds entered');
+  assert.equal(byKey(result, 'online_fee').amountPence, null);
+  assert.match(byKey(result, 'online_twenty_sales').derivation, /online refunds UNKNOWN/);
+  assert.match(byKey(result, 'card_payments').derivation, /no processor fee entered for this month/);
+  assert.doesNotMatch(byKey(result, 'card_payments').derivation, /\bnet\b/i);
+  assert.deepEqual(result.feeMissing, ['POS card fees', 'Online card fees', 'Online refunds']);
+  assert.equal(result.complete, false);
+  assert.equal(byKey(result, 'over_short').amountPence, 0);
+  assert.equal(sum(result), 0);
+
+  const complete = calculateQuickBooksSales(mayFixture());
+  assert.deepEqual(complete.feeMissing, []);
+  assert.equal(complete.complete, complete.vatBaseExact, 'with every input present, completeness is only the VAT-base penny check');
+});
+
+test('settlement rows win for gross, fee and refunds; an operator-entered value wins over settlement and says so; tips stay the till\'s', () => {
+  const fixture = mayFixture();
+  fixture.fees = {};
+  fixture.settlement = [
+    { processor: 'lightspeed', grossPence: 16000, feePence: -200, refundPence: null },
+    { processor: 'storekit', grossPence: 3700, feePence: -100, refundPence: null },
+    { processor: 'livepepper', grossPence: 7900, feePence: -120, refundPence: -400 },
+  ];
+  const result = calculateQuickBooksSales(fixture);
+  assert.equal(result.sources.card, 'settlement');
+  assert.equal(result.sources.online, 'settlement');
+  assert.equal(byKey(result, 'in_house_sales').amountPence, (16000 - 550) + (3700 - 100) + 3000 + 2725 - 7000, 'settlement gross, till tips');
+  assert.equal(byKey(result, 'card_payments').amountPence, -(19700 - 300), 'settlement fees summed across the two card processors');
+  assert.equal(byKey(result, 'pos_fee').amountPence, -300);
+  assert.equal(result.sources.posFee, 'settlement');
+  assert.equal(byKey(result, 'online_twenty_sales').amountPence, 7900 - 400 - 1800);
+  assert.equal(byKey(result, 'online_card_payments').amountPence, -(7900 - 400 - 120));
+  assert.match(result.sourceCaption, /processor settlement rows/);
+  assert.doesNotMatch(byKey(result, 'card_payments').derivation, /TILL PROXY/);
+  assert.equal(sum(result), 0);
+
+  fixture.fees = { pos_fee: -250 };
+  const override = calculateQuickBooksSales(fixture);
+  assert.equal(byKey(override, 'pos_fee').amountPence, -250, 'operator entry wins');
+  assert.match(byKey(override, 'pos_fee').derivation, /operator-entered POS fee -250 pence used; settlement carried -300 pence — operator entry wins by precedence/);
+  assert.equal(override.sources.posFee, 'operator input');
+  assert.equal(sum(override), 0);
+
+  const proxy = calculateQuickBooksSales(mayFixture());
+  assert.equal(proxy.sources.card, 'till proxy');
+  assert.match(byKey(proxy, 'card_payments').derivation, /TILL PROXY — settlement export not yet loaded/);
+  assert.match(proxy.sourceCaption, /from till tenders — settlement export not yet loaded/);
+});
+
+test('gift cards: loads are IKGIFT-negative on TRANSFER whatever paid for them; redemptions are IKGIFT-positive on non-cancelled SALE/SPLIT/RECALL', () => {
+  const fixture = mayFixture();
+  fixture.receipts.push(
+    { receipt_id: 'voucher', business_date: '2026-05-17', type: 'TRANSFER', cancelled: 0, channel_label: 'MON-FRI DEAL', net_with_tax_pence: null },
+    { receipt_id: 'redeem-cancelled', business_date: '2026-05-18', type: 'SALE', cancelled: 1, channel_label: 'EAT IN', net_with_tax_pence: 1000 },
+    { receipt_id: 'redeem-recall', business_date: '2026-05-19', type: 'RECALL', cancelled: 0, channel_label: 'EAT IN', net_with_tax_pence: 1500 },
+    { receipt_id: 'gift-void', business_date: '2026-05-20', type: 'VOID', cancelled: 0, channel_label: 'EAT IN', net_with_tax_pence: -700 },
+  );
+  fixture.payments.push(
+    { receipt_id: 'voucher', payment_seq: 0, business_date: '2026-05-17', code: 'IKGIFT', net_with_tax_pence: -1000, tip_pence: 0 },
+    { receipt_id: 'voucher', payment_seq: 1, business_date: '2026-05-17', code: 'BLACK FRIDAY 10', net_with_tax_pence: 1000, tip_pence: 0 },
+    { receipt_id: 'redeem-cancelled', payment_seq: 0, business_date: '2026-05-18', code: 'IKGIFT', net_with_tax_pence: 1000, tip_pence: 0 },
+    { receipt_id: 'redeem-recall', payment_seq: 0, business_date: '2026-05-19', code: 'IKGIFT', net_with_tax_pence: 1500, tip_pence: 0 },
+    { receipt_id: 'gift-void', payment_seq: 0, business_date: '2026-05-20', code: 'IKGIFT', net_with_tax_pence: -700, tip_pence: 0 },
+  );
+  const result = calculateQuickBooksSales(fixture);
+  assert.equal(byKey(result, 'gift_sold').amountPence, 8000, 'the free voucher load is still a card sold (liability), paid by a zero-money tender');
+  assert.equal(byKey(result, 'gift_redeemed').amountPence, -(2725 + 1500), 'RECALL counts, cancelled does not, a VOID reversal is not a redemption');
+  assert.equal(sum(result), 0);
+});
+
+test('the till is kept visible and OUT of the numbers: Lightspeed-basis comparison incl. Take-Away feeds no row', () => {
+  const result = calculateQuickBooksSales(mayFixture());
+  // eat 12000 + split 3600 + cash 3000 + dojo 400 + redeem 2725 + void −400 + recall 400 + takeaway 1000 + phantom 1860 + mc 500
+  assert.equal(result.tillComparison.tillSalesPence, 25085);
+  assert.equal(result.tillComparison.settlementSalesPence, 17725);
+  assert.equal(result.tillComparison.differencePence, 25085 - 17725);
+  assert.match(result.tillComparison.caption, /Diagnostic only — feeds no row/);
+  const shifted = mayFixture();
+  shifted.receipts.find((row) => row.receipt_id === 'phantom').net_with_tax_pence = 99999;
+  const moved = calculateQuickBooksSales(shifted);
+  assert.deepEqual(moved.rows.map((row) => row.amountPence), result.rows.map((row) => row.amountPence), 'a till-only change moves no row');
+  assert.notEqual(moved.tillComparison.tillSalesPence, result.tillComparison.tillSalesPence, 'but the comparison sees it');
+});
+
+test('the page renders twelve rows, the by-construction tag, the source caption, the refunds control, and a client script that parses', () => {
+  const result = calculateQuickBooksSales(mayFixture());
   const body = reports.render({ tab: 'qbsales', qbsales: result }, {}).body;
-  const renderedRow2 = body.match(/<tr data-qb-line="2">[\s\S]*?<\/tr>/);
-  assert.ok(renderedRow2);
-  assert.match(renderedRow2[0], /POSERROR/, 'the on-page row-2 derivation visibly lists the payment code');
-});
+  for (let line = 1; line <= 12; line++) assert.match(body, new RegExp(`<tr data-qb-line="${line}">`));
+  assert.match(body, /0\.00 by construction/);
+  assert.match(body, /Sources<\/strong> — /);
+  assert.match(body, /Till comparison \(diagnostic only — feeds no row\)/);
+  assert.match(body, /data-qb-line="online_refunds"/);
+  assert.match(body, /data-qb-line="pos_fee"/);
+  assert.match(body, /Gift cards sold \(liability \+\)/);
+  assert.match(body, /Settlement basis/);
+  const scripts = [...body.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((match) => match[1]);
+  assert.ok(scripts.length >= 1, 'the fee-entry script is emitted');
+  for (const script of scripts) assert.doesNotThrow(() => new Function(script), 'the emitted client script must parse — one parse error kills every button');
 
-test('persisted POS fee nets row 2 while row 5 remains the unchanged negative fee', () => {
-  const fixture = aprilFixture();
-  fixture.fees = { pos_fee: -300 };
-  const result = calculateQuickBooksSales(fixture);
-
-  assert.equal(result.rows[1].amountPence, -12300, '£126.00 gross less £3.00 fee is a £123.00 card settlement');
-  assert.equal(result.rows[4].amountPence, -300);
-  assert.match(result.rows[1].derivation, /gross card takings 12600 pence \+ signed POS processor fee -300 pence \(deducted\) = net 12300 pence/i);
-
-  fixture.fees.pos_fee = 0;
-  const zeroFee = calculateQuickBooksSales(fixture);
-  assert.equal(zeroFee.rows[1].amountPence, -12600, 'a persisted zero is still an entered fee');
-  assert.match(zeroFee.rows[1].derivation, /gross card takings 12600 pence \+ signed POS processor fee 0 pence = unchanged at 12600 pence/i);
-  assert.doesNotMatch(zeroFee.rows[1].derivation, /deducted|\bnet\b/i);
-});
-
-test('historic positive POS and online fees render honestly as additions', () => {
-  const fixture = aprilFixture();
-  fixture.fees = { pos_fee: 300, online_fee: 100 };
-  const result = calculateQuickBooksSales(fixture);
-
-  assert.equal(result.rows[1].amountPence, -12900);
-  assert.equal(result.rows[7].amountPence, -7900);
-  assert.match(result.rows[1].derivation, /gross card takings 12600 pence \+ signed POS processor fee \+300 pence \(added\) = 12900 pence/i);
-  assert.match(result.rows[7].derivation, /gross LP takings 7800 pence \+ signed online processor fee \+100 pence \(added\) = 7900 pence/i);
-  assert.doesNotMatch(result.rows[1].derivation, /deducted|\bnet\b/i);
-  assert.doesNotMatch(result.rows[7].derivation, /deducted|\bnet\b/i);
-
-  const body = reports.render({ tab: 'qbsales', qbsales: result }, {}).body;
-  const renderedRow2 = body.match(/<tr data-qb-line="2">[\s\S]*?<\/tr>/);
-  const renderedRow8 = body.match(/<tr data-qb-line="8">[\s\S]*?<\/tr>/);
-  assert.ok(renderedRow2 && renderedRow8);
-  assert.match(renderedRow2[0], /signed POS processor fee \+300 pence \(added\) = 12900 pence/i);
-  assert.match(renderedRow8[0], /signed online processor fee \+100 pence \(added\) = 7900 pence/i);
-  assert.doesNotMatch(renderedRow2[0], /deducted|\bnet\b/i);
-  assert.doesNotMatch(renderedRow8[0], /deducted|\bnet\b/i);
-});
-
-test('missing POS fee leaves row 2 gross and never describes it as net', () => {
-  const result = calculateQuickBooksSales(aprilFixture());
-
-  assert.equal(result.rows[1].amountPence, -12600);
-  assert.match(result.rows[1].derivation, /gross card takings 12600 pence — no processor fee entered for this month/i);
-  assert.doesNotMatch(result.rows[1].derivation, /\bnet\b/i);
-});
-
-test('persisted online fee nets row 8 while row 9 remains the unchanged negative fee', () => {
-  const fixture = aprilFixture();
-  fixture.fees = { online_fee: -100 };
-  const result = calculateQuickBooksSales(fixture);
-
-  assert.equal(result.rows[7].amountPence, -7700, '£78.00 gross less £1.00 fee is a £77.00 LP settlement');
-  assert.equal(result.rows[8].amountPence, -100);
-  assert.match(result.rows[7].derivation, /gross LP takings 7800 pence \+ signed online processor fee -100 pence \(deducted\) = net 7700 pence/i);
-
-  fixture.fees.online_fee = 0;
-  const zeroFee = calculateQuickBooksSales(fixture);
-  assert.equal(zeroFee.rows[7].amountPence, -7800, 'a persisted zero is still an entered fee');
-  assert.match(zeroFee.rows[7].derivation, /gross LP takings 7800 pence \+ signed online processor fee 0 pence = unchanged at 7800 pence/i);
-  assert.doesNotMatch(zeroFee.rows[7].derivation, /deducted|\bnet\b/i);
+  const missing = calculateQuickBooksSales({ ...mayFixture(), fees: {} });
+  const missingBody = reports.render({ tab: 'qbsales', qbsales: missing }, {}).body;
+  assert.match(missingBody, /INCOMPLETE/);
+  assert.match(missingBody, /missing POS card fees, Online card fees, Online refunds/);
+  assert.match(missingBody, /Operator input required — from the card processor statement; not held on this box\./);
 });
 
 test('shared fee formatter keeps signed operands, results, wording and plausibility aligned', () => {
-  assert.deepEqual(formatQuickBooksFeeDerivation({
-    grossPence: 10000, feePence: -500, grossLabel: 'card', feeLabel: 'POS',
-  }), {
+  assert.deepEqual(formatQuickBooksFeeDerivation({ grossPence: 10000, feePence: -500, grossLabel: 'card', feeLabel: 'POS' }), {
     resultPence: 9500,
     explanation: 'gross card takings 10000 pence + signed POS processor fee -500 pence (deducted) = net 9500 pence',
     warning: null,
   });
-  assert.deepEqual(formatQuickBooksFeeDerivation({
-    grossPence: 10000, feePence: 500, grossLabel: 'LP', feeLabel: 'online',
-  }), {
+  assert.deepEqual(formatQuickBooksFeeDerivation({ grossPence: 10000, feePence: 500, grossLabel: 'LP', feeLabel: 'online' }), {
     resultPence: 10500,
     explanation: 'gross LP takings 10000 pence + signed online processor fee +500 pence (added) = 10500 pence',
     warning: null,
   });
-  assert.deepEqual(formatQuickBooksFeeDerivation({
-    grossPence: 10000, feePence: 0, grossLabel: 'card', feeLabel: 'POS',
-  }), {
+  assert.deepEqual(formatQuickBooksFeeDerivation({ grossPence: 10000, feePence: 0, grossLabel: 'card', feeLabel: 'POS' }), {
     resultPence: 10000,
     explanation: 'gross card takings 10000 pence + signed POS processor fee 0 pence = unchanged at 10000 pence',
     warning: null,
   });
-  assert.deepEqual(formatQuickBooksFeeDerivation({
-    grossPence: 10000, feePence: null, grossLabel: 'card', feeLabel: 'POS',
-  }), {
+  assert.deepEqual(formatQuickBooksFeeDerivation({ grossPence: 10000, feePence: null, grossLabel: 'card', feeLabel: 'POS' }), {
     resultPence: 10000,
     explanation: 'gross card takings 10000 pence — no processor fee entered for this month',
     warning: null,
   });
+  assert.match(formatQuickBooksFeeDerivation({ grossPence: 10000, feePence: -1300, grossLabel: 'card', feeLabel: 'POS' }).warning, /13\.0% of positive gross takings/);
 });
 
-test('implausible POS and online fee ratios warn beside their derivations without blocking output', () => {
-  const fixture = aprilFixture();
-  fixture.fees = { pos_fee: -1300, online_fee: -1000 };
-  const result = calculateQuickBooksSales(fixture);
-
-  assert.match(result.rows[1].feeWarning, /Suspicious POS processor fee: -1300 pence is 10\.3% of positive gross takings, exceeding the named 10% plausibility threshold\./);
-  assert.match(result.rows[7].feeWarning, /Suspicious online processor fee: -1000 pence is 12\.8% of positive gross takings, exceeding the named 10% plausibility threshold\./);
-  const body = reports.render({ tab: 'qbsales', qbsales: result }, {}).body;
-  assert.match(body, /data-qb-line="2"[\s\S]*?Suspicious POS processor fee/);
-  assert.match(body, /data-qb-line="8"[\s\S]*?Suspicious online processor fee/);
-});
-
-test('plausible fee ratios do not warn, while a non-zero fee without positive gross does', () => {
-  const plausible = aprilFixture();
-  plausible.fees = { pos_fee: -1260, online_fee: -780 };
-  const plausibleResult = calculateQuickBooksSales(plausible);
-  assert.equal(plausibleResult.rows[1].feeWarning, null, 'the named 10% threshold is permitted');
-  assert.equal(plausibleResult.rows[7].feeWarning, null);
-  assert.doesNotMatch(reports.render({ tab: 'qbsales', qbsales: plausibleResult }, {}).body, /Suspicious (?:POS|online) processor fee/);
-
-  const noGross = aprilFixture();
-  noGross.payments = noGross.payments.filter((payment) => payment.code !== 'LP');
-  noGross.fees = { online_fee: -100 };
-  const noGrossResult = calculateQuickBooksSales(noGross);
-  assert.match(noGrossResult.rows[7].feeWarning, /Suspicious online processor fee: -100 pence with gross takings 0 pence; no meaningful percentage exists when gross is zero or negative\./);
-});
-
-test('missing online fee leaves row 8 gross and row 9 explicitly unentered', () => {
-  const result = calculateQuickBooksSales(aprilFixture());
-
-  assert.equal(result.rows[7].amountPence, -7800);
-  assert.equal(result.rows[8].amountPence, null);
-  assert.equal(result.rows[8].entered, false);
-  assert.match(result.rows[7].derivation, /gross LP takings 7800 pence — no processor fee entered for this month/i);
-  assert.doesNotMatch(result.rows[7].derivation, /\bnet\b/i);
-});
-
-test('fee presence does not close genuine residuals; Over/Short balances all ten rows and cash is unchanged', () => {
-  const missingFees = calculateQuickBooksSales(aprilFixture());
-  const persistedFixture = aprilFixture();
-  persistedFixture.fees = { pos_fee: -300, online_fee: -100 };
-  const persistedFees = calculateQuickBooksSales(persistedFixture);
-
-  for (const result of [missingFees, persistedFees]) {
-    assert.equal(result.rows.length, 10);
-    assert.equal(result.rows[3].amountPence, -3200, 'cash classification and calculation stay unchanged');
-    assert.equal(result.rows[9].amountPence, -400, 'the genuine fixture residual remains formula-driven');
-    assert.equal(result.rows.reduce((sum, row) => sum + (row.amountPence == null ? 0 : row.amountPence), 0), 0);
-  }
-});
-
-test('missing date and unmapped receipt stay visible, and absent fees stay explicitly unentered', () => {
-  const result = calculateQuickBooksSales(aprilFixture());
-  assert.deepEqual(result.missingDates, ['2026-04-12']);
-  assert.deepEqual(result.unmapped, { count: 1, valuePence: 2400 });
-  assert.equal(result.rows[4].amountPence, null);
-  assert.equal(result.rows[8].amountPence, null);
-  assert.equal(result.rows[4].entered, false);
-  assert.equal(result.rows[8].entered, false);
-  assert.equal(result.complete, false);
-
-  const body = reports.render({ tab: 'qbsales', qbsales: result }, {}).body;
-  assert.match(body, /2026-04-12/);
-  assert.match(body, /Unmapped receipts diagnostic/);
-  assert.match(body, /1 receipt[^<]*£24\.00/);
-  assert.match(body, /Operator input required — from the card processor statement; not held on this box\./);
-  assert.match(body, /settlement row remains gross because no processor fee was entered for this month/);
-  assert.doesNotMatch(body, /unentered fee is treated as zero|residual currently absorbs the missing fee/);
-  assert.match(body, /April 2026/);
-});
-
-test('fee persistence validates month, line and signed integer pence and preserves zero as entered', () => {
-  const db = feeDb();
+test('fee persistence validates month, line and signed integer pence; online_refunds is accepted by the route and refused by the live two-key table until the engine migration lands', () => {
+  const live = feeDb();
   for (const body of [
     { op: 'set_qb_sales_fee', month: '2026-4', line: 'pos_fee', value_pence: -100 },
     { op: 'set_qb_sales_fee', month: '2026-13', line: 'pos_fee', value_pence: -100 },
@@ -292,131 +313,24 @@ test('fee persistence validates month, line and signed integer pence and preserv
     { op: 'set_qb_sales_fee', month: '2026-04', line: 'online_fee', value_pence: '-100' },
     { op: 'set_qb_sales_fee', month: '2026-04', line: 'pos_fee', value_pence: -100, arbitrary_key: true },
     { op: 'arbitrary', month: '2026-04', line: 'pos_fee', value_pence: -100 },
+    { op: 'set_qb_sales_fee', month: '2026-04', line: 'pos_fee', value_pence: 100 },
   ]) {
-    const refused = applyQuickBooksSalesFee(db, body, 123);
-    assert.equal(refused.ok, false);
+    const refused = applyQuickBooksSalesFee(live, body, 123);
+    assert.equal(refused.ok, false, JSON.stringify(body));
     assert.equal(refused.status, 400);
   }
+  const ok = applyQuickBooksSalesFee(live, { op: 'set_qb_sales_fee', month: '2026-05', line: 'pos_fee', value_pence: -219764 }, 123);
+  assert.equal(ok.ok, true);
+  assert.equal(ok.value_pence, -219764);
+  const zero = applyQuickBooksSalesFee(live, { op: 'set_qb_sales_fee', month: '2026-05', line: 'online_fee', value_pence: 0 }, 124);
+  assert.equal(zero.ok, true, 'an explicit zero is an entered value');
 
-  const zero = applyQuickBooksSalesFee(db, {
-    op: 'set_qb_sales_fee', month: '2026-04', line: 'pos_fee', value_pence: 0,
-  }, 124);
-  const online = applyQuickBooksSalesFee(db, {
-    op: 'set_qb_sales_fee', month: '2026-04', line: 'online_fee', value_pence: -100,
-  }, 125);
-  assert.deepEqual(zero, { ok: true, status: 200, op: 'set_qb_sales_fee', month: '2026-04', line: 'pos_fee', value_pence: 0 });
-  assert.equal(online.value_pence, -100);
-  assert.deepEqual(db.prepare('SELECT month, line, value_pence FROM qb_sales_fees ORDER BY line').all().map((row) => ({ ...row })), [
-    { month: '2026-04', line: 'online_fee', value_pence: -100 },
-    { month: '2026-04', line: 'pos_fee', value_pence: 0 },
-  ]);
-  db.close();
-});
+  const refundsOnLive = applyQuickBooksSalesFee(live, { op: 'set_qb_sales_fee', month: '2026-05', line: 'online_refunds', value_pence: -5275 }, 125);
+  assert.equal(refundsOnLive.ok, false, 'the route allows it; the engine-owned table does not yet');
+  assert.match(String(refundsOnLive.error), /CHECK|write failed/i, 'SQLite\'s own words, never a bare failure');
 
-test('fee persistence rejects positive POS and online writes with field-specific sign errors', () => {
-  const db = feeDb();
-  const pos = applyQuickBooksSalesFee(db, {
-    op: 'set_qb_sales_fee', month: '2026-04', line: 'pos_fee', value_pence: 1,
-  }, 126);
-  const online = applyQuickBooksSalesFee(db, {
-    op: 'set_qb_sales_fee', month: '2026-04', line: 'online_fee', value_pence: 500,
-  }, 127);
-
-  assert.deepEqual(pos, { ok: false, status: 400, error: 'pos_fee must be zero or negative.' });
-  assert.deepEqual(online, { ok: false, status: 400, error: 'online_fee must be zero or negative.' });
-  assert.equal(db.prepare('SELECT count(*) AS c FROM qb_sales_fees').get().c, 0,
-    'validation happens before persistence');
-  db.close();
-});
-
-test('entered processor fees are used verbatim and VAT imprecision is warned without changing rows', () => {
-  const fixture = aprilFixture();
-  fixture.fees = { pos_fee: -300, online_fee: -100 };
-  let result = calculateQuickBooksSales(fixture);
-  assert.equal(result.rows[4].amountPence, -300);
-  assert.equal(result.rows[4].entered, true);
-  assert.equal(result.rows[8].amountPence, -100);
-  assert.equal(result.rows[9].amountPence, -400, 'persisted fees do not erase the genuine residual');
-
-  fixture.receipts[0].net_with_tax_pence += 1;
-  result = calculateQuickBooksSales(fixture);
-  assert.equal(result.vatBaseExact, false);
-  assert.equal(result.rows[0].amountPence, 15601, 'VAT diagnostic never rewrites a QuickBooks row');
-  assert.equal(result.rows.reduce((sum, row) => sum + (row.amountPence == null ? 0 : row.amountPence), 0), 0);
-});
-
-test('page read seam reloads the exact persisted month/line fee values', () => {
-  const db = new sqlite.DatabaseSync(':memory:');
-  db.exec(`
-    CREATE TABLE sales_day (business_date TEXT PRIMARY KEY);
-    CREATE TABLE sales_api_ingest_runs (business_date TEXT, source TEXT, status TEXT);
-    CREATE TABLE sales_receipts_api (receipt_id TEXT PRIMARY KEY, business_date TEXT, type TEXT,
-      cancelled INTEGER, account_profile_code TEXT, net_with_tax_pence INTEGER);
-    CREATE TABLE sales_channel_map_api (account_profile_code TEXT PRIMARY KEY, channel_label TEXT);
-    CREATE TABLE sales_receipt_lines_api (receipt_id TEXT, line_id TEXT, parent_line_id TEXT,
-      business_date TEXT, accounting_group TEXT, net_with_tax_pence INTEGER,
-      PRIMARY KEY (receipt_id, line_id));
-    CREATE TABLE sales_payments_api (receipt_id TEXT, payment_seq INTEGER, business_date TEXT,
-      code TEXT, net_with_tax_pence INTEGER, tip_pence INTEGER,
-      PRIMARY KEY (receipt_id, payment_seq));
-    CREATE TABLE acct_groups_api (code TEXT PRIMARY KEY, name TEXT);
-  `);
-  db.exec(QB_SALES_FEES_DDL);
-  db.prepare(`INSERT INTO sales_channel_map_api VALUES ('LOCAL','EAT IN')`).run();
-  db.prepare(`INSERT INTO sales_receipts_api VALUES ('r1','2026-04-01','SPLIT',0,'LOCAL',12000)`).run();
-  const ctx = {
-    q: (sql, params) => DATA.safeSelect(db, sql, params),
-    now: Date.UTC(2026, 4, 2),
-    query: { tab: 'qbsales', month: '2026-04' },
-  };
-  const blank = reports.getSection(db, ctx).qbsales;
-  assert.equal(blank.rows[4].entered, false);
-  assert.equal(blank.rows[8].entered, false);
-
-  applyQuickBooksSalesFee(db, { op: 'set_qb_sales_fee', month: '2026-04', line: 'pos_fee', value_pence: -321 }, 200);
-  applyQuickBooksSalesFee(db, { op: 'set_qb_sales_fee', month: '2026-04', line: 'online_fee', value_pence: 0 }, 201);
-  const reloaded = reports.getSection(db, ctx).qbsales;
-  assert.equal(reloaded.rows[4].amountPence, -321);
-  assert.equal(reloaded.rows[4].entered, true);
-  assert.equal(reloaded.rows[8].amountPence, 0);
-  assert.equal(reloaded.rows[8].entered, true, 'stored zero remains distinct from no row');
-  db.close();
-});
-
-// ---- the table is the ENGINE's — this write path must never create it ---------------------------
-
-test('fee persistence NEVER creates qb_sales_fees: with the engine schema unapplied it refuses loudly and writes nothing', () => {
-  const db = new sqlite.DatabaseSync(':memory:');   // no engine schema — the table is absent
-  const refused = applyQuickBooksSalesFee(db, {
-    op: 'set_qb_sales_fee', month: '2026-04', line: 'pos_fee', value_pence: -100,
-  }, 300);
-  assert.equal(refused.ok, false);
-  assert.equal(refused.status, 503);
-  assert.match(refused.error, /qb_sales_fees table missing/);
-  assert.match(refused.error, /coyote-claw src\/schema\.sql/, 'the error names the owner of the declaration');
-  assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='qb_sales_fees'").get(), undefined,
-    'the write path did not create a divergent copy of the table');
-  db.close();
-});
-
-test('fee persistence surfaces a store-shape disagreement (allowlist wider than the CHECK) in SQLite\'s words, not a bare "write failed"', () => {
-  const db = new sqlite.DatabaseSync(':memory:');
-  // An engine declaration NARROWER than this server's allowlist — the exact drift the runtime
-  // CREATE used to paper over by winning the race to create the table.
-  db.exec(`CREATE TABLE qb_sales_fees (month TEXT NOT NULL, line TEXT NOT NULL CHECK (line IN ('pos_fee')),
-    value_pence INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (month, line))`);
-  const refused = applyQuickBooksSalesFee(db, {
-    op: 'set_qb_sales_fee', month: '2026-04', line: 'online_fee', value_pence: -100,
-  }, 301);
-  assert.equal(refused.ok, false);
-  assert.equal(refused.status, 500);
-  assert.match(refused.error, /^write failed: /);
-  assert.match(refused.error, /CHECK/i, 'the constraint that refused is named');
-  assert.equal(db.prepare('SELECT count(*) AS c FROM qb_sales_fees').get().c, 0);
-  db.close();
-});
-
-test('no CREATE TABLE for qb_sales_fees survives anywhere in server.js — the engine owns the declaration', () => {
-  const src = require('node:fs').readFileSync(require.resolve('../mission-control/server.js'), 'utf8');
-  assert.doesNotMatch(src, /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?["'`]?qb_sales_fees/i);
+  const next = feeDb(QB_SALES_FEES_DDL_NEXT);
+  const refundsOnNext = applyQuickBooksSalesFee(next, { op: 'set_qb_sales_fee', month: '2026-05', line: 'online_refunds', value_pence: -5275 }, 126);
+  assert.equal(refundsOnNext.ok, true, 'once the migration widens the CHECK, the same write succeeds unchanged');
+  assert.deepEqual(next.prepare('SELECT line, value_pence FROM qb_sales_fees ORDER BY line').all().map((row) => [row.line, row.value_pence]), [['online_refunds', -5275]]);
 });

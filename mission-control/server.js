@@ -565,7 +565,10 @@ function openWritableDatabase() {
 // Google), so even "responded" can't touch a Google review (its lifecycle is the Telegram tap).
 const REVIEW_ACTION_OPS = new Set(['mark_responded', 'skip', 'snooze', 'log_action']);
 const QB_SALES_FEE_OPS = new Set(['set_qb_sales_fee']);
-const QB_SALES_FEE_LINES = new Set(['pos_fee', 'online_fee']);
+// Operator inputs for the QuickBooks Sales Entry tab, all signed ≤ 0. `online_refunds` was added
+// 2026-09-04 (settlement basis); the ENGINE's qb_sales_fees CHECK must accept it too — until that
+// migration lands the table refuses it and the route reports SQLite's words, never a bare failure.
+const QB_SALES_FEE_LINES = new Set(['pos_fee', 'online_fee', 'online_refunds']);
 
 // qb_sales_fees is DECLARED BY THE ENGINE — coyote-claw src/schema.sql, the canonical table list,
 // applied idempotently at every openDb. Mission Control WRITES it and never creates it. Until
@@ -593,7 +596,7 @@ function applyQuickBooksSalesFee(db, body, now) {
   }
   const line = typeof body.line === 'string' ? body.line : '';
   if (!QB_SALES_FEE_LINES.has(line)) {
-    return { ok: false, status: 400, error: 'line must be pos_fee or online_fee' };
+    return { ok: false, status: 400, error: 'line must be pos_fee, online_fee or online_refunds' };
   }
   if (typeof body.value_pence !== 'number' || !Number.isSafeInteger(body.value_pence)) {
     return { ok: false, status: 400, error: 'value_pence must be a signed integer' };
