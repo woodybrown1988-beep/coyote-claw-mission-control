@@ -38,27 +38,35 @@ function rows(res) {
 }
 
 // A blocked job's wait starts when it ENTERED the status, not whenever the mutable job row was
-// last touched. The append-only status_change trail is the stable clock when present; updated_at
-// is retained for older records that predate a valid transition event.
+// last touched. In particular, renewLease() deliberately updates jobs.updated_at while a job is
+// parked at either human gate (LEASEABLE_STATUSES includes them), so updated_at is NEVER a clock
+// for a held age — it would render every parked gate as "held 1 min" for ever. The append-only
+// status_change trail is the stable clock; when a job predates that trail, the gate's own opening
+// event (pr_opened / spec_submitted / plan_submitted — all engine-written, append-only) is the
+// honest fallback. With neither, the card says "held" and carries no number.
+const GATE_ENTRY_KINDS = new Set(['pr_opened', 'spec_submitted', 'plan_submitted']);
 function deriveBlockedHeldAge(job, eventRows, now) {
   if (!job || !HELD_STATUSES.has(job.status) || !Number.isFinite(now)) return null;
+  const valid = (event) => event && event.job_id === job.id
+    && typeof event.created_at === 'number' && Number.isFinite(event.created_at)
+    && event.created_at >= 0 && event.created_at <= now;
   const matching = [];
+  const entries = [];
   for (const event of Array.isArray(eventRows) ? eventRows : []) {
-    if (!event || event.job_id !== job.id || event.kind !== 'status_change') continue;
+    if (!valid(event)) continue;
+    if (GATE_ENTRY_KINDS.has(String(event.kind || ''))) { entries.push(event); continue; }
+    if (event.kind !== 'status_change') continue;
     let detail = event.detail;
     if (typeof detail === 'string') {
       try { detail = JSON.parse(detail); } catch (_) { detail = null; }
     }
     if (!detail || typeof detail !== 'object' || detail.to !== job.status) continue;
-    if (typeof event.created_at !== 'number' || !Number.isFinite(event.created_at)
-      || event.created_at < 0 || event.created_at > now) continue;
     matching.push(event);
   }
-  matching.sort((a, b) => (b.created_at - a.created_at) || (num(b.id) - num(a.id)));
-  // The immutable transition trail remains the preferred clock. Older jobs can legitimately lack
-  // that event, though, so updated_at is the honest fallback rather than an operator-facing error.
-  const startedAt = matching.length ? matching[0].created_at : nullableInt(job.updated_at);
-  const age = startedAt === null ? NaN : now - startedAt;
+  const latest = (list) => list.sort((a, b) => (b.created_at - a.created_at) || (num(b.id) - num(a.id)))[0];
+  const clock = matching.length ? latest(matching) : (entries.length ? latest(entries) : null);
+  if (!clock) return null;
+  const age = now - clock.created_at;
   return Number.isFinite(age) && age >= 0 ? age : null;
 }
 
@@ -450,6 +458,19 @@ module.exports = {
       const cancelledIds = new Set(
         rows(q(`SELECT DISTINCT job_id FROM job_events WHERE kind = 'cancelled'`)).map((r) => r.job_id),
       );
+      // WORKING elapsed: worker_heartbeat carries NO phase-start column, and its updated_at moves on
+      // every 30s beat — so "on it for N min" can only come from the job's own append-only trail: the
+      // latest gate approval, spec/build submission or status change at or before now (a build starts
+      // the moment its spec is approved; a spec turn starts at the claim). Absent that, the card says
+      // "working now" and carries no number — never "0 min" from a timestamp that just got refreshed.
+      const hbJobIds = [...new Set(hb.map((r) => (r.job_id == null ? '' : String(r.job_id))).filter(Boolean))];
+      const workStartByJob = new Map(hbJobIds.length ? rows(q(
+        `SELECT job_id, MAX(created_at) started_at FROM job_events
+          WHERE job_id IN (${hbJobIds.map(() => '?').join(',')})
+            AND kind IN ('gate_decision','spec_submitted','build_submitted','status_change','pr_opened','claimed')
+            AND created_at <= ?
+          GROUP BY job_id`, [...hbJobIds, now],
+      )).map((r) => [String(r.job_id), nullableInt(r.started_at)]) : []);
       const slots = new Map(); // key → { label, fresh, heartbeat, jobs, inFlightCount }
       const workerLoad = (workerName, ownerId) => {
         if (!workerLoadsKnown) return null;
@@ -484,7 +505,7 @@ module.exports = {
           workerName: wn || '',
           jobId: r.job_id == null ? '' : String(r.job_id),
           phase: r.phase == null ? '' : String(r.phase).trim(),
-          startedAt: nullableInt(r.updated_at),
+          startedAt: r.job_id == null ? null : (workStartByJob.get(String(r.job_id)) ?? null),
           lastBeatAt,
           fresh,
         };
@@ -614,10 +635,15 @@ module.exports = {
         c.waitPill = { tone: 'you', text: staleGate ? 'Gate record stale' : cp.pill };
         if (!staleGate) c.button = { label: cp.btn };
         c.talkJobId = job.id; // "Talk about this" → MC Chat, where close/retask live
-        c.time = job.status === 'awaiting_signoff'
+        // HONESTY ABOUT WHAT THIS BOARD CAN SEE (2026-09-04): nothing on the box writes a PR's merged/
+        // closed state today — a merge made outside the Telegram tap never reaches the job trail. So
+        // a gate that is NOT provably stale is not thereby provably live; say so next to the tap rather
+        // than let "Needs your merge tap" imply the PR is still open.
+        const prNote = pr && !staleGate ? ' · PR #' + pr.number + ' — merged/closed state is not tracked on this box' : '';
+        c.time = (job.status === 'awaiting_signoff'
           ? heldAge === null ? 'waiting on the operator' : 'waiting on the operator · ' + fmtDur(heldAge)
           : heldAge === null ? 'held'
-            : 'held ' + S.agoLabel(heldAge);
+            : 'held ' + S.agoLabel(heldAge)) + prNote;
         if (heldAge !== undefined && heldAge !== null) c._ageMs = heldAge;
         c._trackJob = job.id;
         c._trackMode = 'gate';
@@ -787,9 +813,10 @@ module.exports = {
         const heldAge = HELD_STATUSES.has(j.status) ? heldAgeByJob.get(j.id) : undefined;
         const pr = j.status === 'awaiting_signoff' ? gatePrByJob.get(j.id) : null;
         const staleGate = pr && (pr.state === 'merged' || pr.state === 'closed');
-        const waiting = j.status === 'awaiting_signoff'
+        const prNote = pr && !staleGate ? ' · PR #' + pr.number + ' — merged/closed state is not tracked on this box' : '';
+        const waiting = (j.status === 'awaiting_signoff'
           ? heldAge === null ? 'waiting on the operator' : 'waiting on the operator · ' + fmtDur(heldAge)
-          : heldAge === null ? 'held' : 'held ' + S.agoLabel(heldAge);
+          : heldAge === null ? 'held' : 'held ' + S.agoLabel(heldAge)) + prNote;
         const blocked = {
           col: 'blocked', variant: 'you',
           task: staleGate

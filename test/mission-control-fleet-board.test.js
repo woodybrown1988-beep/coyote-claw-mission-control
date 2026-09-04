@@ -127,8 +127,11 @@ test('WORKING uses a fresh build heartbeat and its phase/job start clock', () =>
       jobId: 'build-job-25',
       phase: 'build',
       lastBeatAt: NOW - 10_000,
-      startedAt: NOW - 25 * MINUTE,
+      startedAt: NOW - 10_000, // updated_at moves with every beat in production — it is NOT the clock
     });
+    // The build started when its spec was approved: that append-only event is the elapsed clock.
+    db.prepare(`INSERT INTO job_events (job_id, created_at, kind, actor, detail) VALUES (?, ?, 'gate_decision', 'agent', ?)`)
+      .run('build-job-25', NOW - 25 * MINUTE, JSON.stringify({ gate: 'spec', decision: 'approve' }));
 
     const ctx = context(db);
     const section = AGENTS.getSection(db, ctx);
@@ -185,8 +188,10 @@ test('the all-heartbeats query also keeps non-idle Lead work in WORKING', () => 
       jobId: 'lead-job-9',
       phase: 'review',
       lastBeatAt: NOW - 20_000,
-      startedAt: NOW - 9 * MINUTE,
+      startedAt: NOW - 20_000,
     });
+    db.prepare(`INSERT INTO job_events (job_id, created_at, kind, actor, detail) VALUES (?, ?, 'status_change', 'agent', ?)`)
+      .run('lead-job-9', NOW - 9 * MINUTE, JSON.stringify({ from: 'queued', to: 'running' }));
 
     const section = AGENTS.getSection(db, context(db));
     const working = section.columns.find((column) => column.id === 'working').cards;
@@ -280,7 +285,7 @@ test('an open or unknown PR preserves the existing merge-tap behavior', () => {
   }
 });
 
-test('a blocked job without a status_change event uses updated_at for held age', () => {
+test('a blocked job without a status_change event uses its gate-opening event for held age, never updated_at', () => {
   const db = makeDb();
   try {
     addJob(db, {
@@ -295,14 +300,19 @@ test('a blocked job without a status_change event uses updated_at for held age',
     const card = section.columns.find((column) => column.id === 'blocked').cards
       .find((item) => item.talkJobId === 'legacy-gate');
 
-    assert.equal(card.time, 'waiting on the operator · 18m');
-    assert.equal(card._ageMs, 18 * MINUTE);
-    assert.doesNotMatch(AGENTS.render(section, ctx).body, /held age unavailable/);
+    assert.match(card.time, /^waiting on the operator(?! · \d)/,
+      'renewLease() refreshes updated_at on parked jobs, so with no event the card carries no number');
+    db.prepare(`INSERT INTO job_events (job_id, created_at, kind, actor, detail) VALUES (?, ?, 'pr_opened', 'worker', ?)`)
+      .run('legacy-gate', NOW - 18 * MINUTE, JSON.stringify({ number: 63 }));
+    const withOpening = AGENTS.getSection(db, context(db));
+    const again = withOpening.columns.find((column) => column.id === 'blocked').cards.find((item) => item.task && item.task.strong === card.task.strong)
+      || withOpening.columns.find((column) => column.id === 'blocked').cards[0];
+    assert.match(again.time, /^waiting on the operator · 18m/, 'the gate-opening event is the fallback clock');
+    assert.match(again.time, /PR #63 — merged\/closed state is not tracked on this box/, 'an unverified PR says so beside the tap');
   } finally {
     db.close();
   }
 });
-
 test('the fleet board empty copy reflects normal build duration', () => {
   const db = makeDb();
   try {

@@ -179,7 +179,7 @@ test('the seven-day aging group uses status-entry age despite later unrelated wr
   }
 });
 
-test('both blocked statuses show event age while missing or malformed events fall back to updated_at', () => {
+test('both blocked statuses show event age; without a transition event the gate-opening event is the clock, and with neither the card carries no number', () => {
   const db = makeDb();
   try {
     addBlockedJob(db, {
@@ -196,12 +196,25 @@ test('both blocked statuses show event age while missing or malformed events fal
       enteredAt: NOW - 2 * DAY,
       updatedAt: NOW - 20_000,
     });
+    // Predates the status_change trail but carries the engine-written gate-opening event.
+    addBlockedJob(db, {
+      id: 'opened-signoff',
+      title: 'Opened sign-off event',
+      status: 'awaiting_signoff',
+      enteredAt: NOW - 3 * DAY,
+      updatedAt: NOW - 10_000,
+      eventDetail: null,
+    });
+    db.prepare(`INSERT INTO job_events (job_id, created_at, kind, actor, detail) VALUES (?, ?, 'pr_opened', 'worker', ?)`)
+      .run('opened-signoff', NOW - 3 * DAY, JSON.stringify({ number: 9, prUrl: 'https://github.com/x/y/pull/9' }));
+    // renewLease() refreshes updated_at on parked jobs, so a 10-second-old updated_at must NEVER
+    // become "waiting 10s": with no usable event the card says so without a number.
     addBlockedJob(db, {
       id: 'missing-signoff',
       title: 'Missing sign-off event',
       status: 'awaiting_signoff',
       enteredAt: NOW - 4 * DAY,
-      updatedAt: NOW - 3 * DAY,
+      updatedAt: NOW - 10_000,
       eventDetail: null,
     });
     addBlockedJob(db, {
@@ -209,7 +222,7 @@ test('both blocked statuses show event age while missing or malformed events fal
       title: 'Malformed plan event',
       status: 'awaiting_plan_feedback',
       enteredAt: NOW - 5 * DAY,
-      updatedAt: NOW - 4 * DAY,
+      updatedAt: NOW - 10_000,
       eventDetail: '{not-json',
     });
 
@@ -219,18 +232,19 @@ test('both blocked statuses show event age while missing or malformed events fal
 
     assert.equal(byTitle.get('Valid sign-off event').time, 'waiting on the operator · 24h');
     assert.equal(byTitle.get('Valid plan event').time, 'held 2d ago');
-    assert.equal(byTitle.get('Missing sign-off event').time, 'waiting on the operator · 3d');
-    assert.equal(byTitle.get('Missing sign-off event')._ageMs, 3 * DAY);
-    assert.equal(byTitle.get('Malformed plan event').time, 'held 4d ago');
-    assert.equal(byTitle.get('Malformed plan event')._ageMs, 4 * DAY);
+    assert.match(byTitle.get('Opened sign-off event').time, /^waiting on the operator · 3d/);
+    assert.equal(byTitle.get('Opened sign-off event')._ageMs, 3 * DAY);
+    assert.match(byTitle.get('Missing sign-off event').time, /^waiting on the operator(?! ·)/);
+    assert.doesNotMatch(byTitle.get('Missing sign-off event').time, /10s|1 min|waiting on the operator · /);
+    assert.equal(byTitle.get('Malformed plan event').time, 'held');
     assert.doesNotMatch(body, /held age unavailable — missing valid status-change event/);
   } finally {
     db.close();
   }
 });
 
-test('deriveBlockedHeldAge prefers the latest valid event and falls back to updated_at', () => {
-  const job = { id: 'job-1', status: 'awaiting_plan_feedback', updated_at: NOW - 3 * DAY };
+test('deriveBlockedHeldAge prefers the latest valid transition, then the gate-opening event, and never updated_at', () => {
+  const job = { id: 'job-1', status: 'awaiting_plan_feedback', updated_at: NOW - 10_000 };
   const older = {
     id: 1,
     job_id: 'job-1',
@@ -245,20 +259,15 @@ test('deriveBlockedHeldAge prefers the latest valid event and falls back to upda
     kind: 'status_change',
     detail: JSON.stringify({ from: 'running', to: 'awaiting_plan_feedback' }),
   };
+  const opened = { id: 3, job_id: 'job-1', created_at: NOW - 3 * DAY, kind: 'plan_submitted', detail: '{}' };
 
   assert.equal(AGENTS.deriveBlockedHeldAge(job, [older, latest], NOW), 2 * DAY);
-  assert.equal(AGENTS.deriveBlockedHeldAge(job, [], NOW), 3 * DAY);
-  assert.equal(AGENTS.deriveBlockedHeldAge(job, [{ ...latest, detail: '{bad-json' }], NOW), 3 * DAY);
-  assert.equal(AGENTS.deriveBlockedHeldAge(job, [{ ...latest, created_at: NOW + 1 }], NOW), 3 * DAY,
-    'a future transition timestamp is invalid, so the updated_at fallback wins');
+  assert.equal(AGENTS.deriveBlockedHeldAge(job, [older, latest, opened], NOW), 2 * DAY, 'a valid transition beats the opening event');
+  assert.equal(AGENTS.deriveBlockedHeldAge(job, [opened], NOW), 3 * DAY, 'the gate-opening event is the fallback clock');
+  assert.equal(AGENTS.deriveBlockedHeldAge(job, [], NOW), null, 'updated_at is never a clock: renewLease() refreshes it on parked jobs');
+  assert.equal(AGENTS.deriveBlockedHeldAge(job, [{ ...latest, detail: '{bad-json' }], NOW), null);
+  assert.equal(AGENTS.deriveBlockedHeldAge(job, [{ ...latest, created_at: NOW + 1 }, opened], NOW), 3 * DAY,
+    'a future transition timestamp is invalid, so the opening event wins');
   assert.equal(AGENTS.deriveBlockedHeldAge({ ...job, updated_at: null }, [], NOW), null);
-  assert.equal(
-    AGENTS.deriveBlockedHeldAge(
-      { id: 'job-1', status: 'running' },
-      [latest],
-      NOW,
-    ),
-    null,
-    'only the two operator-blocked statuses have a held age',
-  );
+  assert.equal(AGENTS.deriveBlockedHeldAge({ id: 'job-1', status: 'running' }, [latest], NOW), null, 'only held statuses have a held age');
 });
