@@ -349,8 +349,8 @@ const DONUT_COLORS = ['#e44b36', '#67a7ff', '#ffb34d', '#ad8cff', '#56616e', '#7
 // standalone reader and belong to Lightspeed Payments; STR is Storekit. VISA and MC are the retired
 // manual house-card tenders and are NEVER a processor (their 2026 use is gift-card loads keyed on the
 // wrong button) — the residual they leave is reported, not absorbed.
-const QB_LIGHTSPEED_CODES = new Set(['LSPAY_ADYEN_TERMINAL_API_LOCAL', 'POSERROR', 'POS ERROR - PAID ON DOJO']);
-const QB_STOREKIT_CODES = new Set(['STR']);
+const QB_LIGHTSPEED_CODES = new Set(['LSPAY_ADYEN_TERMINAL_API_LOCAL', 'LSPAY_ADYEN_TERMINAL_API_LOCAL_MOTO', 'POSERROR', 'POS ERROR - PAID ON DOJO']);
+const QB_STOREKIT_CODES = new Set(['STR', 'STOREKITM']);
 const QB_ONLINE_CODES = new Set(['LP']);
 const QB_NEVER_CARD_CODES = new Set(['VISA', 'MC']);
 const QB_CARD_CODES = new Set([...QB_LIGHTSPEED_CODES, ...QB_STOREKIT_CODES]);
@@ -370,6 +370,24 @@ const QB_SETTLEMENT_PROCESSOR_ALIASES = Object.freeze({
   storekit: Object.freeze(['storekit']),
   livepepper: Object.freeze(['livepepper', 'live pepper']),
 });
+// FREE tenders — money never changed hands. 'BLACK FRIDAY*' loaded the promotional bonus (spend £50 get
+// £10, spend £100 get £25; operator 2026-09-05); 'COMPLIMENTARY' is the recommended till payment method for
+// charity and goodwill cards. A card load funded by one of these is a marketing cost AND a liability — never
+// a sale, never a reduction of sales, never cash. A meal paid with one is a comp, outside the receipt.
+const QB_FREE_TENDER_PREFIXES = Object.freeze(['BLACK FRIDAY']);
+const QB_FREE_TENDER_CODES = new Set(['COMPLIMENTARY']);
+const isFreeTender = (code) => QB_FREE_TENDER_CODES.has(code) || QB_FREE_TENDER_PREFIXES.some((prefix) => code.startsWith(prefix));
+// Operator ruling 2026-09-05: nine free gift cards (charities, goodwill) were keyed as CASH sales because the
+// till had no free tender — no cash was received. A classification, not a measurement (the till holds the
+// amounts); the till now has a free tender, so this list never grows.
+const QB_FREE_GIFT_LOAD_RECEIPTS = new Set([
+  'R838148.85968', 'R838148.86868', 'R1038197.1319', 'R1038197.4203', 'R1038197.8290',
+  'R1038197.12425', 'R1038197.12426', 'R1038197.18539', 'R1038197.29748',
+]);
+// Operator ruling 2026-09-05: the free-card treatment applies from this month. Earlier months are NOT
+// restated; their free issuance and the liability outstanding at the cut-in are brought forward as ONE
+// opening position, shown on the cut-in month only.
+const QB_GIFT_TREATMENT_CUT_IN = '2026-05';
 const QB_OPERATOR_INPUTS = ['pos_fee', 'online_fee', 'online_refunds'];
 const QB_FEE_PLAUSIBILITY_THRESHOLD = 0.10;
 
@@ -490,6 +508,21 @@ function calculateQuickBooksSales(input) {
   const payNet = (row) => qbPence(rowValue(row, ['net_with_tax_pence', 'netWithTaxPence']));
   const payTip = (row) => qbPence(rowValue(row, ['tip_pence', 'tipPence']));
   const sumBy = (rows, f) => rows.reduce((sum, row) => sum + f(row), 0);
+  // ---- free gift cards (operator ruling 2026-09-05; from QB_GIFT_TREATMENT_CUT_IN, never restated) ----
+  const giftTreatmentActive = window.month >= QB_GIFT_TREATMENT_CUT_IN;
+  const receiptKey = (row) => String(row.receipt_id || row.receiptId || '');
+  const paymentsByReceipt = new Map();
+  for (const row of paymentRows) {
+    const key = receiptKey(row);
+    if (!paymentsByReceipt.has(key)) paymentsByReceipt.set(key, []);
+    paymentsByReceipt.get(key).push(row);
+  }
+  /** The tender that funded a card load: the other, positive payment on the same TRANSFER receipt. */
+  const fundingOf = (loadRow) => {
+    const other = (paymentsByReceipt.get(receiptKey(loadRow)) || []).find((row) => row !== loadRow && payNet(row) > 0);
+    return other ? paymentCode(other) : null;
+  };
+  const isRuledFreeReceipt = (row) => QB_FREE_GIFT_LOAD_RECEIPTS.has(receiptKey(row));
   const tillBlock = (codes) => {
     const rows = paymentRows.filter((row) => codes.has(paymentCode(row)));
     return { rows, grossPence: sumBy(rows, (row) => payNet(row) + payTip(row)), tipPence: sumBy(rows, payTip) };
@@ -497,7 +530,7 @@ function calculateQuickBooksSales(input) {
   const tillLightspeed = tillBlock(QB_LIGHTSPEED_CODES);
   const tillStorekit = tillBlock(QB_STOREKIT_CODES);
   const tillOnline = tillBlock(QB_ONLINE_CODES);
-  const cashRows = paymentRows.filter((row) => paymentCode(row) === 'CASH');
+  const cashRows = paymentRows.filter((row) => paymentCode(row) === 'CASH' && !(giftTreatmentActive && isRuledFreeReceipt(row)));
   const cashPence = sumBy(cashRows, payNet);                 // tip_pence EXCLUDED — cash tips are not the business's
   const cashTipPence = sumBy(cashRows, payTip);
   const neverCardRows = paymentRows.filter((row) => QB_NEVER_CARD_CODES.has(paymentCode(row)));
@@ -510,7 +543,36 @@ function calculateQuickBooksSales(input) {
     const receipt = receiptById.get(String(row.receipt_id || row.receiptId));
     return payNet(row) > 0 && receipt && notCancelled(receipt) && QB_GIFT_REDEEM_TYPES.has(typeOf(receipt));
   });
-  const giftSoldPence = -sumBy(giftSoldRows, payNet);
+  const freeLoadRows = giftTreatmentActive
+    // a load with no positive payment on its receipt is UNKNOWN, not free: it stays a paid load
+    ? giftSoldRows.filter((row) => { const funding = fundingOf(row); return isRuledFreeReceipt(row) || (funding != null && isFreeTender(funding)); })
+    : [];
+  const freeLoadSet = new Set(freeLoadRows);
+  const paidLoadRows = giftSoldRows.filter((row) => !freeLoadSet.has(row));
+  const freeLoadPence = sumBy(freeLoadRows, (row) => -payNet(row));
+  const freeLoadByTender = {};
+  for (const row of freeLoadRows) {
+    const key = isRuledFreeReceipt(row) ? 'ruled free (keyed as cash)' : (fundingOf(row) || '<no paying tender>');
+    freeLoadByTender[key] = (freeLoadByTender[key] || 0) - payNet(row);
+  }
+  const giftSoldPence = -sumBy(paidLoadRows, payNet);
+  // meals paid with a free voucher are comps (no money; outside the receipt); a tender in NO list is
+  // surfaced by name so money can never vanish silently — the class behind PAYERROR (Dec 2023–Jan 2024).
+  const knownTenderCodes = new Set([...QB_CARD_CODES, ...QB_ONLINE_CODES, ...QB_NEVER_CARD_CODES, 'CASH', 'IKGIFT']);
+  const nonTransferRows = paymentRows.filter((row) => { const receipt = receiptById.get(receiptKey(row)); return !receipt || typeOf(receipt) !== 'TRANSFER'; });
+  const freeVoucherMealRows = nonTransferRows.filter((row) => isFreeTender(paymentCode(row)));
+  const unclassifiedTenders = [...nonTransferRows.filter((row) => { const code = paymentCode(row); return code && !knownTenderCodes.has(code) && !isFreeTender(code); })
+    .reduce((map, row) => { const code = paymentCode(row); const entry = map.get(code) || { code, count: 0, pence: 0 }; entry.count += 1; entry.pence += payNet(row) + payTip(row); map.set(code, entry); return map; }, new Map()).values()]
+    .sort((a, b) => b.pence - a.pence);
+  const ledgerBefore = source.giftLedgerBefore && typeof source.giftLedgerBefore === 'object' ? source.giftLedgerBefore : null;
+  const broughtForward = giftTreatmentActive && window.month === QB_GIFT_TREATMENT_CUT_IN && ledgerBefore ? (() => {
+    const free = qbPence(ledgerBefore.freePence), paid = qbPence(ledgerBefore.paidPence), redeemed = qbPence(ledgerBefore.redeemedPence);
+    const outstanding = free + paid - redeemed;
+    return { asAt: ledgerBefore.asAt || window.from, freeIssuedPence: free, paidLoadsPence: paid, redeemedPence: redeemed, outstandingPence: outstanding,
+      journal: { marketingPence: free, salesIncomePence: outstanding - free, liabilityPence: outstanding } };
+  })() : null;
+  const freeGiftCards = { active: giftTreatmentActive, cutIn: QB_GIFT_TREATMENT_CUT_IN, count: freeLoadRows.length, pence: freeLoadPence, byTender: freeLoadByTender, broughtForward };
+  const freeVoucherMeals = { count: freeVoucherMealRows.length, pence: sumBy(freeVoucherMealRows, (row) => payNet(row) + payTip(row)) };
   const giftRedeemedPence = sumBy(giftRedeemedRows, payNet);
 
   // ---- settlement rows override the till proxy for gross / fee / refunds (never tips) ----
@@ -619,8 +681,10 @@ function calculateQuickBooksSales(input) {
     },
     {
       line: 10, key: 'gift_sold', label: 'Gift cards sold (liability +)', amountPence: giftSoldPence, entered: true,
-      vatTreatment: 'Outside scope · liability', includedCount: giftSoldRows.length,
-      derivation: `${giftSoldRows.length} card load(s): IKGIFT negative on TRANSFER receipts, any paying tender including the free-voucher codes; magnitude ${giftSoldPence} pence credits Gift Card Liability.`,
+      vatTreatment: 'Outside scope · liability', includedCount: paidLoadRows.length,
+      derivation: giftTreatmentActive
+        ? `${paidLoadRows.length} PAID card load(s): IKGIFT negative on TRANSFER receipts funded by a paying tender; magnitude ${giftSoldPence} pence credits Gift Card Liability. ${freeLoadRows.length} free load(s), ${freeLoadPence} pence, are outside this receipt — see the free gift cards memo (marketing, not sales).`
+        : `${giftSoldRows.length} card load(s): IKGIFT negative on TRANSFER receipts, any paying tender including the free-voucher codes; magnitude ${giftSoldPence} pence credits Gift Card Liability. (Before ${QB_GIFT_TREATMENT_CUT_IN}: not restated.)`,
       sourceGrain: 'till · sales_payments_api IKGIFT on TRANSFER', window: sourceWindow,
     },
     {
@@ -665,6 +729,7 @@ function calculateQuickBooksSales(input) {
   return {
     month: window.month, from: window.from, to: window.to, rows, subtotalPence, balancePence,
     missingDates, unmapped, vatGrossPence, vatBasePence, vatBaseExact, feeMissing, sources, sourceCaption, tillComparison,
+    freeGiftCards, freeVoucherMeals, unclassifiedTenders,
     blocks: {
       lightspeed: { grossPence: lightspeedGross.pence, tipPence: tillLightspeed.tipPence, salesPence: lightspeedSalesPence, source: lightspeedGross.source },
       storekit: { grossPence: storekitGross.pence, tipPence: tillStorekit.tipPence, salesPence: storekitSalesPence, source: storekitGross.source },
@@ -1499,7 +1564,31 @@ function buildQuickBooksSales(q, month) {
     refundPence: row.refund_pence == null ? null : -Math.abs(num(row.refund_pence) || 0),
     rows: num(row.n) || 0,
   }));
-  return calculateQuickBooksSales({ month: window.month, receipts, lines, payments, accountingGroups, salesDates, fees, settlement });
+  // The opening position for the cut-in month: every card load and redemption BEFORE it, with the
+  // funding tender resolved per load (the other, positive payment on the same TRANSFER receipt).
+  let giftLedgerBefore = null;
+  if (window.month === QB_GIFT_TREATMENT_CUT_IN) {
+    const loads = rowsOf(q(
+      `SELECT g.receipt_id, -g.net_with_tax_pence AS pence,
+              (SELECT UPPER(p2.code) FROM sales_payments_api p2
+                WHERE p2.receipt_id = g.receipt_id AND p2.payment_seq != g.payment_seq AND p2.net_with_tax_pence > 0
+                ORDER BY p2.payment_seq LIMIT 1) AS funding
+         FROM sales_payments_api g JOIN sales_receipts_api r ON r.receipt_id = g.receipt_id
+        WHERE UPPER(g.code) = 'IKGIFT' AND g.net_with_tax_pence < 0 AND r.type = 'TRANSFER' AND g.business_date < ?`, [window.from]));
+    const redeemed = rowsOf(q(
+      `SELECT COALESCE(SUM(g.net_with_tax_pence), 0) AS pence
+         FROM sales_payments_api g JOIN sales_receipts_api r ON r.receipt_id = g.receipt_id
+        WHERE UPPER(g.code) = 'IKGIFT' AND g.net_with_tax_pence > 0 AND r.type IN ('SALE','SPLIT','RECALL')
+          AND COALESCE(r.cancelled, 0) = 0 AND g.business_date < ?`, [window.from]));
+    let freePence = 0, paidPence = 0;
+    for (const load of loads) {
+      const funding = load.funding == null ? null : String(load.funding);
+      const free = QB_FREE_GIFT_LOAD_RECEIPTS.has(String(load.receipt_id)) || (funding != null && isFreeTender(funding));
+      if (free) freePence += num(load.pence) || 0; else paidPence += num(load.pence) || 0;
+    }
+    giftLedgerBefore = { asAt: window.from, freePence, paidPence, redeemedPence: num(redeemed[0] && redeemed[0].pence) || 0 };
+  }
+  return calculateQuickBooksSales({ month: window.month, receipts, lines, payments, accountingGroups, salesDates, fees, settlement, giftLedgerBefore });
 }
 
 // Per-month channel stats from the per-receipt record (complete or MTD months only — the kept
@@ -1520,6 +1609,7 @@ module.exports = {
   deriveSittingCaptionState, deriveCoversCaptionState, deriveReconciliationCaptionState,
   buildMenuPortfolio, latestCompleteMonth, formatQuickBooksFeeDerivation, calculateQuickBooksSales,
   QB_SETTLEMENT_PROCESSOR_ALIASES,
+  QB_FREE_GIFT_LOAD_RECEIPTS, QB_GIFT_TREATMENT_CUT_IN, isFreeTender,
   key: 'revenue', route: '/coyote/revenue', workspace: 'coyote', title: 'Revenue',
   sub: 'Revenue Command Centre — all six tabs live · menu contribution uses completed recipes · covers live via OpenTable (spend/cover derived)',
 
@@ -2694,7 +2784,22 @@ module.exports = {
         title: `QuickBooks sales receipt · ${monthLabel(qb.month)}`,
         sub: 'twelve lines · integer pence · settlement basis — each processor block nets to zero',
         headRight: stateTag,
-        body: `${warningHtml}<div class="qb-diagnostic"><strong>Sources</strong> — ${esc(qb.sourceCaption)}</div><div style="overflow:auto"><table class="qb-table"><thead><tr><th>QuickBooks line</th><th class="r-num">Sign</th><th class="r-num">Amount</th><th>VAT treatment</th><th>Plain-English derivation</th><th>Source</th><th>Exact date window</th></tr></thead><tbody>${tableRows}</tbody></table></div>
+        body: `${warningHtml}<div class="qb-diagnostic"><strong>Sources</strong> — ${esc(qb.sourceCaption)}</div>${(() => {
+          const fg = qb.freeGiftCards; if (!fg || !fg.active) return '';
+          const bf = fg.broughtForward;
+          const tenders = Object.entries(fg.byTender || {}).map(([tender, pence]) => `${esc(tender)} ${gbp(pence)}`).join(', ');
+          const thisMonth = fg.count
+            ? `${plural(fg.count, 'card', 'cards')} issued free this month, ${gbp(fg.pence)} (${tenders}) — outside this receipt. Post a journal: Dr Marketing ${gbp(fg.pence)} / Cr Gift Card Liability ${gbp(fg.pence)}. No VAT.`
+            : 'none issued this month.';
+          const forward = bf
+            ? ` <br><strong>Brought forward at ${esc(bf.asAt)}</strong> (earlier months are not restated) — liability outstanding ${gbp(bf.outstandingPence)} = paid loads ${gbp(bf.paidLoadsPence)} + free issuance ${gbp(bf.freeIssuedPence)} − redemptions ${gbp(bf.redeemedPence)}. Opening journal: Dr Marketing ${gbp(bf.journal.marketingPence)}, Dr Sales income ${gbp(bf.journal.salesIncomePence)}, Cr Gift Card Liability ${gbp(bf.journal.liabilityPence)}.`
+            : '';
+          const meals = qb.freeVoucherMeals && qb.freeVoucherMeals.count
+            ? `<div class="qb-diagnostic"><strong>Meals paid with free vouchers</strong> — ${plural(qb.freeVoucherMeals.count, 'payment', 'payments')} · ${gbp(qb.freeVoucherMeals.pence)} — comps: no money, outside the receipt.</div>` : '';
+          const odd = qb.unclassifiedTenders && qb.unclassifiedTenders.length
+            ? `<div class="qb-warning">Tenders in no processor list this month — not in this receipt: ${qb.unclassifiedTenders.map((t) => `${esc(t.code)} ${gbp(t.pence)} (${t.count})`).join(', ')}. If any of these is real card or cash money, the receipt is short by that amount.</div>` : '';
+          return `<div class="qb-diagnostic"><strong>Free gift cards (outside this receipt)</strong> — ${thisMonth}${forward}</div>${meals}${odd}`;
+        })()}<div style="overflow:auto"><table class="qb-table"><thead><tr><th>QuickBooks line</th><th class="r-num">Sign</th><th class="r-num">Amount</th><th>VAT treatment</th><th>Plain-English derivation</th><th>Source</th><th>Exact date window</th></tr></thead><tbody>${tableRows}</tbody></table></div>
           <div class="qb-diagnostic"><strong>Till comparison (diagnostic only — feeds no row)</strong> — till in-house sales on Lightspeed's basis (SALE+SPLIT+VOID+RECALL+TRANSITORY, in-house channels incl. Take-Away) ${gbp(qb.tillComparison.tillSalesPence)} · settlement-basis row 1 ${gbp(qb.tillComparison.settlementSalesPence)} · difference ${qb.tillComparison.differencePence < 0 ? '−' : ''}${gbp(Math.abs(qb.tillComparison.differencePence))}. Gift cards redeemed but not sold this month, uncaptured "paid on reader" tickets, reader tips not keyed, and processor orders that never reached the till all live in this difference.</div>
           <div class="qb-diagnostic"><strong>Unmapped receipts diagnostic</strong> — ${plural(qb.unmapped.count, 'receipt', 'receipts')} · ${gbp(qb.unmapped.valuePence)} gross. Eligible SALE/SPLIT receipt identifiers with no channel_label are deduplicated, counted here and never assigned to an invented channel; their payments are still counted on the settlement basis.</div>`,
       });
