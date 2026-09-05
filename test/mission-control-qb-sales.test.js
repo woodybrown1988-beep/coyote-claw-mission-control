@@ -188,6 +188,29 @@ test('a missing input leaves its row gross, is named, marks the receipt INCOMPLE
   assert.equal(complete.complete, complete.vatBaseExact, 'with every input present, completeness is only the VAT-base penny check');
 });
 
+test("settlement rows are matched by the names the ENGINE writes ('Lightspeed Payments', 'LivePepper'), not only the slot names", () => {
+  // The class: a consumer that keys on a name it invented, while the writer writes the real one. With
+  // 'Lightspeed Payments' unmatched, the card block silently stayed a till proxy for a month whose
+  // settlement rows were already in the table. Storekit is deliberately absent (its export is a later
+  // job), so the card source must read MIXED and the POS fee must stay missing — one processor's fee
+  // is never presented as both.
+  assert.deepEqual(Object.keys(reports.QB_SETTLEMENT_PROCESSOR_ALIASES), ['lightspeed', 'storekit', 'livepepper']);
+  assert.ok(reports.QB_SETTLEMENT_PROCESSOR_ALIASES.lightspeed.includes('lightspeed payments'));
+  const fixture = mayFixture();
+  fixture.fees = {};
+  fixture.settlement = [
+    { processor: 'Lightspeed Payments', grossPence: 16000, feePence: -200, refundPence: null },
+    { processor: 'LivePepper', grossPence: 7900, feePence: -120, refundPence: -400 },
+  ];
+  const result = calculateQuickBooksSales(fixture);
+  assert.match(byKey(result, 'in_house_sales').derivation, /Lightspeed Payments \(gross 16000 − tips 550 = 15450\) \[settlement\]/, 'the engine-named row drives the Lightspeed block');
+  assert.equal(result.sources.card, 'mixed (settlement + till proxy)', 'Storekit absent: mixed, never claimed as settlement');
+  assert.equal(result.sources.online, 'settlement');
+  assert.equal(byKey(result, 'pos_fee').entered, false, 'POS fee stays missing until BOTH card processors carry a fee');
+  assert.equal(byKey(result, 'online_fee').amountPence, -120);
+  assert.match(byKey(result, 'online_twenty_sales').derivation, /refunds -400/, 'refunds ride on the online sales row, from the engine-named LivePepper row');
+});
+
 test('settlement rows win for gross, fee and refunds; an operator-entered value wins over settlement and says so; tips stay the till\'s', () => {
   const fixture = mayFixture();
   fixture.fees = {};

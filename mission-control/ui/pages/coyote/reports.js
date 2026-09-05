@@ -361,6 +361,15 @@ const QB_TILL_COMPARISON_CHANNELS = new Set([...QB_IN_HOUSE_CHANNELS, 'TAKE-AWAY
 // real money movements (voids, re-rings, day-close ghosts) and belong on the sales side of a till figure.
 const QB_TILL_SALES_TYPES = new Set(['SALE', 'SPLIT', 'VOID', 'RECALL', 'TRANSITORY']);
 const QB_GIFT_REDEEM_TYPES = new Set(['SALE', 'SPLIT', 'RECALL']);
+// The names the ENGINE writes into processor_settlement_rows.processor (src/processor-settlements/ingest.ts:
+// 'Lightspeed Payments', 'LivePepper', 'Storekit'), matched case-insensitively against the tab's three
+// processor slots. The first cut matched the bare slot name only, so every Lightspeed Payments payout
+// row was ignored and the card block stayed a till proxy with settlement rows sitting in the table.
+const QB_SETTLEMENT_PROCESSOR_ALIASES = Object.freeze({
+  lightspeed: Object.freeze(['lightspeed', 'lightspeed payments']),
+  storekit: Object.freeze(['storekit']),
+  livepepper: Object.freeze(['livepepper', 'live pepper']),
+});
 const QB_OPERATOR_INPUTS = ['pos_fee', 'online_fee', 'online_refunds'];
 const QB_FEE_PLAUSIBILITY_THRESHOLD = 0.10;
 
@@ -506,7 +515,7 @@ function calculateQuickBooksSales(input) {
 
   // ---- settlement rows override the till proxy for gross / fee / refunds (never tips) ----
   const settlementRows = Array.isArray(source.settlement) ? source.settlement : [];
-  const settlementFor = (name) => settlementRows.find((row) => String(row.processor || '').toLowerCase() === name) || null;
+  const settlementFor = (name) => settlementRows.find((row) => QB_SETTLEMENT_PROCESSOR_ALIASES[name].includes(String(row.processor || '').trim().toLowerCase())) || null;
   const stLightspeed = settlementFor('lightspeed');
   const stStorekit = settlementFor('storekit');
   const stOnline = settlementFor('livepepper');
@@ -1510,6 +1519,7 @@ module.exports = {
   SITTING_MIN_CAPTURE, SITTING_MAX_SPREAD, sittingCaptureVerdict,
   deriveSittingCaptionState, deriveCoversCaptionState, deriveReconciliationCaptionState,
   buildMenuPortfolio, latestCompleteMonth, formatQuickBooksFeeDerivation, calculateQuickBooksSales,
+  QB_SETTLEMENT_PROCESSOR_ALIASES,
   key: 'revenue', route: '/coyote/revenue', workspace: 'coyote', title: 'Revenue',
   sub: 'Revenue Command Centre — all six tabs live · menu contribution uses completed recipes · covers live via OpenTable (spend/cover derived)',
 
