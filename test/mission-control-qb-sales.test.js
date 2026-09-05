@@ -110,6 +110,26 @@ function mayFixture() {
 //   Online gross 7800, refunds −300 → net 7500; shakes 1800 → row 6 = 5700; row 8 = −(7500 − 100) = −7400
 const EXPECTED_MAY = [17725, -19350, 650, -3000, -300, 5700, 1800, -7400, -100, 7000, -2725, 0];
 
+function withFreeLoads(fixture) {
+  fixture.receipts.push(
+    { receipt_id: 'bonus-load', business_date: '2026-05-20', type: 'TRANSFER', cancelled: 0, channel_label: 'MON-FRI DEAL', net_with_tax_pence: null },
+    { receipt_id: 'R1038197.18539', business_date: '2026-05-06', type: 'TRANSFER', cancelled: 0, channel_label: 'EAT IN', net_with_tax_pence: null },
+  );
+  fixture.payments.push(
+    { receipt_id: 'bonus-load', payment_seq: 0, business_date: '2026-05-20', code: 'IKGIFT', net_with_tax_pence: -1000, tip_pence: 0 },
+    { receipt_id: 'bonus-load', payment_seq: 1, business_date: '2026-05-20', code: 'BLACK FRIDAY 10', net_with_tax_pence: 1000, tip_pence: 0 },
+    { receipt_id: 'R1038197.18539', payment_seq: 0, business_date: '2026-05-06', code: 'IKGIFT', net_with_tax_pence: -5000, tip_pence: 0 },
+    { receipt_id: 'R1038197.18539', payment_seq: 1, business_date: '2026-05-06', code: 'CASH', net_with_tax_pence: 5000, tip_pence: 0 },
+  );
+  return fixture;
+}
+const aprilOf = (fixture) => {
+  const shifted = JSON.parse(JSON.stringify(fixture).split('2026-05-').join('2026-04-'));
+  shifted.month = '2026-04';
+  shifted.salesDates = shifted.salesDates.filter((d) => d <= '2026-04-30');
+  return shifted;
+};
+
 test('sixth QuickBooks tab defaults to the latest fully completed calendar month', () => {
   assert.equal(latestCompleteMonth(Date.UTC(2026, 8, 3)), '2026-08');
   assert.equal(latestCompleteMonth(Date.UTC(2026, 0, 4)), '2025-12', 'January crosses the year boundary');
@@ -245,7 +265,7 @@ test('settlement rows win for gross, fee and refunds; an operator-entered value 
   assert.match(proxy.sourceCaption, /from till tenders — settlement export not yet loaded/);
 });
 
-test('gift cards: loads are IKGIFT-negative on TRANSFER whatever paid for them; redemptions are IKGIFT-positive on non-cancelled SALE/SPLIT/RECALL', () => {
+test('gift cards: from 2026-05 a load funded by a free tender is outside the receipt (marketing, not a sale); before it, every load was sold whatever paid for it; redemptions are IKGIFT-positive on non-cancelled SALE/SPLIT/RECALL', () => {
   const fixture = mayFixture();
   fixture.receipts.push(
     { receipt_id: 'voucher', business_date: '2026-05-17', type: 'TRANSFER', cancelled: 0, channel_label: 'MON-FRI DEAL', net_with_tax_pence: null },
@@ -261,7 +281,9 @@ test('gift cards: loads are IKGIFT-negative on TRANSFER whatever paid for them; 
     { receipt_id: 'gift-void', payment_seq: 0, business_date: '2026-05-20', code: 'IKGIFT', net_with_tax_pence: -700, tip_pence: 0 },
   );
   const result = calculateQuickBooksSales(fixture);
-  assert.equal(byKey(result, 'gift_sold').amountPence, 8000, 'the free voucher load is still a card sold (liability), paid by a zero-money tender');
+  assert.equal(byKey(result, 'gift_sold').amountPence, 7000, 'May 2026: the free-voucher load is outside the receipt — row 10 carries the two paid loads');
+  assert.deepEqual({ count: result.freeGiftCards.count, pence: result.freeGiftCards.pence, byTender: result.freeGiftCards.byTender }, { count: 1, pence: 1000, byTender: { 'BLACK FRIDAY 10': 1000 } });
+  assert.equal(byKey(calculateQuickBooksSales(aprilOf(fixture)), 'gift_sold').amountPence, 8000, 'April 2026, before the cut-in: not restated — the free-voucher load is still a card sold');
   assert.equal(byKey(result, 'gift_redeemed').amountPence, -(2725 + 1500), 'RECALL counts, cancelled does not, a VOID reversal is not a redemption');
   assert.equal(sum(result), 0);
 });
@@ -356,4 +378,63 @@ test('fee persistence validates month, line and signed integer pence; online_ref
   const refundsOnNext = applyQuickBooksSalesFee(next, { op: 'set_qb_sales_fee', month: '2026-05', line: 'online_refunds', value_pence: -5275 }, 126);
   assert.equal(refundsOnNext.ok, true, 'once the migration widens the CHECK, the same write succeeds unchanged');
   assert.deepEqual(next.prepare('SELECT line, value_pence FROM qb_sales_fees ORDER BY line').all().map((row) => [row.line, row.value_pence]), [['online_refunds', -5275]]);
+});
+
+test('free gift cards (from 2026-05): a load funded by a free tender or a ruled cash-keyed receipt leaves rows 1, 4 and 10 and lands in the memo; before the cut-in nothing is restated', () => {
+  // THE CLASS: a card given away is a marketing cost and a liability. Counting it as sold reduced Sales
+  // income; keying it as cash invented money. Both are excluded from the receipt and named in a memo.
+  const base = calculateQuickBooksSales(mayFixture());
+  const result = calculateQuickBooksSales(withFreeLoads(mayFixture()));
+  assert.equal(byKey(result, 'gift_sold').amountPence, byKey(base, 'gift_sold').amountPence, 'row 10 carries paid loads only');
+  assert.equal(byKey(result, 'cash_payments').amountPence, byKey(base, 'cash_payments').amountPence, 'row 4: the cash keyed for a ruled free card never existed');
+  assert.equal(byKey(result, 'in_house_sales').amountPence, byKey(base, 'in_house_sales').amountPence, 'row 1: a free card is neither a sale nor a reduction of sales');
+  assert.equal(byKey(result, 'over_short').amountPence, 0);
+  assert.equal(result.freeGiftCards.active, true);
+  assert.deepEqual({ count: result.freeGiftCards.count, pence: result.freeGiftCards.pence }, { count: 2, pence: 6000 });
+  assert.deepEqual(result.freeGiftCards.byTender, { 'BLACK FRIDAY 10': 1000, 'ruled free (keyed as cash)': 5000 });
+  assert.match(byKey(result, 'gift_sold').derivation, /2 free load\(s\), 6000 pence, are outside this receipt/);
+  // before the cut-in: the same evidence is NOT restated — loads count as sold and the keyed cash stays
+  const aprilBase = calculateQuickBooksSales(aprilOf(mayFixture()));
+  const april = calculateQuickBooksSales(aprilOf(withFreeLoads(mayFixture())));
+  assert.equal(april.freeGiftCards.active, false);
+  assert.equal(byKey(april, 'gift_sold').amountPence - byKey(aprilBase, 'gift_sold').amountPence, 6000, 'April: every load is sold, as it was');
+  assert.equal(byKey(aprilBase, 'cash_payments').amountPence - byKey(april, 'cash_payments').amountPence, 5000, 'April: the keyed cash stays');
+  assert.equal(byKey(april, 'over_short').amountPence, 0);
+});
+
+test('the cut-in month carries the opening position forward — liability outstanding and its free share as the journal; later months do not', () => {
+  const fixture = mayFixture();
+  fixture.giftLedgerBefore = { asAt: '2026-05-01', freePence: 81500, paidPence: 2240000, redeemedPence: 1884757 };
+  const bf = calculateQuickBooksSales(fixture).freeGiftCards.broughtForward;
+  assert.deepEqual(bf, { asAt: '2026-05-01', freeIssuedPence: 81500, paidLoadsPence: 2240000, redeemedPence: 1884757, outstandingPence: 436743,
+    journal: { marketingPence: 81500, salesIncomePence: 355243, liabilityPence: 436743 } });
+  const june = calculateQuickBooksSales({ month: '2026-06', giftLedgerBefore: fixture.giftLedgerBefore });
+  assert.equal(june.freeGiftCards.active, true);
+  assert.equal(june.freeGiftCards.broughtForward, null, 'only the cut-in month shows the opening position');
+  assert.equal(calculateQuickBooksSales(mayFixture()).freeGiftCards.broughtForward, null, 'no ledger supplied: nothing invented');
+});
+
+test('tender classes: the Lightspeed MOTO and Storekit variants are card money; a tender in no list is surfaced by name, never dropped silently; free vouchers on meals are comps', () => {
+  const fixture = mayFixture();
+  fixture.receipts.push(
+    { receipt_id: 'moto', business_date: '2026-05-21', type: 'SALE', cancelled: 0, channel_label: 'EAT IN', net_with_tax_pence: 7825 },
+    { receipt_id: 'skm', business_date: '2026-05-22', type: 'SALE', cancelled: 0, channel_label: 'STOREKIT ORDER & PAY', net_with_tax_pence: 9825 },
+    { receipt_id: 'odd', business_date: '2026-05-23', type: 'SALE', cancelled: 0, channel_label: 'EAT IN', net_with_tax_pence: 1234 },
+    { receipt_id: 'comp', business_date: '2026-05-24', type: 'SALE', cancelled: 0, channel_label: 'EAT IN', net_with_tax_pence: 790 },
+  );
+  fixture.payments.push(
+    { receipt_id: 'moto', payment_seq: 0, business_date: '2026-05-21', code: 'LSPAY_ADYEN_TERMINAL_API_LOCAL_MOTO', net_with_tax_pence: 7825, tip_pence: 0 },
+    { receipt_id: 'skm', payment_seq: 0, business_date: '2026-05-22', code: 'STOREKITM', net_with_tax_pence: 9825, tip_pence: 0 },
+    { receipt_id: 'odd', payment_seq: 0, business_date: '2026-05-23', code: 'PAYERROR', net_with_tax_pence: 1234, tip_pence: 0 },
+    { receipt_id: 'comp', payment_seq: 0, business_date: '2026-05-24', code: 'BLACK FRIDAY', net_with_tax_pence: 790, tip_pence: 0 },
+  );
+  const base = calculateQuickBooksSales(mayFixture());
+  const result = calculateQuickBooksSales(fixture);
+  assert.equal(result.blocks.lightspeed.grossPence - base.blocks.lightspeed.grossPence, 7825, 'MOTO is Lightspeed Payments money');
+  assert.equal(result.blocks.storekit.grossPence - base.blocks.storekit.grossPence, 9825, 'STOREKITM is Storekit money');
+  assert.deepEqual(result.unclassifiedTenders, [{ code: 'PAYERROR', count: 1, pence: 1234 }]);
+  assert.deepEqual(base.unclassifiedTenders, [], 'a null-code phantom payment is not an unclassified tender');
+  assert.deepEqual(result.freeVoucherMeals, { count: 1, pence: 790 });
+  assert.equal(byKey(result, 'cash_payments').amountPence, byKey(base, 'cash_payments').amountPence, 'neither PAYERROR nor a free voucher is cash');
+  assert.equal(byKey(result, 'over_short').amountPence, 0);
 });
