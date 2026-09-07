@@ -455,3 +455,51 @@ test('tender classes: the Lightspeed MOTO and Storekit variants are card money; 
   assert.equal(byKey(result, 'cash_payments').amountPence, byKey(base, 'cash_payments').amountPence, 'neither PAYERROR nor a free voucher is cash');
   assert.equal(byKey(result, 'over_short').amountPence, 0);
 });
+
+test('posted-receipt reconciliation: the previous month as posted vs its settlement basis becomes correction lines for this month, summing to zero, with the VAT effect; the posted month is never restated', () => {
+  const { reconcilePostedReceipt } = reports;
+  const prior = calculateQuickBooksSales(mayFixture());               // settlement basis for the posted month
+  const money = byKey(prior, 'in_house_sales').amountPence - prior.blocks.gift.redeemedPence + prior.blocks.gift.soldPence;
+  // David's posted receipt, as the mirror stores it: 20% lines NET (+ a VAT Control line), signs as journal credits/debits
+  const posted = (rows) => rows.map(([memo, gross, vat]) => ({ doc_num: '1183', memo, debit_pence: gross < 0 ? -gross : 0, credit_pence: gross > 0 ? (vat ? Math.round(gross * 5 / 6) : gross) : 0 }));
+  const identical = posted([
+    ['Sales Income with VAT (+) May 2026', money, true],
+    ['In-Restaurant Card Payments (-) May 2026', byKey(prior, 'card_payments').amountPence, false],
+    ['Tips Payable (+) May 2026', byKey(prior, 'tips_payable').amountPence, false],
+    ['Cash Payments (-) May 2026', byKey(prior, 'cash_payments').amountPence, false],
+    ['Card Payment Fees (POS) (-) May 2026', byKey(prior, 'pos_fee').amountPence, false],
+    ['Online Sales Income with VAT (+) May 2026', byKey(prior, 'online_twenty_sales').amountPence, true],
+    ['Online Sales Income 0% VAT (+) May 2026', byKey(prior, 'online_zero_sales').amountPence, false],
+    ['Online Card Payments (-) May 2026', byKey(prior, 'online_card_payments').amountPence, false],
+    ['Card Payment Fees (Online) (-) May 2026', byKey(prior, 'online_fee').amountPence, false],
+  ]);
+  const same = reconcilePostedReceipt(identical, prior, { moneyBasis: true });
+  assert.equal(same.nothingToCarry, true, 'a receipt posted on the settlement basis carries nothing');
+  assert.equal(same.balanced, true);
+  assert.deepEqual(same.docNums, ['1183']);
+
+  // April-shaped differences: card gross over-posted, tips and cash tips over-posted, fee over-posted, online split moved
+  const drifted = identical.map((l) => ({ ...l }));
+  const bump = (memo, deltaGross, vat) => { const l = drifted.find((x) => x.memo.startsWith(memo)); const d = vat ? Math.round(deltaGross * 5 / 6) : deltaGross; if (l.credit_pence) l.credit_pence += d; else l.debit_pence -= d; };
+  bump('Sales Income with VAT (+)', 43872, true);        // posted 438.72 higher
+  bump('In-Restaurant Card Payments (-)', -55524, false); // posted 555.24 more negative
+  bump('Tips Payable (+)', 13037, false);
+  bump('Cash Payments (-)', -755, false);
+  bump('Card Payment Fees (POS) (-)', -630, false);
+  bump('Online Sales Income with VAT (+)', -10075, true);
+  bump('Online Sales Income 0% VAT (+)', 10075, false);
+  const r = reconcilePostedReceipt(drifted, prior, { moneyBasis: true });
+  const adj = Object.fromEntries(r.lines.map((l) => [l.key, l.adjustmentPence]));
+  assert.deepEqual(adj, { in_house_sales: -43872, card_payments: 55524, tips_payable: -13037, cash_payments: 755, pos_fee: 630, online_twenty_sales: 10075, online_zero_sales: -10075, online_card_payments: 0, online_fee: 0 }, 'corrections = settlement − posted, per line');
+  assert.equal(r.balanced, true, 'both receipts balance, so the corrections sum to zero');
+  assert.equal(r.vatMovementGrossPence, -43872 + 10075);
+  assert.equal(r.vatEffectPence, Math.round((-43872 + 10075) / 6), 'VAT effect = 20% lines gross movement / 6');
+  assert.equal(r.nothingToCarry, false);
+
+  // an unknown posted memo is listed, never silently absorbed; row 1 on the FULL basis after the cut-in
+  const withStranger = [...identical, { doc_num: '1183', memo: 'Gift Cards Sold (+) May 2026', debit_pence: 0, credit_pence: 25500 }];
+  const s2 = reconcilePostedReceipt(withStranger, prior, { moneyBasis: false });
+  assert.deepEqual(s2.unknownMemos, ['Gift Cards Sold (+) May 2026']);
+  assert.equal(s2.lines.find((l) => l.key === 'in_house_sales').settlementPence, byKey(prior, 'in_house_sales').amountPence, 'after the cut-in row 1 is compared as posted, gift lines included');
+  assert.equal(reconcilePostedReceipt([], prior), null, 'no posted receipt: nothing to compare');
+});
