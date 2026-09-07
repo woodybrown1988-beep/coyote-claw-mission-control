@@ -479,7 +479,7 @@ const QB_POSTED_RECON_FROM = '2026-04';
 // PLACEHOLDERS (lines copied forward, not completed). A receipt for a month after this one is a
 // placeholder: the month stays live, the operator replaces the placeholder's lines with the tab's
 // rows, and nothing is carried from it. Move this forward only when David says a month is done.
-const QB_POSTED_FINAL_THROUGH = '2026-05';   // May posted 2026-09-07 (#1184, with the April corrections on it)
+const QB_POSTED_FINAL_THROUGH = '2026-06';   // June posted 2026-09-07 (#1185 replaced with the tab's rows); May #1184 carries the April corrections
 
 /**
  * Operator ruling 2026-09-07: a posted month is never restated — "if anything is different we move it
@@ -500,15 +500,25 @@ function reconcilePostedReceipt(postedLines, prior, opts = {}) {
     const m = /\b(January|February|March|April|May|June|July|August|September|October|November|December) (\d{4})\s*$/i.exec(memo);
     return m ? `${m[2]}-${pad2(MONTHS_FULL.findIndex((name) => name.toLowerCase() === m[1].toLowerCase()))}` : null;
   };
-  for (const line of postedLines) {
+  // A correction carried on this receipt ALWAYS accompanies the month's own line for the same product
+  // (that is how David posts them: 'Sales Income with VAT (+) May 2026' next to '… (+) April 2026').
+  // So a line naming an earlier month is carried only when that sibling exists; without one it is the
+  // month's own line with a stale description (June's '… (+) May 2026' typo), and is named as such.
+  const parsed = postedLines.map((line) => {
     const memo = String(line.memo || '').trim();
     const spec = QB_POSTED_MEMO_ROWS.find((m) => m.test.test(memo));
-    if (!spec) { if (memo) unknown.push(memo); continue; }
     const net = (qbPence(line.credit_pence) - qbPence(line.debit_pence));      // credit = +, debit = −
-    const gross = spec.vat ? Math.round((net * 6) / 5) : net;
-    const memoMonth = monthOfMemo(memo);
-    if (opts.month && memoMonth && memoMonth !== opts.month) { carried.push({ memo, fromMonth: memoMonth, key: spec.key, pence: gross }); continue; }
-    posted.set(spec.key, (posted.get(spec.key) || 0) + gross);
+    return { memo, spec, gross: spec && spec.vat ? Math.round((net * 6) / 5) : net, memoMonth: monthOfMemo(memo) };
+  });
+  const ownKeys = new Set(parsed.filter((l) => l.spec && (!opts.month || !l.memoMonth || l.memoMonth === opts.month)).map((l) => l.spec.key));
+  const staleDescriptions = [];
+  for (const l of parsed) {
+    if (!l.spec) { if (l.memo) unknown.push(l.memo); continue; }
+    if (opts.month && l.memoMonth && l.memoMonth !== opts.month) {
+      if (ownKeys.has(l.spec.key)) { carried.push({ memo: l.memo, fromMonth: l.memoMonth, key: l.spec.key, pence: l.gross }); continue; }
+      staleDescriptions.push(l.memo);                     // the month's own line, mis-described
+    }
+    posted.set(l.spec.key, (posted.get(l.spec.key) || 0) + l.gross);
   }
   const settlementOf = (key) => {
     const row = prior.rows.find((r) => r.key === key);
@@ -536,6 +546,7 @@ function reconcilePostedReceipt(postedLines, prior, opts = {}) {
   return {
     month: prior.month, docNums, moneyBasis, lines, unknownMemos: unknown, missingInputs,
     carried: { count: carried.length, netPence: carried.reduce((sum, c) => sum + c.pence, 0), fromMonths: [...new Set(carried.map((c) => c.fromMonth))], lines: carried },
+    staleDescriptions,
     adjustmentSumPence: adjustmentSum, balanced: missingInputs.length === 0 && withinRounding, roundingPence: withinRounding ? adjustmentSum : 0,
     vatEffectPence: Math.round(vatMovementGross / 6), vatMovementGrossPence: vatMovementGross,
     nothingToCarry: missingInputs.length === 0 && known.every((l) => l.adjustmentPence === 0),
@@ -1744,7 +1755,7 @@ function buildQuickBooksSales(q, month, opts = {}) {
         sourceGrain: 'QuickBooks mirror · qb_journal_lines',
       }));
       result.subtotalPence = result.rows.filter((r) => Number(r.line) <= 11).reduce((sum, r) => sum + (r.amountPence || 0), 0);
-      result.frozen = { docNums, txnDate, unknownMemos: asPosted ? asPosted.unknownMemos : [], carried: asPosted ? asPosted.carried : { count: 0, netPence: 0, fromMonths: [], lines: [] } };
+      result.frozen = { docNums, txnDate, unknownMemos: asPosted ? asPosted.unknownMemos : [], carried: asPosted ? asPosted.carried : { count: 0, netPence: 0, fromMonths: [], lines: [] }, staleDescriptions: asPosted ? asPosted.staleDescriptions : [] };
       result.complete = true;
       result.incompleteReasons = [];
       result.warnings = [];
@@ -2917,7 +2928,7 @@ module.exports = {
           ? [`<div class="qb-warning qb-ok">${esc('Complete — every expected date is present and the POS fee, online fee and online refunds are all entered or supplied by settlement.')}</div>`]
           : [`<div class="qb-warning">${esc(`QuickBooks sales receipt incomplete — missing ${reasons.join(', ')}. A missing input is not entered and not in settlement rows; a missing date is absent from the completed daily ingest.`)}</div>`])]
         : qb.frozen
-        ? [`<div class="qb-warning qb-ok">${esc(`Shown AS POSTED in QuickBooks (Sales Receipt ${qb.frozen.docNums.map((d) => '#' + d).join(', ')}${qb.frozen.txnDate ? `, dated ${qb.frozen.txnDate}` : ''}) — not recomputed; a posted month is never restated here. Differences between this posting and the settlement basis are carried into the next unposted month's receipt.${qb.frozen.carried && qb.frozen.carried.count ? ` This receipt also carries ${qb.frozen.carried.count} correction line(s) from ${qb.frozen.carried.fromMonths.map(monthLabel).join(', ')} (net ${gbp(qb.frozen.carried.netPence)}), shown separately from the month's own rows.` : ''}${qb.carryNeeds && qb.carryNeeds.length ? ` That carry-forward still needs: ${qb.carryNeeds.join(', ')} for this month — enter them below; they feed the carry, not this receipt.` : ''}`)}</div>`]
+        ? [`<div class="qb-warning qb-ok">${esc(`Shown AS POSTED in QuickBooks (Sales Receipt ${qb.frozen.docNums.map((d) => '#' + d).join(', ')}${qb.frozen.txnDate ? `, dated ${qb.frozen.txnDate}` : ''}) — not recomputed; a posted month is never restated here. Differences between this posting and the settlement basis are carried into the next unposted month's receipt.${qb.frozen.carried && qb.frozen.carried.count ? ` This receipt also carries ${qb.frozen.carried.count} correction line(s) from ${qb.frozen.carried.fromMonths.map(monthLabel).join(', ')} (net ${gbp(qb.frozen.carried.netPence)}), shown separately from the month's own rows.` : ''}${qb.carryNeeds && qb.carryNeeds.length ? ` That carry-forward still needs: ${qb.carryNeeds.join(', ')} for this month — enter them below; they feed the carry, not this receipt.` : ''}${qb.frozen.staleDescriptions && qb.frozen.staleDescriptions.length ? ` ${qb.frozen.staleDescriptions.length} line(s) carry a description naming another month but stand alone, so they are treated as this month's own: ${qb.frozen.staleDescriptions.join('; ')} — worth correcting the description in QuickBooks.` : ''}`)}</div>`]
         : qb.complete
         ? [`<div class="qb-warning qb-ok">${esc('Complete — every expected date is present and the POS fee, online fee and online refunds are all entered or supplied by settlement.')}</div>`]
         : [`<div class="qb-warning">${esc(`QuickBooks sales receipt incomplete — missing ${reasons.join(', ')}. A missing input is not entered and not in settlement rows; a missing date is absent from the completed daily ingest.`)}</div>`];
