@@ -535,8 +535,8 @@ test('posted-receipt reconciliation: the June/July memo typo still maps; a not-y
   assert.deepEqual(july.placeholder, { docNums: ['1186'], txnDate: null }, 'a placeholder is named, the month stays live');
   assert.equal(july.thisMonthPosted, null);
   assert.equal(july.frozen, null);
-  assert.deepEqual(july.postedReconciliations, []);
-  assert.equal(reports.QB_POSTED_FINAL_THROUGH, '2026-05', 'final through May (operator 2026-09-07: May posted with the April corrections)');
+  assert.deepEqual(july.postedReconciliations.map((r) => r.docNums[0]), ['1185'], 'July (unposted) carries June, the most recent final month');
+  assert.equal(reports.QB_POSTED_FINAL_THROUGH, '2026-06', 'final through June (operator 2026-09-07)');
 });
 
 test('a FINAL posted month is shown AS POSTED and never recomputed; its settlement basis is kept aside for the carry-forward (operator 2026-09-07)', () => {
@@ -639,4 +639,19 @@ test('an unposted month carries only the MOST RECENT final month — the one bef
   const may = reports.getSection(null, { q, now: Date.UTC(2026, 8, 7), query: { tab: 'qbsales', month: '2026-05' } }).qbsales;
   assert.deepEqual(may.frozen && may.frozen.docNums, ['1184']);
   assert.equal(may.frozen.carried.count, 1, "the April line on May's receipt is recognised as carried");
+});
+
+test("a line naming an earlier month WITHOUT a same-product sibling is the month's own line with a stale description (June's '… (+) May 2026' typo), not a carried correction", () => {
+  const { reconcilePostedReceipt } = reports;
+  const prior = calculateQuickBooksSales(mayFixture());
+  const gross = (key) => byKey(prior, key).amountPence;
+  const posted = [
+    { doc_num: '1185', memo: 'Online Sales Income with June (+) April 2026', debit_pence: 0, credit_pence: Math.round(gross('online_twenty_sales') * 5 / 6) },
+    { doc_num: '1185', memo: 'Tips Payable (+) May 2026', debit_pence: 0, credit_pence: gross('tips_payable') },
+    { doc_num: '1185', memo: 'Tips Payable (+) April 2026', debit_pence: 13037, credit_pence: 0 },
+  ];
+  const r = reconcilePostedReceipt(posted, prior, { moneyBasis: false, month: '2026-05' });
+  assert.equal(r.carried.count, 1, 'only the tips line with a sibling is carried');
+  assert.deepEqual(r.staleDescriptions, ['Online Sales Income with June (+) April 2026']);
+  assert.equal(r.lines.find((l) => l.key === 'online_twenty_sales').postedPence, gross('online_twenty_sales'), "the stale-described line counts as the month's own");
 });
