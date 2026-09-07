@@ -468,6 +468,10 @@ const QB_POSTED_MEMO_ROWS = Object.freeze([
   { memo: 'Online Card Payments (-)', test: /^Online Card Payments/i, key: 'online_card_payments', vat: false },
   { memo: 'Card Payment Fees (Online) (-)', test: /^Card Payment Fees \(Online\)/i, key: 'online_fee', vat: false },
   { memo: 'Over/Short (- / +)', test: /^Over\/Short/i, key: 'over_short', vat: false },
+  // Lines the settlement basis carries that a posted receipt may not (David has not posted gift-card
+  // lines yet). Absent from the posting = posted 0, so the whole difference is the correction.
+  { memo: 'Gift Cards Sold (+)', test: /^Gift Cards? Sold/i, key: 'gift_sold', vat: false },
+  { memo: 'Gift Card Redemptions (-)', test: /^Gift Cards? Redemptions?/i, key: 'gift_redeemed', vat: false },
 ]);
 // The first month reconciled against its posting (operator: April is filed and is the starting point).
 const QB_POSTED_RECON_FROM = '2026-04';
@@ -503,8 +507,11 @@ function reconcilePostedReceipt(postedLines, prior, opts = {}) {
     }
     return row.amountPence == null ? 0 : row.amountPence;
   };
-  const lines = QB_POSTED_MEMO_ROWS.filter((m) => posted.has(m.key)).map((m) => {
-    const postedPence = posted.get(m.key);
+  // Compare every line the posting has, plus every settlement row with a value the posting lacks —
+  // otherwise the set cannot net to zero (both receipts balance) and a missing line hides silently.
+  const giftKey = (key) => key === 'gift_sold' || key === 'gift_redeemed';
+  const lines = QB_POSTED_MEMO_ROWS.filter((m) => posted.has(m.key) || ((!moneyBasis || !giftKey(m.key)) && (settlementOf(m.key) || 0) !== 0)).map((m) => {
+    const postedPence = posted.get(m.key) || 0;
     const settlementPence = settlementOf(m.key);
     return { key: m.key, memo: m.memo, vat: m.vat, postedPence, settlementPence, adjustmentPence: settlementPence == null ? null : settlementPence - postedPence };
   });
