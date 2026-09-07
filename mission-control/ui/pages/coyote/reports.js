@@ -568,8 +568,13 @@ function calculateQuickBooksSales(input) {
   const broughtForward = giftTreatmentActive && window.month === QB_GIFT_TREATMENT_CUT_IN && ledgerBefore ? (() => {
     const free = qbPence(ledgerBefore.freePence), paid = qbPence(ledgerBefore.paidPence), redeemed = qbPence(ledgerBefore.redeemedPence);
     const outstanding = free + paid - redeemed;
+    // Operator ruling 2026-09-07: the Sales income line is a 20% VAT-INCLUSIVE reversal — those cards
+    // were declared as sales (VAT paid) when sold under the old money basis, and their redemptions
+    // come through Sales income again with VAT from the cut-in month. Net = gross − round(gross/6).
+    const salesIncomeGross = outstanding - free;
+    const salesIncomeVat = Math.round(salesIncomeGross / 6);
     return { asAt: ledgerBefore.asAt || window.from, freeIssuedPence: free, paidLoadsPence: paid, redeemedPence: redeemed, outstandingPence: outstanding,
-      journal: { marketingPence: free, salesIncomePence: outstanding - free, liabilityPence: outstanding } };
+      journal: { marketingPence: free, salesIncomePence: salesIncomeGross, salesIncomeNetPence: salesIncomeGross - salesIncomeVat, salesIncomeVatPence: salesIncomeVat, liabilityPence: outstanding } };
   })() : null;
   const freeGiftCards = { active: giftTreatmentActive, cutIn: QB_GIFT_TREATMENT_CUT_IN, count: freeLoadRows.length, pence: freeLoadPence, byTender: freeLoadByTender, broughtForward };
   const freeVoucherMeals = { count: freeVoucherMealRows.length, pence: sumBy(freeVoucherMealRows, (row) => payNet(row) + payTip(row)) };
@@ -2792,7 +2797,7 @@ module.exports = {
             ? `${plural(fg.count, 'card', 'cards')} issued free this month, ${gbp(fg.pence)} (${tenders}) — outside this receipt. Post a journal: Dr Marketing ${gbp(fg.pence)} / Cr Gift Card Liability ${gbp(fg.pence)}. No VAT.`
             : 'none issued this month.';
           const forward = bf
-            ? ` <br><strong>Opening position at ${esc(bf.asAt)} — post it in ${esc(monthLabel(qb.month))}, dated ${esc(bf.asAt)}; nothing is restated before this month</strong> — liability outstanding ${gbp(bf.outstandingPence)} = paid loads ${gbp(bf.paidLoadsPence)} + free issuance ${gbp(bf.freeIssuedPence)} − redemptions ${gbp(bf.redeemedPence)}. Opening journal (${esc(bf.asAt)}): Dr Marketing ${gbp(bf.journal.marketingPence)} (no VAT), Dr Sales income ${gbp(bf.journal.salesIncomePence)} (VAT-inclusive reversal of card sales already declared at sale — confirm the VAT coding with your accountant), Cr Gift Card Liability ${gbp(bf.journal.liabilityPence)}.`
+            ? ` <br><strong>Opening position at ${esc(bf.asAt)} — post it in ${esc(monthLabel(qb.month))}, dated ${esc(bf.asAt)}; nothing is restated before this month</strong> — liability outstanding ${gbp(bf.outstandingPence)} = paid loads ${gbp(bf.paidLoadsPence)} + free issuance ${gbp(bf.freeIssuedPence)} − redemptions ${gbp(bf.redeemedPence)}. Opening journal (${esc(bf.asAt)}): Dr Marketing ${gbp(bf.journal.marketingPence)} (no VAT), Dr Sales income ${gbp(bf.journal.salesIncomeNetPence)} net + 20% VAT ${gbp(bf.journal.salesIncomeVatPence)} = ${gbp(bf.journal.salesIncomePence)} gross, coded 20% S (a VAT-inclusive reversal of card sales declared at sale; their redemptions carry VAT from this month — operator ruling 2026-09-07), Cr Gift Card Liability ${gbp(bf.journal.liabilityPence)}.`
             : '';
           const meals = qb.freeVoucherMeals && qb.freeVoucherMeals.count
             ? `<div class="qb-diagnostic"><strong>Meals paid with free vouchers</strong> — ${plural(qb.freeVoucherMeals.count, 'payment', 'payments')} · ${gbp(qb.freeVoucherMeals.pence)} — comps: no money, outside the receipt.</div>` : '';

@@ -407,7 +407,10 @@ test('the cut-in month carries the opening position forward — liability outsta
   fixture.giftLedgerBefore = { asAt: '2026-05-01', freePence: 81500, paidPence: 2240000, redeemedPence: 1884757 };
   const bf = calculateQuickBooksSales(fixture).freeGiftCards.broughtForward;
   assert.deepEqual(bf, { asAt: '2026-05-01', freeIssuedPence: 81500, paidLoadsPence: 2240000, redeemedPence: 1884757, outstandingPence: 436743,
-    journal: { marketingPence: 81500, salesIncomePence: 355243, liabilityPence: 436743 } });
+    journal: { marketingPence: 81500, salesIncomePence: 355243, salesIncomeNetPence: 296036, salesIncomeVatPence: 59207, liabilityPence: 436743 } });
+  // the Sales income line is a 20% VAT-inclusive reversal (operator 2026-09-07): net + VAT = gross, VAT = gross/6 to the penny
+  assert.equal(bf.journal.salesIncomeNetPence + bf.journal.salesIncomeVatPence, bf.journal.salesIncomePence);
+  assert.equal(bf.journal.marketingPence + bf.journal.salesIncomePence, bf.journal.liabilityPence, 'the journal balances');
   const june = calculateQuickBooksSales({ month: '2026-06', giftLedgerBefore: fixture.giftLedgerBefore });
   assert.equal(june.freeGiftCards.active, true);
   assert.equal(june.freeGiftCards.broughtForward, null, 'only the cut-in month shows the opening position');
