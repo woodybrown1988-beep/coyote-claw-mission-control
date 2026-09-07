@@ -455,18 +455,22 @@ function uniqueApiRows(rows, keyOf) {
  *  below the receipt and feeds no row. */
 // The memo David writes on every posted Sales Receipt line, mapped to the tab's row. The QuickBooks
 // mirror (qb_journal_lines) carries 20%-VAT lines NET with one VAT Control line; gross = net × 6/5.
+// Matched by PATTERN, not exact text: the posted June and July receipts carry 'Online Sales Income
+// with June (+)' — a typo on a line that still means the 20% online sales.
 const QB_POSTED_MEMO_ROWS = Object.freeze([
-  { memo: 'Sales Income with VAT (+)', key: 'in_house_sales', vat: true, sign: +1 },
-  { memo: 'In-Restaurant Card Payments (-)', key: 'card_payments', vat: false, sign: -1 },
-  { memo: 'Tips Payable (+)', key: 'tips_payable', vat: false, sign: +1 },
-  { memo: 'Cash Payments (-)', key: 'cash_payments', vat: false, sign: -1 },
-  { memo: 'Card Payment Fees (POS) (-)', key: 'pos_fee', vat: false, sign: -1 },
-  { memo: 'Online Sales Income with VAT (+)', key: 'online_twenty_sales', vat: true, sign: +1 },
-  { memo: 'Online Sales Income 0% VAT (+)', key: 'online_zero_sales', vat: false, sign: +1 },
-  { memo: 'Online Card Payments (-)', key: 'online_card_payments', vat: false, sign: -1 },
-  { memo: 'Card Payment Fees (Online) (-)', key: 'online_fee', vat: false, sign: -1 },
-  { memo: 'Over/Short (- / +)', key: 'over_short', vat: false, sign: +1 },
+  { memo: 'Sales Income with VAT (+)', test: /^Sales Income with VAT/i, key: 'in_house_sales', vat: true },
+  { memo: 'In-Restaurant Card Payments (-)', test: /^In-Restaurant Card Payments/i, key: 'card_payments', vat: false },
+  { memo: 'Tips Payable (+)', test: /^Tips Payable/i, key: 'tips_payable', vat: false },
+  { memo: 'Cash Payments (-)', test: /^Cash Payments/i, key: 'cash_payments', vat: false },
+  { memo: 'Card Payment Fees (POS) (-)', test: /^Card Payment Fees \(POS\)/i, key: 'pos_fee', vat: false },
+  { memo: 'Online Sales Income with VAT (+)', test: /^Online Sales Income with/i, key: 'online_twenty_sales', vat: true },
+  { memo: 'Online Sales Income 0% VAT (+)', test: /^Online Sales Income 0%/i, key: 'online_zero_sales', vat: false },
+  { memo: 'Online Card Payments (-)', test: /^Online Card Payments/i, key: 'online_card_payments', vat: false },
+  { memo: 'Card Payment Fees (Online) (-)', test: /^Card Payment Fees \(Online\)/i, key: 'online_fee', vat: false },
+  { memo: 'Over/Short (- / +)', test: /^Over\/Short/i, key: 'over_short', vat: false },
 ]);
+// The first month reconciled against its posting (operator: April is filed and is the starting point).
+const QB_POSTED_RECON_FROM = '2026-04';
 
 /**
  * Operator ruling 2026-09-07: a posted month is never restated — "if anything is different we move it
@@ -484,7 +488,7 @@ function reconcilePostedReceipt(postedLines, prior, opts = {}) {
   const unknown = [];
   for (const line of postedLines) {
     const memo = String(line.memo || '').trim();
-    const spec = QB_POSTED_MEMO_ROWS.find((m) => memo.startsWith(m.memo));
+    const spec = QB_POSTED_MEMO_ROWS.find((m) => m.test.test(memo));
     if (!spec) { if (memo) unknown.push(memo); continue; }
     const net = (qbPence(line.credit_pence) - qbPence(line.debit_pence));      // credit = +, debit = −
     const gross = spec.vat ? Math.round((net * 6) / 5) : net;
@@ -493,6 +497,7 @@ function reconcilePostedReceipt(postedLines, prior, opts = {}) {
   const settlementOf = (key) => {
     const row = prior.rows.find((r) => r.key === key);
     if (!row) return null;
+    if (row.entered === false) return null;                 // an input not yet entered: nothing to compare
     if (key === 'in_house_sales' && moneyBasis && prior.blocks && prior.blocks.gift) {
       return row.amountPence - qbPence(prior.blocks.gift.redeemedPence) + qbPence(prior.blocks.gift.soldPence);
     }
@@ -503,13 +508,15 @@ function reconcilePostedReceipt(postedLines, prior, opts = {}) {
     const settlementPence = settlementOf(m.key);
     return { key: m.key, memo: m.memo, vat: m.vat, postedPence, settlementPence, adjustmentPence: settlementPence == null ? null : settlementPence - postedPence };
   });
-  const adjustmentSum = lines.reduce((sum, l) => sum + (l.adjustmentPence || 0), 0);
-  const vatMovementGross = lines.filter((l) => l.vat).reduce((sum, l) => sum + (l.adjustmentPence || 0), 0);
+  const missingInputs = lines.filter((l) => l.settlementPence == null).map((l) => l.memo.replace(/ \((\+|-|- \/ \+)\)$/, ''));
+  const known = lines.filter((l) => l.adjustmentPence != null);
+  const adjustmentSum = known.reduce((sum, l) => sum + l.adjustmentPence, 0);
+  const vatMovementGross = known.filter((l) => l.vat).reduce((sum, l) => sum + l.adjustmentPence, 0);
   return {
-    month: prior.month, docNums, moneyBasis, lines, unknownMemos: unknown,
-    adjustmentSumPence: adjustmentSum, balanced: adjustmentSum === 0,
+    month: prior.month, docNums, moneyBasis, lines, unknownMemos: unknown, missingInputs,
+    adjustmentSumPence: adjustmentSum, balanced: missingInputs.length === 0 && adjustmentSum === 0,
     vatEffectPence: Math.round(vatMovementGross / 6), vatMovementGrossPence: vatMovementGross,
-    nothingToCarry: lines.every((l) => l.adjustmentPence === 0),
+    nothingToCarry: missingInputs.length === 0 && known.every((l) => l.adjustmentPence === 0),
   };
 }
 
@@ -1675,15 +1682,32 @@ function buildQuickBooksSales(q, month, opts = {}) {
   const result = calculateQuickBooksSales({ month: window.month, receipts, lines, payments, accountingGroups, salesDates, fees, settlement, giftLedgerBefore });
   // Operator ruling 2026-09-07: the previous month's POSTED receipt (mirror) vs its settlement basis →
   // adjustment lines for this month. Never restates the posted month.
-  const prevMonth = previousMonth(window.month);
-  const postedPrev = prevMonth ? rowsOf(q(
+  // Rule (operator 2026-09-07): a posted month's corrections go to the FIRST month after it that is not
+  // posted. So an unposted month carries every consecutive posted month immediately before it (walking
+  // back from April 2026, the first month reconciled); a month that is itself posted carries nothing —
+  // its own differences will move forward.
+  const postedLinesFor = (ym) => rowsOf(q(
     `SELECT doc_num, memo, debit_pence, credit_pence FROM qb_journal_lines
-      WHERE txn_type = 'Sales Receipt' AND period_month = ?`, [prevMonth])) : [];
-  if (postedPrev.length && !opts.noPrior) {
-    const prior = buildQuickBooksSales(q, prevMonth, { noPrior: true });
-    result.postedReconciliation = prior ? reconcilePostedReceipt(postedPrev, prior, { moneyBasis: prevMonth < QB_GIFT_TREATMENT_CUT_IN }) : null;
-  } else {
-    result.postedReconciliation = null;
+      WHERE txn_type = 'Sales Receipt' AND period_month = ?`, [ym]));
+  result.postedReconciliations = [];
+  result.postedReconciliation = null;
+  result.thisMonthPosted = null;
+  if (!opts.noPrior) {
+    const own = postedLinesFor(window.month);
+    if (own.length) {
+      result.thisMonthPosted = { docNums: [...new Set(own.map((l) => String(l.doc_num || '')).filter(Boolean))] };
+    } else {
+      let ym = previousMonth(window.month);
+      while (ym && ym >= QB_POSTED_RECON_FROM) {
+        const posted = postedLinesFor(ym);
+        if (!posted.length) break;
+        const prior = buildQuickBooksSales(q, ym, { noPrior: true });
+        const recon = prior ? reconcilePostedReceipt(posted, prior, { moneyBasis: ym < QB_GIFT_TREATMENT_CUT_IN }) : null;
+        if (recon) result.postedReconciliations.push(recon);
+        ym = previousMonth(ym);
+      }
+      result.postedReconciliation = result.postedReconciliations[0] || null;
+    }
   }
   return result;
 }
@@ -1706,7 +1730,7 @@ module.exports = {
   deriveSittingCaptionState, deriveCoversCaptionState, deriveReconciliationCaptionState,
   buildMenuPortfolio, latestCompleteMonth, formatQuickBooksFeeDerivation, calculateQuickBooksSales,
   QB_SETTLEMENT_PROCESSOR_ALIASES,
-  QB_FREE_GIFT_LOAD_RECEIPTS, QB_GIFT_TREATMENT_CUT_IN, isFreeTender, reconcilePostedReceipt, QB_POSTED_MEMO_ROWS,
+  QB_FREE_GIFT_LOAD_RECEIPTS, QB_GIFT_TREATMENT_CUT_IN, isFreeTender, reconcilePostedReceipt, QB_POSTED_MEMO_ROWS, QB_POSTED_RECON_FROM,
   key: 'revenue', route: '/coyote/revenue', workspace: 'coyote', title: 'Revenue',
   sub: 'Revenue Command Centre — all six tabs live · menu contribution uses completed recipes · covers live via OpenTable (spend/cover derived)',
 
@@ -2894,12 +2918,16 @@ module.exports = {
             ? `<div class="qb-warning">Tenders in no processor list this month — not in this receipt: ${qb.unclassifiedTenders.map((t) => `${esc(t.code)} ${gbp(t.pence)} (${t.count})`).join(', ')}. If any of these is real card or cash money, the receipt is short by that amount.</div>` : '';
           return `<div class="qb-diagnostic"><strong>Free gift cards (outside this receipt)</strong> — ${thisMonth}${forward}</div>${meals}${odd}`;
         })()}${(() => {
-          const pr = qb.postedReconciliation; if (!pr) return '';
-          const head = `<strong>${esc(monthLabel(pr.month))} as posted in QuickBooks (Sales Receipt ${pr.docNums.map((d) => '#' + d).join(', ') || 'n/a'}) vs settlement basis</strong> — a posted month is never restated: add these correction lines to THIS month's receipt${pr.moneyBasis ? ' (money basis: gift-card lines belong to the 1 May opening journal)' : ''}.`;
-          if (pr.nothingToCarry) return `<div class="qb-diagnostic">${head} Nothing to carry — every line matches to the penny.</div>`;
-          const rows = pr.lines.map((l) => `<tr><td>${esc(l.memo.replace(/ \((\+|-|- \/ \+)\)$/, ''))}</td><td class="r-num">${gbp(l.postedPence)}</td><td class="r-num">${l.settlementPence == null ? '—' : gbp(l.settlementPence)}</td><td class="r-num"><strong>${l.adjustmentPence == null ? '—' : (l.adjustmentPence < 0 ? '−' : '') + gbp(Math.abs(l.adjustmentPence))}</strong></td><td>${l.vat ? '20% S' : 'No VAT'}</td></tr>`).join('');
-          const foot = `Corrections ${pr.balanced ? 'net to 0.00' : `DO NOT balance (${gbp(pr.adjustmentSumPence)}) — the posted receipt carried an Over/Short; check it`}; VAT effect ${pr.vatEffectPence < 0 ? '−' : ''}${gbp(Math.abs(pr.vatEffectPence))} (20% lines move ${pr.vatMovementGrossPence < 0 ? '−' : ''}${gbp(Math.abs(pr.vatMovementGrossPence))} gross).${pr.unknownMemos.length ? ` Posted lines not compared: ${pr.unknownMemos.map(esc).join('; ')}.` : ''}`;
-          return `<div class="qb-diagnostic">${head}<div style="overflow:auto"><table class="qb-table"><thead><tr><th>Line</th><th class="r-num">Posted</th><th class="r-num">Settlement</th><th class="r-num">Add to this month</th><th>VAT</th></tr></thead><tbody>${rows}</tbody></table></div>${foot}</div>`;
+          if (qb.thisMonthPosted) return `<div class="qb-diagnostic"><strong>${esc(monthLabel(qb.month))} is POSTED in QuickBooks (Sales Receipt ${qb.thisMonthPosted.docNums.map((d) => '#' + d).join(', ')})</strong> — a posted month is never restated; any difference between that posting and this settlement basis moves into the next unposted month's receipt.</div>`;
+          const list = Array.isArray(qb.postedReconciliations) ? qb.postedReconciliations : [];
+          return list.map((pr) => {
+            const head = `<strong>${esc(monthLabel(pr.month))} as posted in QuickBooks (Sales Receipt ${pr.docNums.map((d) => '#' + d).join(', ') || 'n/a'}) vs settlement basis</strong> — a posted month is never restated: add these correction lines to THIS month's receipt${pr.moneyBasis ? ' (money basis: gift-card lines belong to the 1 May opening journal)' : ''}.`;
+            if (pr.nothingToCarry) return `<div class="qb-diagnostic">${head} Nothing to carry — every line matches to the penny.</div>`;
+            const rows = pr.lines.map((l) => `<tr><td>${esc(l.memo.replace(/ \((\+|-|- \/ \+)\)$/, ''))}</td><td class="r-num">${gbp(l.postedPence)}</td><td class="r-num">${l.settlementPence == null ? '—' : gbp(l.settlementPence)}</td><td class="r-num"><strong>${l.adjustmentPence == null ? '—' : (l.adjustmentPence < 0 ? '−' : '') + gbp(Math.abs(l.adjustmentPence))}</strong></td><td>${l.vat ? '20% S' : 'No VAT'}</td></tr>`).join('');
+            const missing = pr.missingInputs.length ? ` Cannot be completed until ${pr.missingInputs.join(' and ')} for ${monthLabel(pr.month)} ${pr.missingInputs.length === 1 ? 'is' : 'are'} entered on that month's tab or supplied by settlement.` : '';
+            const foot = `${pr.missingInputs.length ? 'Corrections incomplete' : (pr.balanced ? 'Corrections net to 0.00' : `Corrections DO NOT balance (${gbp(pr.adjustmentSumPence)}) — check the posted receipt`)}; VAT effect ${pr.vatEffectPence < 0 ? '−' : ''}${gbp(Math.abs(pr.vatEffectPence))} (20% lines move ${pr.vatMovementGrossPence < 0 ? '−' : ''}${gbp(Math.abs(pr.vatMovementGrossPence))} gross).${missing}${pr.unknownMemos.length ? ` Posted lines not compared: ${pr.unknownMemos.map(esc).join('; ')}.` : ''}`;
+            return `<div class="qb-diagnostic">${head}<div style="overflow:auto"><table class="qb-table"><thead><tr><th>Line</th><th class="r-num">Posted</th><th class="r-num">Settlement</th><th class="r-num">Add to this month</th><th>VAT</th></tr></thead><tbody>${rows}</tbody></table></div>${foot}</div>`;
+          }).join('');
         })()}<div style="overflow:auto"><table class="qb-table"><thead><tr><th>QuickBooks line</th><th class="r-num">Sign</th><th class="r-num">Amount</th><th>VAT treatment</th><th>Plain-English derivation</th><th>Source</th><th>Exact date window</th></tr></thead><tbody>${tableRows}</tbody></table></div>
           <div class="qb-diagnostic"><strong>Till comparison (diagnostic only — feeds no row)</strong> — till in-house sales on Lightspeed's basis (SALE+SPLIT+VOID+RECALL+TRANSITORY, in-house channels incl. Take-Away) ${gbp(qb.tillComparison.tillSalesPence)} · settlement-basis row 1 ${gbp(qb.tillComparison.settlementSalesPence)} · difference ${qb.tillComparison.differencePence < 0 ? '−' : ''}${gbp(Math.abs(qb.tillComparison.differencePence))}. Gift cards redeemed but not sold this month, uncaptured "paid on reader" tickets, reader tips not keyed, and processor orders that never reached the till all live in this difference.</div>
           <div class="qb-diagnostic"><strong>Unmapped receipts diagnostic</strong> — ${plural(qb.unmapped.count, 'receipt', 'receipts')} · ${gbp(qb.unmapped.valuePence)} gross. Eligible SALE/SPLIT receipt identifiers with no channel_label are deduplicated, counted here and never assigned to an invented channel; their payments are still counted on the settlement basis.</div>`,

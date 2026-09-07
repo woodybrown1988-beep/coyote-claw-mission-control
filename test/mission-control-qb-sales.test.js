@@ -503,3 +503,35 @@ test('posted-receipt reconciliation: the previous month as posted vs its settlem
   assert.equal(s2.lines.find((l) => l.key === 'in_house_sales').settlementPence, byKey(prior, 'in_house_sales').amountPence, 'after the cut-in row 1 is compared as posted, gift lines included');
   assert.equal(reconcilePostedReceipt([], prior), null, 'no posted receipt: nothing to compare');
 });
+
+test('posted-receipt reconciliation: the June/July memo typo still maps; a not-yet-entered input compares as nothing and is named; a posted month carries nothing; an unposted month carries every consecutive posted month before it', () => {
+  const { reconcilePostedReceipt } = reports;
+  const prior = calculateQuickBooksSales(mayFixture());
+  const typo = [{ doc_num: '1185', memo: 'Online Sales Income with June (+) June 2026', debit_pence: 0, credit_pence: Math.round(byKey(prior, 'online_twenty_sales').amountPence * 5 / 6) }];
+  const r1 = reconcilePostedReceipt(typo, prior, { moneyBasis: false });
+  assert.equal(r1.unknownMemos.length, 0, "'with June' is the 20% online line");
+  assert.equal(r1.lines[0].key, 'online_twenty_sales');
+
+  const noFee = mayFixture(); noFee.fees = {};
+  const priorNoFee = calculateQuickBooksSales(noFee);
+  const posted = [{ doc_num: '1185', memo: 'Card Payment Fees (POS) (-) June 2026', debit_pence: 0, credit_pence: 0 }];
+  const r2 = reconcilePostedReceipt(posted, priorNoFee, { moneyBasis: false });
+  assert.deepEqual(r2.missingInputs, ['Card Payment Fees (POS)'], 'a posted zero fee against an un-entered fee is NOT a correction of the whole fee');
+  assert.equal(r2.lines[0].adjustmentPence, null);
+  assert.equal(r2.nothingToCarry, false);
+  assert.equal(r2.balanced, false);
+
+  // the builder: August is unposted; July and June are posted; May is not → August carries July AND June; July itself carries nothing
+  const journal = { '2026-06': [{ doc_num: '1185', memo: 'Tips Payable (+) June 2026', debit_pence: 0, credit_pence: 855459 }], '2026-07': [{ doc_num: '1186', memo: 'Tips Payable (+) July 2026', debit_pence: 0, credit_pence: 958465 }] };
+  const q = (sql, params) => {
+    if (/qb_journal_lines/.test(sql)) return { ok: true, rows: journal[params[0]] || [] };
+    if (/sales_api_ingest_runs/.test(sql)) return { ok: true, rows: [] };
+    return { ok: true, rows: [] };
+  };
+  const august = reports.getSection(null, { q, now: Date.UTC(2026, 8, 7), query: { tab: 'qbsales', month: '2026-08' } }).qbsales;
+  assert.equal(august.thisMonthPosted, null);
+  assert.deepEqual(august.postedReconciliations.map((r) => [r.month, r.docNums[0]]), [['2026-07', '1186'], ['2026-06', '1185']], 'both posted months, most recent first, stopping at unposted May');
+  const july = reports.getSection(null, { q, now: Date.UTC(2026, 8, 7), query: { tab: 'qbsales', month: '2026-07' } }).qbsales;
+  assert.deepEqual(july.thisMonthPosted, { docNums: ['1186'] }, 'a posted month carries nothing itself');
+  assert.deepEqual(july.postedReconciliations, []);
+});
