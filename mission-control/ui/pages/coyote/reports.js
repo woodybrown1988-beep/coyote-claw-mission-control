@@ -510,6 +510,21 @@ function reconcilePostedReceipt(postedLines, prior, opts = {}) {
     const net = (qbPence(line.credit_pence) - qbPence(line.debit_pence));      // credit = +, debit = −
     return { memo, spec, gross: spec && spec.vat ? Math.round((net * 6) / 5) : net, memoMonth: monthOfMemo(memo) };
   });
+  // The mirror stores 20% lines NET; ×6/5 rounds each line to the penny, so the reconstructed gross
+  // can miss the posted gross by 1p per line. The receipt's own VAT Control line carries the exact
+  // VAT total: allocate the residual to the largest 20% line so the posted receipt sums as QuickBooks
+  // saw it (operator 2026-09-07: "it won't balance" — a penny on June's sales line).
+  const vatControl = postedLines.filter((l) => /^VAT Control$/i.test(String(l.account_name || '')));
+  if (vatControl.length) {
+    const vatTotal = vatControl.reduce((sum, l) => sum + qbPence(l.credit_pence) - qbPence(l.debit_pence), 0);
+    const vatLines = parsed.filter((l) => l.spec && l.spec.vat);
+    const impliedVat = vatLines.reduce((sum, l) => sum + (l.gross - (qbPence(postedLines[parsed.indexOf(l)].credit_pence) - qbPence(postedLines[parsed.indexOf(l)].debit_pence))), 0);
+    const residual = vatTotal - impliedVat;
+    if (residual !== 0 && vatLines.length && Math.abs(residual) <= vatLines.length) {
+      const largest = vatLines.reduce((a, b) => (Math.abs(b.gross) > Math.abs(a.gross) ? b : a));
+      largest.gross += residual;
+    }
+  }
   const ownKeys = new Set(parsed.filter((l) => l.spec && (!opts.month || !l.memoMonth || l.memoMonth === opts.month)).map((l) => l.spec.key));
   const staleDescriptions = [];
   for (const l of parsed) {
@@ -1720,7 +1735,7 @@ function buildQuickBooksSales(q, month, opts = {}) {
   // back from April 2026, the first month reconciled); a month that is itself posted carries nothing —
   // its own differences will move forward.
   const postedLinesFor = (ym) => rowsOf(q(
-    `SELECT doc_num, memo, debit_pence, credit_pence, txn_date FROM qb_journal_lines
+    `SELECT doc_num, memo, debit_pence, credit_pence, txn_date, account_name FROM qb_journal_lines
       WHERE txn_type = 'Sales Receipt' AND period_month = ?`, [ym]));
   result.postedReconciliations = [];
   result.postedReconciliation = null;
@@ -2959,23 +2974,24 @@ module.exports = {
           ? '<div class="r-mini-note">Operator input required — from the card processor statement; not held on this box.</div>'
           : '';
         const label = row.key === 'over_short'
-          ? `<div class="qb-balance"><span>${esc(row.label)}</span>${S.rcc.tag(`0.00 by construction · rows 1–11 sum ${gbp(qb.subtotalPence)}`, qb.subtotalPence === 0 ? 'good' : 'bad')}</div>`
+          ? `<div class="qb-balance"><span>${esc(row.label)}</span>${S.rcc.tag(qb.frozen ? `as posted · rows 1–11 sum ${gbp(qb.subtotalPence)}` : `0.00 by construction · rows 1–11 sum ${gbp(qb.subtotalPence)}`, qb.subtotalPence === 0 ? 'good' : 'bad')}</div>`
           : esc(row.label);
         return `<tr data-qb-line="${row.line}">
             <td class="qb-line">${row.line}. ${label}</td>
             <td class="r-num mono">${sign}</td>
-            <td class="r-num mono">${amount}${feeNote}${row.key === 'pos_fee' || row.key === 'online_fee' ? feeControl(row) : ''}${row.key === 'online_card_payments' ? refundsControl() : ''}</td>
+            <td class="r-num mono">${amount}${qb.frozen ? '' : feeNote}${(row.key === 'pos_fee' || row.key === 'online_fee') && (!qb.frozen || (qb.carryNeeds || []).includes(row.key === 'pos_fee' ? 'POS card fees' : 'Online card fees')) ? `${qb.frozen ? '<div class="r-mini-note">Feeds the carry-forward only — the posted receipt is not changed.</div>' : ''}${feeControl(row)}` : ''}${row.key === 'online_card_payments' && (!qb.frozen || (qb.carryNeeds || []).includes('Online refunds')) ? `${qb.frozen ? '<div class="r-mini-note">Feeds the carry-forward only — the posted receipt is not changed.</div>' : ''}${refundsControl()}` : ''}</td>
             <td>${esc(row.vatTreatment)}</td>
             <td class="qb-derivation">${esc(row.derivation)}${row.feeWarning ? `<div class="qb-fee-warning" role="note"><strong>Fee plausibility warning</strong> — ${esc(row.feeWarning)}</div>` : ''}</td>
             <td class="qb-source">${esc(row.sourceGrain)}</td>
             <td class="qb-window mono">${esc(row.window)}</td>
           </tr>`;
       }).join('');
+      const sourcesCaption = qb.frozen ? `As posted in QuickBooks (Sales Receipt ${qb.frozen.docNums.map((d) => '#' + d).join(', ')}). Behind the carry-forward: ${qb.sourceCaption}` : qb.sourceCaption;
       const bundle = S.rcc.panel({
         title: `QuickBooks sales receipt · ${monthLabel(qb.month)}`,
         sub: 'twelve lines · integer pence · settlement basis — each processor block nets to zero',
         headRight: stateTag,
-        body: `${warningHtml}<div class="qb-diagnostic"><strong>Sources</strong> — ${esc(qb.sourceCaption)}</div>${(() => {
+        body: `${warningHtml}<div class="qb-diagnostic"><strong>Sources</strong> — ${esc(sourcesCaption)}</div>${(() => {
           const fg = qb.freeGiftCards; if (!fg || !fg.active) return '';
           const bf = fg.broughtForward;
           const tenders = Object.entries(fg.byTender || {}).map(([tender, pence]) => `${esc(tender)} ${gbp(pence)}`).join(', ');

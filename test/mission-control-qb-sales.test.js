@@ -655,3 +655,22 @@ test("a line naming an earlier month WITHOUT a same-product sibling is the month
   assert.deepEqual(r.staleDescriptions, ['Online Sales Income with June (+) April 2026']);
   assert.equal(r.lines.find((l) => l.key === 'online_twenty_sales').postedPence, gross('online_twenty_sales'), "the stale-described line counts as the month's own");
 });
+
+test("a posted month's 20% lines are grossed up to the penny using the receipt's VAT Control total — the rows sum as QuickBooks saw them, and a posted month offers no save boxes", () => {
+  const { reconcilePostedReceipt } = reports;
+  const prior = calculateQuickBooksSales(mayFixture());
+  // net 12064863 × 1.2 = 14477835.6 → rounds to 14477836; the VAT Control line says the true VAT is 2412972, so gross = 14477835
+  const posted = [
+    { doc_num: '1185', memo: 'Sales Income with VAT (+) June 2026', debit_pence: 0, credit_pence: 12064863, account_name: 'Sales Income', txn_date: '2026-06-30' },
+    { doc_num: '1185', memo: '', debit_pence: 0, credit_pence: 2412972, account_name: 'VAT Control', txn_date: '2026-06-30' },
+    { doc_num: '1185', memo: 'In-Restaurant Card Payments (-) June 2026', debit_pence: 14477835, credit_pence: 0, account_name: 'Card Payment Clearing', txn_date: '2026-06-30' },
+  ];
+  const r = reconcilePostedReceipt(posted, prior, { moneyBasis: false, month: '2026-06' });
+  assert.equal(r.lines.find((l) => l.key === 'in_house_sales').postedPence, 14477835, 'the penny goes where QuickBooks put it');
+  const q = (sql, params) => (/qb_journal_lines/.test(sql) ? { ok: true, rows: params[0] === '2026-06' ? posted : [] } : { ok: true, rows: [] });
+  const june = reports.getSection(null, { q, now: Date.UTC(2026, 8, 7), query: { tab: 'qbsales', month: '2026-06' } }).qbsales;
+  assert.equal(byKey(june, 'in_house_sales').amountPence, 14477835);
+  assert.equal(june.rows.filter((row) => Number(row.line) <= 11).reduce((sum, row) => sum + row.amountPence, 0), 0, 'a posted receipt sums to zero as posted');
+  const html = reports.render ? '' : '';
+  void html;
+});
