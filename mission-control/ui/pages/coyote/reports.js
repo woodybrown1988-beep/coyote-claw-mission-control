@@ -1687,15 +1687,44 @@ function buildQuickBooksSales(q, month, opts = {}) {
   // back from April 2026, the first month reconciled); a month that is itself posted carries nothing —
   // its own differences will move forward.
   const postedLinesFor = (ym) => rowsOf(q(
-    `SELECT doc_num, memo, debit_pence, credit_pence FROM qb_journal_lines
+    `SELECT doc_num, memo, debit_pence, credit_pence, txn_date FROM qb_journal_lines
       WHERE txn_type = 'Sales Receipt' AND period_month = ?`, [ym]));
   result.postedReconciliations = [];
   result.postedReconciliation = null;
   result.thisMonthPosted = null;
+  result.frozen = null;
   if (!opts.noPrior) {
     const own = postedLinesFor(window.month);
     if (own.length) {
-      result.thisMonthPosted = { docNums: [...new Set(own.map((l) => String(l.doc_num || '')).filter(Boolean))] };
+      // Operator 2026-09-07: "we are not changing any prior months in QuickBooks, so don't change them
+      // on Mission Control." A posted month is shown AS POSTED — never recomputed. The settlement
+      // basis still exists for it (result.settlementRows) only so the NEXT unposted month can carry
+      // the corrections; the input controls on a posted month feed that carry, not the receipt.
+      const docNums = [...new Set(own.map((l) => String(l.doc_num || '')).filter(Boolean))];
+      const txnDate = own.map((l) => String(l.txn_date || '')).filter(Boolean).sort()[0] || null;
+      result.thisMonthPosted = { docNums, txnDate };
+      const asPosted = reconcilePostedReceipt(own, result, { moneyBasis: window.month < QB_GIFT_TREATMENT_CUT_IN });
+      const postedByKey = new Map((asPosted ? asPosted.lines : []).map((l) => [l.key, l.postedPence]));
+      result.settlementRows = result.rows;
+      result.settlementComplete = result.complete;
+      result.carryNeeds = result.incompleteReasons.filter((r) => !/expected sales date/.test(r));
+      result.rows = result.rows.map((row) => ({
+        ...row,
+        amountPence: postedByKey.has(row.key) ? postedByKey.get(row.key) : 0,
+        entered: true,
+        derivation: postedByKey.has(row.key)
+          ? `As posted in QuickBooks (Sales Receipt ${docNums.map((d) => '#' + d).join(', ')}${txnDate ? `, dated ${txnDate}` : ''}). Not recomputed: a posted month is never restated here. The settlement basis for this month is reconciled into the next unposted month's receipt.`
+          : `Not on the posted receipt (Sales Receipt ${docNums.map((d) => '#' + d).join(', ')}). A posted month is never restated here.`,
+        sourceGrain: 'QuickBooks mirror · qb_journal_lines',
+      }));
+      result.subtotalPence = result.rows.filter((r) => Number(r.line) <= 11).reduce((sum, r) => sum + (r.amountPence || 0), 0);
+      result.frozen = { docNums, txnDate, unknownMemos: asPosted ? asPosted.unknownMemos : [] };
+      result.complete = true;
+      result.incompleteReasons = [];
+      result.warnings = [];
+      result.freeGiftCards = { ...result.freeGiftCards, active: false, count: 0, pence: 0, byTender: {}, broughtForward: null };
+      result.unclassifiedTenders = [];
+      result.freeVoucherMeals = { count: 0, pence: 0 };
     } else {
       let ym = previousMonth(window.month);
       while (ym && ym >= QB_POSTED_RECON_FROM) {
@@ -2856,16 +2885,18 @@ module.exports = {
       if (qb.feeMissing.length) {
         notes.push('Rows that depend on a missing input stay gross and say so in their derivation; Over/Short stays 0.00 because no row balances through it.');
       }
-      const banner = qb.complete
+      const banner = qb.frozen
+        ? [`<div class="qb-warning qb-ok">${esc(`Shown AS POSTED in QuickBooks (Sales Receipt ${qb.frozen.docNums.map((d) => '#' + d).join(', ')}${qb.frozen.txnDate ? `, dated ${qb.frozen.txnDate}` : ''}) — not recomputed; a posted month is never restated here. Differences between this posting and the settlement basis are carried into the next unposted month's receipt.${qb.carryNeeds && qb.carryNeeds.length ? ` That carry-forward still needs: ${qb.carryNeeds.join(', ')} for this month — enter them below; they feed the carry, not this receipt.` : ''}`)}</div>`]
+        : qb.complete
         ? [`<div class="qb-warning qb-ok">${esc('Complete — every expected date is present and the POS fee, online fee and online refunds are all entered or supplied by settlement.')}</div>`]
         : [`<div class="qb-warning">${esc(`QuickBooks sales receipt incomplete — missing ${reasons.join(', ')}. A missing input is not entered and not in settlement rows; a missing date is absent from the completed daily ingest.`)}</div>`];
-      const warningHtml = `<div class="qb-warnings">${[...banner, ...notes.map((note) => `<div class="qb-warning">${esc(note)}</div>`)].join('')}</div>`;
+      const warningHtml = `<div class="qb-warnings">${[...banner, ...(qb.frozen ? [] : notes).map((note) => `<div class="qb-warning">${esc(note)}</div>`)].join('')}</div>`;
       const monthPicker = `<form class="qb-month" method="get" action="/coyote/revenue">
           <input type="hidden" name="tab" value="qbsales">
           <label for="qb-month">Calendar month</label>
           <input id="qb-month" name="month" type="month" value="${esc(qb.month)}" onchange="this.form.submit()">
         </form>`;
-      const stateTag = qb.complete ? S.rcc.tag('COMPLETE', 'good') : S.rcc.tag(`INCOMPLETE · missing ${(qb.incompleteReasons || []).join(', ') || 'reason not named'}`, 'warn');
+      const stateTag = qb.frozen ? S.rcc.tag(`POSTED ${qb.frozen.docNums.map((d) => '#' + d).join(', ')}`, 'good') : (qb.complete ? S.rcc.tag('COMPLETE', 'good') : S.rcc.tag(`INCOMPLETE · missing ${(qb.incompleteReasons || []).join(', ') || 'reason not named'}`, 'warn'));
       const feeControl = (row) => `<div class="qb-fee-entry">
           <input class="qb-fee-value" type="number" step="1" inputmode="numeric" data-qb-line="${row.key}" value="${row.entered ? row.amountPence : ''}" placeholder="signed pence" aria-label="${esc(row.label)} signed pence">
           <button class="qb-fee-save" type="button" data-qb-line="${row.key}">Save signed pence</button>
