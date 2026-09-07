@@ -732,8 +732,8 @@ function calculateQuickBooksSales(input) {
   // rounding (QuickBooks computes its own VAT): a named WARNING, never incompleteness. April 2026 sat
   // "incomplete" with nothing listed for exactly this.
   const incompleteReasons = [
-    ...(missingDates.length ? [`${missingDates.length} expected sales date(s) absent from the completed daily ingest: ${missingDates.join(', ')}`] : []),
-    ...feeMissing.map((name) => `${name} — not entered and not in settlement rows`),
+    ...(missingDates.length ? [`${missingDates.length} expected sales date(s) (${missingDates.join(', ')})`] : []),
+    ...feeMissing,
   ];
   const warnings = vatBaseExact ? [] : [
     `VAT base not an exact 20% split of gross — row 1 + row 6 = ${vatGrossPence} pence is not divisible by 6, so ${vatBasePence} pence is 1p rounding; no row altered and the receipt is still postable.`,
@@ -2753,14 +2753,14 @@ module.exports = {
       }
       const banner = qb.complete
         ? [`<div class="qb-warning qb-ok">${esc('Complete — every expected date is present and the POS fee, online fee and online refunds are all entered or supplied by settlement.')}</div>`]
-        : [`<div class="qb-warning">${esc(`QuickBooks sales receipt incomplete — ${reasons.join('; ')}.`)}</div>`];
+        : [`<div class="qb-warning">${esc(`QuickBooks sales receipt incomplete — missing ${reasons.join(', ')}. A missing input is not entered and not in settlement rows; a missing date is absent from the completed daily ingest.`)}</div>`];
       const warningHtml = `<div class="qb-warnings">${[...banner, ...notes.map((note) => `<div class="qb-warning">${esc(note)}</div>`)].join('')}</div>`;
       const monthPicker = `<form class="qb-month" method="get" action="/coyote/revenue">
           <input type="hidden" name="tab" value="qbsales">
           <label for="qb-month">Calendar month</label>
           <input id="qb-month" name="month" type="month" value="${esc(qb.month)}" onchange="this.form.submit()">
         </form>`;
-      const stateTag = qb.complete ? S.rcc.tag('COMPLETE', 'good') : S.rcc.tag(`INCOMPLETE · ${(qb.incompleteReasons || []).map((r) => r.split(' — ')[0]).join(', ') || 'reason not named'}`, 'warn');
+      const stateTag = qb.complete ? S.rcc.tag('COMPLETE', 'good') : S.rcc.tag(`INCOMPLETE · missing ${(qb.incompleteReasons || []).join(', ') || 'reason not named'}`, 'warn');
       const feeControl = (row) => `<div class="qb-fee-entry">
           <input class="qb-fee-value" type="number" step="1" inputmode="numeric" data-qb-line="${row.key}" value="${row.entered ? row.amountPence : ''}" placeholder="signed pence" aria-label="${esc(row.label)} signed pence">
           <button class="qb-fee-save" type="button" data-qb-line="${row.key}">Save signed pence</button>

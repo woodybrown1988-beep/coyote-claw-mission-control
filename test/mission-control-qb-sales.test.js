@@ -203,7 +203,7 @@ test('a missing input leaves its row gross, is named, marks the receipt INCOMPLE
   assert.equal(byKey(result, 'over_short').amountPence, 0);
   assert.equal(sum(result), 0);
 
-  assert.deepEqual(result.incompleteReasons, ['POS card fees — not entered and not in settlement rows', 'Online card fees — not entered and not in settlement rows', 'Online refunds — not entered and not in settlement rows'], 'incomplete always names why');
+  assert.deepEqual(result.incompleteReasons, ['POS card fees', 'Online card fees', 'Online refunds'], 'incomplete always names why');
 
   // Operator ruling 2026-09-07: with every input present the receipt is COMPLETE even when the VAT base
   // is not an exact 20% split of gross — that is a penny of rounding, surfaced as a named warning.
@@ -219,7 +219,7 @@ test('a missing input leaves its row gross, is named, marks the receipt INCOMPLE
   gap.salesDates = gap.salesDates.filter((d) => d !== '2026-05-09');
   const withGap = calculateQuickBooksSales(gap);
   assert.equal(withGap.complete, false);
-  assert.deepEqual(withGap.incompleteReasons, ['1 expected sales date(s) absent from the completed daily ingest: 2026-05-09'], 'a missing trading date is named');
+  assert.deepEqual(withGap.incompleteReasons, ['1 expected sales date(s) (2026-05-09)'], 'a missing trading date is named');
 });
 
 test("settlement rows are matched by the names the ENGINE writes ('Lightspeed Payments', 'LivePepper'), not only the slot names", () => {
