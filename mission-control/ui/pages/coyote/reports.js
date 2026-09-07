@@ -727,6 +727,17 @@ function calculateQuickBooksSales(input) {
   const vatBasePence = Math.round((vatGrossPence * 5) / 6);
   const unmapped = { count: unmappedReceipts.length, valuePence: unmappedReceipts.reduce((sum, row) => sum + receiptGross(row), 0) };
   const feeMissing = [!posFee.present ? 'POS card fees' : null, !onlineFee.present ? 'Online card fees' : null, !onlineRefunds.present ? 'Online refunds' : null].filter(Boolean);
+  // Operator ruling 2026-09-07: the receipt is INCOMPLETE only for a reason it can name — a missing
+  // trading date or a missing input. A VAT base that is not an exact 20% split of gross is a penny of
+  // rounding (QuickBooks computes its own VAT): a named WARNING, never incompleteness. April 2026 sat
+  // "incomplete" with nothing listed for exactly this.
+  const incompleteReasons = [
+    ...(missingDates.length ? [`${missingDates.length} expected sales date(s) absent from the completed daily ingest: ${missingDates.join(', ')}`] : []),
+    ...feeMissing.map((name) => `${name} — not entered and not in settlement rows`),
+  ];
+  const warnings = vatBaseExact ? [] : [
+    `VAT base not an exact 20% split of gross — row 1 + row 6 = ${vatGrossPence} pence is not divisible by 6, so ${vatBasePence} pence is 1p rounding; no row altered and the receipt is still postable.`,
+  ];
   const sources = { card: cardSource, online: onlineGross.source, posFee: posFee.source, onlineFee: onlineFee.source, onlineRefunds: onlineRefunds.source };
   const sourceCaption = cardSource === 'settlement' && onlineGross.source === 'settlement'
     ? 'Card and online figures from processor settlement rows for this month.'
@@ -734,7 +745,7 @@ function calculateQuickBooksSales(input) {
   return {
     month: window.month, from: window.from, to: window.to, rows, subtotalPence, balancePence,
     missingDates, unmapped, vatGrossPence, vatBasePence, vatBaseExact, feeMissing, sources, sourceCaption, tillComparison,
-    freeGiftCards, freeVoucherMeals, unclassifiedTenders,
+    freeGiftCards, freeVoucherMeals, unclassifiedTenders, incompleteReasons, warnings,
     blocks: {
       lightspeed: { grossPence: lightspeedGross.pence, tipPence: tillLightspeed.tipPence, salesPence: lightspeedSalesPence, source: lightspeedGross.source },
       storekit: { grossPence: storekitGross.pence, tipPence: tillStorekit.tipPence, salesPence: storekitSalesPence, source: storekitGross.source },
@@ -742,7 +753,7 @@ function calculateQuickBooksSales(input) {
       cash: { pence: cashPence, tipPence: cashTipPence }, gift: { soldPence: giftSoldPence, redeemedPence: giftRedeemedPence },
       neverCard: { count: neverCardRows.length, pence: neverCardPence },
     },
-    complete: missingDates.length === 0 && posFee.present && onlineFee.present && onlineRefunds.present && vatBaseExact,
+    complete: incompleteReasons.length === 0,
   };
 }
 
@@ -2732,27 +2743,24 @@ module.exports = {
     // ============================ QUICKBOOKS SALES ENTRY ============================
     const renderQuickBooksSales = () => {
       const qb = m.qbsales || calculateQuickBooksSales({ month: latestCompleteMonth(m.now) });
-      const warnings = [];
-      if (qb.missingDates.length) {
-        warnings.push(`Expected sales dates absent from the completed daily K-Series ingest (${qb.missingDates.length}): ${qb.missingDates.join(', ')}. This calendar month is partial.`);
-      }
+      const reasons = Array.isArray(qb.incompleteReasons) ? qb.incompleteReasons : [];
+      const notes = Array.isArray(qb.warnings) ? [...qb.warnings] : [];
       if (qb.unmapped.count) {
-        warnings.push(`${plural(qb.unmapped.count, 'receipt lacks', 'receipts lack')} a channel mapping, gross value ${gbp(qb.unmapped.valuePence)}. On the settlement basis their card and cash payments are still counted; only the till comparison below is affected.`);
+        notes.push(`${plural(qb.unmapped.count, 'receipt lacks', 'receipts lack')} a channel mapping, gross value ${gbp(qb.unmapped.valuePence)}. On the settlement basis their card and cash payments are still counted by tender; only the till comparison is affected.`);
       }
       if (qb.feeMissing.length) {
-        warnings.push(`QuickBooks sales receipt incomplete — missing ${qb.feeMissing.join(', ')}. Rows that depend on a missing input stay gross and say so in their derivation; Over/Short stays 0.00 because no row balances through it.`);
+        notes.push('Rows that depend on a missing input stay gross and say so in their derivation; Over/Short stays 0.00 because no row balances through it.');
       }
-      if (!qb.vatBaseExact) {
-        warnings.push(`VAT-base precision warning — (row 1 + row 6) / 1.2 does not resolve to an integer penny; ${gbp(qb.vatBasePence)} is display rounding only and no QuickBooks row was altered.`);
-      }
-      if (!warnings.length) warnings.push('Complete — every expected date is present, both fees and the online refunds are entered, and the VAT base resolves to the penny.');
-      const warningHtml = `<div class="qb-warnings">${warnings.map((warning) => `<div class="qb-warning${qb.complete ? ' qb-ok' : ''}">${esc(warning)}</div>`).join('')}</div>`;
+      const banner = qb.complete
+        ? [`<div class="qb-warning qb-ok">${esc('Complete — every expected date is present and the POS fee, online fee and online refunds are all entered or supplied by settlement.')}</div>`]
+        : [`<div class="qb-warning">${esc(`QuickBooks sales receipt incomplete — ${reasons.join('; ')}.`)}</div>`];
+      const warningHtml = `<div class="qb-warnings">${[...banner, ...notes.map((note) => `<div class="qb-warning">${esc(note)}</div>`)].join('')}</div>`;
       const monthPicker = `<form class="qb-month" method="get" action="/coyote/revenue">
           <input type="hidden" name="tab" value="qbsales">
           <label for="qb-month">Calendar month</label>
           <input id="qb-month" name="month" type="month" value="${esc(qb.month)}" onchange="this.form.submit()">
         </form>`;
-      const stateTag = qb.complete ? S.rcc.tag('COMPLETE', 'good') : S.rcc.tag('INCOMPLETE', 'warn');
+      const stateTag = qb.complete ? S.rcc.tag('COMPLETE', 'good') : S.rcc.tag(`INCOMPLETE · ${(qb.incompleteReasons || []).map((r) => r.split(' — ')[0]).join(', ') || 'reason not named'}`, 'warn');
       const feeControl = (row) => `<div class="qb-fee-entry">
           <input class="qb-fee-value" type="number" step="1" inputmode="numeric" data-qb-line="${row.key}" value="${row.entered ? row.amountPence : ''}" placeholder="signed pence" aria-label="${esc(row.label)} signed pence">
           <button class="qb-fee-save" type="button" data-qb-line="${row.key}">Save signed pence</button>
