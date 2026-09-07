@@ -536,7 +536,7 @@ test('posted-receipt reconciliation: the June/July memo typo still maps; a not-y
   assert.equal(july.thisMonthPosted, null);
   assert.equal(july.frozen, null);
   assert.deepEqual(july.postedReconciliations, []);
-  assert.equal(reports.QB_POSTED_FINAL_THROUGH, '2026-04', 'only April is final (operator 2026-09-07)');
+  assert.equal(reports.QB_POSTED_FINAL_THROUGH, '2026-05', 'final through May (operator 2026-09-07: May posted with the April corrections)');
 });
 
 test('a FINAL posted month is shown AS POSTED and never recomputed; its settlement basis is kept aside for the carry-forward (operator 2026-09-07)', () => {
@@ -594,4 +594,36 @@ test('a settlement row the posting lacks (gift-card lines after the cut-in) is c
   assert.equal(adj.over_short, -4275, 'the plug reverses: posted +4275, settlement 0');
   assert.equal(r.balanced, true, 'with the unposted rows included the corrections net to zero');
   assert.equal(r.lines.filter((l) => l.key === 'gift_sold')[0].postedPence, 0);
+});
+
+test('a correction line posted on a later receipt (its description names another month) is carried, not counted as that month\'s own figure — so the next month compares the month\'s own lines only', () => {
+  const { reconcilePostedReceipt } = reports;
+  const prior = calculateQuickBooksSales(mayFixture());
+  const gross = (key) => byKey(prior, key).amountPence;
+  const own = [
+    ['Sales Income with VAT (+) May 2026', gross('in_house_sales'), true],
+    ['In-Restaurant Card Payments (-) May 2026', gross('card_payments'), false],
+    ['Tips Payable (+) May 2026', gross('tips_payable'), false],
+    ['Cash Payments (-) May 2026', gross('cash_payments'), false],
+    ['Card Payment Fees (POS) (-) May 2026', gross('pos_fee'), false],
+    ['Online Sales Income with VAT (+) May 2026', gross('online_twenty_sales'), true],
+    ['Online Sales Income 0% VAT (+) May 2026', gross('online_zero_sales'), false],
+    ['Online Card Payments (-) May 2026', gross('online_card_payments'), false],
+    ['Card Payment Fees (Online) (-) May 2026', gross('online_fee'), false],
+    ['Gift cards sold (liability +)', gross('gift_sold'), false],
+    ['Gift card redemptions (liability −)', gross('gift_redeemed'), false],
+    // the April corrections David added to the May receipt
+    ['Sales Income with VAT (+) April 2026', -43872, true],
+    ['In-Restaurant Card Payments (-) April 2026', 55524, false],
+    ['Tips Payable (+) April 2026', -13037, false],
+  ];
+  const posted = own.map(([memo, g, vat]) => ({ doc_num: '1184', memo, debit_pence: g < 0 ? (vat ? Math.round(-g * 5 / 6) : -g) : 0, credit_pence: g > 0 ? (vat ? Math.round(g * 5 / 6) : g) : 0 }));
+  const r = reconcilePostedReceipt(posted, prior, { moneyBasis: false, month: '2026-05' });
+  assert.equal(r.carried.count, 3, 'the three April lines are carried corrections');
+  assert.deepEqual(r.carried.fromMonths, ['2026-04']);
+  assert.equal(r.carried.netPence, -43872 + 55524 - 13037);
+  assert.equal(r.nothingToCarry, true, "May's own lines equal the settlement basis, so June carries nothing");
+  assert.equal(r.lines.find((l) => l.key === 'in_house_sales').postedPence, gross('in_house_sales'), 'the carried line did not leak into the month\'s own figure');
+  const without = reconcilePostedReceipt(posted, prior, { moneyBasis: false });
+  assert.equal(without.carried.count, 0, 'without the month there is nothing to classify against');
 });
