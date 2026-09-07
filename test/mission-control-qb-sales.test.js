@@ -530,13 +530,12 @@ test('posted-receipt reconciliation: the June/July memo typo still maps; a not-y
   };
   const august = reports.getSection(null, { q, now: Date.UTC(2026, 8, 7), query: { tab: 'qbsales', month: '2026-08' } }).qbsales;
   assert.equal(august.thisMonthPosted, null);
-  assert.deepEqual(august.postedReconciliations, [], 'June and July receipts are PLACEHOLDERS (after the final-through month): nothing is carried from them');
+  assert.deepEqual(august.postedReconciliations.map((r) => r.docNums[0]), ['1186'], 'August (unposted) carries July, the most recent final month');
   const july = reports.getSection(null, { q, now: Date.UTC(2026, 8, 7), query: { tab: 'qbsales', month: '2026-07' } }).qbsales;
-  assert.deepEqual(july.placeholder, { docNums: ['1186'], txnDate: null }, 'a placeholder is named, the month stays live');
-  assert.equal(july.thisMonthPosted, null);
-  assert.equal(july.frozen, null);
-  assert.deepEqual(july.postedReconciliations.map((r) => r.docNums[0]), ['1185'], 'July (unposted) carries June, the most recent final month');
-  assert.equal(reports.QB_POSTED_FINAL_THROUGH, '2026-06', 'final through June (operator 2026-09-07)');
+  assert.equal(july.placeholder, null);
+  assert.deepEqual(july.frozen && july.frozen.docNums, ['1186'], 'July is final: shown as posted');
+  assert.deepEqual(july.postedReconciliations, [], 'a posted month carries nothing itself');
+  assert.equal(reports.QB_POSTED_FINAL_THROUGH, '2026-07', 'final through July (operator 2026-09-07)');
 });
 
 test('a FINAL posted month is shown AS POSTED and never recomputed; its settlement basis is kept aside for the carry-forward (operator 2026-09-07)', () => {

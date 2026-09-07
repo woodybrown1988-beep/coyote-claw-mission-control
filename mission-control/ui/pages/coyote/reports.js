@@ -479,7 +479,7 @@ const QB_POSTED_RECON_FROM = '2026-04';
 // PLACEHOLDERS (lines copied forward, not completed). A receipt for a month after this one is a
 // placeholder: the month stays live, the operator replaces the placeholder's lines with the tab's
 // rows, and nothing is carried from it. Move this forward only when David says a month is done.
-const QB_POSTED_FINAL_THROUGH = '2026-06';   // June posted 2026-09-07 (#1185 replaced with the tab's rows); May #1184 carries the April corrections
+const QB_POSTED_FINAL_THROUGH = '2026-07';   // July posted 2026-09-07 (#1186); June #1185 corrected at source; May #1184 carries the April corrections
 
 /**
  * Operator ruling 2026-09-07: a posted month is never restated — "if anything is different we move it
