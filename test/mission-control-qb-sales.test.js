@@ -497,9 +497,9 @@ test('posted-receipt reconciliation: the previous month as posted vs its settlem
   assert.equal(r.nothingToCarry, false);
 
   // an unknown posted memo is listed, never silently absorbed; row 1 on the FULL basis after the cut-in
-  const withStranger = [...identical, { doc_num: '1183', memo: 'Gift Cards Sold (+) May 2026', debit_pence: 0, credit_pence: 25500 }];
+  const withStranger = [...identical, { doc_num: '1183', memo: 'Charity Donations (+) May 2026', debit_pence: 0, credit_pence: 25500 }];
   const s2 = reconcilePostedReceipt(withStranger, prior, { moneyBasis: false });
-  assert.deepEqual(s2.unknownMemos, ['Gift Cards Sold (+) May 2026']);
+  assert.deepEqual(s2.unknownMemos, ['Charity Donations (+) May 2026']);
   assert.equal(s2.lines.find((l) => l.key === 'in_house_sales').settlementPence, byKey(prior, 'in_house_sales').amountPence, 'after the cut-in row 1 is compared as posted, gift lines included');
   assert.equal(reconcilePostedReceipt([], prior), null, 'no posted receipt: nothing to compare');
 });
@@ -510,14 +510,14 @@ test('posted-receipt reconciliation: the June/July memo typo still maps; a not-y
   const typo = [{ doc_num: '1185', memo: 'Online Sales Income with June (+) June 2026', debit_pence: 0, credit_pence: Math.round(byKey(prior, 'online_twenty_sales').amountPence * 5 / 6) }];
   const r1 = reconcilePostedReceipt(typo, prior, { moneyBasis: false });
   assert.equal(r1.unknownMemos.length, 0, "'with June' is the 20% online line");
-  assert.equal(r1.lines[0].key, 'online_twenty_sales');
+  assert.ok(r1.lines.some((l) => l.key === 'online_twenty_sales' && l.postedPence === byKey(prior, 'online_twenty_sales').amountPence), 'mapped to the 20% online line at the posted gross');
 
   const noFee = mayFixture(); noFee.fees = {};
   const priorNoFee = calculateQuickBooksSales(noFee);
   const posted = [{ doc_num: '1185', memo: 'Card Payment Fees (POS) (-) June 2026', debit_pence: 0, credit_pence: 0 }];
   const r2 = reconcilePostedReceipt(posted, priorNoFee, { moneyBasis: false });
   assert.deepEqual(r2.missingInputs, ['Card Payment Fees (POS)'], 'a posted zero fee against an un-entered fee is NOT a correction of the whole fee');
-  assert.equal(r2.lines[0].adjustmentPence, null);
+  assert.equal(r2.lines.find((l) => l.key === 'pos_fee').adjustmentPence, null);
   assert.equal(r2.nothingToCarry, false);
   assert.equal(r2.balanced, false);
 
@@ -562,4 +562,32 @@ test('a POSTED month is shown AS POSTED and never recomputed; its settlement bas
   assert.deepEqual(june.postedReconciliations, [], 'a posted month carries nothing itself');
   const may = reports.getSection(null, { q, now: Date.UTC(2026, 8, 7), query: { tab: 'qbsales', month: '2026-05' } }).qbsales;
   assert.equal(may.frozen, null, 'an unposted month stays live');
+});
+
+test('a settlement row the posting lacks (gift-card lines after the cut-in) is carried as a correction with posted 0 — so the set nets to zero', () => {
+  const { reconcilePostedReceipt } = reports;
+  const prior = calculateQuickBooksSales(mayFixture());          // May 2026: gift rows are live (sold 7000, redeemed 2725)
+  const gross = (key) => byKey(prior, key).amountPence;
+  // David's posting of that month WITHOUT gift lines, balanced with an Over/Short plug
+  const noGift = [
+    ['Sales Income with VAT (+) May 2026', gross('in_house_sales'), true],
+    ['In-Restaurant Card Payments (-) May 2026', gross('card_payments'), false],
+    ['Tips Payable (+) May 2026', gross('tips_payable'), false],
+    ['Cash Payments (-) May 2026', gross('cash_payments'), false],
+    ['Card Payment Fees (POS) (-) May 2026', gross('pos_fee'), false],
+    ['Online Sales Income with VAT (+) May 2026', gross('online_twenty_sales'), true],
+    ['Online Sales Income 0% VAT (+) May 2026', gross('online_zero_sales'), false],
+    ['Online Card Payments (-) May 2026', gross('online_card_payments'), false],
+    ['Card Payment Fees (Online) (-) May 2026', gross('online_fee'), false],
+  ];
+  const plug = -noGift.reduce((sum, [, g]) => sum + g, 0);        // = −(gift sold − gift redeemed) = −4275
+  noGift.push(['Over/Short (- / +) May 2026', plug, false]);
+  const posted = noGift.map(([memo, g, vat]) => ({ doc_num: '1184', memo, debit_pence: g < 0 ? -g : 0, credit_pence: g > 0 ? (vat ? Math.round(g * 5 / 6) : g) : 0 }));
+  const r = reconcilePostedReceipt(posted, prior, { moneyBasis: false });
+  const adj = Object.fromEntries(r.lines.map((l) => [l.key, l.adjustmentPence]));
+  assert.equal(adj.gift_sold, 7000, 'gift cards sold: settlement 7000, posted nothing');
+  assert.equal(adj.gift_redeemed, -2725, 'gift redemptions: settlement −2725, posted nothing');
+  assert.equal(adj.over_short, -4275, 'the plug reverses: posted +4275, settlement 0');
+  assert.equal(r.balanced, true, 'with the unposted rows included the corrections net to zero');
+  assert.equal(r.lines.filter((l) => l.key === 'gift_sold')[0].postedPence, 0);
 });
