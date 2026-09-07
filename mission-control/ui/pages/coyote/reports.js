@@ -2792,7 +2792,7 @@ module.exports = {
             ? `${plural(fg.count, 'card', 'cards')} issued free this month, ${gbp(fg.pence)} (${tenders}) — outside this receipt. Post a journal: Dr Marketing ${gbp(fg.pence)} / Cr Gift Card Liability ${gbp(fg.pence)}. No VAT.`
             : 'none issued this month.';
           const forward = bf
-            ? ` <br><strong>Brought forward at ${esc(bf.asAt)}</strong> (earlier months are not restated) — liability outstanding ${gbp(bf.outstandingPence)} = paid loads ${gbp(bf.paidLoadsPence)} + free issuance ${gbp(bf.freeIssuedPence)} − redemptions ${gbp(bf.redeemedPence)}. Opening journal: Dr Marketing ${gbp(bf.journal.marketingPence)}, Dr Sales income ${gbp(bf.journal.salesIncomePence)}, Cr Gift Card Liability ${gbp(bf.journal.liabilityPence)}.`
+            ? ` <br><strong>Opening position at ${esc(bf.asAt)} — post it in ${esc(monthLabel(qb.month))}, dated ${esc(bf.asAt)}; nothing is restated before this month</strong> — liability outstanding ${gbp(bf.outstandingPence)} = paid loads ${gbp(bf.paidLoadsPence)} + free issuance ${gbp(bf.freeIssuedPence)} − redemptions ${gbp(bf.redeemedPence)}. Opening journal (${esc(bf.asAt)}): Dr Marketing ${gbp(bf.journal.marketingPence)} (no VAT), Dr Sales income ${gbp(bf.journal.salesIncomePence)} (VAT-inclusive reversal of card sales already declared at sale — confirm the VAT coding with your accountant), Cr Gift Card Liability ${gbp(bf.journal.liabilityPence)}.`
             : '';
           const meals = qb.freeVoucherMeals && qb.freeVoucherMeals.count
             ? `<div class="qb-diagnostic"><strong>Meals paid with free vouchers</strong> — ${plural(qb.freeVoucherMeals.count, 'payment', 'payments')} · ${gbp(qb.freeVoucherMeals.pence)} — comps: no money, outside the receipt.</div>` : '';
