@@ -627,3 +627,16 @@ test('a correction line posted on a later receipt (its description names another
   const without = reconcilePostedReceipt(posted, prior, { moneyBasis: false });
   assert.equal(without.carried.count, 0, 'without the month there is nothing to classify against');
 });
+
+test('an unposted month carries only the MOST RECENT final month — the one before it was absorbed by that posting (June carries May, not April again)', () => {
+  const journal = {
+    '2026-04': [{ doc_num: '1183', memo: 'Tips Payable (+) April 2026', debit_pence: 0, credit_pence: 837962, txn_date: '2026-04-30' }],
+    '2026-05': [{ doc_num: '1184', memo: 'Tips Payable (+) May 2026', debit_pence: 0, credit_pence: 944284, txn_date: '2026-05-31' }, { doc_num: '1184', memo: 'Tips Payable (+) April 2026', debit_pence: 13037, credit_pence: 0, txn_date: '2026-05-31' }],
+  };
+  const q = (sql, params) => (/qb_journal_lines/.test(sql) ? { ok: true, rows: journal[params[0]] || [] } : { ok: true, rows: [] });
+  const june = reports.getSection(null, { q, now: Date.UTC(2026, 8, 7), query: { tab: 'qbsales', month: '2026-06' } }).qbsales;
+  assert.deepEqual(june.postedReconciliations.map((r) => r.docNums[0]), ['1184'], 'May only');
+  const may = reports.getSection(null, { q, now: Date.UTC(2026, 8, 7), query: { tab: 'qbsales', month: '2026-05' } }).qbsales;
+  assert.deepEqual(may.frozen && may.frozen.docNums, ['1184']);
+  assert.equal(may.frozen.carried.count, 1, "the April line on May's receipt is recognised as carried");
+});

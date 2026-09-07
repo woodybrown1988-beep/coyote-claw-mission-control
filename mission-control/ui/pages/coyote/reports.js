@@ -1752,14 +1752,15 @@ function buildQuickBooksSales(q, month, opts = {}) {
       result.unclassifiedTenders = [];
       result.freeVoucherMeals = { count: 0, pence: 0 };
     } else {
-      let ym = previousMonth(window.month);
-      while (ym && ym >= QB_POSTED_RECON_FROM) {
-        const posted = ym <= QB_POSTED_FINAL_THROUGH ? postedLinesFor(ym) : [];   // a placeholder is not a posting
-        if (!posted.length) break;
+      // Only the MOST RECENT final month carries: each final posting absorbed the corrections of the
+      // one before it (May's receipt carries April's lines), so walking further back would carry them
+      // twice. A placeholder month is not a posting and carries nothing.
+      const ym = previousMonth(window.month);
+      const posted = ym && ym >= QB_POSTED_RECON_FROM && ym <= QB_POSTED_FINAL_THROUGH ? postedLinesFor(ym) : [];
+      if (posted.length) {
         const prior = buildQuickBooksSales(q, ym, { noPrior: true });
         const recon = prior ? reconcilePostedReceipt(posted, prior, { moneyBasis: ym < QB_GIFT_TREATMENT_CUT_IN, month: ym }) : null;
         if (recon) result.postedReconciliations.push(recon);
-        ym = previousMonth(ym);
       }
       result.postedReconciliation = result.postedReconciliations[0] || null;
     }
