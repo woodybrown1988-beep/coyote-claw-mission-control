@@ -530,31 +530,34 @@ test('posted-receipt reconciliation: the June/July memo typo still maps; a not-y
   };
   const august = reports.getSection(null, { q, now: Date.UTC(2026, 8, 7), query: { tab: 'qbsales', month: '2026-08' } }).qbsales;
   assert.equal(august.thisMonthPosted, null);
-  assert.deepEqual(august.postedReconciliations.map((r) => [r.month, r.docNums[0]]), [['2026-07', '1186'], ['2026-06', '1185']], 'both posted months, most recent first, stopping at unposted May');
+  assert.deepEqual(august.postedReconciliations, [], 'June and July receipts are PLACEHOLDERS (after the final-through month): nothing is carried from them');
   const july = reports.getSection(null, { q, now: Date.UTC(2026, 8, 7), query: { tab: 'qbsales', month: '2026-07' } }).qbsales;
-  assert.deepEqual(july.thisMonthPosted, { docNums: ['1186'], txnDate: null }, 'a posted month carries nothing itself');
+  assert.deepEqual(july.placeholder, { docNums: ['1186'], txnDate: null }, 'a placeholder is named, the month stays live');
+  assert.equal(july.thisMonthPosted, null);
+  assert.equal(july.frozen, null);
   assert.deepEqual(july.postedReconciliations, []);
+  assert.equal(reports.QB_POSTED_FINAL_THROUGH, '2026-04', 'only April is final (operator 2026-09-07)');
 });
 
-test('a POSTED month is shown AS POSTED and never recomputed; its settlement basis is kept aside for the carry-forward (operator 2026-09-07)', () => {
+test('a FINAL posted month is shown AS POSTED and never recomputed; its settlement basis is kept aside for the carry-forward (operator 2026-09-07)', () => {
   const posted = [
-    { doc_num: '1185', memo: 'Sales Income with VAT (+) June 2026', debit_pence: 0, credit_pence: 12070088, txn_date: '2026-06-30' },
-    { doc_num: '1185', memo: 'In-Restaurant Card Payments (-) June 2026', debit_pence: 15031103, credit_pence: 0, txn_date: '2026-06-30' },
-    { doc_num: '1185', memo: 'Card Payment Fees (POS) (-) June 2026', debit_pence: 0, credit_pence: 0, txn_date: '2026-06-30' },
-    { doc_num: '1185', memo: 'Over/Short (- / +) June 2026', debit_pence: 0, credit_pence: 8445, txn_date: '2026-06-30' },
+    { doc_num: '1183', memo: 'Sales Income with VAT (+) April 2026', debit_pence: 0, credit_pence: 12070088, txn_date: '2026-04-30' },
+    { doc_num: '1183', memo: 'In-Restaurant Card Payments (-) April 2026', debit_pence: 15031103, credit_pence: 0, txn_date: '2026-04-30' },
+    { doc_num: '1183', memo: 'Card Payment Fees (POS) (-) April 2026', debit_pence: 0, credit_pence: 0, txn_date: '2026-04-30' },
+    { doc_num: '1183', memo: 'Over/Short (- / +) April 2026', debit_pence: 0, credit_pence: 8445, txn_date: '2026-04-30' },
   ];
   const q = (sql, params) => {
-    if (/qb_journal_lines/.test(sql)) return { ok: true, rows: params[0] === '2026-06' ? posted : [] };
+    if (/qb_journal_lines/.test(sql)) return { ok: true, rows: params[0] === '2026-04' ? posted : [] };
     return { ok: true, rows: [] };
   };
-  const june = reports.getSection(null, { q, now: Date.UTC(2026, 8, 7), query: { tab: 'qbsales', month: '2026-06' } }).qbsales;
-  assert.deepEqual(june.frozen && june.frozen.docNums, ['1185']);
-  assert.equal(june.frozen.txnDate, '2026-06-30');
+  const june = reports.getSection(null, { q, now: Date.UTC(2026, 8, 7), query: { tab: 'qbsales', month: '2026-04' } }).qbsales;
+  assert.deepEqual(june.frozen && june.frozen.docNums, ['1183']);
+  assert.equal(june.frozen.txnDate, '2026-04-30');
   assert.equal(byKey(june, 'in_house_sales').amountPence, 14484106, 'the posted 20% line, gross (net × 6/5)');
   assert.equal(byKey(june, 'card_payments').amountPence, -15031103, 'as posted');
   assert.equal(byKey(june, 'over_short').amountPence, 8445, 'the posted plug is shown, not zeroed');
   assert.equal(byKey(june, 'gift_sold').amountPence, 0, 'a line not on the posted receipt shows 0, not a recomputation');
-  assert.match(byKey(june, 'in_house_sales').derivation, /As posted in QuickBooks \(Sales Receipt #1185, dated 2026-06-30\)/);
+  assert.match(byKey(june, 'in_house_sales').derivation, /As posted in QuickBooks \(Sales Receipt #1183, dated 2026-04-30\)/);
   assert.equal(june.complete, true, 'a posted month is closed');
   assert.deepEqual(june.incompleteReasons, []);
   assert.ok(Array.isArray(june.settlementRows) && june.settlementRows.length === 12, 'the settlement basis is kept aside for the carry-forward');
@@ -562,6 +565,7 @@ test('a POSTED month is shown AS POSTED and never recomputed; its settlement bas
   assert.deepEqual(june.postedReconciliations, [], 'a posted month carries nothing itself');
   const may = reports.getSection(null, { q, now: Date.UTC(2026, 8, 7), query: { tab: 'qbsales', month: '2026-05' } }).qbsales;
   assert.equal(may.frozen, null, 'an unposted month stays live');
+  assert.deepEqual(may.postedReconciliations.map((r) => r.docNums[0]), ['1183'], 'and carries the final month before it');
 });
 
 test('a settlement row the posting lacks (gift-card lines after the cut-in) is carried as a correction with posted 0 — so the set nets to zero', () => {

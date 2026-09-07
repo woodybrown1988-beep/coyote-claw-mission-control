@@ -475,6 +475,11 @@ const QB_POSTED_MEMO_ROWS = Object.freeze([
 ]);
 // The first month reconciled against its posting (operator: April is filed and is the starting point).
 const QB_POSTED_RECON_FROM = '2026-04';
+// Operator 2026-09-07: only April 2026 is FINAL in QuickBooks; the May/June/July Sales Receipts are
+// PLACEHOLDERS (lines copied forward, not completed). A receipt for a month after this one is a
+// placeholder: the month stays live, the operator replaces the placeholder's lines with the tab's
+// rows, and nothing is carried from it. Move this forward only when David says a month is done.
+const QB_POSTED_FINAL_THROUGH = '2026-04';
 
 /**
  * Operator ruling 2026-09-07: a posted month is never restated — "if anything is different we move it
@@ -519,9 +524,11 @@ function reconcilePostedReceipt(postedLines, prior, opts = {}) {
   const known = lines.filter((l) => l.adjustmentPence != null);
   const adjustmentSum = known.reduce((sum, l) => sum + l.adjustmentPence, 0);
   const vatMovementGross = known.filter((l) => l.vat).reduce((sum, l) => sum + l.adjustmentPence, 0);
+  const vatLines = known.filter((l) => l.vat).length;
+  const withinRounding = Math.abs(adjustmentSum) <= vatLines;   // ≤ 1p per grossed-up 20% line
   return {
     month: prior.month, docNums, moneyBasis, lines, unknownMemos: unknown, missingInputs,
-    adjustmentSumPence: adjustmentSum, balanced: missingInputs.length === 0 && adjustmentSum === 0,
+    adjustmentSumPence: adjustmentSum, balanced: missingInputs.length === 0 && withinRounding, roundingPence: withinRounding ? adjustmentSum : 0,
     vatEffectPence: Math.round(vatMovementGross / 6), vatMovementGrossPence: vatMovementGross,
     nothingToCarry: missingInputs.length === 0 && known.every((l) => l.adjustmentPence === 0),
   };
@@ -1700,9 +1707,13 @@ function buildQuickBooksSales(q, month, opts = {}) {
   result.postedReconciliation = null;
   result.thisMonthPosted = null;
   result.frozen = null;
+  result.placeholder = null;
   if (!opts.noPrior) {
     const own = postedLinesFor(window.month);
-    if (own.length) {
+    if (own.length && window.month > QB_POSTED_FINAL_THROUGH) {
+      result.placeholder = { docNums: [...new Set(own.map((l) => String(l.doc_num || '')).filter(Boolean))], txnDate: own.map((l) => String(l.txn_date || '')).filter(Boolean).sort()[0] || null };
+    }
+    if (own.length && window.month <= QB_POSTED_FINAL_THROUGH) {
       // Operator 2026-09-07: "we are not changing any prior months in QuickBooks, so don't change them
       // on Mission Control." A posted month is shown AS POSTED — never recomputed. The settlement
       // basis still exists for it (result.settlementRows) only so the NEXT unposted month can carry
@@ -1735,7 +1746,7 @@ function buildQuickBooksSales(q, month, opts = {}) {
     } else {
       let ym = previousMonth(window.month);
       while (ym && ym >= QB_POSTED_RECON_FROM) {
-        const posted = postedLinesFor(ym);
+        const posted = ym <= QB_POSTED_FINAL_THROUGH ? postedLinesFor(ym) : [];   // a placeholder is not a posting
         if (!posted.length) break;
         const prior = buildQuickBooksSales(q, ym, { noPrior: true });
         const recon = prior ? reconcilePostedReceipt(posted, prior, { moneyBasis: ym < QB_GIFT_TREATMENT_CUT_IN }) : null;
@@ -1766,7 +1777,7 @@ module.exports = {
   deriveSittingCaptionState, deriveCoversCaptionState, deriveReconciliationCaptionState,
   buildMenuPortfolio, latestCompleteMonth, formatQuickBooksFeeDerivation, calculateQuickBooksSales,
   QB_SETTLEMENT_PROCESSOR_ALIASES,
-  QB_FREE_GIFT_LOAD_RECEIPTS, QB_GIFT_TREATMENT_CUT_IN, isFreeTender, reconcilePostedReceipt, QB_POSTED_MEMO_ROWS, QB_POSTED_RECON_FROM,
+  QB_FREE_GIFT_LOAD_RECEIPTS, QB_GIFT_TREATMENT_CUT_IN, isFreeTender, reconcilePostedReceipt, QB_POSTED_MEMO_ROWS, QB_POSTED_RECON_FROM, QB_POSTED_FINAL_THROUGH,
   key: 'revenue', route: '/coyote/revenue', workspace: 'coyote', title: 'Revenue',
   sub: 'Revenue Command Centre — all six tabs live · menu contribution uses completed recipes · covers live via OpenTable (spend/cover derived)',
 
@@ -2892,7 +2903,11 @@ module.exports = {
       if (qb.feeMissing.length) {
         notes.push('Rows that depend on a missing input stay gross and say so in their derivation; Over/Short stays 0.00 because no row balances through it.');
       }
-      const banner = qb.frozen
+      const banner = qb.placeholder
+        ? [`<div class="qb-warning">${esc(`QuickBooks holds a PLACEHOLDER Sales Receipt for this month (#${qb.placeholder.docNums.join(', #')}${qb.placeholder.txnDate ? `, dated ${qb.placeholder.txnDate}` : ''}) — lines copied forward, not final. Replace its lines with the rows below; nothing is carried from a placeholder.`)}</div>`, ...(qb.complete
+          ? [`<div class="qb-warning qb-ok">${esc('Complete — every expected date is present and the POS fee, online fee and online refunds are all entered or supplied by settlement.')}</div>`]
+          : [`<div class="qb-warning">${esc(`QuickBooks sales receipt incomplete — missing ${reasons.join(', ')}. A missing input is not entered and not in settlement rows; a missing date is absent from the completed daily ingest.`)}</div>`])]
+        : qb.frozen
         ? [`<div class="qb-warning qb-ok">${esc(`Shown AS POSTED in QuickBooks (Sales Receipt ${qb.frozen.docNums.map((d) => '#' + d).join(', ')}${qb.frozen.txnDate ? `, dated ${qb.frozen.txnDate}` : ''}) — not recomputed; a posted month is never restated here. Differences between this posting and the settlement basis are carried into the next unposted month's receipt.${qb.carryNeeds && qb.carryNeeds.length ? ` That carry-forward still needs: ${qb.carryNeeds.join(', ')} for this month — enter them below; they feed the carry, not this receipt.` : ''}`)}</div>`]
         : qb.complete
         ? [`<div class="qb-warning qb-ok">${esc('Complete — every expected date is present and the POS fee, online fee and online refunds are all entered or supplied by settlement.')}</div>`]
@@ -2963,7 +2978,7 @@ module.exports = {
             if (pr.nothingToCarry) return `<div class="qb-diagnostic">${head} Nothing to carry — every line matches to the penny.</div>`;
             const rows = pr.lines.map((l) => `<tr><td>${esc(l.memo.replace(/ \((\+|-|- \/ \+)\)$/, ''))}</td><td class="r-num">${gbp(l.postedPence)}</td><td class="r-num">${l.settlementPence == null ? '—' : gbp(l.settlementPence)}</td><td class="r-num"><strong>${l.adjustmentPence == null ? '—' : (l.adjustmentPence < 0 ? '−' : '') + gbp(Math.abs(l.adjustmentPence))}</strong></td><td>${l.vat ? '20% S' : 'No VAT'}</td></tr>`).join('');
             const missing = pr.missingInputs.length ? ` Cannot be completed until ${pr.missingInputs.join(' and ')} for ${monthLabel(pr.month)} ${pr.missingInputs.length === 1 ? 'is' : 'are'} entered on that month's tab or supplied by settlement.` : '';
-            const foot = `${pr.missingInputs.length ? 'Corrections incomplete' : (pr.balanced ? 'Corrections net to 0.00' : `Corrections DO NOT balance (${gbp(pr.adjustmentSumPence)}) — check the posted receipt`)}; VAT effect ${pr.vatEffectPence < 0 ? '−' : ''}${gbp(Math.abs(pr.vatEffectPence))} (20% lines move ${pr.vatMovementGrossPence < 0 ? '−' : ''}${gbp(Math.abs(pr.vatMovementGrossPence))} gross).${missing}${pr.unknownMemos.length ? ` Posted lines not compared: ${pr.unknownMemos.map(esc).join('; ')}.` : ''}`;
+            const foot = `${pr.missingInputs.length ? 'Corrections incomplete' : (pr.balanced ? (pr.roundingPence ? `Corrections net to ${gbp(pr.roundingPence)} — VAT gross-up rounding on the posted 20% lines, treat as zero` : 'Corrections net to 0.00') : `Corrections DO NOT balance (${gbp(pr.adjustmentSumPence)}) — check the posted receipt`)}; VAT effect ${pr.vatEffectPence < 0 ? '−' : ''}${gbp(Math.abs(pr.vatEffectPence))} (20% lines move ${pr.vatMovementGrossPence < 0 ? '−' : ''}${gbp(Math.abs(pr.vatMovementGrossPence))} gross).${missing}${pr.unknownMemos.length ? ` Posted lines not compared: ${pr.unknownMemos.map(esc).join('; ')}.` : ''}`;
             return `<div class="qb-diagnostic">${head}<div style="overflow:auto"><table class="qb-table"><thead><tr><th>Line</th><th class="r-num">Posted</th><th class="r-num">Settlement</th><th class="r-num">Add to this month</th><th>VAT</th></tr></thead><tbody>${rows}</tbody></table></div>${foot}</div>`;
           }).join('');
         })()}<div style="overflow:auto"><table class="qb-table"><thead><tr><th>QuickBooks line</th><th class="r-num">Sign</th><th class="r-num">Amount</th><th>VAT treatment</th><th>Plain-English derivation</th><th>Source</th><th>Exact date window</th></tr></thead><tbody>${tableRows}</tbody></table></div>
