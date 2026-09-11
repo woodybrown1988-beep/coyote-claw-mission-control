@@ -255,6 +255,22 @@
     {
       "module": "mission-control/server.js",
       "export": "handleRequest"
+    },
+    {
+      "module": "mission-control/ui/pages/coyote/stock.js",
+      "export": "getSection"
+    },
+    {
+      "module": "mission-control/ui/pages/coyote/stock.js",
+      "export": "render"
+    },
+    {
+      "module": "mission-control/ui/pages/coyote/stock.js",
+      "export": "jsonForScript"
+    },
+    {
+      "module": "mission-control/ui/pages/coyote/stock.js",
+      "export": "defaultCountKind"
     }
   ],
   "tests": [
@@ -353,6 +369,10 @@
     {
       "name": "mission-control-stock-bridge",
       "command": "node --require ./test/tmpdir.js --test test/mission-control-stock-bridge.test.js"
+    },
+    {
+      "name": "mission-control-stock-page",
+      "command": "node --require ./test/tmpdir.js --test test/mission-control-stock-page.test.js"
     }
   ],
   "mutants": [
