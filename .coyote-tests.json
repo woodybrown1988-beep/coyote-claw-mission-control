@@ -239,6 +239,22 @@
     {
       "module": "mission-control/ui/pages/coyote/inventory.js",
       "export": "calendarDaysAgo"
+    },
+    {
+      "module": "mission-control/ui/stock-bridge.js",
+      "export": "buildStockArgv"
+    },
+    {
+      "module": "mission-control/server.js",
+      "export": "normalizeStockEngineResult"
+    },
+    {
+      "module": "mission-control/server.js",
+      "export": "getStockContext"
+    },
+    {
+      "module": "mission-control/server.js",
+      "export": "handleRequest"
     }
   ],
   "tests": [
@@ -333,6 +349,10 @@
     {
       "name": "mission-control-life-autonomy-count",
       "command": "node --require ./test/tmpdir.js --test test/mission-control-life-autonomy-count.test.js"
+    },
+    {
+      "name": "mission-control-stock-bridge",
+      "command": "node --require ./test/tmpdir.js --test test/mission-control-stock-bridge.test.js"
     }
   ],
   "mutants": [
