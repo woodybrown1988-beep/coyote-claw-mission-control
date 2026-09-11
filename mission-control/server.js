@@ -36,6 +36,7 @@ const crypto = require('node:crypto');
 const UP = require('./ui/upload.js');
 const AUTH = require('./ui/auth.js');
 const EXPORTS = require('./ui/exports-lib.js');
+const STOCK_BRIDGE = require('./ui/stock-bridge.js');
 const CC_DIR = process.env.COYOTE_CLAW_DIR || path.join(homedir(), 'coyote-claw');
 const OPENTABLE_INBOX = process.env.OPENTABLE_INBOX || path.join(CC_DIR, 'data', 'opentable-inbox');
 // TASK FILES (operator ask 2026-08-13) — the same inbox pattern, personal edition: MC
@@ -82,7 +83,7 @@ function main() {
   });
 }
 
-function handleRequest(req, res) {
+function handleRequest(req, res, dependencies) {
   const url = new URL(req.url, `http://${HOST}`);
 
   // --- Wave 1: security headers on EVERY response (set before any writeHead; route handlers may
@@ -134,6 +135,14 @@ function handleRequest(req, res) {
   // safe/reversible ops (review state/action + QuickBooks processor-fee input) via a SEPARATE write handle.
   // Everything else — all DATA rendering — uses the read-only handle. There is no op that posts to
   // Google (replyToReview stays the box-side Telegram-gated tap; the board has no token/nonce/path).
+  if (req.method === 'POST' && url.pathname === '/api/stock/action') {
+    handleStockAction(req, res, dependencies);
+    return;
+  }
+  if (req.method === 'GET' && url.pathname === '/api/stock/context') {
+    handleStockContext(res);
+    return;
+  }
   if (req.method === 'POST' && url.pathname === '/api/review-action') {
     handleReviewAction(req, res);
     return;
@@ -568,6 +577,228 @@ function openWritableDatabase() {
     return { ok: true, db };
   } catch (_) {
     return { ok: false };
+  }
+}
+
+// STOCK WRITE BRIDGE — Mission Control validates one of five commands, then delegates the write to
+// the stock engine. No database handle is opened on this path and no shell command is constructed.
+const STOCK_UUID_SOURCE = '[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}';
+const STOCK_NUMBER_SOURCE = '[+-]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:e[+-]?\\d+)?';
+const STOCK_UUID_RE = new RegExp(`^${STOCK_UUID_SOURCE}$`);
+const STOCK_SUCCESS_RE = [
+  new RegExp(`^\\[stock\\] opened (?:full|spot) count ${STOCK_UUID_SOURCE} for \\d{4}-\\d{2}-\\d{2}$`),
+  new RegExp(`^\\[stock\\] set [A-Za-z0-9._-]{1,64} at [A-Za-z0-9._-]{1,64}: ${STOCK_NUMBER_SOURCE} count units = ${STOCK_NUMBER_SOURCE} base units$`),
+  new RegExp(`^\\[stock\\] deleted [A-Za-z0-9._-]{1,64} at [A-Za-z0-9._-]{1,64} from count ${STOCK_UUID_SOURCE}$`),
+  new RegExp(`^\\[stock\\] closed count ${STOCK_UUID_SOURCE}: \\d+ ingredients, \\d+ adjustments \\([+-]?\\d+p\\), settled through (?:\\d{4}-\\d{2}-\\d{2}|none)$`),
+  new RegExp(`^\\[stock\\] recorded waste ${STOCK_UUID_SOURCE}: \\d+ movements \\([+-]?\\d+p\\) for \\d{4}-\\d{2}-\\d{2}$`),
+  new RegExp(`^\\[stock\\] voided waste ${STOCK_UUID_SOURCE}$`),
+];
+const STOCK_REFUSED_RE = /^\[stock\] refused — (.+)$/;
+const STOCK_OPENED_ID_RE = new RegExp(`^\\[stock\\] opened (?:full|spot) count (${STOCK_UUID_SOURCE}) for `);
+const STOCK_WASTE_ID_RE = new RegExp(`^\\[stock\\] recorded waste (${STOCK_UUID_SOURCE}):`);
+
+function normalizeStockLine(stderr) {
+  const line = String(stderr == null ? '' : stderr).trim();
+  return { line, single: line.length > 0 && !/[\r\n]/u.test(line) };
+}
+
+function normalizeStockEngineResult(error, stderr) {
+  const normalized = normalizeStockLine(stderr);
+  const line = normalized.line;
+  if (error && (error.killed === true || error.code === 'ETIMEDOUT' || error.signal)) {
+    return { status: 502, body: { ok: false, line } };
+  }
+
+  if (normalized.single) {
+    const refused = STOCK_REFUSED_RE.exec(line);
+    if (refused && (!error || error.code === 1)) {
+      return { status: 409, body: { ok: false, reason: refused[1] } };
+    }
+  }
+
+  const dates = line.match(/\b\d{4}-\d{2}-\d{2}\b/g) || [];
+  const validDates = dates.every((date) => {
+    const timestamp = Date.parse(`${date}T00:00:00Z`);
+    return Number.isFinite(timestamp) && new Date(timestamp).toISOString().slice(0, 10) === date;
+  });
+  if (error || !normalized.single || !validDates || !STOCK_SUCCESS_RE.some((pattern) => pattern.test(line))) {
+    return { status: 502, body: { ok: false, line } };
+  }
+
+  const opened = STOCK_OPENED_ID_RE.exec(line);
+  const waste = STOCK_WASTE_ID_RE.exec(line);
+  const id = (opened && opened[1]) || (waste && waste[1]);
+  const body = { ok: true, line };
+  if (id && STOCK_UUID_RE.test(id)) body.id = id;
+  return { status: 200, body };
+}
+
+function handleStockAction(req, res, dependencies) {
+  // The top-level auth wall already applies this check. Keeping it at the command boundary too makes
+  // the same Origin rule explicit and fail-closed if the handler is ever mounted elsewhere.
+  if (!AUTH.originOk(req)) {
+    sendJson(res, 403, { ok: false, error: 'cross-origin request refused' });
+    return;
+  }
+  readJsonBody(req, res, 8192, (body) => {
+    const built = STOCK_BRIDGE.buildStockArgv(body);
+    if (built.error) {
+      sendJson(res, 400, { ok: false, error: built.error });
+      return;
+    }
+
+    const childEnv = { ...process.env };
+    delete childEnv.COYOTE_CLAW_DB;
+    const options = {
+      cwd: process.env.MC_ENGINE_DIR || '/home/david/coyote-claw',
+      timeout: 15_000,
+      env: childEnv,
+      shell: false,
+    };
+    const execute = dependencies && typeof dependencies.execFile === 'function'
+      ? dependencies.execFile
+      : execFile;
+    try {
+      execute('npm', ['run', '-s', 'stock', '--', ...built.argv], options, (error, _stdout, stderr) => {
+        const result = normalizeStockEngineResult(error, stderr);
+        sendJson(res, result.status, result.body);
+      });
+    } catch (error) {
+      const line = error && error.message ? String(error.message) : '';
+      sendJson(res, 502, { ok: false, line });
+    }
+  });
+}
+
+// Read-only stock context. Engine S1 is canonical; the expected-units expression below is only a
+// read mirror for Mission Control and must not become a second stock writer or settlement engine.
+function getStockContext(ctx) {
+  const q = ctx && typeof ctx.q === 'function' ? ctx.q : () => ({ ok: false, rows: [] });
+  const rows = (result) => (result && result.ok && Array.isArray(result.rows) ? result.rows : []);
+
+  const countSettings = rows(q(`
+    SELECT settings.ingredient_id, ingredients.name, ingredients.unit_of_measure,
+           settings.location, settings.walk_order, settings.count_unit, settings.count_unit_qty,
+           (
+             SELECT lines.count_unit_qty
+               FROM count_lines lines
+               JOIN stock_counts counts ON counts.id = lines.count_id
+              WHERE lines.ingredient_id = settings.ingredient_id
+                AND lines.location = settings.location
+              ORDER BY counts.business_date DESC, lines.updated_at DESC, counts.id DESC
+              LIMIT 1
+           ) AS last_counted_units,
+           (
+             SELECT (lines.counted_qty + COALESCE((
+                      SELECT SUM(movements.qty)
+                        FROM stock_movements movements
+                       WHERE movements.ingredient_id = settings.ingredient_id
+                         AND movements.business_date > counts.business_date
+                         AND movements.proof_kind <> 'count'
+                    ), 0)) / settings.count_unit_qty
+               FROM count_lines lines
+               JOIN stock_counts counts ON counts.id = lines.count_id
+              WHERE counts.status = 'closed'
+                AND lines.ingredient_id = settings.ingredient_id
+                AND lines.location = settings.location
+              ORDER BY counts.business_date DESC, counts.closed_at DESC, counts.id DESC
+              LIMIT 1
+           ) AS expected_units
+      FROM ingredient_count_settings settings
+      JOIN sub_items ingredients ON ingredients.id = settings.ingredient_id
+     WHERE settings.active = 1
+     ORDER BY settings.location, settings.walk_order, settings.ingredient_id
+  `)).map((row) => ({
+    ingredientId: String(row.ingredient_id),
+    name: String(row.name),
+    unitOfMeasure: String(row.unit_of_measure),
+    location: String(row.location),
+    walkOrder: Number(row.walk_order),
+    countUnit: String(row.count_unit),
+    countUnitQty: Number(row.count_unit_qty),
+    lastCountedUnits: row.last_counted_units == null ? null : Number(row.last_counted_units),
+    expectedUnits: row.expected_units == null ? null : Number(row.expected_units),
+  }));
+
+  const openCounts = rows(q(`
+    SELECT id, business_date, kind, opened_by, opened_at, note
+      FROM stock_counts
+     WHERE status = 'open'
+     ORDER BY business_date DESC, opened_at DESC, id
+  `)).map((row) => ({
+    id: String(row.id),
+    businessDate: String(row.business_date),
+    kind: String(row.kind),
+    openedBy: String(row.opened_by),
+    openedAt: Number(row.opened_at),
+    note: row.note == null ? null : String(row.note),
+  }));
+
+  const wasteEvents = rows(q(`
+    SELECT waste.id, waste.business_date, waste.ingredient_id, waste.product_sku,
+           waste.qty, waste.unit, waste.reason, waste.note, waste.photo_path,
+           waste.entered_by, waste.created_at,
+           COALESCE(ingredients.name, products.name, waste.product_sku, waste.ingredient_id) AS name,
+           CASE WHEN instr(COALESCE(waste.note, ''), '[voided by') > 0
+                  AND NOT EXISTS (
+                    SELECT 1
+                      FROM stock_movements movements
+                     WHERE movements.proof_kind = 'waste'
+                       AND movements.proof_ref = waste.id
+                  )
+                THEN 1 ELSE 0 END AS voided
+      FROM waste_events waste
+      LEFT JOIN sub_items ingredients ON ingredients.id = waste.ingredient_id
+      LEFT JOIN ls_items products ON products.sku = waste.product_sku
+     ORDER BY waste.business_date DESC, waste.created_at DESC, waste.id DESC
+     LIMIT 20
+  `)).map((row) => ({
+    id: String(row.id),
+    businessDate: String(row.business_date),
+    target: row.ingredient_id == null ? `sku:${String(row.product_sku)}` : String(row.ingredient_id),
+    name: String(row.name),
+    qty: Number(row.qty),
+    unit: String(row.unit),
+    reason: String(row.reason),
+    note: row.note == null ? null : String(row.note),
+    photoPath: row.photo_path == null ? null : String(row.photo_path),
+    enteredBy: String(row.entered_by),
+    createdAt: Number(row.created_at),
+    voided: Number(row.voided) === 1,
+  }));
+
+  const ingredients = rows(q(`
+    SELECT id, name
+      FROM sub_items
+     ORDER BY name COLLATE NOCASE, id
+  `)).map((row) => ({ id: String(row.id), name: String(row.name) }));
+
+  const products = rows(q(`
+    SELECT DISTINCT 'sku:' || items.sku AS id, items.name
+      FROM ls_items items
+      LEFT JOIN products products ON products.lightspeed_sku = items.sku
+      LEFT JOIN recipe_lines recipes ON recipes.product_id = products.id
+     WHERE items.item_type = 'sub-item'
+        OR (items.price_mode = 'amount'
+            AND items.default_price_pence IS NOT NULL
+            AND recipes.product_id IS NOT NULL)
+     ORDER BY items.name COLLATE NOCASE, id
+  `)).map((row) => ({ id: String(row.id), name: String(row.name) }));
+
+  return { ok: true, countSettings, openCounts, wasteEvents, ingredients, products };
+}
+
+function handleStockContext(res) {
+  const opened = openDatabase();
+  if (!opened.ok) {
+    sendJson(res, 503, { ok: false, error: 'database unavailable' });
+    return;
+  }
+  try {
+    const ctx = { q: (sql, params) => DATA.safeSelect(opened.db, sql, params) };
+    sendJson(res, 200, getStockContext(ctx));
+  } finally {
+    try { opened.db.close(); } catch (_) { /* close failure is not user-actionable */ }
   }
 }
 
@@ -4085,6 +4316,8 @@ module.exports = {
   applyChatMessage,
   applyForecastOverride,
   chatUpdates,
+  normalizeStockEngineResult,
+  getStockContext,
   handleRequest,
   applyAuthEvent,
   __resetAuthLimiter: () => { LOGIN_LIMITER = AUTH.createLoginLimiter(); },
