@@ -11,6 +11,7 @@
 
 // Env MUST be set before requiring server.js (DB_PATH is read at load; auth reads env lazily).
 process.env.MC_AUTH_SECRET = 'test-operator-secret-0123456789abcdef'; // >= 16 chars
+process.env.MC_STAFF_SECRET = 'test-staff-secret-0123456789abcdef';
 process.env.MC_SESSION_KEY = 'test-session-signing-key-0123456789abcdef';
 process.env.MC_LOGIN_DELAY_MS = '0'; // no real sleep in tests
 
@@ -23,6 +24,7 @@ process.env.COYOTE_CLAW_DB = TMP_DB; // isolate all write-handle events to a thr
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const { Readable } = require('node:stream');
+const crypto = require('node:crypto');
 const sqlite = require('node:sqlite');
 
 const AUTH = require('../mission-control/ui/auth.js');
@@ -54,6 +56,12 @@ async function run(method, url, headers, body) {
   return res;
 }
 function validCookie(nowMs) { return { cookie: AUTH.COOKIE + '=' + AUTH.issueToken(nowMs || Date.now()) }; }
+function tierCookie(tier, nowMs) { return { cookie: AUTH.COOKIE + '=' + AUTH.issueToken(nowMs || Date.now(), tier) }; }
+function legacyCookie(nowMs) {
+  const payload = Buffer.from(JSON.stringify({ exp: (nowMs || Date.now()) + AUTH.SESSION_TTL_MS })).toString('base64url');
+  const signature = crypto.createHmac('sha256', process.env.MC_SESSION_KEY).update(payload).digest('base64url');
+  return { cookie: AUTH.COOKIE + '=' + payload + '.' + signature };
+}
 
 // ─────────────────────────── ACCEPTANCE (the two required negatives) ───────────────────────────
 
@@ -92,6 +100,111 @@ test('the login page itself is reachable unauthenticated', async () => {
   const res = await run('GET', '/login', { accept: 'text/html' });
   assert.equal(res.statusCode, 200);
   assert.match(res.body, /Mission Control/);
+});
+
+// ─────────────────────────── tier-aware authorization ───────────────────────────
+
+test('allowedFor — operator is unrestricted; staff is limited to stock and public paths', () => {
+  assert.equal(AUTH.allowedFor('operator', '/coyote/revenue'), true);
+  assert.equal(AUTH.allowedFor('operator', '/anything'), true);
+  assert.equal(AUTH.allowedFor('staff', '/login'), true);
+  assert.equal(AUTH.allowedFor('staff', '/healthz'), true);
+  assert.equal(AUTH.allowedFor('staff', '/logout'), true);
+  assert.equal(AUTH.allowedFor('staff', '/coyote/stock'), true);
+  assert.equal(AUTH.allowedFor('staff', '/coyote/stock/counts'), true);
+  assert.equal(AUTH.allowedFor('staff', '/api/stock/items'), true);
+  assert.equal(AUTH.allowedFor('staff', '/api/stock'), false);
+  assert.equal(AUTH.allowedFor('staff', '/coyote/stockroom'), false);
+  assert.equal(AUTH.allowedFor('staff', '/api/stockroom/items'), false);
+  assert.equal(AUTH.allowedFor('staff', '/coyote/revenue'), false);
+  assert.equal(AUTH.allowedFor('admin', '/coyote/stock'), false);
+  assert.equal(AUTH.allowedFor(null, '/coyote/stock'), false);
+  assert.equal(AUTH.allowedFor({}, '/coyote/stock'), false);
+  assert.equal(AUTH.allowedFor('staff', null), false);
+});
+
+test('staff can pass the server authorization gate for /coyote/stock', async () => {
+  server.__resetAuthLimiter();
+  const logged = [];
+  const originalError = console.error;
+  console.error = (message) => logged.push(String(message));
+  let login;
+  try {
+    login = await run('POST', '/login', { 'content-type': 'application/json' }, JSON.stringify({ secret: process.env.MC_STAFF_SECRET }));
+  } finally { console.error = originalError; }
+  assert.equal(login.statusCode, 200);
+  assert.ok(logged.some((line) => line.includes('login-ok') && line.includes('"tier":"staff"')));
+  assert.ok(logged.every((line) => !line.includes(process.env.MC_AUTH_SECRET) && !line.includes(process.env.MC_STAFF_SECRET)));
+  const cookie = login.headers['set-cookie'].split(';')[0];
+  assert.equal(AUTH.verifyToken(cookie.slice(cookie.indexOf('=') + 1), Date.now()), 'staff');
+  const stock = await run('GET', '/coyote/stock', { cookie });
+  assert.equal(stock.statusCode, 404, 'authorization passes; no stock route is added by this change');
+});
+
+test('staff receives 401 for non-HTML /coyote/revenue and /claw requests', async () => {
+  const headers = tierCookie('staff');
+  for (const pathname of ['/coyote/revenue', '/claw']) {
+    const res = await run('GET', pathname, headers);
+    assert.equal(res.statusCode, 401, pathname);
+    assert.deepEqual(JSON.parse(res.body), { ok: false, error: 'authentication required' });
+  }
+  const apiWithHtmlAccept = await run('GET', '/api/chat-updates', Object.assign({ accept: 'text/html' }, headers));
+  assert.equal(apiWithHtmlAccept.statusCode, 401, 'API requests remain JSON 401 even when Accept includes HTML');
+  assert.deepEqual(JSON.parse(apiWithHtmlAccept.body), { ok: false, error: 'authentication required' });
+});
+
+test('staff HTML GET outside stock redirects to /coyote/stock', async () => {
+  const res = await run('GET', '/coyote/overview', Object.assign({ accept: 'text/html' }, tierCookie('staff')));
+  assert.equal(res.statusCode, 302);
+  assert.equal(res.headers.location, '/coyote/stock');
+});
+
+test('a tier-less legacy signed cookie retains operator access', async () => {
+  const headers = legacyCookie();
+  assert.equal(AUTH.verifyToken(headers.cookie.slice(headers.cookie.indexOf('=') + 1), Date.now()), 'operator');
+  const res = await run('GET', '/coyote/revenue', headers);
+  assert.notEqual(res.statusCode, 401, 'legacy cookie passes the operator authorization gate');
+});
+
+test('unset staff secret cannot authenticate', async () => {
+  const saved = process.env.MC_STAFF_SECRET;
+  const existingCookie = tierCookie('staff');
+  delete process.env.MC_STAFF_SECRET;
+  try {
+    assert.deepEqual(AUTH.checkSecret(saved), { ok: false, tier: null });
+    assert.equal(AUTH.verifyToken(existingCookie.cookie.slice(existingCookie.cookie.indexOf('=') + 1), Date.now()), false);
+    server.__resetAuthLimiter();
+    const res = await run('POST', '/login', { 'content-type': 'application/json' }, JSON.stringify({ secret: saved }));
+    assert.equal(res.statusCode, 401);
+    assert.equal((await run('GET', '/coyote/stock', existingCookie)).statusCode, 401);
+  } finally { process.env.MC_STAFF_SECRET = saved; }
+});
+
+test('too-short staff secret cannot authenticate', () => {
+  const saved = process.env.MC_STAFF_SECRET;
+  process.env.MC_STAFF_SECRET = 'too-short';
+  try {
+    assert.deepEqual(AUTH.checkSecret('too-short'), { ok: false, tier: null });
+  } finally { process.env.MC_STAFF_SECRET = saved; }
+});
+
+test('staff secret equal to operator secret is refused as staff', () => {
+  const saved = process.env.MC_STAFF_SECRET;
+  const existingStaffToken = AUTH.issueToken(Date.now(), 'staff');
+  process.env.MC_STAFF_SECRET = process.env.MC_AUTH_SECRET;
+  try {
+    assert.deepEqual(AUTH.checkSecret(process.env.MC_AUTH_SECRET), { ok: true, tier: 'operator' });
+    assert.equal(AUTH.verifyToken(existingStaffToken, Date.now()), false);
+  } finally { process.env.MC_STAFF_SECRET = saved; }
+});
+
+test('RED CONTROL — an always-true allowedFor stub lets staff reach /coyote/revenue', async () => {
+  const original = AUTH.allowedFor;
+  AUTH.allowedFor = () => true;
+  try {
+    const res = await run('GET', '/coyote/revenue', tierCookie('staff'));
+    assert.notEqual(res.statusCode, 401, 'without the real allowlist, the staff cookie reaches the route');
+  } finally { AUTH.allowedFor = original; }
 });
 
 // ─────────────────────────── security headers + CSRF ───────────────────────────
@@ -219,7 +332,7 @@ test('SESSION REVOCATION — rotating MC_SESSION_KEY invalidates every existing 
 test('token integrity — tampered signature and expired tokens are rejected', () => {
   const now = 1_000_000_000_000;
   const good = AUTH.issueToken(now);
-  assert.equal(AUTH.verifyToken(good, now), true);
+  assert.equal(AUTH.verifyToken(good, now), 'operator');
   // tamper the signature
   const tampered = good.slice(0, -2) + (good.slice(-2) === 'aa' ? 'bb' : 'aa');
   assert.equal(AUTH.verifyToken(tampered, now), false);

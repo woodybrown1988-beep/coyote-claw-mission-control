@@ -106,9 +106,20 @@ function handleRequest(req, res) {
   // probes requires a valid session cookie. The dumb-pipe forwarder means we cannot trust peer IP —
   // the cookie IS the trust boundary. ---
   if (!AUTH.isPublicPath(url.pathname, acceptsHtml)) {
-    if (!AUTH.isAuthed(req, Date.now())) {
+    const tier = AUTH.isAuthed(req, Date.now(), true);
+    if (!tier) {
       if (acceptsHtml && req.method === 'GET') { res.writeHead(302, { Location: '/login' }); res.end(); }
       else { sendJson(res, 401, { ok: false, error: 'authentication required' }); }
+      return;
+    }
+    if (!AUTH.allowedFor(tier, url.pathname)) {
+      const isApi = url.pathname === '/api' || url.pathname.startsWith('/api/');
+      if (tier === 'staff' && !isApi && acceptsHtml && req.method === 'GET') {
+        res.writeHead(302, { Location: '/coyote/stock' });
+        res.end();
+      } else {
+        sendJson(res, 401, { ok: false, error: 'authentication required' });
+      }
       return;
     }
     // CSRF: state-changing requests must be same-origin (SameSite=Strict already withholds the
@@ -3735,10 +3746,11 @@ function handleLogin(req, res) {
   readTextBody(req, res, 4096, (raw) => {
     let secret = '';
     try { secret = String((JSON.parse(raw || '{}') || {}).secret || ''); } catch (_) { secret = ''; }
-    if (AUTH.checkSecret(secret)) {
+    const auth = AUTH.checkSecret(secret);
+    if (auth.ok) {
       LOGIN_LIMITER.succeed();
-      logAuth('login-ok', {});
-      res.setHeader('Set-Cookie', AUTH.issueCookie(Date.now()));
+      logAuth('login-ok', { tier: auth.tier });
+      res.setHeader('Set-Cookie', AUTH.issueCookie(Date.now(), auth.tier));
       sendJson(res, 200, { ok: true });
       return;
     }
