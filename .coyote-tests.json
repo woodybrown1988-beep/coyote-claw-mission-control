@@ -1,6 +1,10 @@
 {
   "functionsUnderTest": [
     {
+      "module": "mission-control/ui/auth.js",
+      "export": "allowedFor"
+    },
+    {
       "module": "mission-control/server.js",
       "export": "formatCount"
     },

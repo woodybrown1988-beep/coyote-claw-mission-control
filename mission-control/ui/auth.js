@@ -34,8 +34,14 @@ const LOCK_MAX_MS = 15 * 60 * 1000;       // cap
 const WINDOW_MS = 15 * 60 * 1000;         // failures older than this (and not locked) decay to 0
 
 function authSecret() { return process.env.MC_AUTH_SECRET || ''; }
+function staffSecret() { return process.env.MC_STAFF_SECRET || ''; }
 function sessionKey() { return process.env.MC_SESSION_KEY || ''; }
 function configured() { return authSecret().length >= MIN_SECRET_LEN && sessionKey().length >= MIN_SECRET_LEN; }
+function staffConfigured() {
+  const staff = staffSecret();
+  const operator = authSecret();
+  return staff.length >= MIN_SECRET_LEN && !eq(staff, operator);
+}
 
 function sha(x) { return crypto.createHash('sha256').update(String(x)).digest(); }
 // Constant-time compare with NO length oracle (both sides hashed to a fixed 32 bytes first).
@@ -44,12 +50,13 @@ function eq(a, b) { return crypto.timingSafeEqual(sha(a), sha(b)); }
 function signPayload(payloadB64) {
   return crypto.createHmac('sha256', sessionKey()).update(payloadB64).digest('base64url');
 }
-function issueToken(nowMs) {
-  const payload = Buffer.from(JSON.stringify({ exp: nowMs + SESSION_TTL_MS })).toString('base64url');
+function issueToken(nowMs, tier) {
+  const resolvedTier = tier == null ? 'operator' : tier;
+  const payload = Buffer.from(JSON.stringify({ exp: nowMs + SESSION_TTL_MS, tier: resolvedTier })).toString('base64url');
   return payload + '.' + signPayload(payload);
 }
-function issueCookie(nowMs) {
-  return `${COOKIE}=${issueToken(nowMs)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`;
+function issueCookie(nowMs, tier) {
+  return `${COOKIE}=${issueToken(nowMs, tier)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`;
 }
 function verifyToken(token, nowMs) {
   if (!configured() || typeof token !== 'string') return false;
@@ -60,7 +67,10 @@ function verifyToken(token, nowMs) {
   if (!eq(sig, signPayload(payload))) return false;      // tampered/forged signature → reject
   try {
     const p = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
-    return typeof p.exp === 'number' && p.exp > nowMs;    // expired → reject
+    if (typeof p.exp !== 'number' || p.exp <= nowMs) return false; // expired → reject
+    const tier = Object.prototype.hasOwnProperty.call(p, 'tier') ? p.tier : 'operator';
+    if (tier === 'staff' && !staffConfigured()) return false;
+    return tier;
   } catch { return false; }
 }
 function parseCookies(header) {
@@ -71,13 +81,18 @@ function parseCookies(header) {
   }
   return out;
 }
-function isAuthed(req, nowMs) {
+function isAuthed(req, nowMs, returnTier) {
   const cookies = parseCookies(req && req.headers && req.headers.cookie);
-  return verifyToken(cookies[COOKIE] || '', nowMs);
+  const tier = verifyToken(cookies[COOKIE] || '', nowMs);
+  return returnTier ? tier : Boolean(tier);
 }
 function checkSecret(candidate) {
-  if (!configured() || typeof candidate !== 'string' || candidate.length === 0) return false;
-  return eq(candidate, authSecret());
+  const refused = { ok: false, tier: null };
+  if (!configured() || typeof candidate !== 'string' || candidate.length === 0) return refused;
+  if (eq(candidate, authSecret())) return { ok: true, tier: 'operator' };
+  if (!staffConfigured()) return refused;
+  if (eq(candidate, staffSecret())) return { ok: true, tier: 'staff' };
+  return refused;
 }
 // Unauthenticated routes: the login page, and the machine-only health/version probes the deploy
 // path polls. The HTML /health PAGE (Accept: text/html) is NOT public — only the JSON probe is.
@@ -86,6 +101,15 @@ function isPublicPath(pathname, acceptsHtml) {
     || pathname === '/healthz'
     || pathname === '/version'
     || (pathname === '/health' && !acceptsHtml);
+}
+function allowedFor(tier, pathname) {
+  if (tier === 'operator') return true;
+  if (tier !== 'staff' || typeof pathname !== 'string') return false;
+  return isPublicPath(pathname, false)
+    || pathname === '/logout'
+    || pathname === '/coyote/stock'
+    || pathname.startsWith('/coyote/stock/')
+    || pathname.startsWith('/api/stock/');
 }
 // CSRF defence-in-depth: SameSite=Strict already withholds the cookie on cross-site requests; this
 // additionally refuses any state-changing request whose Origin is present and not same-host. A
@@ -126,5 +150,5 @@ function createLoginLimiter(opts) {
 module.exports = {
   COOKIE, SESSION_TTL_MS, MIN_SECRET_LEN, FAIL_THRESHOLD,
   configured, issueToken, issueCookie, verifyToken, parseCookies,
-  isAuthed, checkSecret, isPublicPath, originOk, createLoginLimiter,
+  isAuthed, checkSecret, isPublicPath, allowedFor, originOk, createLoginLimiter,
 };
