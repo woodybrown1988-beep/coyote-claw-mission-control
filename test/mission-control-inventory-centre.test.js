@@ -306,7 +306,8 @@ test('golden isolation: every other page file remains byte-identical', () => {
       ? walk(path.join(dir, entry.name)) : [path.join(dir, entry.name)]);
   }
   const root = path.join(__dirname, '../mission-control/ui/pages');
-  const files = walk(root).filter((file) => file.endsWith('.js') && file !== path.join(root, 'coyote/inventory.js')).sort();
+  const excluded = new Set([path.join(root, 'coyote/inventory.js'), path.join(root, 'coyote/stock.js')]);
+  const files = walk(root).filter((file) => file.endsWith('.js') && !excluded.has(file)).sort();
   const hash = crypto.createHash('sha256');
   for (const file of files) hash.update(`${path.relative(path.join(__dirname, '..'), file)}\0`).update(fs.readFileSync(file)).update('\0');
   assert.equal(files.length, 34);

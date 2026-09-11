@@ -138,7 +138,8 @@ test('staff can pass the server authorization gate for /coyote/stock', async () 
   const cookie = login.headers['set-cookie'].split(';')[0];
   assert.equal(AUTH.verifyToken(cookie.slice(cookie.indexOf('=') + 1), Date.now()), 'staff');
   const stock = await run('GET', '/coyote/stock', { cookie });
-  assert.equal(stock.statusCode, 404, 'authorization passes; no stock route is added by this change');
+  assert.equal(stock.statusCode, 200, 'authorization passes and the registered stock page renders');
+  assert.match(stock.body, /<title>Coyote Claw · Mission Control · Stock count<\/title>/);
 });
 
 test('staff receives 401 for non-HTML /coyote/revenue and /claw requests', async () => {

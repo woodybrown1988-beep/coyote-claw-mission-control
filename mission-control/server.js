@@ -325,6 +325,7 @@ const PAGES = [
   require('./ui/pages/coyote/reservations.js'),
   require('./ui/pages/coyote/costs.js'),
   require('./ui/pages/coyote/inventory.js'),
+  require('./ui/pages/coyote/stock.js'),
   require('./ui/pages/coyote/kitchen-safety.js'),
   require('./ui/pages/coyote/operations.js'),
   require('./ui/pages/coyote/customer-growth.js'),
@@ -414,6 +415,9 @@ function servePage(page, res, url) {
     foot = DATA.footModel(db, now);
     const ctx = {
       q: (sql, params) => DATA.safeSelect(db, sql, params),
+      // The stock page owns no SQL contract: it consumes this existing, SELECT-only interface,
+      // which is also the response model for GET /api/stock/context.
+      stockContext: () => getStockContext({ q: (sql, params) => DATA.safeSelect(db, sql, params) }),
       now,
       halt: buildHaltModel(readHaltFileExists(), readPausedValue(db)),
       // URL query → period navigation state (validated page-side; bookmarkable views).

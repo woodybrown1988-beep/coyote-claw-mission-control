@@ -137,7 +137,7 @@ const WORKSPACES = [
       { key: 'overview', label: 'Overview', route: '/coyote/overview', ico: '<rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/>' },
     ] },
     // Reports order (operator ruling 2026-07-22): Revenue, Labour, Costs, Reservations, Operations,
-    // Inventory, Customer Growth, Kitchen Safety, Report Library. The standalone "Rota Review" nav item
+    // Inventory, Stock count, Customer Growth, Kitchen Safety, Report Library. The standalone "Rota Review" nav item
     // was RETIRED in the same ruling — its full report (FORWARD/HINDSIGHT verdicts + per-daypart items +
     // run history) now lives as the Labour Centre's "Rota Review" tab; /coyote/rota-review 308-redirects
     // to /coyote/labour?tab=rota-review. The cadence timers still write to rota_review_runs, which that
@@ -149,6 +149,7 @@ const WORKSPACES = [
       { key: 'reservations', label: 'Reservations', route: '/coyote/reservations', ico: '<path d="M12 2a4 4 0 0 1 4 4c0 2.5-4 7-4 7s-4-4.5-4-7a4 4 0 0 1 4-4z"/><path d="M4 21h16M6 17h12"/>' },
       { key: 'operations', label: 'Operations', route: '/coyote/operations', ico: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/>' },
       { key: 'inventory', label: 'Inventory', route: '/coyote/inventory', ico: '<path d="M20 7 12 3 4 7v10l8 4 8-4z"/><path d="M4 7l8 4 8-4M12 11v10"/>' },
+      { key: 'stock', label: 'Stock count', route: '/coyote/stock', ico: '<path d="M5 4h14v17H5z"/><path d="M9 2h6v4H9zM8 10h8M8 14h5M8 18h3"/>' },
       { key: 'customer-growth', label: 'Customer Growth', route: '/coyote/customer-growth', ico: '<circle cx="9" cy="8" r="3"/><path d="M3 20v-1a6 6 0 0 1 12 0v1"/><path d="M16 3.5a3 3 0 0 1 0 5.8M18 20v-1a5 5 0 0 0-3-4.6"/>' },
       { key: 'kitchen-safety', label: 'Kitchen Safety', route: '/coyote/kitchen-safety', ico: '<path d="M12 2a3 3 0 0 1 3 3c0 1-.4 1.7-1 2.3V9h2a2 2 0 0 1 2 2v3a6 6 0 0 1-12 0v-3a2 2 0 0 1 2-2h2V7.3c-.6-.6-1-1.3-1-2.3a3 3 0 0 1 3-3z"/><path d="M6 21h12"/>' },
       { key: 'report-library', label: 'Report Library', route: '/coyote/report-library', ico: '<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><path d="M9 7h7M9 11h7"/>' },
