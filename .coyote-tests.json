@@ -203,6 +203,42 @@
     {
       "module": "mission-control/ui/pages/coyote/reports.js",
       "export": "formatQuickBooksFeeDerivation"
+    },
+    {
+      "module": "mission-control/ui/pages/coyote/inventory.js",
+      "export": "getSection"
+    },
+    {
+      "module": "mission-control/ui/pages/coyote/inventory.js",
+      "export": "getReadiness"
+    },
+    {
+      "module": "mission-control/ui/pages/coyote/inventory.js",
+      "export": "getCountsAggregation"
+    },
+    {
+      "module": "mission-control/ui/pages/coyote/inventory.js",
+      "export": "getCountQuality"
+    },
+    {
+      "module": "mission-control/ui/pages/coyote/inventory.js",
+      "export": "getWasteAggregates"
+    },
+    {
+      "module": "mission-control/ui/pages/coyote/inventory.js",
+      "export": "getExecutiveKpis"
+    },
+    {
+      "module": "mission-control/ui/pages/coyote/inventory.js",
+      "export": "formatPounds"
+    },
+    {
+      "module": "mission-control/ui/pages/coyote/inventory.js",
+      "export": "formatSignedQuantity"
+    },
+    {
+      "module": "mission-control/ui/pages/coyote/inventory.js",
+      "export": "calendarDaysAgo"
     }
   ],
   "tests": [
