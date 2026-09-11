@@ -199,9 +199,21 @@
     {
       "module": "mission-control/ui/pages/coyote/reports.js",
       "export": "formatQuickBooksFeeDerivation"
+    },
+    {
+      "module": "mission-control/ui/pages/coyote/inventory.js",
+      "export": "getSection"
+    },
+    {
+      "module": "mission-control/ui/pages/coyote/inventory.js",
+      "export": "render"
     }
   ],
   "tests": [
+    {
+      "name": "mission-control-inventory-centre",
+      "command": "node --require ./test/tmpdir.js --test test/mission-control-inventory-centre.test.js"
+    },
     {
       "name": "statusPillClass",
       "command": "node --test test/status-pill-class.test.js"
